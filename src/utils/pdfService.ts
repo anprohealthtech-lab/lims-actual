@@ -1,10 +1,13 @@
 import { supabase } from './supabase';
 import type { ReportTemplateContext, ReportTemplateAnalyteRow } from './supabase';
 import nunjucks from 'nunjucks';
+import { reportBaselineCss } from '../styles/reportBaselineString';
+import { ensureReportRegions, extractReportRegions } from './reportTemplateRegions';
 
 // PDF.co API configuration
 const PDFCO_API_KEY = import.meta.env.VITE_PDFCO_API_KEY || 'landinquiryfirm@gmail.com_AEu7lrDUacQsWOHuJ757dQDYPrJz6XbsYQcX2HrSVXf1LX8cvBn94TPzmfpeVgrT';
 const PDFCO_API_URL = 'https://api.pdf.co/v1/pdf/convert/from/html';
+const PDFCO_JOB_STATUS_URL = 'https://api.pdf.co/v1/job/check';
 
 const nunjucksEnv = nunjucks.configure({
   autoescape: true,
@@ -12,6 +15,109 @@ const nunjucksEnv = nunjucks.configure({
   trimBlocks: true,
   lstripBlocks: true,
 });
+
+const BASELINE_STYLE_TAG_ID = 'lims-report-baseline';
+const REPORT_BASELINE_CLASS = 'limsv2-report';
+const DEFAULT_HEADER_HTML = '';
+const DEFAULT_FOOTER_HTML = '';
+
+let brandingSanitizationEnabled = false;
+
+export const setBrandingSanitizationEnabled = (enabled: boolean): void => {
+  brandingSanitizationEnabled = enabled;
+};
+
+export const skipBrandingSanitization = (skip = true): void => {
+  brandingSanitizationEnabled = !skip;
+};
+
+const sanitizeRegionHtml = (html?: string | null): string | null => {
+  if (!brandingSanitizationEnabled) {
+    if (typeof html !== 'string') {
+      return null;
+    }
+
+    const trimmed = html.trim();
+    return trimmed.length > 0 ? trimmed : null;
+  }
+
+  if (!html) {
+    return null;
+  }
+
+  const trimmed = html.trim();
+  if (!trimmed) {
+    return null;
+  }
+
+  const placeholderTextVariants = new Set([
+    'headercontent',
+    'footercontent',
+    'placeheadercontenthere',
+    'placefootercontenthere',
+  ]);
+
+  let placeholderRemoved = false;
+  const cleaned = trimmed
+    .replace(/<[^>]*class=["'][^"']*report-region-placeholder[^"']*["'][^>]*>([\s\S]*?)<\/[^>]+>/gi, (match, inner) => {
+      const normalizedInner = String(inner)
+        .replace(/<br\s*\/?>(\s|&nbsp;|&#160;)*?/gi, ' ')
+        .replace(/&nbsp;|&#160;/gi, ' ')
+        .replace(/<[^>]*>/g, ' ')
+        .replace(/\s+/g, '')
+        .toLowerCase();
+
+      if (placeholderTextVariants.has(normalizedInner)) {
+        placeholderRemoved = true;
+        return '';
+      }
+
+      return match;
+    })
+    .replace(/<[^>]*data-placeholder=["']true["'][^>]*>([\s\S]*?)<\/[^>]+>/gi, (match, inner) => {
+      const normalizedInner = String(inner)
+        .replace(/<br\s*\/?>(\s|&nbsp;|&#160;)*?/gi, ' ')
+        .replace(/&nbsp;|&#160;/gi, ' ')
+        .replace(/<[^>]*>/g, ' ')
+        .replace(/\s+/g, '')
+        .toLowerCase();
+
+      if (placeholderTextVariants.has(normalizedInner)) {
+        placeholderRemoved = true;
+        return '';
+      }
+
+      return match;
+    })
+    .trim();
+
+  const workingHtml = cleaned || trimmed;
+
+  const hasVisualElements = /<\s*(img|svg|picture|table|canvas|iframe|video|div|span)[^>]*>/i.test(workingHtml);
+  const textContent = workingHtml
+    .replace(/<br\s*\/?>(\s|&nbsp;|&#160;)*?/gi, ' ')
+    .replace(/&nbsp;|&#160;/gi, ' ')
+    .replace(/<[^>]*>/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  const textLower = textContent.toLowerCase();
+  const isNamedPlaceholder =
+    textLower === 'header content' ||
+    textLower === 'footer content' ||
+    textLower === 'place header content here' ||
+    textLower === 'place footer content here';
+
+  if ((placeholderRemoved && !cleaned) || isNamedPlaceholder) {
+    return null;
+  }
+
+  if (!hasVisualElements && textContent.length === 0) {
+    return null;
+  }
+
+  return workingHtml;
+};
 
 export interface LabTemplateRecord {
   id: string;
@@ -114,23 +220,58 @@ const buildContextFromReportTemplate = (context: ReportTemplateContext): Record<
 export interface TemplateRenderOptions {
   context?: ReportTemplateContext | null;
   overrides?: Record<string, any>;
+  brandingDefaults?: LabBrandingHtmlDefaults;
 }
 
-const ensureHtmlDocument = (html: string, css?: string | null): string => {
-  const trimmedCss = css?.trim();
-  let finalHtml = html;
-  const hasHtmlRoot = /<html[\s>]/i.test(finalHtml);
+interface BuildReportHtmlOptions {
+  html: string;
+  css?: string | null;
+  brandingDefaults?: LabBrandingHtmlDefaults;
+}
 
-  if (!hasHtmlRoot) {
-    finalHtml = `<!DOCTYPE html>\n<html>\n<head></head>\n<body>\n${finalHtml}\n</body>\n</html>`;
+const sanitizeHtmlFragment = (raw: string): string => {
+  if (!raw) {
+    return '';
   }
 
-  if (trimmedCss && !finalHtml.includes(trimmedCss)) {
-    finalHtml = finalHtml.replace(/<head([\s>])/i, `<head$1\n<style>${trimmedCss}</style>\n`);
+  let working = raw
+    .replace(/<!DOCTYPE[\s\S]*?>/gi, '')
+    .replace(/<\/?html[^>]*>/gi, '')
+    .replace(/<head[\s\S]*?<\/head>/gi, '');
+
+  const bodyMatch = working.match(/<body[^>]*>([\s\S]*?)<\/body>/i);
+  if (bodyMatch) {
+    working = bodyMatch[1];
   }
 
-  return finalHtml;
+  working = working.replace(/\u00a0/g, ' ').replace(/undefined\s*:\s*undefined;?/gi, '');
+
+  working = working.replace(/<style[^>]*>[\s\S]*?<\/style>/gi, (block) => {
+    const css = block.replace(/<\/?style[^>]*>/gi, '').trim();
+    if (!css) {
+      return '';
+    }
+
+    const normalized = css.replace(/\s+/g, '').toLowerCase();
+    const shouldDrop =
+      normalized.includes('*{box-sizing:border-box;}body{margin:0;}') ||
+      normalized.includes('undefined:undefined');
+
+    return shouldDrop ? '' : block;
+  });
+
+  return ensureReportRegions(working.trim());
 };
+
+const normalizeCustomCss = (css?: string | null): string => {
+  if (!css) {
+    return '';
+  }
+
+  return css.replace(/\u00a0/g, ' ').replace(/undefined\s*:\s*undefined;?/gi, '').trim();
+};
+
+const CUSTOM_STYLE_TAG_ID = 'lims-report-custom';
 
 const renderTemplateWithContext = (html: string, context: Record<string, any>): string => {
   try {
@@ -141,23 +282,205 @@ const renderTemplateWithContext = (html: string, context: Record<string, any>): 
   }
 };
 
-const sendHtmlToPdfCo = async (htmlContent: string, filename: string): Promise<string> => {
+const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+export interface ReportHtmlBundle {
+  previewHtml: string;
+  bodyHtml: string;
+  headerHtml: string;
+  footerHtml: string;
+}
+
+interface PreparedReportHtml {
+  html: string;
+  bundle: ReportHtmlBundle | null;
+  filenameBase: string;
+  brandingDefaults: LabBrandingHtmlDefaults;
+}
+
+const buildPreviewDocument = (
+  bodyHtml: string,
+  headerHtml: string,
+  footerHtml: string,
+  customCss: string,
+  brandingDefaults?: LabBrandingHtmlDefaults
+): string => {
+  const styles = [
+    `<style id="${BASELINE_STYLE_TAG_ID}">${reportBaselineCss}</style>`,
+    customCss ? `<style id="${CUSTOM_STYLE_TAG_ID}">${customCss}</style>` : '',
+  ]
+    .filter(Boolean)
+    .join('\n');
+
+  const fallbackHeader = sanitizeBrandingRegion(brandingDefaults?.headerHtml);
+  const fallbackFooter = sanitizeBrandingRegion(brandingDefaults?.footerHtml);
+  const resolvedHeader = sanitizeRegionHtml(headerHtml) ?? fallbackHeader ?? DEFAULT_HEADER_HTML;
+  const resolvedFooter = sanitizeRegionHtml(footerHtml) ?? fallbackFooter ?? DEFAULT_FOOTER_HTML;
+  const resolvedBody = bodyHtml || '<p></p>';
+
+  return [
+    '<!DOCTYPE html>',
+    '<html lang="en">',
+    '<head>',
+    '<meta charset="utf-8" />',
+    '<meta name="viewport" content="width=device-width, initial-scale=1" />',
+    styles,
+    '</head>',
+    '<body>',
+    '<div class="limsv2-report">',
+    `<header class="limsv2-report-header">${resolvedHeader}</header>`,
+    `<main class="limsv2-report-body">${resolvedBody}</main>`,
+    `<footer class="limsv2-report-footer">${resolvedFooter}</footer>`,
+    '</div>',
+    '</body>',
+    '</html>',
+  ].join('');
+};
+
+const buildPdfBodyDocument = (bodyHtml: string, customCss: string): string => {
+  const styles = [
+    `<style id="${BASELINE_STYLE_TAG_ID}">${reportBaselineCss}</style>`,
+    customCss ? `<style id="${CUSTOM_STYLE_TAG_ID}">${customCss}</style>` : '',
+  ]
+    .filter(Boolean)
+    .join('\n');
+
+  return [
+    '<!DOCTYPE html>',
+    '<html lang="en">',
+    '<head>',
+    '<meta charset="utf-8" />',
+    '<meta name="viewport" content="width=device-width, initial-scale=1" />',
+    styles,
+    '</head>',
+    '<body>',
+    '<div class="limsv2-report">',
+    `<main class="limsv2-report-body limsv2-report-body--pdf">${bodyHtml || '<p></p>'}</main>`,
+    '</div>',
+    '</body>',
+    '</html>',
+  ].join('');
+};
+
+export const buildReportHtmlBundle = (options: BuildReportHtmlOptions): ReportHtmlBundle => {
+  const fragment = sanitizeHtmlFragment(options.html);
+  const customCss = normalizeCustomCss(options.css);
+  const regions = extractReportRegions(fragment);
+
+  return {
+    previewHtml: buildPreviewDocument(
+      regions.bodyHtml,
+      regions.headerHtml,
+      regions.footerHtml,
+      customCss,
+      options.brandingDefaults
+    ),
+    bodyHtml: buildPdfBodyDocument(regions.bodyHtml, customCss),
+    headerHtml: regions.headerHtml,
+    footerHtml: regions.footerHtml,
+  };
+};
+
+
+const buildReportFilenameBase = (reportData: ReportData, isDraft: boolean): string => {
+  const safePatient = (reportData.patient?.name || 'Patient').replace(/\s+/g, '_');
+  const reportId = reportData.report?.reportId || 'Report';
+  return `${safePatient}_${reportId}${isDraft ? '_DRAFT' : ''}`;
+};
+
+export const buildReportHtml = (options: BuildReportHtmlOptions): string =>
+  buildReportHtmlBundle(options).previewHtml;
+
+interface PdfCoRequestOptions {
+  displayHeaderFooter?: boolean;
+  headerHtml?: string;
+  footerHtml?: string;
+  headerHeight?: string;
+  footerHeight?: string;
+  margins?: string;
+  mediaType?: 'print' | 'screen';
+  printBackground?: boolean;
+  scale?: number;
+}
+
+const pollPdfCoJob = async (jobId: string, maxAttempts = 60, intervalMs = 3000): Promise<string> => {
+  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+    await delay(intervalMs);
+
+    const response = await fetch(PDFCO_JOB_STATUS_URL, {
+      method: 'POST',
+      headers: {
+        'x-api-key': PDFCO_API_KEY,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ jobid: jobId }),
+    });
+
+    if (!response.ok) {
+      throw new Error(`PDF.co job status error: ${response.status} ${response.statusText}`);
+    }
+
+    const statusPayload = await response.json();
+    const status = (statusPayload.status || '').toLowerCase();
+
+    if (status === 'success' && statusPayload.url) {
+      return statusPayload.url;
+    }
+
+    if (status === 'working' || status === 'waiting') {
+      continue;
+    }
+
+    const errorMessage = statusPayload.message || statusPayload.error || `Job returned status: ${status}`;
+    throw new Error(`PDF.co job failed: ${errorMessage}`);
+  }
+
+  throw new Error('PDF.co job polling exceeded maximum attempts');
+};
+
+const sendHtmlToPdfCo = async (
+  htmlContent: string,
+  filename: string,
+  options: PdfCoRequestOptions = {}
+): Promise<string> => {
   if (!PDFCO_API_KEY) {
     throw new Error('PDF.co API key not configured');
   }
 
+  const margins = options.margins ?? '40px 20px 40px 20px';
+  const mediaType = options.mediaType ?? 'print';
+  const printBackground = options.printBackground ?? true;
+  const scale = options.scale ?? 1.0;
+
+  // ALWAYS include header/footer fields, even if empty
+  const headerHtml = options.headerHtml ?? '';
+  const footerHtml = options.footerHtml ?? '';
+  
+  console.log('Raw header HTML (before JSON):', headerHtml);
+  console.log('Raw footer HTML (before JSON):', footerHtml);
+  
   const requestBody = {
     name: filename,
     html: htmlContent,
-    async: false,
-    margins: '15mm',
+    async: true,
+    margins,
     paperSize: 'A4',
     orientation: 'portrait',
-    printBackground: true,
-    scale: 1.0,
-    mediaType: 'print',
-    displayHeaderFooter: false,
+    printBackground,
+    scale,
+    mediaType,
+    displayHeaderFooter: true,
+    header: headerHtml,
+    footer: footerHtml,
   };
+
+  // Add header/footer height if specified
+  if (options.headerHeight) {
+    (requestBody as Record<string, any>).headerHeight = options.headerHeight;
+  }
+  if (options.footerHeight) {
+    (requestBody as Record<string, any>).footerHeight = options.footerHeight;
+  }
 
   const response = await fetch(PDFCO_API_URL, {
     method: 'POST',
@@ -178,14 +501,41 @@ const sendHtmlToPdfCo = async (htmlContent: string, filename: string): Promise<s
     throw new Error(`PDF.co API error: ${result.message}`);
   }
 
-  console.log('PDF generated successfully:', result.url);
-  return result.url;
+  if (result.url) {
+    console.log('PDF generated synchronously:', result.url);
+    return result.url;
+  }
+
+  if (result.jobId) {
+    console.log('PDF.co async job queued:', result.jobId);
+    return pollPdfCoJob(result.jobId);
+  }
+
+  throw new Error('PDF.co API did not return a result URL or jobId');
 };
 
-export const renderLabTemplateHtml = (
+const sendPrintHtmlToPdfCo = async (
+  bundle: ReportHtmlBundle,
+  filename: string
+): Promise<PrintPdfResult> => {
+  const url = await sendHtmlToPdfCo(bundle.bodyHtml, filename, {
+    headerHtml: '',
+    footerHtml: '',
+    mediaType: 'print',
+    printBackground: false,
+  });
+
+  return {
+    url,
+    headerHtml: null,
+    footerHtml: null,
+  };
+};
+
+export const renderLabTemplateHtmlBundle = (
   template: LabTemplateRecord,
   options: TemplateRenderOptions = {}
-): string => {
+): ReportHtmlBundle => {
   if (!template?.gjs_html) {
     throw new Error('Template is missing HTML content');
   }
@@ -211,16 +561,105 @@ export const renderLabTemplateHtml = (
   }
 
   const rendered = renderTemplateWithContext(template.gjs_html, renderContext);
-  return ensureHtmlDocument(rendered, template.gjs_css);
+  return buildReportHtmlBundle({
+    html: rendered,
+    css: template.gjs_css,
+    brandingDefaults: options.brandingDefaults,
+  });
+};
+
+export const renderLabTemplateHtml = (
+  template: LabTemplateRecord,
+  options: TemplateRenderOptions = {}
+): string => renderLabTemplateHtmlBundle(template, options).previewHtml;
+
+const convertImageUrlToBase64 = async (imageUrl: string): Promise<string> => {
+  try {
+    const response = await fetch(imageUrl);
+    if (!response.ok) {
+      throw new Error(`Failed to fetch image: ${response.status}`);
+    }
+    
+    const arrayBuffer = await response.arrayBuffer();
+    const base64 = btoa(String.fromCharCode(...new Uint8Array(arrayBuffer)));
+    
+    // Detect image format from URL or response headers
+    const contentType = response.headers.get('content-type') || 'image/png';
+    return `data:${contentType};base64,${base64}`;
+  } catch (error) {
+    console.warn('Failed to convert image to base64:', error);
+    return '';
+  }
+};
+
+const convertHtmlImagestoBase64 = async (html: string): Promise<string> => {
+  if (!html || html.trim().length === 0) {
+    return '';
+  }
+
+  // Find all img tags with src attributes
+  const imgRegex = /<img([^>]*src=['"]([^'"]+)['"][^>]*)>/gi;
+  const matches = [...html.matchAll(imgRegex)];
+  
+  let convertedHtml = html;
+  
+  for (const match of matches) {
+    const fullImgTag = match[0];
+    const imageUrl = match[2];
+    
+    // Skip if already base64
+    if (imageUrl.startsWith('data:')) {
+      continue;
+    }
+    
+    try {
+      const base64Src = await convertImageUrlToBase64(imageUrl);
+      if (base64Src) {
+        const newImgTag = fullImgTag.replace(imageUrl, base64Src);
+        convertedHtml = convertedHtml.replace(fullImgTag, newImgTag);
+        console.log(`Converted image URL to base64: ${imageUrl.substring(0, 50)}...`);
+      }
+    } catch (error) {
+      console.warn(`Failed to convert image ${imageUrl}:`, error);
+    }
+  }
+  
+  return convertedHtml;
 };
 
 export const generateTemplatePreviewPDF = async (
   template: LabTemplateRecord,
   options: TemplateRenderOptions = {}
 ): Promise<string> => {
-  const htmlDocument = renderLabTemplateHtml(template, options);
+  // Get lab branding defaults from database
+  const { data: labDefaults } = await supabase
+    .from('labs')
+    .select('default_report_header_html, default_report_footer_html')
+    .eq('id', template.lab_id)
+    .maybeSingle();
+
+  const rawHeaderHtml = labDefaults?.default_report_header_html || '';
+  const rawFooterHtml = labDefaults?.default_report_footer_html || '';
+  
+  // Convert images to base64
+  const headerHtml = await convertHtmlImagestoBase64(rawHeaderHtml);
+  const footerHtml = await convertHtmlImagestoBase64(rawFooterHtml);
+  
+  const brandingDefaults = resolveBrandingDefaultsFromOptions(options);
+  const htmlDocument = renderLabTemplateHtml(template, {
+    ...options,
+    brandingDefaults,
+  });
   const filename = `${template.template_name?.replace(/\s+/g, '_') || 'Template'}_Preview.pdf`;
-  return sendHtmlToPdfCo(htmlDocument, filename);
+  return sendHtmlToPdfCo(htmlDocument, filename, {
+    displayHeaderFooter: true,
+    headerHtml,
+    footerHtml,
+    headerHeight: '90px',
+    footerHeight: '80px',
+    mediaType: 'print',
+    printBackground: true,
+  });
 };
 
 // Interfaces from pdfGenerator.ts
@@ -278,6 +717,12 @@ export interface ReportData {
   labTemplateRecord?: LabTemplateRecord | null;
   templateContext?: ReportTemplateContext | null;
   placeholderOverrides?: Record<string, any>;
+  labBrandingDefaults?: LabBrandingHtmlDefaults;
+}
+
+export interface LabBrandingHtmlDefaults {
+  headerHtml?: string | null;
+  footerHtml?: string | null;
 }
 
 // Default lab template
@@ -304,6 +749,126 @@ export const defaultLabTemplate: LabTemplate = {
 
 const normalizeString = (value: string | null | undefined): string => {
   return value ? value.toLowerCase().trim() : '';
+};
+
+const pickFirstHtmlValue = (...values: (unknown | null | undefined)[]): string | null => {
+  for (const candidate of values) {
+    if (typeof candidate === 'string') {
+      if (candidate.trim().length > 0) {
+        return candidate;
+      }
+    }
+  }
+  return null;
+};
+
+const resolveBrandingDefaultsFromContext = (context?: ReportTemplateContext | null): LabBrandingHtmlDefaults => {
+  if (!context) {
+    return {};
+  }
+
+  const placeholders = (context.placeholderValues ?? {}) as Record<string, unknown>;
+  const branding = context.labBranding;
+
+  const headerCandidate = pickFirstHtmlValue(
+    branding?.defaultHeaderHtml,
+    placeholders['labDefaultHeaderHtml'],
+    placeholders['lab_default_header_html']
+  );
+
+  const footerCandidate = pickFirstHtmlValue(
+    branding?.defaultFooterHtml,
+    placeholders['labDefaultFooterHtml'],
+    placeholders['lab_default_footer_html']
+  );
+
+  return {
+    headerHtml: headerCandidate,
+    footerHtml: footerCandidate,
+  };
+};
+
+const resolveReportBrandingDefaults = (reportData: ReportData): LabBrandingHtmlDefaults => {
+  const overrides = (reportData.placeholderOverrides ?? {}) as Record<string, unknown>;
+
+  const overrideHeader = pickFirstHtmlValue(
+    overrides['labDefaultHeaderHtml'],
+    overrides['lab_default_header_html']
+  );
+
+  const overrideFooter = pickFirstHtmlValue(
+    overrides['labDefaultFooterHtml'],
+    overrides['lab_default_footer_html']
+  );
+
+  const dataDefaults = reportData.labBrandingDefaults ?? {};
+  const contextDefaults = resolveBrandingDefaultsFromContext(reportData.templateContext);
+
+  return {
+    headerHtml: pickFirstHtmlValue(
+      overrideHeader,
+      dataDefaults.headerHtml,
+      contextDefaults.headerHtml
+    ),
+    footerHtml: pickFirstHtmlValue(
+      overrideFooter,
+      dataDefaults.footerHtml,
+      contextDefaults.footerHtml
+    ),
+  };
+};
+
+const resolveBrandingDefaultsFromOptions = (options: TemplateRenderOptions = {}): LabBrandingHtmlDefaults => {
+  const overrides = (options.overrides ?? {}) as Record<string, unknown>;
+
+  const overrideHeader = pickFirstHtmlValue(
+    overrides['labDefaultHeaderHtml'],
+    overrides['lab_default_header_html']
+  );
+
+  const overrideFooter = pickFirstHtmlValue(
+    overrides['labDefaultFooterHtml'],
+    overrides['lab_default_footer_html']
+  );
+
+  const explicitDefaults = options.brandingDefaults ?? {};
+  const contextDefaults = resolveBrandingDefaultsFromContext(options.context ?? null);
+
+  return {
+    headerHtml: pickFirstHtmlValue(
+      overrideHeader,
+      explicitDefaults.headerHtml,
+      contextDefaults.headerHtml
+    ),
+    footerHtml: pickFirstHtmlValue(
+      overrideFooter,
+      explicitDefaults.footerHtml,
+      contextDefaults.footerHtml
+    ),
+  };
+};
+
+const sanitizeBrandingRegion = (html?: string | null): string => {
+  if (!brandingSanitizationEnabled) {
+    if (typeof html !== 'string') {
+      return '';
+    }
+
+    const trimmed = html.trim();
+    return trimmed.length > 0 ? trimmed : '';
+  }
+
+  if (typeof html !== 'string') {
+    return '';
+  }
+
+  const sanitized = sanitizeRegionHtml(html);
+  if (sanitized && sanitized.trim().length > 0) {
+    return sanitized;
+  }
+
+  const trimmed = html.trim();
+  return trimmed.length > 0 ? trimmed : '';
 };
 
 const createTestResultLabel = (row: ReportTemplateAnalyteRow): string => {
@@ -497,6 +1062,7 @@ export const createReportDataFromContext = (
     labTemplateRecord: options.template ?? null,
     templateContext: context,
     placeholderOverrides: { ...(context.placeholderValues ?? {}) },
+    labBrandingDefaults: resolveBrandingDefaultsFromContext(context),
   };
 
   return reportData;
@@ -683,8 +1249,9 @@ const generateUniversalHTMLTemplate = (data: ReportData, isDraft = false): strin
       text-align: left;
       font-size: 12px;
     }
-    th {
-      background: ${template.styling.primaryColor};
+      try {
+        const printResult = await generatePrintPDFWithAPI(reportData, preparedHtml);
+        const printPdfUrl = printResult.url;
       color: white;
       font-weight: bold;
       text-align: center;
@@ -909,43 +1476,118 @@ const generateUniversalHTMLTemplate = (data: ReportData, isDraft = false): strin
 </html>`;
 };
 
+const prepareReportHtml = (reportData: ReportData, isDraft: boolean): PreparedReportHtml => {
+  const filenameBase = buildReportFilenameBase(reportData, isDraft);
+  const brandingDefaults = resolveReportBrandingDefaults(reportData);
+
+  if (reportData.labTemplateRecord?.gjs_html && reportData.templateContext) {
+    const bundle = renderLabTemplateHtmlBundle(reportData.labTemplateRecord, {
+      context: reportData.templateContext,
+      overrides: {
+        ...(reportData.placeholderOverrides ?? {}),
+        report_is_draft: isDraft,
+        report_generated_at: new Date().toISOString(),
+      },
+      brandingDefaults,
+    });
+
+    return {
+      html: bundle.previewHtml,
+      bundle,
+      filenameBase,
+      brandingDefaults,
+    };
+  }
+
+  return {
+    html: generateUniversalHTMLTemplate(reportData, isDraft),
+    bundle: null,
+    filenameBase,
+    brandingDefaults,
+  };
+};
+
 // Enhanced PDF generation with PDF.co API
-export const generatePDFWithAPI = async (reportData: ReportData, isDraft = false): Promise<string> => {
+export const generatePDFWithAPI = async (
+  reportData: ReportData,
+  isDraft = false,
+  prepared?: PreparedReportHtml
+): Promise<string> => {
   console.log('Generating PDF with PDF.co API...', isDraft ? '(DRAFT)' : '(FINAL)');
-  const htmlContent = reportData.labTemplateRecord?.gjs_html && reportData.templateContext
-    ? renderLabTemplateHtml(reportData.labTemplateRecord, {
-        context: reportData.templateContext,
-        overrides: {
-          ...(reportData.placeholderOverrides ?? {}),
-          report_is_draft: isDraft,
-          report_generated_at: new Date().toISOString(),
-        },
-      })
-    : generateUniversalHTMLTemplate(reportData, isDraft);
-  const filename = `${reportData.patient.name.replace(/\s+/g, '_')}_${reportData.report.reportId}${isDraft ? '_DRAFT' : ''}.pdf`;
+  const ready = prepared ?? prepareReportHtml(reportData, isDraft);
+  const filename = `${ready.filenameBase}.pdf`;
+  
+  // Get lab defaults directly from database
+  let headerHtml = '';
+  let footerHtml = '';
+  
+  if (reportData.templateContext?.labId) {
+    const { data: labDefaults } = await supabase
+      .from('labs')
+      .select('default_report_header_html, default_report_footer_html')
+      .eq('id', reportData.templateContext.labId)
+      .maybeSingle();
+    
+    const rawHeaderHtml = labDefaults?.default_report_header_html || '';
+    const rawFooterHtml = labDefaults?.default_report_footer_html || '';
+    
+    // Convert images to base64
+    headerHtml = await convertHtmlImagestoBase64(rawHeaderHtml);
+    footerHtml = await convertHtmlImagestoBase64(rawFooterHtml);
+  }
 
   try {
-    return await sendHtmlToPdfCo(htmlContent, filename);
+    return await sendHtmlToPdfCo(ready.html, filename, {
+      displayHeaderFooter: true,
+      headerHtml,
+      footerHtml,
+      headerHeight: '100px',
+      footerHeight: '80px',
+      mediaType: 'screen',
+      printBackground: true,
+    });
   } catch (error) {
     console.error('PDF.co generation failed:', error);
     throw error;
   }
 };
 
+interface PrintPdfResult {
+  url: string;
+  headerHtml?: string | null;
+  footerHtml?: string | null;
+}
+
+const generatePrintPDFWithAPI = async (
+  _reportData: ReportData,
+  prepared: PreparedReportHtml
+): Promise<PrintPdfResult> => {
+  const filename = `${prepared.filenameBase}_PRINT.pdf`;
+
+  if (prepared.bundle) {
+    return sendPrintHtmlToPdfCo(prepared.bundle, filename);
+  }
+
+  console.warn('Print PDF requested but no template bundle available. Falling back to preview HTML.');
+  const url = await sendHtmlToPdfCo(prepared.html, filename, {
+    displayHeaderFooter: false,
+    mediaType: 'print',
+    printBackground: true,
+  });
+
+  return {
+    url,
+    headerHtml: null,
+    footerHtml: null,
+  };
+};
+
 // Fallback PDF generation using browser print
 export const generatePDFWithBrowser = (reportData: ReportData): string => {
   console.log('Generating PDF with browser fallback...');
 
-  const htmlContent = reportData.labTemplateRecord?.gjs_html && reportData.templateContext
-    ? renderLabTemplateHtml(reportData.labTemplateRecord, {
-        context: reportData.templateContext,
-        overrides: {
-          ...(reportData.placeholderOverrides ?? {}),
-          report_generated_at: new Date().toISOString(),
-        },
-      })
-    : generateUniversalHTMLTemplate(reportData);
-  const blob = new Blob([htmlContent], { type: 'text/html' });
+  const ready = prepareReportHtml(reportData, false);
+  const blob = new Blob([ready.html], { type: 'text/html' });
   const url = URL.createObjectURL(blob);
   
   console.log('Browser PDF blob created');
@@ -953,14 +1595,21 @@ export const generatePDFWithBrowser = (reportData: ReportData): string => {
 };
 
 // Enhanced Save PDF to Supabase storage - For public bucket
-export const savePDFToStorage = async (pdfBlob: Blob, orderId: string): Promise<string> => {
+type PdfVariant = 'final' | 'draft' | 'print';
+
+export const savePDFToStorage = async (
+  pdfBlob: Blob,
+  orderId: string,
+  variant: PdfVariant = 'final'
+): Promise<string> => {
   console.log('Saving PDF to Supabase storage...');
 
   try {
     // Create a unique filename
-    const fileName = `${orderId}_${Date.now()}.pdf`;
+    const suffix = variant === 'final' ? '' : `_${variant}`;
+    const fileName = `${orderId}_${Date.now()}${suffix}.pdf`;
     
-    console.log('Uploading file:', fileName, 'Size:', pdfBlob.size, 'Type:', pdfBlob.type);
+  console.log('Uploading file:', fileName, 'Size:', pdfBlob.size, 'Type:', pdfBlob.type);
 
     // Ensure we have a proper PDF blob
     if (!pdfBlob || pdfBlob.size === 0) {
@@ -1043,6 +1692,33 @@ export const updateReportWithPDFInfo = async (orderId: string, pdfUrl: string, r
     console.log(`Database updated successfully for ${reportType} report`);
   } catch (error) {
     console.error('Failed to update database:', error);
+    throw error;
+  }
+};
+
+export const updateReportWithPrintPDFInfo = async (
+  orderId: string,
+  printPdfUrl: string
+): Promise<void> => {
+  console.log('Updating database with print PDF info...');
+
+  try {
+    const { error } = await supabase
+      .from('reports')
+      .update({
+        print_pdf_url: printPdfUrl,
+        print_pdf_generated_at: new Date().toISOString(),
+      })
+      .eq('order_id', orderId);
+
+    if (error) {
+      console.error('Database update error (print PDF):', error);
+      throw error;
+    }
+
+    console.log('Print PDF metadata stored successfully');
+  } catch (error) {
+    console.error('Failed to update print PDF information:', error);
     throw error;
   }
 };
@@ -1151,12 +1827,13 @@ export async function generateAndSavePDFReportWithProgress(
     console.log(`Generating new ${reportType} PDF...`);
     onProgress?.(`Generating ${reportType} PDF with PDF.co...`, 25);
     
-    let pdfUrl: string | null = null;
-    let pdfBlob: Blob | null = null;
+    const preparedHtml = prepareReportHtml(reportData, isDraft);
+  let pdfUrl: string | null = null;
+  let pdfBlob: Blob | null = null;
 
     // Try PDF.co API - this is the only method we should use
     try {
-      pdfUrl = await generatePDFWithAPI(reportData, isDraft);
+      pdfUrl = await generatePDFWithAPI(reportData, isDraft, preparedHtml);
       console.log('✅ PDF.co URL received:', pdfUrl);
       onProgress?.('PDF generated, downloading...', 40);
       
@@ -1216,12 +1893,53 @@ export async function generateAndSavePDFReportWithProgress(
     // Save to Supabase storage (public bucket)
     console.log('Saving PDF to storage...');
     onProgress?.('Uploading to storage...', 85);
-    const storageUrl = await savePDFToStorage(pdfBlob, orderId);
+    const storageUrl = await savePDFToStorage(pdfBlob, orderId, isDraft ? 'draft' : 'final');
     
     // Update database
     console.log('Updating database with PDF URL...');
     onProgress?.('Updating database...', 90);
     await updateReportWithPDFInfo(orderId, storageUrl, reportType);
+
+    if (!isDraft) {
+      onProgress?.('Generating print-ready PDF...', 92);
+      try {
+        const printResult = await generatePrintPDFWithAPI(reportData, preparedHtml);
+        const printPdfUrl = printResult.url;
+        onProgress?.('Downloading print PDF...', 94);
+
+        let printBlob: Blob | null = null;
+        try {
+          printBlob = await downloadLargePDFWithProgress(printPdfUrl, onProgress);
+        } catch (printDownloadError) {
+          console.warn('Print PDF robust download failed, attempting standard fetch...', printDownloadError);
+          const response = await fetch(printPdfUrl, {
+            method: 'GET',
+            headers: {
+              'Accept': 'application/pdf, */*',
+              'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+              'Cache-Control': 'no-cache',
+            },
+          });
+
+          if (response.ok) {
+            const buffer = await response.arrayBuffer();
+            printBlob = new Blob([buffer], { type: 'application/pdf' });
+          } else {
+            throw new Error(`Standard print PDF download failed: ${response.status} ${response.statusText}`);
+          }
+        }
+
+        if (printBlob) {
+          onProgress?.('Saving print PDF...', 95);
+          const printStorageUrl = await savePDFToStorage(printBlob, orderId, 'print');
+          await updateReportWithPrintPDFInfo(orderId, printStorageUrl);
+          onProgress?.('Print PDF ready!', 96);
+        }
+      } catch (printError) {
+        console.error('Print PDF generation failed:', printError);
+        onProgress?.('Print PDF generation failed', 96);
+      }
+    }
 
     console.log('PDF generation completed successfully');
     onProgress?.('PDF ready for download!', 100);
@@ -1362,6 +2080,7 @@ export async function generateAndSavePDFReport(orderId: string, reportData: Repo
   }
   
   try {
+    const reportType = isDraft ? 'draft' : 'final';
     // First, ensure a report record exists
     let { data: existingReport } = await supabase
       .from('reports')
@@ -1396,7 +2115,7 @@ export async function generateAndSavePDFReport(orderId: string, reportData: Repo
           doctor: orderData.doctor || 'Unknown',
           status: 'pending',
           generated_date: new Date().toISOString(),
-          report_type: isDraft ? 'draft' : 'final',
+          report_type: reportType,
           report_status: 'generating'
         })
         .select()
@@ -1439,12 +2158,13 @@ export async function generateAndSavePDFReport(orderId: string, reportData: Repo
     }
 
     console.log('Generating new PDF...');
-    let pdfUrl: string | null = null;
-    let pdfBlob: Blob | null = null;
+    const preparedHtml = prepareReportHtml(reportData, isDraft);
+  let pdfUrl: string | null = null;
+  let pdfBlob: Blob | null = null;
 
     // Try PDF.co API - this is the only method we should use
     try {
-  pdfUrl = await generatePDFWithAPI(reportData, isDraft);
+      pdfUrl = await generatePDFWithAPI(reportData, isDraft, preparedHtml);
       console.log('✅ PDF.co URL received:', pdfUrl);
       
       if (pdfUrl && (pdfUrl.includes('pdf.co') || pdfUrl.includes('s3.us-west-2.amazonaws.com'))) {
@@ -1497,11 +2217,49 @@ export async function generateAndSavePDFReport(orderId: string, reportData: Repo
 
     // Save to Supabase storage (public bucket)
     console.log('Saving PDF to storage...');
-    const storageUrl = await savePDFToStorage(pdfBlob, orderId);
+  const storageUrl = await savePDFToStorage(pdfBlob, orderId, reportType);
     
     // Update database
     console.log('Updating database with PDF URL...');
-    await updateReportWithPDFInfo(orderId, storageUrl, 'final');
+  await updateReportWithPDFInfo(orderId, storageUrl, reportType);
+
+  if (!isDraft) {
+      console.log('Generating print-ready PDF variant...');
+      try {
+        const printResult = await generatePrintPDFWithAPI(reportData, preparedHtml);
+        const printPdfUrl = printResult.url;
+        let printBlob: Blob | null = null;
+
+        try {
+          printBlob = await downloadLargePDF(printPdfUrl);
+        } catch (printDownloadError) {
+          console.warn('Print PDF robust download failed, trying standard fetch...', printDownloadError);
+
+          const response = await fetch(printPdfUrl, {
+            method: 'GET',
+            headers: {
+              'Accept': 'application/pdf, */*',
+              'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+              'Cache-Control': 'no-cache',
+            },
+          });
+
+          if (response.ok) {
+            const buffer = await response.arrayBuffer();
+            printBlob = new Blob([buffer], { type: 'application/pdf' });
+          } else {
+            throw new Error(`Standard print PDF download failed: ${response.status} ${response.statusText}`);
+          }
+        }
+
+        if (printBlob) {
+          const printStorageUrl = await savePDFToStorage(printBlob, orderId, 'print');
+          await updateReportWithPrintPDFInfo(orderId, printStorageUrl);
+        }
+      } catch (printError) {
+        console.error('Print PDF generation failed:', printError);
+      }
+    }
 
     console.log('PDF generation completed successfully');
     return storageUrl;

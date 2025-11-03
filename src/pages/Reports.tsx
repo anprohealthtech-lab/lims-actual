@@ -20,7 +20,8 @@ import {
   Loader2,
   SortAsc,
   SortDesc,
-  Wand2
+  Wand2,
+  Printer
 } from 'lucide-react';
 import {
   format,
@@ -38,7 +39,7 @@ import {
   createReportDataFromContext,
   selectTemplateForContext,
 } from '../utils/pdfService';
-import type { LabTemplateRecord, ReportData } from '../utils/pdfService';
+import type { LabTemplateRecord, ReportData, LabBrandingHtmlDefaults } from '../utils/pdfService';
 import PDFProgressModal from '../components/PDFProgressModal';
 import { usePDFGeneration, isOrderReportReady } from '../hooks/usePDFGeneration';
 import QuickSendReport from '../components/WhatsApp/QuickSendReport';
@@ -89,8 +90,11 @@ interface ApprovedResult {
   is_report_ready?: boolean;
   has_draft_report?: boolean;
   has_final_report?: boolean;
+  has_print_pdf?: boolean;
   draft_report?: any;
   final_report?: any;
+  print_pdf_url?: string;
+  print_pdf_generated_at?: string;
 }
 
 interface OrderGroup {
@@ -178,7 +182,7 @@ const Reports: React.FC = () => {
         if (orderIds.length > 0) {
           const { data: reportsData } = await supabase
             .from('reports')
-            .select('order_id, status, generated_date, report_type, pdf_url, pdf_generated_at')
+            .select('order_id, status, generated_date, report_type, pdf_url, pdf_generated_at, print_pdf_url, print_pdf_generated_at')
             .in('order_id', orderIds);
           existingReports = (reportsData as any[]) || [];
         }
@@ -233,8 +237,11 @@ const Reports: React.FC = () => {
               is_report_ready: isReady,
               has_draft_report: report?.report_type === 'draft' && !!report.pdf_url,
               has_final_report: report?.report_type === 'final' && !!report.pdf_url,
+              has_print_pdf: !!report?.print_pdf_url,
               draft_report: report?.report_type === 'draft' ? report : null,
               final_report: report?.report_type === 'final' ? report : null,
+              print_pdf_url: report?.print_pdf_url || undefined,
+              print_pdf_generated_at: report?.print_pdf_generated_at || undefined,
               phone: resolvedPhone
             };
           })
@@ -586,7 +593,24 @@ const Reports: React.FC = () => {
         return;
       }
 
-      const pdfUrl = await generateTemplatePreviewPDF(templateRecord);
+  let brandingDefaults: LabBrandingHtmlDefaults | undefined;
+      try {
+        const { data: labBranding, error: brandingError } = await database.labs.getBrandingDefaults();
+        if (brandingError) {
+          console.warn('Failed to load lab branding defaults:', brandingError);
+        } else if (labBranding) {
+          brandingDefaults = {
+            headerHtml: labBranding.defaultReportHeaderHtml ?? null,
+            footerHtml: labBranding.defaultReportFooterHtml ?? null,
+          };
+        }
+      } catch (brandingFetchError) {
+        console.warn('Unexpected error loading lab branding defaults for preview:', brandingFetchError);
+      }
+
+      const pdfUrl = await generateTemplatePreviewPDF(templateRecord, {
+        brandingDefaults,
+      });
       if (pdfUrl) {
         if (previewWindow) {
           previewWindow.location.replace(pdfUrl);
@@ -666,6 +690,38 @@ const Reports: React.FC = () => {
           preview_mode: true,
           preview_generated_at: new Date().toISOString(),
           report_is_draft: context.meta?.allAnalytesApproved !== true,
+        },
+        brandingDefaults: {
+          headerHtml: (() => {
+            const placeholders = (context.placeholderValues ?? {}) as Record<string, unknown>;
+            if (typeof context.labBranding?.defaultHeaderHtml === 'string' && context.labBranding.defaultHeaderHtml.trim()) {
+              return context.labBranding.defaultHeaderHtml;
+            }
+            const direct = placeholders['labDefaultHeaderHtml'];
+            if (typeof direct === 'string' && direct.trim()) {
+              return direct;
+            }
+            const snake = placeholders['lab_default_header_html'];
+            if (typeof snake === 'string' && snake.trim()) {
+              return snake;
+            }
+            return undefined;
+          })(),
+          footerHtml: (() => {
+            const placeholders = (context.placeholderValues ?? {}) as Record<string, unknown>;
+            if (typeof context.labBranding?.defaultFooterHtml === 'string' && context.labBranding.defaultFooterHtml.trim()) {
+              return context.labBranding.defaultFooterHtml;
+            }
+            const direct = placeholders['labDefaultFooterHtml'];
+            if (typeof direct === 'string' && direct.trim()) {
+              return direct;
+            }
+            const snake = placeholders['lab_default_footer_html'];
+            if (typeof snake === 'string' && snake.trim()) {
+              return snake;
+            }
+            return undefined;
+          })(),
         },
       });
       if (pdfUrl) {
@@ -1237,23 +1293,44 @@ const Reports: React.FC = () => {
                                   </button>
                                 </>
                               ) : (
-                                <button
-                                  className="flex items-center space-x-1 px-3 py-1.5 text-sm bg-green-600 text-white rounded-md hover:bg-green-700 transition-colors"
-                                  onClick={() => {
-                                    const finalReport = (group.results[0] as ApprovedResult)?.final_report;
-                                    console.log('Final report object:', finalReport);
-                                    if (finalReport?.pdf_url) {
-                                      window.open(finalReport.pdf_url, '_blank');
-                                    } else {
-                                      console.warn('Final report PDF URL not found, regenerating...');
-                                      handleDownload(group.order_id, false);
-                                    }
-                                  }}
-                                  title="Download final report"
-                                >
-                                  <Download className="w-4 h-4" />
-                                  <span>Download Final</span>
-                                </button>
+                                <>
+                                  <button
+                                    className="flex items-center space-x-1 px-3 py-1.5 text-sm bg-green-600 text-white rounded-md hover:bg-green-700 transition-colors"
+                                    onClick={() => {
+                                      const finalReport = (group.results[0] as ApprovedResult)?.final_report;
+                                      console.log('Final report object:', finalReport);
+                                      if (finalReport?.pdf_url) {
+                                        window.open(finalReport.pdf_url, '_blank');
+                                      } else {
+                                        console.warn('Final report PDF URL not found, regenerating...');
+                                        handleDownload(group.order_id, false);
+                                      }
+                                    }}
+                                    title="Download final report"
+                                  >
+                                    <Download className="w-4 h-4" />
+                                    <span>Download Final</span>
+                                  </button>
+                                  <button
+                                    className={`flex items-center space-x-1 px-3 py-1.5 text-sm rounded-md transition-colors ${
+                                      (group.results[0] as ApprovedResult)?.final_report?.print_pdf_url
+                                        ? 'bg-emerald-600 text-white hover:bg-emerald-700'
+                                        : 'bg-gray-200 text-gray-500 cursor-not-allowed'
+                                    }`}
+                                    onClick={() => {
+                                      const finalReport = (group.results[0] as ApprovedResult)?.final_report;
+                                      const printUrl = finalReport?.print_pdf_url;
+                                      if (printUrl) {
+                                        window.open(printUrl, '_blank');
+                                      }
+                                    }}
+                                    disabled={!(group.results[0] as ApprovedResult)?.final_report?.print_pdf_url}
+                                    title={(group.results[0] as ApprovedResult)?.final_report?.print_pdf_url ? 'Open print-ready PDF' : 'Print PDF pending generation'}
+                                  >
+                                    <Printer className="w-4 h-4" />
+                                    <span>Print</span>
+                                  </button>
+                                </>
                               )}
                               
                               {/* WhatsApp Send Button - Show if final report exists */}
@@ -1262,14 +1339,6 @@ const Reports: React.FC = () => {
                                 const finalReport = result?.final_report;
                                 const hasFinalReport = result?.has_final_report;
                                 const reportUrl = finalReport?.pdf_url;
-                                
-                                // Debug logging
-                                console.log('WhatsApp button check:', {
-                                  orderId: group.order_id,
-                                  hasFinalReport,
-                                  finalReport,
-                                  reportUrl
-                                });
                                 
                                 // Show WhatsApp button if there's a final report (even without URL for now)
                                 if (hasFinalReport || finalReport) {
@@ -1421,7 +1490,26 @@ const Reports: React.FC = () => {
                                     <Download className="w-4 h-4" />
                                     <span>Download</span>
                                   </button>
-                                  
+                                  <button
+                                    className={`flex-1 flex items-center justify-center space-x-1 px-3 py-2 text-sm rounded-md transition-colors ${
+                                      (group.results[0] as ApprovedResult)?.final_report?.print_pdf_url
+                                        ? 'bg-emerald-600 text-white hover:bg-emerald-700'
+                                        : 'bg-gray-200 text-gray-500 cursor-not-allowed'
+                                    }`}
+                                    onClick={() => {
+                                      const finalReport = (group.results[0] as ApprovedResult)?.final_report;
+                                      const printUrl = finalReport?.print_pdf_url;
+                                      if (printUrl) {
+                                        window.open(printUrl, '_blank');
+                                      }
+                                    }}
+                                    disabled={!(group.results[0] as ApprovedResult)?.final_report?.print_pdf_url}
+                                    title={(group.results[0] as ApprovedResult)?.final_report?.print_pdf_url ? 'Open print-ready PDF' : 'Print PDF pending generation'}
+                                  >
+                                    <Printer className="w-4 h-4" />
+                                    <span>Print</span>
+                                  </button>
+
                                   {/* WhatsApp Send Button for Mobile */}
                                   {(() => {
                                     const result = group.results[0] as ApprovedResult;

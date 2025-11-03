@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import StudioEditor from '@grapesjs/studio-sdk/react';
 import '@grapesjs/studio-sdk/style';
 
@@ -7,8 +7,12 @@ import { database, LabBrandingAsset, LabUserSignature } from '../utils/supabase'
 import TemplateAIConsole from '../components/TemplateStudio/TemplateAIConsole';
 import TemplateAIAuditModal, { TemplateAuditResult } from '../components/TemplateStudio/TemplateAIAuditModal';
 import PlaceholderPicker, { PlaceholderOption } from '../components/TemplateStudio/PlaceholderPicker';
+import { ensureReportRegions } from '../utils/reportTemplateRegions';
+import '../styles/report-baseline.css';
+import reportBaselineCss from '../styles/reportBaselineString';
 
 const LICENSE_KEY = '0e8c208f003842abbfd1135201cd3ceff655e84267c8453b8b9435b9889c96ec';
+const BASELINE_STYLE_ELEMENT_ID = 'lims-report-baseline';
 
 interface LabTemplateRecord {
   id: string;
@@ -250,6 +254,7 @@ const TemplateStudio: React.FC = () => {
   const [saveErrorMessage, setSaveErrorMessage] = useState<string | null>(null);
   const [lastSavedAt, setLastSavedAt] = useState<Date | null>(null);
   const [pendingFallback, setPendingFallback] = useState<{ html: string; css: string } | null>(null);
+  const fallbackHydrationRef = useRef<{ templateId: string; version: number | null } | null>(null);
   const [selectedTemplateId, setSelectedTemplateId] = useState<string | null>(null);
   const [editorInstance, setEditorInstance] = useState<any | null>(null);
   const [isAiConsoleOpen, setIsAiConsoleOpen] = useState(false);
@@ -277,6 +282,40 @@ const TemplateStudio: React.FC = () => {
   const [placeholderOptions, setPlaceholderOptions] = useState<PlaceholderOption[]>([]);
   const [placeholderLoading, setPlaceholderLoading] = useState(false);
   const [placeholderError, setPlaceholderError] = useState<string | null>(null);
+  const applyBaselineToCanvas = useCallback(
+    (editor: any) => {
+      if (!editor?.Canvas?.getDocument) {
+        return;
+      }
+
+      try {
+        const canvasDocument = editor.Canvas.getDocument();
+        if (!canvasDocument) {
+          return;
+        }
+
+        const { head, body } = canvasDocument;
+        if (body && !body.classList.contains('limsv2-report')) {
+          body.classList.add('limsv2-report');
+        }
+
+        if (head) {
+          const existing = head.querySelector(`#${BASELINE_STYLE_ELEMENT_ID}`);
+          if (existing) {
+            existing.textContent = reportBaselineCss;
+          } else {
+            const styleEl = canvasDocument.createElement('style');
+            styleEl.id = BASELINE_STYLE_ELEMENT_ID;
+            styleEl.textContent = reportBaselineCss;
+            head.appendChild(styleEl);
+          }
+        }
+      } catch (baselineErr) {
+        console.warn('Failed to inject baseline styles into GrapesJS canvas:', baselineErr);
+      }
+    },
+    [reportBaselineCss]
+  );
   const PATIENT_PLACEHOLDER_OPTIONS: PlaceholderOption[] = useMemo(
     () => [
       { id: 'patientName', label: 'Patient Name', placeholder: '{{patientName}}', group: 'patient' },
@@ -352,22 +391,24 @@ const TemplateStudio: React.FC = () => {
           byType.forEach((asset, assetType) => {
             const friendlyType = BRANDING_TYPE_LABELS[assetType] || toTitleCase(assetType);
             const baseLabel = `Branding · ${friendlyType}`;
-            aggregated.push({
-              id: `branding-${asset.id}-original`,
-              label: `${baseLabel} (Original)`,
-              placeholder: asset.file_url,
-              group: 'branding',
-            });
-
             const variantMap = parseVariantMap(asset.variants);
+            const optimizedUrl = variantMap.optimized || asset.file_url;
 
-            Object.entries(variantMap).forEach(([variantKey, url]) => {
-              aggregated.push({
-                id: `branding-${asset.id}-${variantKey}`,
-                label: `${baseLabel} (${formatVariantLabel(variantKey)})`,
-                placeholder: url,
-                group: 'branding',
-              });
+            if (!optimizedUrl) {
+              return;
+            }
+
+            const shouldConstrainWidth = assetType === 'header' || assetType === 'footer' || assetType === 'watermark';
+            aggregated.push({
+              id: `branding-${asset.id}-${variantMap.optimized ? 'optimized' : 'preferred'}`,
+              label: `${baseLabel} (${variantMap.optimized ? 'Optimized' : 'Original'})`,
+              placeholder: optimizedUrl,
+              group: 'branding',
+              assetType,
+              variantKey: variantMap.optimized ? 'optimized' : 'original',
+              preferredWidth: shouldConstrainWidth ? 1000 : null,
+              preferredHeight: null,
+              removeBackground: assetType === 'watermark',
             });
           });
         }
@@ -383,21 +424,19 @@ const TemplateStudio: React.FC = () => {
             const baseLabel = `Signature · ${friendlyName}`;
 
             if (defaultSignature.file_url) {
-              aggregated.push({
-                id: `signature-${defaultSignature.id}-original`,
-                label: `${baseLabel} (Original)`,
-                placeholder: defaultSignature.file_url,
-                group: 'signature',
-              });
-
               const variants = parseVariantMap(defaultSignature.variants);
-              Object.entries(variants).forEach(([variantKey, url]) => {
-                aggregated.push({
-                  id: `signature-${defaultSignature.id}-${variantKey}`,
-                  label: `${baseLabel} (${formatVariantLabel(variantKey)})`,
-                  placeholder: url,
-                  group: 'signature',
-                });
+              const optimizedSignature = variants.optimized || defaultSignature.file_url;
+
+              aggregated.push({
+                id: `signature-${defaultSignature.id}-${variants.optimized ? 'optimized' : 'preferred'}`,
+                label: `${baseLabel} (${variants.optimized ? 'Optimized' : 'Original'})`,
+                placeholder: optimizedSignature,
+                group: 'signature',
+                assetType: 'signature',
+                variantKey: variants.optimized ? 'optimized' : 'original',
+                preferredWidth: 200,
+                preferredHeight: 200,
+                removeBackground: true,
               });
             }
 
@@ -479,10 +518,73 @@ const TemplateStudio: React.FC = () => {
   }, [loadPlaceholderOptions, placeholderPickerOpen]);
 
   const handleInsertPlaceholder = useCallback(
-    (token: string) => {
+    (option: PlaceholderOption) => {
       if (!editorInstance) {
         setPlaceholderError('Editor is not ready yet. Try again in a moment.');
         return;
+      }
+
+      const token = option.placeholder;
+      if (!token || typeof token !== 'string') {
+        setPlaceholderError('Selected placeholder did not include any content to insert.');
+        return;
+      }
+
+      const isImagePlaceholder = option.group === 'branding' || option.group === 'signature';
+
+      const buildImageAttributes = () => {
+        const attributes: Record<string, any> = {
+          src: token,
+          alt: option.label || 'Lab branding',
+        };
+
+        const styleSegments: string[] = [];
+
+        if (option.preferredWidth) {
+          const widthValue = Math.max(option.preferredWidth, 1);
+          attributes.width = widthValue;
+          styleSegments.push(`width:${widthValue}px`, `max-width:${widthValue}px`);
+          if (!option.preferredHeight) {
+            styleSegments.push('height:auto');
+          }
+        }
+
+        if (option.preferredHeight) {
+          const heightValue = Math.max(option.preferredHeight, 1);
+          attributes.height = heightValue;
+          styleSegments.push(`height:${heightValue}px`);
+        }
+
+        if (option.preferredWidth || option.preferredHeight) {
+          styleSegments.push('object-fit:contain');
+        }
+
+        if (option.removeBackground) {
+          styleSegments.push('background:none transparent', 'background-image:none');
+        }
+
+        if (!option.preferredWidth && !option.preferredHeight) {
+          styleSegments.push('max-width:100%', 'height:auto');
+        }
+
+        const styleString = Array.from(new Set(styleSegments)).join(';');
+        if (styleString) {
+          attributes.style = styleString;
+        }
+
+        if (!attributes.style) {
+          attributes.style = 'max-width:100%;height:auto;';
+        }
+
+        return attributes;
+      };
+
+      const imageAttributes = isImagePlaceholder ? buildImageAttributes() : null;
+      let fallbackHtml = token;
+      if (isImagePlaceholder) {
+        const styleValue = imageAttributes?.style || 'max-width:100%;height:auto;';
+        const sanitizedAlt = (imageAttributes?.alt || 'Lab branding').replace(/"/g, '&quot;');
+        fallbackHtml = `<img src="${token}" alt="${sanitizedAlt}" style="${styleValue}" />`;
       }
 
       try {
@@ -490,12 +592,21 @@ const TemplateStudio: React.FC = () => {
         const hasFocusedRte = Boolean(rte?.getFocused?.());
 
         if (hasFocusedRte && typeof rte.insertHTML === 'function') {
-          rte.insertHTML(token);
+          rte.insertHTML(fallbackHtml);
         } else {
           const selected = editorInstance.getSelected?.();
 
           if (selected && typeof selected.append === 'function') {
-            if (selected.is?.('text') || selected.is?.('textnode')) {
+            if (isImagePlaceholder) {
+              selected.append({
+                type: 'image',
+                attributes: imageAttributes || {
+                  src: token,
+                  alt: option.label || 'Lab branding',
+                  style: 'max-width:100%;height:auto;',
+                },
+              });
+            } else if (selected.is?.('text') || selected.is?.('textnode')) {
               const existing = selected.get?.('content') || '';
               selected.set?.('content', `${existing}${token}`);
             } else {
@@ -503,7 +614,18 @@ const TemplateStudio: React.FC = () => {
             }
           } else {
             const wrapper = editorInstance.getWrapper?.();
-            wrapper?.append?.({ type: 'text', content: token });
+            if (isImagePlaceholder) {
+              wrapper?.append?.({
+                type: 'image',
+                attributes: imageAttributes || {
+                  src: token,
+                  alt: option.label || 'Lab branding',
+                  style: 'max-width:100%;height:auto;',
+                },
+              });
+            } else {
+              wrapper?.append?.({ type: 'text', content: token });
+            }
           }
         }
 
@@ -770,13 +892,14 @@ const TemplateStudio: React.FC = () => {
 
     if (hasSerializedProject) {
       setPendingFallback(null);
+      fallbackHydrationRef.current = null;
       return {
         id: templateMeta.id,
         project: templateMeta.gjs_project,
       };
     }
 
-    const fallbackHtml = templateMeta.gjs_html ?? '';
+  const fallbackHtml = ensureReportRegions(templateMeta.gjs_html ?? '');
     const fallbackCss = templateMeta.gjs_css ?? '';
     setPendingFallback({ html: fallbackHtml, css: fallbackCss });
 
@@ -798,6 +921,7 @@ const TemplateStudio: React.FC = () => {
             ],
           },
         ],
+        css: fallbackCss,
       },
     };
   }, [selectedTemplateId, templateMeta]);
@@ -812,7 +936,7 @@ const TemplateStudio: React.FC = () => {
         setIsSaving(true);
         setSaveErrorMessage(null);
 
-        const html = editor?.getHtml?.() ?? '';
+  const html = ensureReportRegions(editor?.getHtml?.() ?? '');
         const css = editor?.getCss?.() ?? '';
         let components: any = null;
 
@@ -869,6 +993,12 @@ const TemplateStudio: React.FC = () => {
   const handleEditorReady = useCallback(
     (editor: any) => {
       setEditorInstance(editor);
+      applyBaselineToCanvas(editor);
+
+      if (typeof editor?.on === 'function') {
+        editor.on('load', () => applyBaselineToCanvas(editor));
+      }
+
       if (!pendingFallback) {
         return;
       }
@@ -900,8 +1030,56 @@ const TemplateStudio: React.FC = () => {
         setPendingFallback(null);
       }
     },
-    [pendingFallback, templateMeta?.id]
+    [applyBaselineToCanvas, pendingFallback, templateMeta?.id]
   );
+
+  const templateId = templateMeta?.id || null;
+  const serializedProjectRef = templateMeta?.gjs_project || null;
+  const fallbackHtmlContent = templateMeta?.gjs_html ?? '';
+  const fallbackCssContent = templateMeta?.gjs_css ?? '';
+  const templateVersion = templateMeta?.template_version ?? null;
+
+  useEffect(() => {
+    if (!editorInstance || !templateId) {
+      return;
+    }
+
+    applyBaselineToCanvas(editorInstance);
+
+    const hasSerializedProject = serializedProjectRef && Object.keys(serializedProjectRef).length > 0;
+    if (hasSerializedProject) {
+      const hydrated = fallbackHydrationRef.current;
+      if (hydrated && hydrated.templateId === templateId) {
+        fallbackHydrationRef.current = null;
+      }
+      return;
+    }
+
+    if (!fallbackHtmlContent.trim()) {
+      return;
+    }
+
+    const alreadyHydrated =
+      fallbackHydrationRef.current?.templateId === templateId &&
+      fallbackHydrationRef.current?.version === templateVersion;
+
+    if (alreadyHydrated) {
+      return;
+    }
+
+    try {
+      editorInstance.setComponents(fallbackHtmlContent);
+      if (typeof editorInstance.setStyle === 'function') {
+        editorInstance.setStyle(fallbackCssContent ?? '');
+      }
+      fallbackHydrationRef.current = {
+        templateId,
+        version: templateVersion,
+      };
+    } catch (err) {
+      console.warn('Failed to hydrate GrapesJS editor from fallback HTML:', err);
+    }
+  }, [applyBaselineToCanvas, editorInstance, fallbackCssContent, fallbackHtmlContent, serializedProjectRef, templateId, templateVersion]);
 
   const toggleAiConsole = useCallback(() => {
     setIsAiConsoleOpen((prev) => !prev);
@@ -1371,12 +1549,25 @@ const TemplateStudio: React.FC = () => {
       return;
     }
 
+    const timestamp = new Date().toISOString().slice(0, 10);
+    const baseName = `New Template ${timestamp}`;
+    const existingNames = new Set(
+      templates
+        .map((tpl) => tpl.template_name?.trim().toLowerCase())
+        .filter((name): name is string => Boolean(name))
+    );
+
+    let candidateName = baseName;
+    let suffix = 2;
+    while (existingNames.has(candidateName.trim().toLowerCase())) {
+      candidateName = `${baseName} (${suffix})`;
+      suffix += 1;
+    }
+
     try {
-      const timestamp = new Date().toISOString().slice(0, 10);
-      const templateName = `New Template ${timestamp}`;
       const { data, error: createError } = await database.labTemplates.create({
         labId,
-        name: templateName,
+        name: candidateName,
         description: 'New template created from Template Studio',
         category: 'reports',
       });
@@ -1395,9 +1586,15 @@ const TemplateStudio: React.FC = () => {
       setPendingFallback(null);
     } catch (createErr) {
       console.error('Failed to create template:', createErr);
-      setSaveErrorMessage('Unable to create a new template right now. Please try again later.');
+      const duplicateName =
+        createErr && typeof createErr === 'object' && 'code' in createErr && (createErr as { code?: string }).code === '23505';
+      setSaveErrorMessage(
+        duplicateName
+          ? 'A template with the same name already exists. Please rename the existing template or try again.'
+          : 'Unable to create a new template right now. Please try again later.'
+      );
     }
-  }, [labId]);
+  }, [labId, templates]);
 
   useEffect(() => {
     if (!templateMeta) {

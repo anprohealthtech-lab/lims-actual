@@ -18,3 +18,9 @@
   -webkit-line-clamp: 3;
   line-clamp: 3;
 }
+
+/* Ensure GrapesJS modals overlay the fixed sidebar */
+.gjs-mdl-container,
+.gjs-mdl-bg {
+  z-index: 60 !important;
+}

@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 
 type PlaceholderGroup = 'lab' | 'test' | 'patient' | 'branding' | 'signature';
+type BrandingAssetType = 'header' | 'footer' | 'watermark' | 'logo' | 'letterhead';
 
 interface PlaceholderOption {
   id: string;
@@ -9,11 +10,16 @@ interface PlaceholderOption {
   unit?: string | null;
   referenceRange?: string | null;
   group?: PlaceholderGroup;
+  assetType?: BrandingAssetType | 'signature';
+  variantKey?: string | null;
+  preferredWidth?: number | null;
+  preferredHeight?: number | null;
+  removeBackground?: boolean;
 }
 
 interface PlaceholderPickerProps {
   options: PlaceholderOption[];
-  onInsert: (placeholder: string) => void;
+  onInsert: (option: PlaceholderOption) => void;
   onClose: () => void;
   loading?: boolean;
   errorMessage?: string | null;
@@ -74,7 +80,7 @@ const PlaceholderPicker: React.FC<PlaceholderPickerProps> = ({ options, onInsert
     if (!activeOption) {
       return;
     }
-    onInsert(activeOption.placeholder);
+    onInsert(activeOption);
   };
 
   const renderGroup = (groupKey: PlaceholderGroup, emptyText: string) => {

@@ -94,6 +94,8 @@ DECLARE
   base_placeholders jsonb := '{}';
   lab_placeholders jsonb := '{}';
   analyte_placeholders jsonb := '{}';
+  lab_header_html text;
+  lab_footer_html text;
 BEGIN
   SELECT * INTO ctx_record
   FROM public.v_report_template_context
@@ -126,14 +128,20 @@ BEGIN
     'approvedAt', to_char(ctx_record.approved_at, 'YYYY-MM-DD"T"HH24:MI:SS"Z"')
   );
 
-  SELECT jsonb_build_object(
-    'labId', lab.id::text,
-    'labName', coalesce(lab.name, ''),
-    'labEmail', coalesce(lab.email, ''),
-    'labPhone', coalesce(lab.phone, ''),
-    'labAddress', coalesce(lab.address, ''),
-    'labRegistrationNumber', coalesce(lab.registration_number, '')
-  ) INTO lab_placeholders
+  SELECT
+    lab.default_report_header_html,
+    lab.default_report_footer_html,
+    jsonb_build_object(
+      'labId', lab.id::text,
+      'labName', coalesce(lab.name, ''),
+      'labEmail', coalesce(lab.email, ''),
+      'labPhone', coalesce(lab.phone, ''),
+      'labAddress', coalesce(lab.address, ''),
+      'labRegistrationNumber', coalesce(lab.registration_number, ''),
+      'labDefaultHeaderHtml', coalesce(lab.default_report_header_html, ''),
+      'labDefaultFooterHtml', coalesce(lab.default_report_footer_html, '')
+    )
+  INTO lab_header_html, lab_footer_html, lab_placeholders
   FROM public.labs lab
   WHERE lab.id = ctx_record.lab_id;
 
@@ -218,6 +226,14 @@ BEGIN
     'placeholderValues', coalesce(base_placeholders, '{}'::jsonb)
       || coalesce(lab_placeholders, '{}'::jsonb)
       || coalesce(analyte_placeholders, '{}'::jsonb)
+      || jsonb_build_object(
+        'labDefaultHeaderHtml', coalesce(lab_header_html, ''),
+        'labDefaultFooterHtml', coalesce(lab_footer_html, '')
+      ),
+    'labBranding', jsonb_build_object(
+      'defaultHeaderHtml', lab_header_html,
+      'defaultFooterHtml', lab_footer_html
+    )
   ));
 END;
 $$;

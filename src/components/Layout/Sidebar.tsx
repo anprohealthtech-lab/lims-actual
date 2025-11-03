@@ -54,6 +54,7 @@ const navigation = [
   { name: 'AI Tools', href: '/ai-tools', icon: Brain, category: 'tools' },
   { name: 'Workflow Demo', href: '/workflow-demo', icon: Workflow, category: 'tools' },
   { name: 'Template Studio', href: '/template-studio', icon: Palette, category: 'tools' },
+  { name: 'Template Studio (CKE)', href: '/template-studio-cke', icon: Palette, category: 'tools' },
   { name: 'Branding & Signatures', href: '/settings/branding', icon: Image, category: 'tools' },
   { name: 'Settings', href: '/settings', icon: Settings, category: 'tools' },
 ];
@@ -71,7 +72,7 @@ const Sidebar: React.FC<SidebarProps> = ({ isOpen, onToggle }) => {
       {/* Sidebar */}
       <div className={`
         fixed inset-y-0 left-0 z-30 w-64 bg-white shadow-lg transform transition-transform duration-300 ease-in-out overflow-y-auto
-        lg:translate-x-0 lg:static lg:inset-0
+        lg:translate-x-0
         ${isOpen ? 'translate-x-0' : '-translate-x-full'}
       `}>
         <div className="flex items-center justify-between h-16 px-6 bg-blue-600">

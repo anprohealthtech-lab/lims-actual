@@ -36,6 +36,7 @@ import Result2 from './pages/result2';
 import DoctorMaster from './components/Masters/DoctorMaster';
 import LocationMaster from './components/Masters/LocationMaster';
 import TemplateStudio from './pages/TemplateStudio';
+import TemplateStudioCKE from './pages/TemplateStudioCKE';
 import { BrandingSettings } from './pages/BrandingSettings';
 
 const AppRoutes: React.FC = () => {
@@ -95,6 +96,7 @@ const AppRoutes: React.FC = () => {
                 <Route path="/workflow-demo" element={<WorkflowDemo />} />
                 <Route path="/orders/:id" element={<OrderDetail />} />
                 <Route path="/template-studio" element={<TemplateStudio />} />
+                <Route path="/template-studio-cke" element={<TemplateStudioCKE />} />
                 {/* WhatsApp Integration */}
                 <Route path="/whatsapp" element={<WhatsApp />} />
                 <Route path="/whatsapp/sync" element={<WhatsAppUserSyncManager />} />

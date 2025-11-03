@@ -29,11 +29,19 @@ const getSupabaseClient = () => {
   });
 };
 
-const buildVariantUrls = (baseUrl, assetType) => {
-  const baseTransforms = ['e-upscale'];
-  if (assetType === 'watermark') {
-    baseTransforms.push('e-removebg');
+const buildVariantUrls = (baseUrl, assetType, tableName) => {
+  const baseTransforms = [];
+  const isSignatureAsset = tableName === 'lab_user_signatures';
+  const isWideBranding = assetType === 'header' || assetType === 'footer' || assetType === 'watermark';
+
+  if (assetType === 'watermark' || isSignatureAsset) {
+    baseTransforms.push('e-removedotbg');
+  } else {
+    baseTransforms.push('e-upscale');
   }
+
+  const targetWidth = isSignatureAsset ? 200 : isWideBranding ? 1000 : 1600;
+  const previewWidth = Math.max(isSignatureAsset ? 200 : Math.round(targetWidth / 2), 200);
 
   const buildUrl = (extraTransforms = []) => {
     const transforms = [...baseTransforms, ...extraTransforms, 'fo-auto'];
@@ -41,10 +49,10 @@ const buildVariantUrls = (baseUrl, assetType) => {
   };
 
   return {
-    optimized: buildUrl(['w-1600']),
-    preview1x: buildUrl(['w-800']),
-    preview2x: buildUrl(['w-1600']),
-    webp: buildUrl(['f-webp', 'w-1600']),
+    optimized: buildUrl([`w-${targetWidth}`]),
+    preview1x: buildUrl([`w-${previewWidth}`]),
+    preview2x: buildUrl([`w-${targetWidth}`]),
+    webp: buildUrl(['f-webp', `w-${targetWidth}`]),
   };
 };
 
@@ -135,7 +143,7 @@ exports.handler = async (event) => {
 
   const uploadResult = await response.json();
   const baseUrl = uploadResult.url || `${IMAGEKIT_ENDPOINT.replace(/\/$/, '')}/${uploadResult.filePath}`;
-  const variants = buildVariantUrls(baseUrl, assetType);
+  const variants = buildVariantUrls(baseUrl, assetType, tableName);
 
     const updateFields = {
       imagekit_file_id: uploadResult.fileId,

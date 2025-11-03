@@ -64,6 +64,12 @@ export interface ReportTemplateContext {
   analyteParameters: string[];
   testGroupIds: string[];
   placeholderValues: Record<string, string | number | boolean | null>;
+  labBranding?: ReportTemplateLabBranding;
+}
+
+export interface ReportTemplateLabBranding {
+  defaultHeaderHtml?: string | null;
+  defaultFooterHtml?: string | null;
 }
 
 // Branding & Signature System Interfaces
@@ -115,6 +121,161 @@ export interface LabUserSignature {
   created_at: string;
   updated_at: string;
 }
+
+export interface LabReportBrandingDefaults {
+  labId: string;
+  labName?: string | null;
+  defaultReportHeaderHtml: string | null;
+  defaultReportFooterHtml: string | null;
+}
+
+interface LabContactRecord {
+  id: string;
+  name: string | null;
+  address: string | null;
+  city: string | null;
+  state: string | null;
+  pincode: string | null;
+  phone: string | null;
+  email: string | null;
+  license_number: string | null;
+}
+
+type BrandingAssetSnippet = Pick<LabBrandingAsset, 'asset_type' | 'asset_name' | 'description' | 'file_url' | 'imagekit_url' | 'variants'>;
+
+const escapeHtml = (value: string): string => {
+  const map: Record<string, string> = {
+    '&': '&amp;',
+    '<': '&lt;',
+    '>': '&gt;',
+    '"': '&quot;',
+    "'": '&#39;',
+  };
+
+  return value.replace(/[&<>\"']/g, (char) => map[char] ?? char);
+};
+
+const joinDisplayParts = (parts: Array<string | null | undefined>, separator: string): string => {
+  return parts
+    .map((part) => (typeof part === 'string' ? part.trim() : ''))
+    .filter((part) => part.length > 0)
+    .join(separator);
+};
+
+const pickAssetPrimaryUrl = (asset?: BrandingAssetSnippet | null): string | null => {
+  if (!asset) {
+    return null;
+  }
+
+  if (asset.imagekit_url && asset.imagekit_url.trim().length > 0) {
+    return asset.imagekit_url.trim();
+  }
+
+  const variants = asset.variants && typeof asset.variants === 'object' ? asset.variants : null;
+  if (variants) {
+    const variantKeys = ['optimized', 'optimized_url', 'optimizedUrl', 'default', 'original'];
+    for (const key of variantKeys) {
+      const candidate = (variants as Record<string, unknown>)[key];
+      if (typeof candidate === 'string' && candidate.trim().length > 0) {
+        return candidate.trim();
+      }
+    }
+
+    for (const value of Object.values(variants)) {
+      if (typeof value === 'string' && value.trim().length > 0) {
+        return value.trim();
+      }
+    }
+  }
+
+  if (asset.file_url && asset.file_url.trim().length > 0) {
+    return asset.file_url.trim();
+  }
+
+  return null;
+};
+
+const composeHeaderHtml = (lab: LabContactRecord, asset?: BrandingAssetSnippet | null): string => {
+  const logoUrl = pickAssetPrimaryUrl(asset);
+  const displayName = escapeHtml(lab.name ?? asset?.asset_name ?? 'Laboratory');
+  const addressLine = joinDisplayParts(
+    [lab.address, lab.city, lab.state, lab.pincode],
+    ', '
+  );
+  const contactLine = joinDisplayParts([lab.phone, lab.email], ' • ');
+  const descriptionLine = asset?.description ? escapeHtml(asset.description) : '';
+
+  const addressHtml = addressLine
+    ? `<div style="font-size:12px;color:#4b5563;">${escapeHtml(addressLine)}</div>`
+    : '';
+  const contactHtml = contactLine
+    ? `<div style="font-size:12px;color:#4b5563;margin-top:2px;">${escapeHtml(contactLine)}</div>`
+    : '';
+  const descriptionHtml = descriptionLine
+    ? `<div style="font-size:11px;color:#6b7280;margin-top:6px;">${descriptionLine}</div>`
+    : '';
+
+  const logoHtml = logoUrl
+    ? `<div style="flex:0 0 auto;max-width:220px;display:flex;align-items:center;justify-content:flex-start;">
+        <img src="${escapeHtml(logoUrl)}" alt="${displayName} branding" style="max-height:80px;width:auto;object-fit:contain;" />
+      </div>`
+    : '';
+
+  return `
+    <div style="width:100%;display:flex;align-items:flex-start;justify-content:space-between;gap:18px;font-family:'Inter','Helvetica Neue',Arial,sans-serif;">
+      ${logoHtml}
+      <div style="flex:1 1 auto;text-align:right;">
+        <div style="font-size:18px;font-weight:600;color:#111827;">${displayName}</div>
+        ${addressHtml}
+        ${contactHtml}
+        ${descriptionHtml}
+      </div>
+    </div>
+  `.trim();
+};
+
+const composeFooterHtml = (lab: LabContactRecord, asset?: BrandingAssetSnippet | null): string => {
+  const accentName = escapeHtml(lab.name ?? asset?.asset_name ?? 'Laboratory');
+  const addressLine = joinDisplayParts(
+    [lab.address, lab.city, lab.state, lab.pincode],
+    ', '
+  );
+  const contactLine = joinDisplayParts([lab.phone, lab.email], ' • ');
+  const licenseLine = lab.license_number ? `License: ${escapeHtml(lab.license_number)}` : '';
+  const descriptionLine = asset?.description ? escapeHtml(asset.description) : '';
+  const logoUrl = pickAssetPrimaryUrl(asset);
+
+  const addressHtml = addressLine
+    ? `<div style="margin-top:6px;">${escapeHtml(addressLine)}</div>`
+    : '';
+  const contactHtml = contactLine
+    ? `<div style="margin-top:4px;">${escapeHtml(contactLine)}</div>`
+    : '';
+  const licenseHtml = licenseLine ? `<div style="margin-top:4px;color:#6b7280;">${licenseLine}</div>` : '';
+  const descriptionHtml = descriptionLine
+    ? `<div style="margin-top:6px;color:#6b7280;">${descriptionLine}</div>`
+    : '';
+
+  const logoHtml = logoUrl
+    ? `<div style="flex:0 0 auto;max-width:180px;display:flex;justify-content:flex-end;">
+        <img src="${escapeHtml(logoUrl)}" alt="${accentName} seal" style="max-height:70px;width:auto;object-fit:contain;" />
+      </div>`
+    : '';
+
+  return `
+    <div style="width:100%;display:flex;align-items:center;justify-content:space-between;gap:18px;font-family:'Inter','Helvetica Neue',Arial,sans-serif;font-size:12px;color:#4b5563;">
+      <div style="flex:1 1 auto;line-height:1.45;">
+        <div style="font-weight:600;color:#111827;">${accentName}</div>
+        ${addressHtml}
+        ${contactHtml}
+        ${licenseHtml}
+        ${descriptionHtml}
+      </div>
+      ${logoHtml}
+    </div>
+  `.trim();
+};
+
 
 // File upload utilities
 export const uploadFile = async (
@@ -291,6 +452,88 @@ export const database = {
     
     console.error('No lab_id found for user and no default lab available');
     return null;
+  },
+
+
+  labs: {
+    getBrandingDefaults: async (): Promise<{ data: LabReportBrandingDefaults | null; error: Error | null }> => {
+      const labId = await database.getCurrentUserLabId();
+      if (!labId) {
+        return { data: null, error: new Error('No lab_id found for current user') };
+      }
+
+      const { data, error } = await supabase
+        .from('labs')
+        .select('id, name, default_report_header_html, default_report_footer_html')
+        .eq('id', labId)
+        .maybeSingle();
+
+      if (error) {
+        return { data: null, error };
+      }
+
+      if (!data) {
+        return { data: null, error: null };
+      }
+
+      const payload: LabReportBrandingDefaults = {
+        labId: data.id,
+        labName: data.name ?? null,
+        defaultReportHeaderHtml: data.default_report_header_html ?? null,
+        defaultReportFooterHtml: data.default_report_footer_html ?? null,
+      };
+
+      return { data: payload, error: null };
+    },
+
+    updateBrandingHtmlDefaults: async (
+      input: { headerHtml?: string | null; footerHtml?: string | null },
+      labIdOverride?: string
+    ): Promise<{ data: LabReportBrandingDefaults | null; error: Error | null }> => {
+      const labId = labIdOverride || (await database.getCurrentUserLabId());
+      if (!labId) {
+        return { data: null, error: new Error('No lab_id found for current user') };
+      }
+
+      const updatePayload: Record<string, string | null> = {};
+      if (Object.prototype.hasOwnProperty.call(input, 'headerHtml')) {
+        updatePayload.default_report_header_html = input.headerHtml ?? null;
+      }
+      if (Object.prototype.hasOwnProperty.call(input, 'footerHtml')) {
+        updatePayload.default_report_footer_html = input.footerHtml ?? null;
+      }
+
+      if (Object.keys(updatePayload).length === 0) {
+        return { data: null, error: null };
+      }
+
+      updatePayload.updated_at = new Date().toISOString();
+
+      const { data, error } = await supabase
+        .from('labs')
+        .update(updatePayload)
+        .eq('id', labId)
+        .select('id, name, default_report_header_html, default_report_footer_html')
+        .maybeSingle();
+
+      if (error) {
+        return { data: null, error };
+      }
+
+      if (!data) {
+        return { data: null, error: null };
+      }
+
+      return {
+        data: {
+          labId: data.id,
+          labName: data.name ?? null,
+          defaultReportHeaderHtml: data.default_report_header_html ?? null,
+          defaultReportFooterHtml: data.default_report_footer_html ?? null,
+        },
+        error: null,
+      };
+    },
   },
 
 
@@ -564,6 +807,27 @@ export const database = {
           ? (placeholderValues as Record<string, string | number | boolean | null>)
           : {};
 
+      const labBrandingSource = context.labBranding && typeof context.labBranding === 'object' && !Array.isArray(context.labBranding)
+        ? (context.labBranding as { defaultHeaderHtml?: unknown; defaultFooterHtml?: unknown })
+        : undefined;
+
+      const normalizedLabBranding: ReportTemplateLabBranding | undefined = labBrandingSource
+        ? {
+            defaultHeaderHtml:
+              typeof labBrandingSource.defaultHeaderHtml === 'string'
+                ? labBrandingSource.defaultHeaderHtml
+                : labBrandingSource.defaultHeaderHtml == null
+                  ? null
+                  : String(labBrandingSource.defaultHeaderHtml),
+            defaultFooterHtml:
+              typeof labBrandingSource.defaultFooterHtml === 'string'
+                ? labBrandingSource.defaultFooterHtml
+                : labBrandingSource.defaultFooterHtml == null
+                  ? null
+                  : String(labBrandingSource.defaultFooterHtml),
+          }
+        : undefined;
+
       const normalized: ReportTemplateContext = {
         ...context,
         orderId: context.orderId ? String(context.orderId) : '',
@@ -575,8 +839,9 @@ export const database = {
         testGroupIds: Array.isArray(context.testGroupIds)
           ? context.testGroupIds.map((id) => (id == null ? '' : String(id))).filter((id) => id.length > 0)
           : [],
-  analytes: Array.isArray(context.analytes) ? (context.analytes as ReportTemplateAnalyteRow[]) : [],
+        analytes: Array.isArray(context.analytes) ? (context.analytes as ReportTemplateAnalyteRow[]) : [],
         placeholderValues: normalizedPlaceholderValues,
+        labBranding: normalizedLabBranding,
       };
 
       return { data: normalized, error: null };
@@ -4212,7 +4477,19 @@ const brandingSignatureAPI = {
         p_asset_type: asset.asset_type
       });
 
-      return { data, error };
+      if (error) {
+        return { data, error };
+      }
+
+      const shouldSync = asset.asset_type === 'header' || asset.asset_type === 'footer';
+      if (shouldSync) {
+        const syncResult = await syncLabBrandingDefaultsForLab(labId);
+        if (syncResult.error) {
+          return { data, error: syncResult.error };
+        }
+      }
+
+      return { data, error: null };
     },
 
     delete: async (assetId: string) => {
@@ -4454,3 +4731,49 @@ const brandingSignatureAPI = {
 // Merge master data APIs into main database object
 
 Object.assign(database, masterDataAPI, brandingSignatureAPI);
+
+async function syncLabBrandingDefaultsForLab(
+  labId: string
+): Promise<{ error: Error | null }> {
+  const { data: labRecord, error: labFetchError } = await supabase
+    .from('labs')
+    .select('id, name, address, city, state, pincode, phone, email, license_number')
+    .eq('id', labId)
+    .maybeSingle();
+
+  if (labFetchError) {
+    return { error: labFetchError };
+  }
+
+  if (!labRecord) {
+    return { error: new Error('Lab not found while syncing branding defaults') };
+  }
+
+  const { data: assets, error: assetsError } = await supabase
+    .from('lab_branding_assets')
+    .select('asset_type, asset_name, description, file_url, imagekit_url, variants')
+    .eq('lab_id', labId)
+    .eq('is_default', true)
+    .in('asset_type', ['header', 'footer']);
+
+  if (assetsError) {
+    return { error: assetsError };
+  }
+
+  const assetList = Array.isArray(assets) ? (assets as BrandingAssetSnippet[]) : [];
+  const headerAsset = assetList.find((asset) => asset.asset_type === 'header') ?? null;
+  const footerAsset = assetList.find((asset) => asset.asset_type === 'footer') ?? null;
+
+  const headerHtml = composeHeaderHtml(labRecord as LabContactRecord, headerAsset);
+  const footerHtml = composeFooterHtml(labRecord as LabContactRecord, footerAsset);
+
+  const updateResult = await database.labs.updateBrandingHtmlDefaults(
+    {
+      headerHtml,
+      footerHtml,
+    },
+    labId
+  );
+
+  return { error: updateResult.error };
+}
