@@ -19,6 +19,12 @@ import {
   MessageCircle,
   Palette,
   Image,
+  Cog,
+  Play,
+  GitBranch,
+  Upload,
+  Bot,
+  Zap,
 } from 'lucide-react';
 
 interface SidebarProps {
@@ -50,9 +56,14 @@ const navigation = [
   { name: 'Doctor Master', href: '/masters/doctors', icon: UserCheck, category: 'masters' },
   { name: 'Location Master', href: '/masters/locations', icon: Building, category: 'masters' },
   
+  // AI Workflow Management
+  { name: 'Workflow Management', href: '/workflows', icon: Workflow, category: 'workflows' },
+  { name: 'Workflow Configurator', href: '/workflow-configurator', icon: Cog, category: 'workflows' },
+  { name: 'Workflow Demo', href: '/workflow-demo', icon: Play, category: 'workflows' },
+  { name: 'Workflow Explainer Demo', href: '/workflow-explainer-demo', icon: Bot, category: 'workflows' },
+  
   // Advanced Tools
   { name: 'AI Tools', href: '/ai-tools', icon: Brain, category: 'tools' },
-  { name: 'Workflow Demo', href: '/workflow-demo', icon: Workflow, category: 'tools' },
   { name: 'Template Studio', href: '/template-studio', icon: Palette, category: 'tools' },
   { name: 'Template Studio (CKE)', href: '/template-studio-cke', icon: Palette, category: 'tools' },
   { name: 'Branding & Signatures', href: '/settings/branding', icon: Image, category: 'tools' },
@@ -195,6 +206,34 @@ const Sidebar: React.FC<SidebarProps> = ({ isOpen, onToggle }) => {
                   onClick={() => window.innerWidth < 1024 && onToggle()}
                 >
                   <item.icon className={`h-5 w-5 mr-3 ${isActive ? 'text-sky-700' : 'text-gray-400'}`} />
+                  {item.name}
+                </Link>
+              );
+            })}
+          </div>
+
+          {/* AI Workflow Management */}
+          <div className="mb-6">
+            <h3 className="px-4 text-xs font-semibold text-gray-500 uppercase tracking-wider mb-3">
+              🤖 AI Workflows
+            </h3>
+            {navigation.filter(item => item.category === 'workflows').map((item) => {
+              const isActive = location.pathname === item.href;
+              return (
+                <Link
+                  key={item.name}
+                  to={item.href}
+                  className={`
+                    flex items-center px-4 py-3 rounded-lg text-sm font-medium transition-colors duration-200 mb-1
+                    border-l-4 border-l-indigo-500
+                    ${isActive
+                      ? 'bg-indigo-50 text-indigo-700 border-l-indigo-700'
+                      : 'text-gray-600 hover:bg-indigo-50 hover:text-indigo-700 border-l-transparent hover:border-l-indigo-300'
+                    }
+                  `}
+                  onClick={() => window.innerWidth < 1024 && onToggle()}
+                >
+                  <item.icon className={`h-5 w-5 mr-3 ${isActive ? 'text-indigo-700' : 'text-gray-400'}`} />
                   {item.name}
                 </Link>
               );

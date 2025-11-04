@@ -534,8 +534,189 @@ export const database = {
         error: null,
       };
     },
+
+    getDefaultApprovalSignature: async (labId: string): Promise<string | null> => {
+      try {
+        // First try to get from lab's default branding
+        const { data: brandingData, error: brandingError } = await supabase
+          .from('lab_branding_assets')
+          .select('file_url, imagekit_url, processed_url')
+          .eq('lab_id', labId)
+          .eq('asset_type', 'signature')
+          .eq('is_default', true)
+          .single();
+
+        if (!brandingError && brandingData) {
+          return brandingData.imagekit_url || brandingData.processed_url || brandingData.file_url;
+        }
+
+        // Fallback: Get any signature from users in this lab
+        const { data: userSignature, error: userError } = await supabase
+          .from('lab_user_signatures')
+          .select('signature_url, processed_signature_url, imagekit_url')
+          .eq('lab_id', labId)
+          .eq('is_active', true)
+          .order('created_at', { ascending: false })
+          .limit(1)
+          .single();
+
+        if (!userError && userSignature) {
+          return userSignature.imagekit_url || userSignature.processed_signature_url || userSignature.signature_url;
+        }
+
+        return null;
+      } catch (error) {
+        console.error('Error fetching default approval signature:', error);
+        return null;
+      }
+    }
   },
 
+  auth: {
+    getCurrentUser: async () => {
+      try {
+        const { data: { user }, error } = await supabase.auth.getUser();
+        if (error || !user) {
+          return { data: null, error };
+        }
+        return { data: { user }, error: null };
+      } catch (error) {
+        console.error('Error fetching current user:', error);
+        return { data: null, error };
+      }
+    },
+
+    getCurrentUserWithLab: async (): Promise<{ data: any; error: any }> => {
+      try {
+        const { data: authData, error: authError } = await supabase.auth.getUser();
+        if (authError || !authData.user) return { data: null, error: authError };
+
+        const { data: userData, error: userError } = await supabase
+          .from('users')
+          .select(`
+            id,
+            email,
+            lab_id,
+            raw_user_meta_data,
+            labs(id, name, code)
+          `)
+          .eq('email', authData.user.email)
+          .eq('status', 'Active')
+          .single();
+
+        return { data: userData, error: userError };
+      } catch (error) {
+        console.error('Error fetching current user with lab:', error);
+        return { data: null, error };
+      }
+    }
+  },
+
+  users: {
+    getLabUsers: async (labId: string): Promise<{ data: any[]; error: any }> => {
+      try {
+        const { data, error } = await supabase
+          .from('users')
+          .select(`
+            id,
+            email,
+            raw_user_meta_data,
+            lab_id,
+            created_at,
+            status,
+            lab_user_signatures(
+              id,
+              signature_url,
+              processed_signature_url,
+              imagekit_url,
+              is_active
+            )
+          `)
+          .eq('lab_id', labId)
+          .eq('status', 'Active')
+          .order('created_at', { ascending: false });
+
+        return { data: data || [], error };
+      } catch (error) {
+        console.error('Error fetching lab users:', error);
+        return { data: [], error };
+      }
+    },
+
+    getSignatureByUserId: async (userId: string, labId?: string): Promise<string | null> => {
+      try {
+        let query = supabase
+          .from('lab_user_signatures')
+          .select('signature_url, processed_signature_url, imagekit_url')
+          .eq('user_id', userId)
+          .eq('is_active', true);
+
+        // If labId is provided, filter by it for additional security
+        if (labId) {
+          query = query.eq('lab_id', labId);
+        }
+
+        const { data, error } = await query.single();
+
+        if (error || !data) return null;
+
+        // Prefer processed/imagekit URL, fallback to original
+        return data.imagekit_url || data.processed_signature_url || data.signature_url;
+      } catch (error) {
+        console.error('Error fetching user signature:', error);
+        return null;
+      }
+    }
+  },
+
+  aiProtocols: {
+    create: async (payload: {
+      name: string;
+      lab_id: string;
+      category: string;
+      status: string;
+      description?: string | null;
+      config?: Record<string, unknown>;
+      ui_config?: Record<string, unknown>;
+      result_mapping?: Record<string, unknown>;
+    }) => {
+      const { data, error } = await supabase
+        .from('ai_protocols')
+        .insert({
+          ...payload,
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString()
+        })
+        .select()
+        .single();
+
+      return { data, error };
+    },
+
+    update: async (protocolId: string, updates: Record<string, unknown>) => {
+      const { data, error } = await supabase
+        .from('ai_protocols')
+        .update({
+          ...updates,
+          updated_at: new Date().toISOString()
+        })
+        .eq('id', protocolId)
+        .select()
+        .single();
+
+      return { data, error };
+    },
+
+    getById: async (protocolId: string) => {
+      const { data, error } = await supabase
+        .from('ai_protocols')
+        .select('*')
+        .eq('id', protocolId)
+        .single();
+
+      return { data, error };
+    }
+  },
 
   patients: {
     getAll: async () => {
@@ -1129,6 +1310,32 @@ export const database = {
         .single();
 
       return { data, error };
+    },
+
+    delete: async (templateId: string, labIdOverride?: string) => {
+      const labId = labIdOverride || (await database.getCurrentUserLabId());
+      if (!labId) {
+        return { error: new Error('No lab_id found for current user') };
+      }
+
+      // Delete template versions first (foreign key constraint)
+      const { error: versionsError } = await supabase
+        .from('lab_template_versions')
+        .delete()
+        .eq('template_id', templateId);
+
+      if (versionsError) {
+        return { error: versionsError };
+      }
+
+      // Delete the main template
+      const { error } = await supabase
+        .from('lab_templates')
+        .delete()
+        .eq('lab_id', labId)
+        .eq('id', templateId);
+
+      return { error };
     },
   },
 
@@ -2007,9 +2214,167 @@ export const database = {
     }
   },
 
-  result_values: {
-    // Direct CRUD operations for result_values are typically not needed if managed via results
+  resultValues: {
+    updateVerificationStatus: async (resultValueIds: string[], status: 'approved' | 'rejected' | 'pending', note?: string): Promise<{ data: any; error: any }> => {
+      try {
+        // Get current user
+        const { data: currentUser } = await database.auth.getCurrentUser();
+        if (!currentUser?.user) {
+          throw new Error('User not authenticated');
+        }
+
+        const updateData: any = {
+          verify_status: status,
+          verified: status === 'approved',
+          verified_by: currentUser.user.id,
+          verified_at: new Date().toISOString(),
+          updated_at: new Date().toISOString()
+        };
+
+        if (note) {
+          updateData.verify_note = note;
+        }
+
+        const { data, error } = await supabase
+          .from('result_values')
+          .update(updateData)
+          .in('id', resultValueIds)
+          .select(`
+            id,
+            verify_status,
+            verified_by,
+            verified_at,
+            order_id,
+            users:verified_by(id, email, raw_user_meta_data, lab_id)
+          `);
+
+        // Log the verification event if we have workflow support
+        if (!error && data && data.length > 0) {
+          try {
+            await database.workflows?.logStepEvent({
+              order_id: data[0]?.order_id || '',
+              step_name: 'result_verification',
+              user_id: currentUser.user.id,
+              event_data: {
+                result_value_ids: resultValueIds,
+                status,
+                note
+              }
+            });
+          } catch (workflowError) {
+            console.warn('Could not log workflow event:', workflowError);
+            // Don't fail the main operation if workflow logging fails
+          }
+        }
+
+        return { data, error };
+      } catch (error) {
+        console.error('Error updating verification status:', error);
+        return { data: null, error };
+      }
+    },
+
+    bulkApprove: async (resultValueIds: string[], note?: string): Promise<{ data: any; error: any }> => {
+      return database.resultValues.updateVerificationStatus(resultValueIds, 'approved', note);
+    },
+
+    bulkReject: async (resultValueIds: string[], note?: string): Promise<{ data: any; error: any }> => {
+      return database.resultValues.updateVerificationStatus(resultValueIds, 'rejected', note);
+    },
+
+    getVerifierSignature: async (resultValueId: string): Promise<string | null> => {
+      try {
+        const { data, error } = await supabase
+          .from('result_values')
+          .select(`
+            verified_by,
+            lab_id,
+            users:verified_by(
+              id,
+              lab_id,
+              lab_user_signatures(
+                signature_url,
+                processed_signature_url,
+                imagekit_url,
+                is_active
+              )
+            )
+          `)
+          .eq('id', resultValueId)
+          .eq('verify_status', 'approved')
+          .single();
+
+        if (error || !data?.verified_by || !data.users?.lab_user_signatures?.length) {
+          return null;
+        }
+
+        // Get the active signature for this user
+        const signature = data.users.lab_user_signatures.find((sig: any) => sig.is_active);
+        if (!signature) return null;
+
+        // Return best available URL
+        return signature.imagekit_url || signature.processed_signature_url || signature.signature_url;
+      } catch (error) {
+        console.error('Error fetching verifier signature:', error);
+        return null;
+      }
+    },
+
+    getApproverInfo: async (resultId: string): Promise<{ userId: string; labId: string } | null> => {
+      try {
+        const { data, error } = await supabase
+          .from('result_values')
+          .select(`
+            verified_by,
+            lab_id,
+            users:verified_by(id, email, lab_id)
+          `)
+          .eq('result_id', resultId)
+          .eq('verify_status', 'approved')
+          .single();
+
+        if (error || !data?.verified_by) return null;
+
+        return {
+          userId: data.verified_by,
+          labId: data.lab_id || data.users?.lab_id
+        };
+      } catch (error) {
+        console.error('Error fetching approver info:', error);
+        return null;
+      }
+    },
+
+    getPendingForLab: async (labId: string): Promise<{ data: any[]; error: any }> => {
+      try {
+        const { data, error } = await supabase
+          .from('result_values')
+          .select(`
+            id,
+            parameter,
+            value,
+            verify_status,
+            verified_by,
+            verified_at,
+            order_id,
+            result_id,
+            lab_id,
+            orders(id, order_number, patient_id, patients(name)),
+            users:verified_by(email, raw_user_meta_data)
+          `)
+          .eq('lab_id', labId)
+          .in('verify_status', ['pending', 'rejected'])
+          .order('created_at', { ascending: false });
+
+        return { data: data || [], error };
+      } catch (error) {
+        console.error('Error fetching pending results:', error);
+        return { data: [], error };
+      }
+    }
   },
+
+
 
   invoices: {
     getAll: async () => {
@@ -2499,6 +2864,27 @@ export const database = {
 
   // Workflow dynamic engine helpers (lab scoped)
   workflows: {
+    create: async (payload: {
+      name: string;
+      description?: string | null;
+      type: string;
+      category?: string | null;
+      is_active?: boolean;
+      lab_id?: string | null;
+    }) => {
+      const { data, error } = await supabase
+        .from('workflows')
+        .insert({
+          ...payload,
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString()
+        })
+        .select()
+        .single();
+
+      return { data, error };
+    },
+
     getLabWorkflowForTest: async (labId: string, testCode: string) => {
       try {
         // Find mapping
@@ -2554,6 +2940,128 @@ export const database = {
         .insert({ instance_id: instanceId, step_id: stepId, event_type: eventType, payload })
         .select()
         .single();
+      return { data, error };
+    },
+    
+    logStepEvent: async (eventData: {
+      order_id: string;
+      step_name: string;
+      user_id: string;
+      event_data?: any;
+    }): Promise<void> => {
+      try {
+        await supabase
+          .from('workflow_step_events')
+          .insert({
+            ...eventData,
+            created_at: new Date().toISOString()
+          });
+      } catch (error) {
+        console.error('Error logging workflow step event:', error);
+      }
+    }
+  },
+
+  workflowVersions: {
+    create: async (payload: {
+      workflow_id: string;
+      version: string;
+      definition: Record<string, unknown>;
+      description?: string | null;
+      active?: boolean;
+    }) => {
+      const { data, error } = await supabase
+        .from('workflow_versions')
+        .insert({
+          workflow_id: payload.workflow_id,
+          version: parseInt(payload.version) || 1,
+          definition: payload.definition,
+          description: payload.description || null,
+          active: payload.active || false,
+          created_at: new Date().toISOString()
+        })
+        .select()
+        .single();
+
+      return { data, error };
+    },
+
+    update: async (versionId: string, updates: Record<string, unknown>) => {
+      const { data, error } = await supabase
+        .from('workflow_versions')
+        .update(updates)
+        .eq('id', versionId)
+        .select()
+        .single();
+
+      return { data, error };
+    },
+
+    getById: async (versionId: string) => {
+      const { data, error } = await supabase
+        .from('workflow_versions')
+        .select('*')
+        .eq('id', versionId)
+        .single();
+
+      return { data, error };
+    },
+
+    getAll: async () => {
+      const { data, error } = await supabase
+        .from('workflow_versions')
+        .select(`
+          id,
+          name,
+          description,
+          active,
+          created_at,
+          version
+        `)
+        .order('created_at', { ascending: false });
+
+      return { data, error };
+    }
+  },
+
+  testWorkflowMap: {
+    create: async (payload: {
+      test_code: string;
+      workflow_version_id: string;
+      test_group_id?: string | null;
+      lab_id?: string | null;
+      is_default?: boolean;
+    }) => {
+      const { data, error } = await supabase
+        .from('test_workflow_map')
+        .insert({
+          ...payload,
+          created_at: new Date().toISOString()
+        })
+        .select()
+        .single();
+
+      return { data, error };
+    }
+  },
+
+  aiIssues: {
+    create: async (payload: {
+      workflow_version_id: string;
+      issue_type: string;
+      description: string;
+      severity?: string;
+      metadata?: Record<string, unknown> | null;
+    }) => {
+      const { data, error } = await supabase
+        .from('ai_issues')
+        .insert({
+          ...payload,
+          created_at: new Date().toISOString()
+        })
+        .select()
+        .single();
+
       return { data, error };
     }
   },
@@ -2643,6 +3151,21 @@ export const database = {
         .order('name', { ascending: true });
 
       return { data: (data as any[]) || [], error };
+    },
+
+    getByLabId: async (labId: string) => {
+      const { data, error } = await supabase
+        .from('test_groups')
+        .select('id, name, category, lab_id, description')
+        .eq('is_active', true)
+        .or(`lab_id.eq.${labId},lab_id.is.null`)
+        .order('name', { ascending: true });
+
+      return { data: (data as any[]) || [], error };
+    },
+
+    list: async (labIdOverride?: string) => {
+      return database.testGroups.listByLab(labIdOverride);
     },
 
     getAll: async () => {
@@ -4731,6 +5254,322 @@ const brandingSignatureAPI = {
 // Merge master data APIs into main database object
 
 Object.assign(database, masterDataAPI, brandingSignatureAPI);
+
+// Workflow management helpers
+export const workflowVersions = {
+  getAll: async () => {
+    const { data, error } = await supabase
+      .from('workflow_versions')
+      .select(`
+        *,
+        workflows(name, description, type, category, lab_id, is_active)
+      `)
+      .order('created_at', { ascending: false });
+    return { data, error };
+  },
+
+  getById: async (id: string) => {
+    const { data, error } = await supabase
+      .from('workflow_versions')
+      .select(`
+        *,
+        workflows(name, description, type, category, lab_id, is_active)
+      `)
+      .eq('id', id)
+      .single();
+    return { data, error };
+  },
+
+  getByWorkflowId: async (workflowId: string) => {
+    const { data, error } = await supabase
+      .from('workflow_versions')
+      .select('*')
+      .eq('workflow_id', workflowId)
+      .order('version', { ascending: false });
+    return { data, error };
+  },
+
+  create: async (versionData: {
+    workflow_id: string;
+    version: string;
+    definition: any;
+    description?: string;
+    active?: boolean;
+  }) => {
+    const { data, error } = await supabase
+      .from('workflow_versions')
+      .insert([versionData])
+      .select()
+      .single();
+    return { data, error };
+  },
+
+  update: async (id: string, updates: {
+    definition?: any;
+    description?: string;
+    active?: boolean;
+  }) => {
+    const { data, error } = await supabase
+      .from('workflow_versions')
+      .update(updates)
+      .eq('id', id)
+      .select()
+      .single();
+    return { data, error };
+  },
+
+  delete: async (id: string) => {
+    const { error } = await supabase
+      .from('workflow_versions')
+      .delete()
+      .eq('id', id);
+    return { error };
+  }
+};
+
+export const workflows = {
+  getAll: async () => {
+    const { data, error } = await supabase
+      .from('workflows')
+      .select('*')
+      .order('created_at', { ascending: false });
+    return { data, error };
+  },
+
+  getById: async (id: string) => {
+    const { data, error } = await supabase
+      .from('workflows')
+      .select('*')
+      .eq('id', id)
+      .single();
+    return { data, error };
+  },
+
+  create: async (workflowData: {
+    name: string;
+    description?: string;
+    type: string;
+    category?: string;
+    lab_id: string;
+    is_active?: boolean;
+  }) => {
+    const { data, error } = await supabase
+      .from('workflows')
+      .insert([workflowData])
+      .select()
+      .single();
+    return { data, error };
+  },
+
+  update: async (id: string, updates: {
+    name?: string;
+    description?: string;
+    type?: string;
+    category?: string;
+    is_active?: boolean;
+  }) => {
+    const { data, error } = await supabase
+      .from('workflows')
+      .update(updates)
+      .eq('id', id)
+      .select()
+      .single();
+    return { data, error };
+  },
+
+  delete: async (id: string) => {
+    const { error } = await supabase
+      .from('workflows')
+      .delete()
+      .eq('id', id);
+    return { error };
+  }
+};
+
+export const aiProtocols = {
+  getAll: async () => {
+    const { data, error } = await supabase
+      .from('ai_protocols')
+      .select('*')
+      .order('created_at', { ascending: false });
+    return { data, error };
+  },
+
+  getById: async (id: string) => {
+    const { data, error } = await supabase
+      .from('ai_protocols')
+      .select('*')
+      .eq('id', id)
+      .single();
+    return { data, error };
+  },
+
+  create: async (protocolData: {
+    name: string;
+    description?: string;
+    config: any;
+    status?: string;
+    lab_id: string;
+  }) => {
+    const { data, error } = await supabase
+      .from('ai_protocols')
+      .insert([protocolData])
+      .select()
+      .single();
+    return { data, error };
+  },
+
+  update: async (id: string, updates: {
+    name?: string;
+    description?: string;
+    config?: any;
+    status?: string;
+  }) => {
+    const { data, error } = await supabase
+      .from('ai_protocols')
+      .update(updates)
+      .eq('id', id)
+      .select()
+      .single();
+    return { data, error };
+  },
+
+  delete: async (id: string) => {
+    const { error } = await supabase
+      .from('ai_protocols')
+      .delete()
+      .eq('id', id);
+    return { error };
+  }
+};
+
+export const testWorkflowMap = {
+  getAll: async (labIdOverride?: string) => {
+    const labId = labIdOverride || await database.getCurrentUserLabId();
+    if (!labId) {
+      return { data: [], error: new Error('No lab_id found for current user') };
+    }
+
+    const { data, error } = await supabase
+      .from('test_workflow_map')
+      .select(`
+        id,
+        workflow_version_id,
+        test_group_id,
+        analyte_id,
+        is_default,
+        is_active,
+        priority,
+        created_at,
+        workflow_versions!inner(id, name),
+        test_groups!inner(id, name, lab_id),
+        analytes(id, name)
+      `)
+      .eq('test_groups.lab_id', labId)
+      .order('priority', { ascending: true });
+    return { data, error };
+  },
+
+  getByTestGroupId: async (testGroupId: string, labIdOverride?: string) => {
+    const labId = labIdOverride || await database.getCurrentUserLabId();
+    if (!labId) {
+      return { data: [], error: new Error('No lab_id found for current user') };
+    }
+
+    const { data, error } = await supabase
+      .from('test_workflow_map')
+      .select(`
+        id,
+        workflow_version_id,
+        test_group_id,
+        analyte_id,
+        is_default,
+        is_active,
+        priority,
+        workflow_versions(id, name, definition, active),
+        test_groups!inner(id, name, lab_id),
+        analytes(id, name)
+      `)
+      .eq('test_groups.lab_id', labId)
+      .eq('test_group_id', testGroupId)
+      .eq('is_active', true)
+      .order('priority', { ascending: true });
+    return { data, error };
+  },
+
+  create: async (mappingData: {
+    test_group_id?: string;
+    analyte_id?: string;
+    workflow_version_id: string;
+    is_active?: boolean;
+    is_default?: boolean;
+    priority?: number;
+    lab_id?: string;
+  }) => {
+    const labId = mappingData.lab_id || await database.getCurrentUserLabId();
+    if (!labId) {
+      return { data: null, error: new Error('No lab_id found for current user') };
+    }
+
+    const payload = {
+      ...mappingData,
+      lab_id: labId,
+      is_active: mappingData.is_active ?? true,
+      is_default: mappingData.is_default ?? false,
+      priority: mappingData.priority ?? 1
+    };
+
+    const { data, error } = await supabase
+      .from('test_workflow_map')
+      .insert([payload])
+      .select()
+      .single();
+    return { data, error };
+  },
+
+  update: async (id: string, updates: {
+    workflow_version_id?: string;
+    is_active?: boolean;
+    is_default?: boolean;
+    priority?: number;
+  }, labIdOverride?: string) => {
+    const labId = labIdOverride || await database.getCurrentUserLabId();
+    if (!labId) {
+      return { data: null, error: new Error('No lab_id found for current user') };
+    }
+
+    const { data, error } = await supabase
+      .from('test_workflow_map')
+      .update(updates)
+      .eq('id', id)
+      .eq('lab_id', labId)
+      .select()
+      .single();
+    return { data, error };
+  },
+
+  delete: async (id: string, labIdOverride?: string) => {
+    const labId = labIdOverride || await database.getCurrentUserLabId();
+    if (!labId) {
+      return { error: new Error('No lab_id found for current user') };
+    }
+
+    const { error } = await supabase
+      .from('test_workflow_map')
+      .delete()
+      .eq('id', id)
+      .eq('lab_id', labId);
+    return { error };
+  }
+};
+
+// Add workflow helpers to database object
+Object.assign(database, {
+  workflowVersions,
+  workflows,
+  aiProtocols,
+  testWorkflowMap
+});
 
 async function syncLabBrandingDefaultsForLab(
   labId: string

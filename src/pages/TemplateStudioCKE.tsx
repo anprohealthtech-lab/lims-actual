@@ -2,11 +2,13 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import {
   CheckCircle2,
+  Eye,
   FileCode,
   FilePlus2,
   Loader2,
   Save,
   Sparkles,
+  Trash2,
   Wand2,
 } from 'lucide-react';
 
@@ -613,6 +615,9 @@ const TemplateStudioCKE: React.FC = () => {
   const [placeholderError, setPlaceholderError] = useState<string | null>(null);
   const [isSourcePreviewOpen, setIsSourcePreviewOpen] = useState(false);
   const [sourceCopyState, setSourceCopyState] = useState<'html' | 'css' | null>(null);
+  const [isA4PreviewOpen, setIsA4PreviewOpen] = useState(false);
+  const [isDeleteConfirmOpen, setIsDeleteConfirmOpen] = useState(false);
+  const [isDeleting, setIsDeleting] = useState(false);
   const [isAuditModalOpen, setIsAuditModalOpen] = useState(false);
   const [auditLoading, setAuditLoading] = useState(false);
   const [auditResult, setAuditResult] = useState<TemplateAuditResult | null>(null);
@@ -1777,6 +1782,48 @@ const TemplateStudioCKE: React.FC = () => {
     setAuditRevertSnapshot(null);
   }, [auditRevertSnapshot, ckeditorInstance]);
 
+  const handleDeleteTemplate = useCallback(async () => {
+    if (!selectedTemplateId || !labId) {
+      return;
+    }
+
+    setIsDeleting(true);
+    try {
+      const { error } = await database.labTemplates.delete(selectedTemplateId);
+      
+      if (error) {
+        console.error('Failed to delete template:', error);
+        alert('Failed to delete template. Please try again.');
+        return;
+      }
+
+      // Refresh templates list
+      const { data: updatedTemplates } = await database.labTemplates.list(labId);
+      setTemplates(updatedTemplates || []);
+      
+      // Clear current template if it was deleted
+      if (updatedTemplates && updatedTemplates.length > 0) {
+        const firstTemplate = updatedTemplates[0];
+        setSelectedTemplateId(firstTemplate.id);
+        await handleTemplateSelect(firstTemplate.id);
+      } else {
+        // No templates left, clear everything
+        setSelectedTemplateId(null);
+        setTemplateMeta(null);
+        setHtmlContent('');
+        setCssContent('');
+        setMetadataDraft({ name: '', description: '', category: '', testGroupId: '' });
+      }
+      
+      setIsDeleteConfirmOpen(false);
+    } catch (err) {
+      console.error('Unexpected error deleting template:', err);
+      alert('An unexpected error occurred. Please try again.');
+    } finally {
+      setIsDeleting(false);
+    }
+  }, [selectedTemplateId, labId, handleTemplateSelect]);
+
   if (isLoading) {
     return (
       <div className="flex min-h-[60vh] items-center justify-center">
@@ -1830,6 +1877,13 @@ const TemplateStudioCKE: React.FC = () => {
           </button>
           <button
             type="button"
+            onClick={() => setIsA4PreviewOpen(true)}
+            className="inline-flex items-center gap-1 rounded-md border border-orange-200 bg-orange-50 px-3 py-1.5 text-xs font-medium text-orange-700 transition hover:bg-orange-100"
+          >
+            <Eye className="h-3.5 w-3.5" /> A4 Full View
+          </button>
+          <button
+            type="button"
             onClick={() => setIsAiConsoleOpen(true)}
             className="inline-flex items-center gap-1 rounded-md border border-blue-200 bg-blue-50 px-3 py-1.5 text-xs font-medium text-blue-700 transition hover:bg-blue-100"
           >
@@ -1860,13 +1914,24 @@ const TemplateStudioCKE: React.FC = () => {
             <section>
               <div className="flex items-center justify-between">
                 <h2 className="text-xs font-semibold uppercase tracking-wide text-gray-500">Templates</h2>
-                <button
-                  type="button"
-                  onClick={handleCreateTemplate}
-                  className="inline-flex items-center gap-1 rounded-md border border-gray-300 px-2 py-1 text-[11px] font-medium text-gray-600 transition hover:bg-white"
-                >
-                  <FilePlus2 className="h-3 w-3" /> New
-                </button>
+                <div className="flex items-center gap-1">
+                  <button
+                    type="button"
+                    onClick={() => setIsDeleteConfirmOpen(true)}
+                    disabled={!selectedTemplateId || templates.length <= 1}
+                    className="inline-flex items-center gap-1 rounded-md border border-red-300 px-2 py-1 text-[11px] font-medium text-red-600 transition hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-transparent"
+                    title={templates.length <= 1 ? "Cannot delete the only template" : "Delete current template"}
+                  >
+                    <Trash2 className="h-3 w-3" />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleCreateTemplate}
+                    className="inline-flex items-center gap-1 rounded-md border border-gray-300 px-2 py-1 text-[11px] font-medium text-gray-600 transition hover:bg-white"
+                  >
+                    <FilePlus2 className="h-3 w-3" /> New
+                  </button>
+                </div>
               </div>
               <select
                 value={selectedTemplateId || ''}
@@ -2096,6 +2161,413 @@ const TemplateStudioCKE: React.FC = () => {
                   placeholder="/* No custom CSS yet */"
                 />
               </section>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {isA4PreviewOpen ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 px-4">
+          <div className="h-[90vh] w-full max-w-6xl rounded-lg border border-gray-200 bg-white shadow-2xl">
+            <div className="flex items-center justify-between border-b border-gray-200 px-6 py-4">
+              <div>
+                <h2 className="text-lg font-semibold text-gray-900">A4 Full View Preview</h2>
+                <p className="text-sm text-gray-500">Complete A4 document preview with actual dimensions</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsA4PreviewOpen(false)}
+                className="rounded-md border border-gray-300 px-4 py-2 text-sm font-medium text-gray-600 hover:bg-gray-100"
+              >
+                Close
+              </button>
+            </div>
+            
+            <div className="flex h-[calc(90vh-80px)] overflow-hidden">
+              {/* A4 Preview Container */}
+              <div className="flex-1 overflow-auto bg-gray-100 p-8">
+                <div className="mx-auto bg-white shadow-lg" style={{ 
+                  width: '210mm', 
+                  minHeight: '297mm',
+                  padding: '20mm',
+                  position: 'relative'
+                }}>
+                  {/* Template Content with proper CSS injection */}
+                  <div 
+                    dangerouslySetInnerHTML={{ 
+                      __html: `
+                        <style>
+                          /* Reset and base styles for A4 preview */
+                          * {
+                            box-sizing: border-box;
+                          }
+                          
+                          body, div, p, h1, h2, h3, h4, h5, h6, table, tr, td, th {
+                            margin: 0;
+                            padding: 0;
+                          }
+                          
+                          /* Typography */
+                          body {
+                            font-family: 'Arial', 'Helvetica', sans-serif;
+                            font-size: 12px;
+                            line-height: 1.4;
+                            color: #000;
+                            background: transparent;
+                          }
+                          
+                          /* Headings */
+                          h1 { font-size: 18px; font-weight: bold; margin-bottom: 12px; }
+                          h2 { font-size: 16px; font-weight: bold; margin-bottom: 10px; }
+                          h3 { font-size: 14px; font-weight: bold; margin-bottom: 8px; }
+                          h4 { font-size: 12px; font-weight: bold; margin-bottom: 6px; }
+                          h5, h6 { font-size: 11px; font-weight: bold; margin-bottom: 4px; }
+                          
+                          /* Paragraphs */
+                          p {
+                            margin-bottom: 8px;
+                            text-align: left;
+                          }
+                          
+                          /* Tables */
+                          table {
+                            width: 100%;
+                            border-collapse: collapse;
+                            margin-bottom: 16px;
+                            font-size: 11px;
+                          }
+                          
+                          table, th, td {
+                            border: 1px solid #000;
+                          }
+                          
+                          th, td {
+                            padding: 6px 8px;
+                            text-align: left;
+                            vertical-align: top;
+                          }
+                          
+                          th {
+                            background-color: #f5f5f5;
+                            font-weight: bold;
+                          }
+                          
+                          /* Lists */
+                          ul, ol {
+                            margin: 8px 0;
+                            padding-left: 20px;
+                          }
+                          
+                          li {
+                            margin-bottom: 4px;
+                          }
+                          
+                          /* Images */
+                          img {
+                            max-width: 100%;
+                            height: auto;
+                            display: block;
+                            margin: 8px 0;
+                          }
+                          
+                          /* Divs and containers */
+                          div {
+                            margin-bottom: 4px;
+                          }
+                          
+                          /* Text formatting */
+                          strong, b {
+                            font-weight: bold;
+                          }
+                          
+                          em, i {
+                            font-style: italic;
+                          }
+                          
+                          /* Links */
+                          a {
+                            color: #0066cc;
+                            text-decoration: underline;
+                          }
+                          
+                          /* Horizontal rules */
+                          hr {
+                            border: none;
+                            border-top: 1px solid #000;
+                            margin: 16px 0;
+                          }
+                          
+                          /* Blockquotes */
+                          blockquote {
+                            margin: 8px 0;
+                            padding-left: 16px;
+                            border-left: 3px solid #ccc;
+                            font-style: italic;
+                          }
+                          
+                          /* Code blocks */
+                          pre, code {
+                            font-family: 'Courier New', monospace;
+                            font-size: 10px;
+                            background-color: #f8f8f8;
+                            padding: 4px;
+                            border: 1px solid #ddd;
+                          }
+                          
+                          pre {
+                            white-space: pre-wrap;
+                            margin: 8px 0;
+                            padding: 8px;
+                          }
+                          
+                          /* Custom CSS from template */
+                          ${cssContent || ''}
+                        </style>
+                        ${htmlContent || '<p>No content available</p>'}
+                      `
+                    }}
+                  />
+                </div>
+              </div>
+              
+              {/* Information Panel */}
+              <div className="w-80 border-l border-gray-200 bg-gray-50 p-6">
+                <h3 className="text-sm font-semibold text-gray-900 mb-4">A4 Document Info</h3>
+                
+                <div className="space-y-3 text-sm">
+                  <div>
+                    <dt className="font-medium text-gray-700">Paper Size</dt>
+                    <dd className="text-gray-600">A4 (210 × 297 mm)</dd>
+                  </div>
+                  
+                  <div>
+                    <dt className="font-medium text-gray-700">Margins</dt>
+                    <dd className="text-gray-600">20mm all sides</dd>
+                  </div>
+                  
+                  <div>
+                    <dt className="font-medium text-gray-700">Content Area</dt>
+                    <dd className="text-gray-600">170 × 257 mm</dd>
+                  </div>
+                  
+                  <div>
+                    <dt className="font-medium text-gray-700">Template</dt>
+                    <dd className="text-gray-600">{templateMeta?.template_name || 'Untitled'}</dd>
+                  </div>
+                  
+                  {templateMeta?.template_description && (
+                    <div>
+                      <dt className="font-medium text-gray-700">Description</dt>
+                      <dd className="text-gray-600">{templateMeta.template_description}</dd>
+                    </div>
+                  )}
+                  
+                  <div className="pt-4 border-t border-gray-200">
+                    <dt className="font-medium text-gray-700 mb-2">CSS Applied</dt>
+                    <dd className="text-xs text-gray-500 font-mono bg-gray-100 p-2 rounded">
+                      {cssContent ? 'Custom CSS active' : 'No custom CSS'}
+                    </dd>
+                  </div>
+                  
+                  <div className="pt-4">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const printWindow = window.open('', '_blank');
+                        if (printWindow) {
+                          printWindow.document.write(`
+                            <html>
+                              <head>
+                                <title>A4 Template Preview - ${templateMeta?.template_name || 'Untitled'}</title>
+                                <style>
+                                  @page { 
+                                    size: A4; 
+                                    margin: 20mm; 
+                                  }
+                                  
+                                  /* Reset and base styles */
+                                  * {
+                                    box-sizing: border-box;
+                                  }
+                                  
+                                  body, div, p, h1, h2, h3, h4, h5, h6, table, tr, td, th {
+                                    margin: 0;
+                                    padding: 0;
+                                  }
+                                  
+                                  body {
+                                    font-family: 'Arial', 'Helvetica', sans-serif;
+                                    font-size: 12px;
+                                    line-height: 1.4;
+                                    color: #000;
+                                    background: white;
+                                  }
+                                  
+                                  /* Typography */
+                                  h1 { font-size: 18px; font-weight: bold; margin-bottom: 12px; }
+                                  h2 { font-size: 16px; font-weight: bold; margin-bottom: 10px; }
+                                  h3 { font-size: 14px; font-weight: bold; margin-bottom: 8px; }
+                                  h4 { font-size: 12px; font-weight: bold; margin-bottom: 6px; }
+                                  h5, h6 { font-size: 11px; font-weight: bold; margin-bottom: 4px; }
+                                  
+                                  p {
+                                    margin-bottom: 8px;
+                                    text-align: left;
+                                  }
+                                  
+                                  /* Tables */
+                                  table {
+                                    width: 100%;
+                                    border-collapse: collapse;
+                                    margin-bottom: 16px;
+                                    font-size: 11px;
+                                  }
+                                  
+                                  table, th, td {
+                                    border: 1px solid #000;
+                                  }
+                                  
+                                  th, td {
+                                    padding: 6px 8px;
+                                    text-align: left;
+                                    vertical-align: top;
+                                  }
+                                  
+                                  th {
+                                    background-color: #f5f5f5;
+                                    font-weight: bold;
+                                  }
+                                  
+                                  /* Lists */
+                                  ul, ol {
+                                    margin: 8px 0;
+                                    padding-left: 20px;
+                                  }
+                                  
+                                  li {
+                                    margin-bottom: 4px;
+                                  }
+                                  
+                                  /* Images */
+                                  img {
+                                    max-width: 100%;
+                                    height: auto;
+                                    display: block;
+                                    margin: 8px 0;
+                                  }
+                                  
+                                  /* Text formatting */
+                                  strong, b { font-weight: bold; }
+                                  em, i { font-style: italic; }
+                                  
+                                  /* Links */
+                                  a {
+                                    color: #0066cc;
+                                    text-decoration: underline;
+                                  }
+                                  
+                                  /* Horizontal rules */
+                                  hr {
+                                    border: none;
+                                    border-top: 1px solid #000;
+                                    margin: 16px 0;
+                                  }
+                                  
+                                  /* Blockquotes */
+                                  blockquote {
+                                    margin: 8px 0;
+                                    padding-left: 16px;
+                                    border-left: 3px solid #ccc;
+                                    font-style: italic;
+                                  }
+                                  
+                                  /* Code blocks */
+                                  pre, code {
+                                    font-family: 'Courier New', monospace;
+                                    font-size: 10px;
+                                    background-color: #f8f8f8;
+                                    padding: 4px;
+                                    border: 1px solid #ddd;
+                                  }
+                                  
+                                  pre {
+                                    white-space: pre-wrap;
+                                    margin: 8px 0;
+                                    padding: 8px;
+                                  }
+                                  
+                                  /* Custom CSS from template */
+                                  ${cssContent || ''}
+                                </style>
+                              </head>
+                              <body>
+                                ${htmlContent || '<p>No content available</p>'}
+                              </body>
+                            </html>
+                          `);
+                          printWindow.document.close();
+                          printWindow.print();
+                        }
+                      }}
+                      className="w-full rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700"
+                    >
+                      Print Preview
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {isDeleteConfirmOpen ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 px-4">
+          <div className="w-full max-w-md rounded-lg border border-gray-200 bg-white shadow-2xl">
+            <div className="flex items-center gap-3 border-b border-gray-200 px-6 py-4">
+              <div className="flex h-10 w-10 items-center justify-center rounded-full bg-red-100">
+                <Trash2 className="h-5 w-5 text-red-600" />
+              </div>
+              <div>
+                <h2 className="text-lg font-semibold text-gray-900">Delete Template</h2>
+                <p className="text-sm text-gray-500">This action cannot be undone</p>
+              </div>
+            </div>
+            
+            <div className="px-6 py-4">
+              <p className="text-sm text-gray-700 mb-4">
+                Are you sure you want to delete the template <strong>"{templateMeta?.template_name || 'Untitled Template'}"</strong>? 
+                This will permanently remove the template and all its versions.
+              </p>
+              
+              <div className="flex justify-end gap-3">
+                <button
+                  type="button"
+                  onClick={() => setIsDeleteConfirmOpen(false)}
+                  disabled={isDeleting}
+                  className="rounded-md border border-gray-300 px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={handleDeleteTemplate}
+                  disabled={isDeleting}
+                  className="inline-flex items-center gap-2 rounded-md bg-red-600 px-4 py-2 text-sm font-medium text-white hover:bg-red-700 disabled:cursor-not-allowed disabled:bg-red-400"
+                >
+                  {isDeleting ? (
+                    <>
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                      Deleting...
+                    </>
+                  ) : (
+                    <>
+                      <Trash2 className="h-4 w-4" />
+                      Delete Template
+                    </>
+                  )}
+                </button>
+              </div>
             </div>
           </div>
         </div>

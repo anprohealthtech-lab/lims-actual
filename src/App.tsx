@@ -38,6 +38,10 @@ import LocationMaster from './components/Masters/LocationMaster';
 import TemplateStudio from './pages/TemplateStudio';
 import TemplateStudioCKE from './pages/TemplateStudioCKE';
 import { BrandingSettings } from './pages/BrandingSettings';
+import WorkflowConfiguratorPage from './pages/WorkflowConfiguratorPage';
+import WorkflowEvaluatorPage from './pages/WorkflowEvaluatorPage';
+import WorkflowExplainerDemo from './pages/WorkflowExplainerDemo';
+import WorkflowExplainerTestPage from './pages/WorkflowExplainerTestPage';
 
 const AppRoutes: React.FC = () => {
   const { user, loading } = useAuth();
@@ -94,6 +98,9 @@ const AppRoutes: React.FC = () => {
                 <Route path="/verification" element={<ResultVerificationConsole />} />
                 <Route path="/workflows" element={<WorkflowManagement />} />
                 <Route path="/workflow-demo" element={<WorkflowDemo />} />
+                <Route path="/workflow-configurator" element={<WorkflowConfiguratorPage />} />
+                <Route path="/workflow-evaluator/:protocolId" element={<WorkflowEvaluatorPage />} />
+                <Route path="/workflow-explainer-demo" element={<WorkflowExplainerDemo />} />
                 <Route path="/orders/:id" element={<OrderDetail />} />
                 <Route path="/template-studio" element={<TemplateStudio />} />
                 <Route path="/template-studio-cke" element={<TemplateStudioCKE />} />

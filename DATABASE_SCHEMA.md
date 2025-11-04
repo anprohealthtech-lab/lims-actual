@@ -1,9 +1,60 @@
-# Current Database Schema
-
 -- WARNING: This schema is for context only and is not meant to be run.
 -- Table order and constraints may not be valid for execution.
 
-```sql
+CREATE TABLE public.accounts (
+  id uuid NOT NULL DEFAULT gen_random_uuid(),
+  lab_id uuid NOT NULL,
+  name text NOT NULL,
+  code text,
+  type text NOT NULL CHECK (type = ANY (ARRAY['hospital'::text, 'corporate'::text, 'insurer'::text, 'clinic'::text, 'doctor'::text, 'other'::text])),
+  default_discount_percent numeric CHECK (default_discount_percent >= 0::numeric AND default_discount_percent <= 100::numeric),
+  credit_limit numeric NOT NULL DEFAULT 0 CHECK (credit_limit >= 0::numeric),
+  payment_terms integer NOT NULL DEFAULT 0 CHECK (payment_terms >= 0),
+  billing_email text,
+  billing_phone text,
+  gst_number text,
+  address_line1 text,
+  address_line2 text,
+  city text,
+  state text,
+  pincode text,
+  is_active boolean NOT NULL DEFAULT true,
+  created_at timestamp with time zone NOT NULL DEFAULT now(),
+  updated_at timestamp with time zone NOT NULL DEFAULT now(),
+  CONSTRAINT accounts_pkey PRIMARY KEY (id),
+  CONSTRAINT accounts_lab_id_fkey FOREIGN KEY (lab_id) REFERENCES public.labs(id)
+);
+CREATE TABLE public.ai_captures (
+  id uuid NOT NULL DEFAULT gen_random_uuid(),
+  session_id uuid,
+  step_id uuid,
+  capture_type character varying NOT NULL,
+  file_path character varying,
+  file_size_bytes bigint,
+  mime_type character varying,
+  capture_metadata jsonb DEFAULT '{}'::jsonb,
+  analysis_status character varying DEFAULT 'pending'::character varying,
+  analysis_results jsonb DEFAULT '{}'::jsonb,
+  confidence_score numeric,
+  processed_at timestamp with time zone,
+  processing_duration_ms integer,
+  created_at timestamp with time zone DEFAULT now(),
+  CONSTRAINT ai_captures_pkey PRIMARY KEY (id),
+  CONSTRAINT ai_captures_session_id_fkey FOREIGN KEY (session_id) REFERENCES public.ai_protocol_sessions(id),
+  CONSTRAINT ai_captures_step_id_fkey FOREIGN KEY (step_id) REFERENCES public.ai_protocol_steps_Not_used(id)
+);
+CREATE TABLE public.ai_issues (
+  id uuid NOT NULL DEFAULT gen_random_uuid(),
+  workflow_result_id uuid NOT NULL,
+  severity text NOT NULL,
+  field text,
+  code text,
+  message text NOT NULL,
+  suggestion text,
+  created_at timestamp with time zone NOT NULL DEFAULT now(),
+  CONSTRAINT ai_issues_pkey PRIMARY KEY (id),
+  CONSTRAINT ai_issues_workflow_result_id_fkey FOREIGN KEY (workflow_result_id) REFERENCES public.workflow_results(id)
+);
 CREATE TABLE public.ai_prompts (
   id uuid NOT NULL DEFAULT gen_random_uuid(),
   test_id uuid,
@@ -14,11 +65,84 @@ CREATE TABLE public.ai_prompts (
   default boolean NOT NULL DEFAULT false,
   created_at timestamp with time zone NOT NULL DEFAULT now(),
   CONSTRAINT ai_prompts_pkey PRIMARY KEY (id),
+  CONSTRAINT fk_ai_prompts_analyte FOREIGN KEY (analyte_id) REFERENCES public.analytes(id),
   CONSTRAINT fk_ai_prompts_lab FOREIGN KEY (lab_id) REFERENCES public.labs(id),
-  CONSTRAINT fk_ai_prompts_test_group FOREIGN KEY (test_id) REFERENCES public.test_groups(id),
-  CONSTRAINT fk_ai_prompts_analyte FOREIGN KEY (analyte_id) REFERENCES public.analytes(id)
+  CONSTRAINT fk_ai_prompts_test_group FOREIGN KEY (test_id) REFERENCES public.test_groups(id)
 );
-
+CREATE TABLE public.ai_protocol_sessions (
+  id uuid NOT NULL DEFAULT gen_random_uuid(),
+  protocol_id uuid,
+  order_id uuid,
+  patient_id uuid,
+  test_id uuid,
+  status character varying DEFAULT 'started'::character varying,
+  current_step_id uuid,
+  current_step_order integer DEFAULT 1,
+  session_data jsonb DEFAULT '{}'::jsonb,
+  results jsonb DEFAULT '{}'::jsonb,
+  started_at timestamp with time zone DEFAULT now(),
+  completed_at timestamp with time zone,
+  duration_seconds integer,
+  user_id uuid,
+  created_at timestamp with time zone DEFAULT now(),
+  CONSTRAINT ai_protocol_sessions_pkey PRIMARY KEY (id),
+  CONSTRAINT ai_protocol_sessions_protocol_id_fkey FOREIGN KEY (protocol_id) REFERENCES public.ai_protocols(id),
+  CONSTRAINT ai_protocol_sessions_order_id_fkey FOREIGN KEY (order_id) REFERENCES public.orders(id),
+  CONSTRAINT ai_protocol_sessions_patient_id_fkey FOREIGN KEY (patient_id) REFERENCES public.patients(id),
+  CONSTRAINT ai_protocol_sessions_current_step_id_fkey FOREIGN KEY (current_step_id) REFERENCES public.ai_protocol_steps_Not_used(id),
+  CONSTRAINT ai_protocol_sessions_user_id_fkey FOREIGN KEY (user_id) REFERENCES auth.users(id)
+);
+CREATE TABLE public.ai_protocol_steps_Not_used (
+  id uuid NOT NULL DEFAULT gen_random_uuid(),
+  protocol_id uuid,
+  step_order integer NOT NULL,
+  step_type character varying NOT NULL,
+  title character varying NOT NULL,
+  description text,
+  config jsonb NOT NULL DEFAULT '{}'::jsonb,
+  is_required boolean DEFAULT true,
+  validation_rules jsonb DEFAULT '{}'::jsonb,
+  estimated_duration_seconds integer,
+  max_duration_seconds integer,
+  created_at timestamp with time zone DEFAULT now(),
+  CONSTRAINT ai_protocol_steps_Not_used_pkey PRIMARY KEY (id),
+  CONSTRAINT ai_protocol_steps_protocol_id_fkey FOREIGN KEY (protocol_id) REFERENCES public.ai_protocols(id)
+);
+CREATE TABLE public.ai_protocols (
+  id uuid NOT NULL DEFAULT gen_random_uuid(),
+  name character varying NOT NULL,
+  description text,
+  category character varying NOT NULL,
+  version text DEFAULT '1.0'::character varying,
+  is_active boolean DEFAULT true,
+  config jsonb NOT NULL DEFAULT '{}'::jsonb,
+  requires_lims_integration boolean DEFAULT false,
+  target_table character varying,
+  result_mapping jsonb DEFAULT '{}'::jsonb,
+  ui_config jsonb DEFAULT '{}'::jsonb,
+  created_at timestamp with time zone DEFAULT now(),
+  created_by uuid,
+  updated_at timestamp with time zone DEFAULT now(),
+  updated_by uuid,
+  status text,
+  lab_id uuid,
+  CONSTRAINT ai_protocols_pkey PRIMARY KEY (id),
+  CONSTRAINT ai_protocols_created_by_fkey FOREIGN KEY (created_by) REFERENCES auth.users(id),
+  CONSTRAINT ai_protocols_updated_by_fkey FOREIGN KEY (updated_by) REFERENCES auth.users(id)
+);
+CREATE TABLE public.ai_runs (
+  id uuid NOT NULL DEFAULT gen_random_uuid(),
+  workflow_result_id uuid NOT NULL,
+  kind text NOT NULL,
+  model text NOT NULL,
+  request jsonb NOT NULL,
+  response jsonb,
+  ok boolean,
+  duration_ms integer,
+  created_at timestamp with time zone NOT NULL DEFAULT now(),
+  CONSTRAINT ai_runs_pkey PRIMARY KEY (id),
+  CONSTRAINT ai_runs_workflow_result_id_fkey FOREIGN KEY (workflow_result_id) REFERENCES public.workflow_results(id)
+);
 CREATE TABLE public.ai_usage_logs (
   id uuid NOT NULL DEFAULT gen_random_uuid(),
   user_id uuid,
@@ -34,7 +158,13 @@ CREATE TABLE public.ai_usage_logs (
   CONSTRAINT ai_usage_logs_user_id_fkey FOREIGN KEY (user_id) REFERENCES auth.users(id),
   CONSTRAINT ai_usage_logs_lab_id_fkey FOREIGN KEY (lab_id) REFERENCES public.labs(id)
 );
-
+CREATE TABLE public.analyte_aliases (
+  id uuid NOT NULL DEFAULT gen_random_uuid(),
+  analyte_id uuid NOT NULL,
+  alias text NOT NULL,
+  CONSTRAINT analyte_aliases_pkey PRIMARY KEY (id),
+  CONSTRAINT analyte_aliases_analyte_id_fkey FOREIGN KEY (analyte_id) REFERENCES public.analytes(id)
+);
 CREATE TABLE public.analytes (
   id uuid NOT NULL DEFAULT gen_random_uuid(),
   name character varying NOT NULL UNIQUE,
@@ -54,9 +184,10 @@ CREATE TABLE public.analytes (
   group_ai_mode USER-DEFINED DEFAULT 'individual'::group_ai_mode,
   is_global boolean DEFAULT true,
   to_be_copied boolean DEFAULT false,
+  reference_range_male text,
+  reference_range_female text,
   CONSTRAINT analytes_pkey PRIMARY KEY (id)
 );
-
 CREATE TABLE public.attachments (
   id uuid NOT NULL DEFAULT gen_random_uuid(),
   patient_id uuid,
@@ -67,7 +198,7 @@ CREATE TABLE public.attachments (
   description text,
   uploaded_by uuid,
   created_at timestamp with time zone DEFAULT now(),
-  lab_id uuid,
+  lab_id uuid NOT NULL,
   file_path text,
   original_filename text,
   stored_filename text,
@@ -79,12 +210,18 @@ CREATE TABLE public.attachments (
   ai_processed_at timestamp without time zone,
   ai_processing_type text,
   ai_metadata jsonb,
+  tag text,
+  order_id uuid,
+  order_test_id uuid,
+  file_name text,
+  metadata text,
   CONSTRAINT attachments_pkey PRIMARY KEY (id),
-  CONSTRAINT attachments_lab_id_fkey FOREIGN KEY (lab_id) REFERENCES public.labs(id),
+  CONSTRAINT attachments_patient_id_fkey FOREIGN KEY (patient_id) REFERENCES public.patients(id),
   CONSTRAINT attachments_uploaded_by_fkey FOREIGN KEY (uploaded_by) REFERENCES public.users(id),
-  CONSTRAINT attachments_patient_id_fkey FOREIGN KEY (patient_id) REFERENCES public.patients(id)
+  CONSTRAINT attachments_lab_id_fkey FOREIGN KEY (lab_id) REFERENCES public.labs(id),
+  CONSTRAINT attachments_order_id_fkey FOREIGN KEY (order_id) REFERENCES public.orders(id),
+  CONSTRAINT attachments_order_test_id_fkey FOREIGN KEY (order_test_id) REFERENCES public.order_tests(id)
 );
-
 CREATE TABLE public.audit_logs (
   id uuid NOT NULL DEFAULT gen_random_uuid(),
   table_name character varying NOT NULL,
@@ -98,7 +235,79 @@ CREATE TABLE public.audit_logs (
   CONSTRAINT audit_logs_pkey PRIMARY KEY (id),
   CONSTRAINT audit_logs_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.users(id)
 );
-
+CREATE TABLE public.cash_register (
+  id uuid NOT NULL DEFAULT gen_random_uuid(),
+  lab_id uuid,
+  register_date date NOT NULL,
+  location_id uuid,
+  shift text NOT NULL DEFAULT 'full_day'::text CHECK (shift = ANY (ARRAY['morning'::text, 'afternoon'::text, 'night'::text, 'full_day'::text])),
+  opening_balance numeric NOT NULL DEFAULT 0,
+  system_amount numeric NOT NULL DEFAULT 0,
+  actual_amount numeric,
+  closing_balance numeric,
+  variance numeric DEFAULT (COALESCE(actual_amount, (0)::numeric) - COALESCE(system_amount, (0)::numeric)),
+  notes text,
+  reconciled boolean NOT NULL DEFAULT false,
+  reconciled_by uuid,
+  reconciled_at timestamp with time zone,
+  created_by uuid,
+  created_at timestamp with time zone NOT NULL DEFAULT now(),
+  CONSTRAINT cash_register_pkey PRIMARY KEY (id),
+  CONSTRAINT cash_register_lab_id_fkey FOREIGN KEY (lab_id) REFERENCES public.labs(id),
+  CONSTRAINT cash_register_location_id_fkey FOREIGN KEY (location_id) REFERENCES public.locations(id),
+  CONSTRAINT cash_register_reconciled_by_fkey FOREIGN KEY (reconciled_by) REFERENCES public.users(id),
+  CONSTRAINT cash_register_created_by_fkey FOREIGN KEY (created_by) REFERENCES public.users(id)
+);
+CREATE TABLE public.consolidated_invoices (
+  id uuid NOT NULL DEFAULT gen_random_uuid(),
+  lab_id uuid NOT NULL,
+  account_id uuid NOT NULL,
+  account_name text NOT NULL,
+  billing_period text NOT NULL,
+  subtotal numeric NOT NULL DEFAULT 0 CHECK (subtotal >= 0::numeric),
+  total_discount numeric NOT NULL DEFAULT 0 CHECK (total_discount >= 0::numeric),
+  tax numeric NOT NULL DEFAULT 0 CHECK (tax >= 0::numeric),
+  total numeric NOT NULL DEFAULT 0 CHECK (total >= 0::numeric),
+  status text NOT NULL DEFAULT 'Draft'::text CHECK (status = ANY (ARRAY['Draft'::text, 'Sent'::text, 'Paid'::text, 'Overdue'::text])),
+  invoice_date timestamp with time zone NOT NULL DEFAULT now(),
+  due_date timestamp with time zone NOT NULL DEFAULT (now() + '15 days'::interval),
+  payment_date timestamp with time zone,
+  notes text,
+  invoice_count integer NOT NULL DEFAULT 0 CHECK (invoice_count >= 0),
+  patient_count integer NOT NULL DEFAULT 0 CHECK (patient_count >= 0),
+  created_at timestamp with time zone NOT NULL DEFAULT now(),
+  updated_at timestamp with time zone NOT NULL DEFAULT now(),
+  CONSTRAINT consolidated_invoices_pkey PRIMARY KEY (id),
+  CONSTRAINT consolidated_invoices_lab_id_fkey FOREIGN KEY (lab_id) REFERENCES public.labs(id),
+  CONSTRAINT consolidated_invoices_account_id_fkey FOREIGN KEY (account_id) REFERENCES public.accounts(id)
+);
+CREATE TABLE public.credit_transactions (
+  id uuid NOT NULL DEFAULT gen_random_uuid(),
+  lab_id uuid,
+  location_id uuid,
+  patient_id uuid,
+  invoice_id uuid,
+  amount numeric NOT NULL,
+  transaction_type text CHECK (transaction_type = ANY (ARRAY['credit'::text, 'payment'::text, 'adjustment'::text])),
+  payment_method text,
+  reference_number text,
+  notes text,
+  balance_after numeric,
+  created_by uuid,
+  created_at timestamp with time zone NOT NULL DEFAULT now(),
+  account_id uuid,
+  description text,
+  reference_type text,
+  transaction_date date,
+  type USER-DEFINED,
+  CONSTRAINT credit_transactions_pkey PRIMARY KEY (id),
+  CONSTRAINT credit_transactions_lab_id_fkey FOREIGN KEY (lab_id) REFERENCES public.labs(id),
+  CONSTRAINT credit_transactions_location_id_fkey FOREIGN KEY (location_id) REFERENCES public.locations(id),
+  CONSTRAINT credit_transactions_patient_id_fkey FOREIGN KEY (patient_id) REFERENCES public.patients(id),
+  CONSTRAINT credit_transactions_invoice_id_fkey FOREIGN KEY (invoice_id) REFERENCES public.invoices(id),
+  CONSTRAINT credit_transactions_created_by_fkey FOREIGN KEY (created_by) REFERENCES public.users(id),
+  CONSTRAINT credit_transactions_account_id_fkey FOREIGN KEY (account_id) REFERENCES public.accounts(id)
+);
 CREATE TABLE public.departments (
   id uuid NOT NULL DEFAULT gen_random_uuid(),
   name character varying NOT NULL,
@@ -109,7 +318,29 @@ CREATE TABLE public.departments (
   updated_at timestamp with time zone DEFAULT now(),
   CONSTRAINT departments_pkey PRIMARY KEY (id)
 );
-
+CREATE TABLE public.doctors (
+  id uuid NOT NULL DEFAULT gen_random_uuid(),
+  lab_id uuid NOT NULL,
+  name text NOT NULL,
+  specialization text,
+  qualification text,
+  registration_number text,
+  phone text,
+  email text,
+  preferred_contact text NOT NULL DEFAULT 'email'::text CHECK (preferred_contact = ANY (ARRAY['email'::text, 'sms'::text, 'whatsapp'::text, 'none'::text])),
+  report_delivery_method text NOT NULL DEFAULT 'email'::text CHECK (report_delivery_method = ANY (ARRAY['email'::text, 'whatsapp'::text, 'both'::text, 'none'::text])),
+  default_discount_percent numeric CHECK (default_discount_percent >= 0::numeric AND default_discount_percent <= 100::numeric),
+  is_active boolean NOT NULL DEFAULT true,
+  created_at timestamp with time zone NOT NULL DEFAULT now(),
+  updated_at timestamp with time zone NOT NULL DEFAULT now(),
+  address text,
+  hospital text,
+  is_referring_doctor boolean DEFAULT false,
+  license_number text,
+  notes text,
+  CONSTRAINT doctors_pkey PRIMARY KEY (id),
+  CONSTRAINT doctors_lab_id_fkey FOREIGN KEY (lab_id) REFERENCES public.labs(id)
+);
 CREATE TABLE public.invoice_items (
   id uuid NOT NULL DEFAULT gen_random_uuid(),
   invoice_id uuid NOT NULL,
@@ -118,10 +349,19 @@ CREATE TABLE public.invoice_items (
   quantity integer DEFAULT 1 CHECK (quantity > 0),
   total numeric NOT NULL CHECK (total >= 0::numeric),
   created_at timestamp with time zone DEFAULT now(),
+  order_test_id uuid,
+  discount_type text CHECK (discount_type = ANY (ARRAY['percent'::text, 'flat'::text])),
+  discount_value numeric,
+  discount_amount numeric,
+  discount_reason text,
+  lab_id uuid NOT NULL,
+  order_id uuid,
   CONSTRAINT invoice_items_pkey PRIMARY KEY (id),
-  CONSTRAINT invoice_items_invoice_id_fkey FOREIGN KEY (invoice_id) REFERENCES public.invoices(id)
+  CONSTRAINT invoice_items_invoice_id_fkey FOREIGN KEY (invoice_id) REFERENCES public.invoices(id),
+  CONSTRAINT invoice_items_order_test_id_fkey FOREIGN KEY (order_test_id) REFERENCES public.order_tests(id),
+  CONSTRAINT invoice_items_order_id_fkey FOREIGN KEY (order_id) REFERENCES public.orders(id),
+  CONSTRAINT invoice_items_lab_id_fkey FOREIGN KEY (lab_id) REFERENCES public.labs(id)
 );
-
 CREATE TABLE public.invoices (
   id uuid NOT NULL DEFAULT gen_random_uuid(),
   patient_id uuid NOT NULL,
@@ -139,11 +379,29 @@ CREATE TABLE public.invoices (
   notes text,
   created_at timestamp with time zone DEFAULT now(),
   updated_at timestamp with time zone DEFAULT now(),
+  total_before_discount numeric,
+  total_discount numeric NOT NULL DEFAULT 0,
+  total_after_discount numeric,
+  location_id uuid,
+  referring_doctor_id uuid,
+  payment_type text NOT NULL DEFAULT 'self'::text CHECK (payment_type = ANY (ARRAY['self'::text, 'credit'::text, 'insurance'::text, 'corporate'::text])),
+  is_partial boolean NOT NULL DEFAULT false,
+  parent_invoice_id uuid,
+  lab_id uuid NOT NULL,
+  account_id uuid,
+  invoice_type text NOT NULL DEFAULT 'patient'::text CHECK (invoice_type = ANY (ARRAY['patient'::text, 'account'::text])),
+  billing_period text,
+  consolidated_invoice_id uuid,
   CONSTRAINT invoices_pkey PRIMARY KEY (id),
+  CONSTRAINT invoices_patient_id_fkey FOREIGN KEY (patient_id) REFERENCES public.patients(id),
   CONSTRAINT invoices_order_id_fkey FOREIGN KEY (order_id) REFERENCES public.orders(id),
-  CONSTRAINT invoices_patient_id_fkey FOREIGN KEY (patient_id) REFERENCES public.patients(id)
+  CONSTRAINT invoices_location_id_fkey FOREIGN KEY (location_id) REFERENCES public.locations(id),
+  CONSTRAINT invoices_referring_doctor_id_fkey FOREIGN KEY (referring_doctor_id) REFERENCES public.doctors(id),
+  CONSTRAINT invoices_parent_invoice_id_fkey FOREIGN KEY (parent_invoice_id) REFERENCES public.invoices(id),
+  CONSTRAINT invoices_lab_id_fkey FOREIGN KEY (lab_id) REFERENCES public.labs(id),
+  CONSTRAINT invoices_consolidated_invoice_id_fkey FOREIGN KEY (consolidated_invoice_id) REFERENCES public.consolidated_invoices(id),
+  CONSTRAINT invoices_account_id_fkey FOREIGN KEY (account_id) REFERENCES public.accounts(id)
 );
-
 CREATE TABLE public.lab_analytes (
   id uuid NOT NULL DEFAULT gen_random_uuid(),
   lab_id uuid NOT NULL,
@@ -156,11 +414,136 @@ CREATE TABLE public.lab_analytes (
   lab_specific_interpretation_low text,
   lab_specific_interpretation_normal text,
   lab_specific_interpretation_high text,
+  lab_specific_unit character varying,
+  lab_specific_name text,
+  reference_range_male text,
+  reference_range_female text,
+  reference_range text,
+  critical_low numeric,
+  critical_high numeric,
+  interpretation_low text,
+  interpretation_normal text,
+  interpretation_high text,
+  unit character varying,
+  name text,
+  low_critical numeric,
+  high_critical numeric,
   CONSTRAINT lab_analytes_pkey PRIMARY KEY (id),
-  CONSTRAINT lab_analytes_analyte_id_fkey FOREIGN KEY (analyte_id) REFERENCES public.analytes(id),
-  CONSTRAINT lab_analytes_lab_id_fkey FOREIGN KEY (lab_id) REFERENCES public.labs(id)
+  CONSTRAINT lab_analytes_lab_id_fkey FOREIGN KEY (lab_id) REFERENCES public.labs(id),
+  CONSTRAINT lab_analytes_analyte_id_fkey FOREIGN KEY (analyte_id) REFERENCES public.analytes(id)
 );
-
+CREATE TABLE public.lab_branding_assets (
+  id uuid NOT NULL DEFAULT gen_random_uuid(),
+  lab_id uuid NOT NULL,
+  asset_type character varying NOT NULL CHECK (asset_type::text = ANY (ARRAY['header'::character varying, 'footer'::character varying, 'watermark'::character varying, 'logo'::character varying, 'letterhead'::character varying]::text[])),
+  asset_name character varying NOT NULL,
+  file_url text NOT NULL,
+  file_path text NOT NULL,
+  file_type character varying NOT NULL,
+  file_size bigint,
+  dimensions jsonb,
+  is_active boolean DEFAULT true,
+  is_default boolean DEFAULT false,
+  description text,
+  usage_context ARRAY,
+  created_by uuid,
+  updated_by uuid,
+  created_at timestamp with time zone DEFAULT now(),
+  updated_at timestamp with time zone DEFAULT now(),
+  storage_bucket text DEFAULT 'attachments'::text,
+  storage_path text,
+  status text NOT NULL DEFAULT 'pending'::text CHECK (status = ANY (ARRAY['pending'::text, 'processing'::text, 'ready'::text, 'error'::text])),
+  imagekit_file_id text,
+  imagekit_url text,
+  variants jsonb DEFAULT '{}'::jsonb,
+  processed_at timestamp with time zone,
+  last_error text,
+  CONSTRAINT lab_branding_assets_pkey PRIMARY KEY (id),
+  CONSTRAINT lab_branding_assets_lab_id_fkey FOREIGN KEY (lab_id) REFERENCES public.labs(id),
+  CONSTRAINT lab_branding_assets_created_by_fkey FOREIGN KEY (created_by) REFERENCES public.users(id),
+  CONSTRAINT lab_branding_assets_updated_by_fkey FOREIGN KEY (updated_by) REFERENCES public.users(id)
+);
+CREATE TABLE public.lab_template_versions (
+  id uuid NOT NULL DEFAULT gen_random_uuid(),
+  template_id uuid NOT NULL,
+  version_number integer NOT NULL,
+  gjs_html text,
+  gjs_css text,
+  gjs_components jsonb,
+  gjs_styles jsonb,
+  gjs_project jsonb,
+  version_name character varying,
+  version_notes text,
+  created_at timestamp with time zone DEFAULT now(),
+  created_by uuid,
+  CONSTRAINT lab_template_versions_pkey PRIMARY KEY (id),
+  CONSTRAINT lab_template_versions_template_id_fkey FOREIGN KEY (template_id) REFERENCES public.lab_templates(id),
+  CONSTRAINT lab_template_versions_created_by_fkey FOREIGN KEY (created_by) REFERENCES public.users(id)
+);
+CREATE TABLE public.lab_templates (
+  id uuid NOT NULL DEFAULT gen_random_uuid(),
+  lab_id uuid NOT NULL,
+  template_name character varying NOT NULL,
+  template_description text,
+  test_group_id uuid,
+  category character varying DEFAULT 'general'::character varying,
+  gjs_html text,
+  gjs_css text,
+  gjs_components jsonb,
+  gjs_styles jsonb,
+  gjs_project jsonb,
+  is_active boolean DEFAULT true,
+  is_default boolean DEFAULT false,
+  template_version integer DEFAULT 1,
+  created_at timestamp with time zone DEFAULT now(),
+  updated_at timestamp with time zone DEFAULT now(),
+  created_by uuid,
+  updated_by uuid,
+  ai_verification_status text DEFAULT 'not_reviewed'::text,
+  ai_verification_summary text,
+  ai_verification_details jsonb,
+  ai_verification_checked_at timestamp with time zone,
+  CONSTRAINT lab_templates_pkey PRIMARY KEY (id),
+  CONSTRAINT lab_templates_lab_id_fkey FOREIGN KEY (lab_id) REFERENCES public.labs(id),
+  CONSTRAINT lab_templates_test_group_id_fkey FOREIGN KEY (test_group_id) REFERENCES public.test_groups(id),
+  CONSTRAINT lab_templates_created_by_fkey FOREIGN KEY (created_by) REFERENCES public.users(id),
+  CONSTRAINT lab_templates_updated_by_fkey FOREIGN KEY (updated_by) REFERENCES public.users(id)
+);
+CREATE TABLE public.lab_user_signatures (
+  id uuid NOT NULL DEFAULT gen_random_uuid(),
+  lab_id uuid NOT NULL,
+  user_id uuid NOT NULL,
+  signature_type character varying NOT NULL CHECK (signature_type::text = ANY (ARRAY['digital'::character varying, 'handwritten'::character varying, 'stamp'::character varying, 'text'::character varying]::text[])),
+  signature_name character varying NOT NULL,
+  file_url text,
+  file_path text,
+  file_type character varying,
+  file_size bigint,
+  dimensions jsonb,
+  text_signature text,
+  signature_data jsonb,
+  is_active boolean DEFAULT true,
+  is_default boolean DEFAULT false,
+  description text,
+  usage_context ARRAY,
+  created_by uuid,
+  updated_by uuid,
+  created_at timestamp with time zone DEFAULT now(),
+  updated_at timestamp with time zone DEFAULT now(),
+  storage_bucket text DEFAULT 'attachments'::text,
+  storage_path text,
+  status text NOT NULL DEFAULT 'pending'::text CHECK (status = ANY (ARRAY['pending'::text, 'processing'::text, 'ready'::text, 'error'::text])),
+  imagekit_file_id text,
+  imagekit_url text,
+  variants jsonb DEFAULT '{}'::jsonb,
+  processed_at timestamp with time zone,
+  last_error text,
+  CONSTRAINT lab_user_signatures_pkey PRIMARY KEY (id),
+  CONSTRAINT lab_user_signatures_lab_id_fkey FOREIGN KEY (lab_id) REFERENCES public.labs(id),
+  CONSTRAINT lab_user_signatures_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.users(id),
+  CONSTRAINT lab_user_signatures_created_by_fkey FOREIGN KEY (created_by) REFERENCES public.users(id),
+  CONSTRAINT lab_user_signatures_updated_by_fkey FOREIGN KEY (updated_by) REFERENCES public.users(id)
+);
 CREATE TABLE public.labs (
   id uuid NOT NULL DEFAULT gen_random_uuid(),
   name character varying NOT NULL,
@@ -175,9 +558,33 @@ CREATE TABLE public.labs (
   is_active boolean DEFAULT true,
   created_at timestamp with time zone DEFAULT now(),
   updated_at timestamp with time zone DEFAULT now(),
+  registration_number text,
+  default_report_header_html text,
+  default_report_footer_html text,
   CONSTRAINT labs_pkey PRIMARY KEY (id)
 );
-
+CREATE TABLE public.locations (
+  id uuid NOT NULL DEFAULT gen_random_uuid(),
+  lab_id uuid NOT NULL,
+  name text NOT NULL,
+  type text NOT NULL CHECK (type = ANY (ARRAY['hospital'::text, 'clinic'::text, 'diagnostic_center'::text, 'home_collection'::text, 'walk_in'::text])),
+  contact_person text,
+  phone text,
+  email text,
+  address text,
+  city text,
+  state text,
+  pincode text,
+  supports_cash_collection boolean NOT NULL DEFAULT false,
+  default_discount_percent numeric CHECK (default_discount_percent >= 0::numeric AND default_discount_percent <= 100::numeric),
+  credit_limit numeric NOT NULL DEFAULT 0 CHECK (credit_limit >= 0::numeric),
+  payment_terms integer NOT NULL DEFAULT 0 CHECK (payment_terms >= 0),
+  is_active boolean NOT NULL DEFAULT true,
+  created_at timestamp with time zone NOT NULL DEFAULT now(),
+  updated_at timestamp with time zone NOT NULL DEFAULT now(),
+  CONSTRAINT locations_pkey PRIMARY KEY (id),
+  CONSTRAINT locations_lab_id_fkey FOREIGN KEY (lab_id) REFERENCES public.labs(id)
+);
 CREATE TABLE public.ocr_results (
   id uuid NOT NULL DEFAULT gen_random_uuid(),
   attachment_id uuid,
@@ -186,7 +593,6 @@ CREATE TABLE public.ocr_results (
   CONSTRAINT ocr_results_pkey PRIMARY KEY (id),
   CONSTRAINT ocr_results_attachment_id_fkey FOREIGN KEY (attachment_id) REFERENCES public.attachments(id)
 );
-
 CREATE TABLE public.order_test_groups (
   id uuid NOT NULL DEFAULT gen_random_uuid(),
   order_id uuid NOT NULL,
@@ -198,16 +604,37 @@ CREATE TABLE public.order_test_groups (
   CONSTRAINT order_test_groups_order_id_fkey FOREIGN KEY (order_id) REFERENCES public.orders(id),
   CONSTRAINT order_test_groups_test_group_id_fkey FOREIGN KEY (test_group_id) REFERENCES public.test_groups(id)
 );
-
 CREATE TABLE public.order_tests (
   id uuid NOT NULL DEFAULT gen_random_uuid(),
   order_id uuid NOT NULL,
   test_name character varying NOT NULL,
   created_at timestamp with time zone DEFAULT now(),
+  test_group_id uuid,
+  sample_id text,
+  invoice_id uuid,
+  is_billed boolean NOT NULL DEFAULT false,
+  billed_at timestamp with time zone,
+  billed_amount numeric,
+  lab_id uuid NOT NULL,
+  price numeric CHECK (price >= 0::numeric),
   CONSTRAINT order_tests_pkey PRIMARY KEY (id),
-  CONSTRAINT order_tests_order_id_fkey FOREIGN KEY (order_id) REFERENCES public.orders(id)
+  CONSTRAINT order_tests_invoice_id_fkey FOREIGN KEY (invoice_id) REFERENCES public.invoices(id),
+  CONSTRAINT order_tests_order_id_fkey FOREIGN KEY (order_id) REFERENCES public.orders(id),
+  CONSTRAINT order_tests_lab_id_fkey FOREIGN KEY (lab_id) REFERENCES public.labs(id),
+  CONSTRAINT order_tests_test_group_id_fkey FOREIGN KEY (test_group_id) REFERENCES public.test_groups(id)
 );
-
+CREATE TABLE public.order_workflow_instances (
+  id uuid NOT NULL DEFAULT gen_random_uuid(),
+  order_id uuid NOT NULL UNIQUE,
+  workflow_version_id uuid NOT NULL,
+  current_step_id text,
+  started_at timestamp with time zone NOT NULL DEFAULT now(),
+  completed_at timestamp with time zone,
+  status text,
+  CONSTRAINT order_workflow_instances_pkey PRIMARY KEY (id),
+  CONSTRAINT order_workflow_instances_order_id_fkey FOREIGN KEY (order_id) REFERENCES public.orders(id),
+  CONSTRAINT order_workflow_instances_workflow_version_id_fkey FOREIGN KEY (workflow_version_id) REFERENCES public.workflow_versions(id)
+);
 CREATE TABLE public.orders (
   id uuid NOT NULL DEFAULT gen_random_uuid(),
   patient_id uuid NOT NULL,
@@ -215,7 +642,7 @@ CREATE TABLE public.orders (
   priority USER-DEFINED NOT NULL DEFAULT 'Normal'::priority_type,
   order_date date NOT NULL DEFAULT CURRENT_DATE,
   expected_date date NOT NULL,
-  total_amount numeric NOT NULL CHECK (total_amount >= 0::numeric),
+  total_amount numeric NOT NULL DEFAULT 0 CHECK (total_amount >= 0::numeric),
   doctor character varying NOT NULL,
   notes text,
   created_at timestamp with time zone DEFAULT now(),
@@ -234,15 +661,31 @@ CREATE TABLE public.orders (
   color_code text,
   color_name text,
   qr_code_data text,
-  lab_id uuid,
+  lab_id uuid NOT NULL,
   status USER-DEFINED NOT NULL DEFAULT 'Order Created'::order_status,
+  sample_id text UNIQUE,
+  sample_collected_at timestamp with time zone,
+  sample_collected_by text,
+  tube_barcode text,
+  workflow_status text,
+  order_number integer,
+  order_display character varying,
+  referring_doctor_id uuid,
+  location_id uuid,
+  payment_type text NOT NULL DEFAULT 'self'::text CHECK (payment_type = ANY (ARRAY['self'::text, 'credit'::text, 'insurance'::text, 'corporate'::text])),
+  is_billed boolean NOT NULL DEFAULT false,
+  billing_status text NOT NULL DEFAULT 'pending'::text CHECK (billing_status = ANY (ARRAY['pending'::text, 'partial'::text, 'billed'::text])),
+  account_id uuid,
+  testRequestFile text,
   CONSTRAINT orders_pkey PRIMARY KEY (id),
-  CONSTRAINT orders_created_by_fkey FOREIGN KEY (created_by) REFERENCES auth.users(id),
   CONSTRAINT orders_patient_id_fkey FOREIGN KEY (patient_id) REFERENCES public.patients(id),
+  CONSTRAINT orders_referring_doctor_id_fkey FOREIGN KEY (referring_doctor_id) REFERENCES public.doctors(id),
+  CONSTRAINT orders_location_id_fkey FOREIGN KEY (location_id) REFERENCES public.locations(id),
   CONSTRAINT orders_parent_order_id_fkey FOREIGN KEY (parent_order_id) REFERENCES public.orders(id),
-  CONSTRAINT orders_lab_id_fkey FOREIGN KEY (lab_id) REFERENCES public.labs(id)
+  CONSTRAINT orders_created_by_fkey FOREIGN KEY (created_by) REFERENCES auth.users(id),
+  CONSTRAINT orders_lab_id_fkey FOREIGN KEY (lab_id) REFERENCES public.labs(id),
+  CONSTRAINT orders_account_id_fkey FOREIGN KEY (account_id) REFERENCES public.accounts(id)
 );
-
 CREATE TABLE public.package_test_groups (
   id uuid NOT NULL DEFAULT gen_random_uuid(),
   package_id uuid NOT NULL,
@@ -252,7 +695,6 @@ CREATE TABLE public.package_test_groups (
   CONSTRAINT package_test_groups_package_id_fkey FOREIGN KEY (package_id) REFERENCES public.packages(id),
   CONSTRAINT package_test_groups_test_group_id_fkey FOREIGN KEY (test_group_id) REFERENCES public.test_groups(id)
 );
-
 CREATE TABLE public.packages (
   id uuid NOT NULL DEFAULT gen_random_uuid(),
   name character varying NOT NULL,
@@ -268,7 +710,6 @@ CREATE TABLE public.packages (
   CONSTRAINT packages_pkey PRIMARY KEY (id),
   CONSTRAINT packages_lab_id_fkey FOREIGN KEY (lab_id) REFERENCES public.labs(id)
 );
-
 CREATE TABLE public.patient_activity_log (
   id uuid NOT NULL DEFAULT gen_random_uuid(),
   patient_id uuid,
@@ -282,10 +723,9 @@ CREATE TABLE public.patient_activity_log (
   CONSTRAINT patient_activity_log_pkey PRIMARY KEY (id),
   CONSTRAINT patient_activity_log_patient_id_fkey FOREIGN KEY (patient_id) REFERENCES public.patients(id),
   CONSTRAINT patient_activity_log_order_id_fkey FOREIGN KEY (order_id) REFERENCES public.orders(id),
-  CONSTRAINT patient_activity_log_lab_id_fkey FOREIGN KEY (lab_id) REFERENCES public.labs(id),
-  CONSTRAINT patient_activity_log_performed_by_fkey FOREIGN KEY (performed_by) REFERENCES public.users(id)
+  CONSTRAINT patient_activity_log_performed_by_fkey FOREIGN KEY (performed_by) REFERENCES public.users(id),
+  CONSTRAINT patient_activity_log_lab_id_fkey FOREIGN KEY (lab_id) REFERENCES public.labs(id)
 );
-
 CREATE TABLE public.patients (
   id uuid NOT NULL DEFAULT gen_random_uuid(),
   name character varying NOT NULL,
@@ -311,9 +751,16 @@ CREATE TABLE public.patients (
   external_patient_id character varying,
   display_id character varying,
   referring_doctor character varying,
-  CONSTRAINT patients_pkey PRIMARY KEY (id)
+  default_doctor_id uuid,
+  default_location_id uuid,
+  default_payment_type text NOT NULL DEFAULT 'self'::text CHECK (default_payment_type = ANY (ARRAY['self'::text, 'credit'::text, 'insurance'::text, 'corporate'::text])),
+  lab_id uuid NOT NULL,
+  date_of_birth date,
+  CONSTRAINT patients_pkey PRIMARY KEY (id),
+  CONSTRAINT patients_default_doctor_id_fkey FOREIGN KEY (default_doctor_id) REFERENCES public.doctors(id),
+  CONSTRAINT patients_default_location_id_fkey FOREIGN KEY (default_location_id) REFERENCES public.locations(id),
+  CONSTRAINT patients_lab_id_fkey FOREIGN KEY (lab_id) REFERENCES public.labs(id)
 );
-
 CREATE TABLE public.payments (
   id uuid NOT NULL DEFAULT gen_random_uuid(),
   invoice_id uuid NOT NULL,
@@ -323,11 +770,29 @@ CREATE TABLE public.payments (
   payment_date date DEFAULT CURRENT_DATE,
   received_by uuid,
   created_at timestamp with time zone DEFAULT now(),
+  location_id uuid,
+  lab_id uuid,
+  notes text,
   CONSTRAINT payments_pkey PRIMARY KEY (id),
+  CONSTRAINT payments_invoice_id_fkey FOREIGN KEY (invoice_id) REFERENCES public.invoices(id),
   CONSTRAINT payments_received_by_fkey FOREIGN KEY (received_by) REFERENCES public.users(id),
-  CONSTRAINT payments_invoice_id_fkey FOREIGN KEY (invoice_id) REFERENCES public.invoices(id)
+  CONSTRAINT payments_location_id_fkey FOREIGN KEY (location_id) REFERENCES public.locations(id)
 );
-
+CREATE TABLE public.quality_control_results (
+  id uuid NOT NULL DEFAULT gen_random_uuid(),
+  test_group_id uuid,
+  qc_type text NOT NULL,
+  qc_value numeric,
+  expected_value numeric,
+  tolerance_range numeric,
+  pass_fail boolean,
+  notes text,
+  technician_id uuid,
+  created_at timestamp with time zone DEFAULT now(),
+  CONSTRAINT quality_control_results_pkey PRIMARY KEY (id),
+  CONSTRAINT quality_control_results_test_group_id_fkey FOREIGN KEY (test_group_id) REFERENCES public.test_groups(id),
+  CONSTRAINT quality_control_results_technician_id_fkey FOREIGN KEY (technician_id) REFERENCES public.users(id)
+);
 CREATE TABLE public.reports (
   id uuid NOT NULL DEFAULT gen_random_uuid(),
   patient_id uuid NOT NULL,
@@ -338,27 +803,83 @@ CREATE TABLE public.reports (
   created_at timestamp with time zone DEFAULT now(),
   updated_at timestamp with time zone DEFAULT now(),
   doctor character varying NOT NULL DEFAULT ''::character varying,
+  order_id uuid UNIQUE,
+  pdf_url text,
+  pdf_generated_at timestamp with time zone,
+  report_status text DEFAULT 'pending'::text,
+  report_type character varying DEFAULT 'final'::character varying CHECK (report_type::text = ANY (ARRAY['draft'::character varying, 'final'::character varying]::text[])),
+  print_pdf_url text,
+  print_pdf_generated_at timestamp with time zone,
   CONSTRAINT reports_pkey PRIMARY KEY (id),
+  CONSTRAINT fk_reports_patient FOREIGN KEY (patient_id) REFERENCES public.patients(id),
   CONSTRAINT fk_reports_result FOREIGN KEY (result_id) REFERENCES public.results(id),
-  CONSTRAINT fk_reports_patient FOREIGN KEY (patient_id) REFERENCES public.patients(id)
+  CONSTRAINT reports_order_id_fkey FOREIGN KEY (order_id) REFERENCES public.orders(id)
 );
-
 CREATE TABLE public.result_values (
   id uuid NOT NULL DEFAULT gen_random_uuid(),
   result_id uuid NOT NULL,
   analyte_id uuid,
   parameter character varying NOT NULL,
-  value character varying NOT NULL,
-  unit character varying NOT NULL,
+  value character varying,
+  unit character varying,
   reference_range text NOT NULL,
   flag character varying,
   created_at timestamp with time zone DEFAULT now(),
   updated_at timestamp with time zone DEFAULT now(),
+  order_id uuid,
+  analyte_name text,
+  units text,
+  order_test_id uuid,
+  test_group_id uuid,
+  lab_id uuid,
+  order_test_group_id uuid,
+  sample_id text,
+  verified boolean DEFAULT false,
+  verified_by uuid,
+  verified_at timestamp with time zone,
+  verify_status text NOT NULL DEFAULT 'pending'::text CHECK (verify_status = ANY (ARRAY['pending'::text, 'approved'::text, 'rejected'::text])),
+  verify_note text,
+  ai_confidence text,
+  extracted_by_ai boolean,
   CONSTRAINT result_values_pkey PRIMARY KEY (id),
+  CONSTRAINT result_values_result_id_fkey FOREIGN KEY (result_id) REFERENCES public.results(id),
   CONSTRAINT result_values_analyte_id_fkey FOREIGN KEY (analyte_id) REFERENCES public.analytes(id),
-  CONSTRAINT result_values_result_id_fkey FOREIGN KEY (result_id) REFERENCES public.results(id)
+  CONSTRAINT rv_tg_analyte_fkey FOREIGN KEY (analyte_id) REFERENCES public.test_group_analytes(test_group_id),
+  CONSTRAINT rv_tg_analyte_fkey FOREIGN KEY (test_group_id) REFERENCES public.test_group_analytes(test_group_id),
+  CONSTRAINT rv_tg_analyte_fkey FOREIGN KEY (analyte_id) REFERENCES public.test_group_analytes(analyte_id),
+  CONSTRAINT rv_tg_analyte_fkey FOREIGN KEY (test_group_id) REFERENCES public.test_group_analytes(analyte_id),
+  CONSTRAINT result_values_order_id_fkey FOREIGN KEY (order_id) REFERENCES public.orders(id),
+  CONSTRAINT rv_order_test_id_fkey FOREIGN KEY (order_test_id) REFERENCES public.order_tests(id),
+  CONSTRAINT rv_test_group_id_fkey FOREIGN KEY (test_group_id) REFERENCES public.test_groups(id),
+  CONSTRAINT rv_lab_id_fkey FOREIGN KEY (lab_id) REFERENCES public.labs(id),
+  CONSTRAINT rv_order_test_group_id_fkey FOREIGN KEY (order_test_group_id) REFERENCES public.order_test_groups(id),
+  CONSTRAINT result_values_sample_id_fkey FOREIGN KEY (sample_id) REFERENCES public.samples(id),
+  CONSTRAINT rv_verified_by_fkey FOREIGN KEY (verified_by) REFERENCES public.users(id)
 );
-
+CREATE TABLE public.result_verification_audit (
+  id uuid NOT NULL DEFAULT gen_random_uuid(),
+  result_id uuid,
+  action character varying NOT NULL,
+  performed_by uuid,
+  performed_at timestamp with time zone DEFAULT now(),
+  previous_status character varying,
+  new_status character varying,
+  comment text,
+  metadata jsonb,
+  CONSTRAINT result_verification_audit_pkey PRIMARY KEY (id),
+  CONSTRAINT result_verification_audit_result_id_fkey FOREIGN KEY (result_id) REFERENCES public.results(id),
+  CONSTRAINT result_verification_audit_performed_by_fkey FOREIGN KEY (performed_by) REFERENCES public.users(id)
+);
+CREATE TABLE public.result_verification_notes (
+  id uuid NOT NULL DEFAULT gen_random_uuid(),
+  result_id uuid,
+  author_id uuid,
+  note text NOT NULL,
+  created_at timestamp with time zone DEFAULT now(),
+  CONSTRAINT result_verification_notes_pkey PRIMARY KEY (id),
+  CONSTRAINT result_verification_notes_result_id_fkey FOREIGN KEY (result_id) REFERENCES public.results(id),
+  CONSTRAINT result_verification_notes_author_id_fkey FOREIGN KEY (author_id) REFERENCES public.users(id)
+);
 CREATE TABLE public.results (
   id uuid NOT NULL DEFAULT gen_random_uuid(),
   order_id uuid NOT NULL,
@@ -378,22 +899,92 @@ CREATE TABLE public.results (
   manually_verified boolean DEFAULT false,
   ai_extraction_metadata jsonb,
   attachment_id uuid,
+  verification_status character varying DEFAULT 'pending_verification'::character varying CHECK (verification_status::text = ANY (ARRAY['pending_verification'::character varying, 'needs_clarification'::character varying, 'verified'::character varying, 'rejected'::character varying]::text[])),
+  verified_by uuid,
+  verified_at timestamp with time zone,
+  review_comment text,
+  technician_notes text,
+  delta_check_flag boolean DEFAULT false,
+  critical_flag boolean DEFAULT false,
+  priority_level integer DEFAULT 1 CHECK (priority_level >= 1 AND priority_level <= 5),
+  is_locked boolean DEFAULT false,
+  locked_reason text,
+  locked_at timestamp with time zone,
+  locked_by uuid,
+  workflow_instance_id uuid,
+  technician_id uuid,
+  result_date timestamp with time zone DEFAULT now(),
+  order_test_group_id uuid,
+  test_group_id uuid,
+  lab_id uuid NOT NULL,
+  order_test_id uuid,
+  sample_id text,
   CONSTRAINT results_pkey PRIMARY KEY (id),
-  CONSTRAINT results_attachment_id_fkey FOREIGN KEY (attachment_id) REFERENCES public.attachments(id),
   CONSTRAINT results_patient_id_fkey FOREIGN KEY (patient_id) REFERENCES public.patients(id),
-  CONSTRAINT results_order_id_fkey FOREIGN KEY (order_id) REFERENCES public.orders(id)
+  CONSTRAINT results_order_id_fkey FOREIGN KEY (order_id) REFERENCES public.orders(id),
+  CONSTRAINT results_attachment_id_fkey FOREIGN KEY (attachment_id) REFERENCES public.attachments(id),
+  CONSTRAINT results_verified_by_fkey FOREIGN KEY (verified_by) REFERENCES public.users(id),
+  CONSTRAINT results_locked_by_fkey FOREIGN KEY (locked_by) REFERENCES public.users(id),
+  CONSTRAINT results_technician_id_fkey FOREIGN KEY (technician_id) REFERENCES public.users(id),
+  CONSTRAINT fk_results_workflow_instance FOREIGN KEY (workflow_instance_id) REFERENCES public.order_workflow_instances(id),
+  CONSTRAINT results_order_test_group_id_fkey FOREIGN KEY (order_test_group_id) REFERENCES public.order_test_groups(id),
+  CONSTRAINT results_test_group_id_fkey FOREIGN KEY (test_group_id) REFERENCES public.test_groups(id),
+  CONSTRAINT results_lab_id_fkey FOREIGN KEY (lab_id) REFERENCES public.labs(id),
+  CONSTRAINT results_order_test_id_fkey FOREIGN KEY (order_test_id) REFERENCES public.order_tests(id)
 );
-
+CREATE TABLE public.samples (
+  id text NOT NULL,
+  order_id uuid NOT NULL,
+  sample_type text,
+  barcode text UNIQUE,
+  container_type text,
+  specimen_site text,
+  lab_id uuid,
+  status USER-DEFINED NOT NULL DEFAULT 'created'::sample_status,
+  collected_at timestamp with time zone,
+  received_at timestamp with time zone,
+  processed_at timestamp with time zone,
+  rejected_at timestamp with time zone,
+  rejection_reason text,
+  collected_by uuid,
+  created_at timestamp with time zone DEFAULT now(),
+  CONSTRAINT samples_pkey PRIMARY KEY (id),
+  CONSTRAINT samples_order_id_fkey FOREIGN KEY (order_id) REFERENCES public.orders(id),
+  CONSTRAINT samples_lab_id_fkey FOREIGN KEY (lab_id) REFERENCES public.labs(id),
+  CONSTRAINT samples_collected_by_fkey FOREIGN KEY (collected_by) REFERENCES public.users(id)
+);
+CREATE TABLE public.system_config (
+  id bigint NOT NULL DEFAULT nextval('system_config_id_seq'::regclass),
+  key character varying NOT NULL UNIQUE,
+  value text,
+  description text,
+  category character varying,
+  created_at timestamp with time zone DEFAULT now(),
+  updated_at timestamp with time zone DEFAULT now(),
+  CONSTRAINT system_config_pkey PRIMARY KEY (id)
+);
+CREATE TABLE public.task_runs (
+  id uuid NOT NULL DEFAULT gen_random_uuid(),
+  workflow_result_id uuid NOT NULL,
+  task_id uuid NOT NULL,
+  status text NOT NULL,
+  request jsonb NOT NULL,
+  response jsonb,
+  duration_ms integer,
+  created_at timestamp with time zone NOT NULL DEFAULT now(),
+  CONSTRAINT task_runs_pkey PRIMARY KEY (id),
+  CONSTRAINT task_runs_workflow_result_id_fkey FOREIGN KEY (workflow_result_id) REFERENCES public.workflow_results(id),
+  CONSTRAINT task_runs_task_id_fkey FOREIGN KEY (task_id) REFERENCES public.workflow_tasks(id)
+);
 CREATE TABLE public.test_group_analytes (
   id uuid NOT NULL DEFAULT gen_random_uuid(),
   test_group_id uuid NOT NULL,
   analyte_id uuid NOT NULL,
   created_at timestamp with time zone DEFAULT now(),
   CONSTRAINT test_group_analytes_pkey PRIMARY KEY (id),
-  CONSTRAINT test_group_analytes_analyte_id_fkey FOREIGN KEY (analyte_id) REFERENCES public.analytes(id),
-  CONSTRAINT test_group_analytes_test_group_id_fkey FOREIGN KEY (test_group_id) REFERENCES public.test_groups(id)
+  CONSTRAINT test_group_analytes_test_group_id_fkey FOREIGN KEY (test_group_id) REFERENCES public.test_groups(id),
+  CONSTRAINT test_group_analytes_analyte_id_fkey FOREIGN KEY (analyte_id) REFERENCES public.analytes(id)
 );
-
 CREATE TABLE public.test_groups (
   id uuid NOT NULL DEFAULT gen_random_uuid(),
   name character varying NOT NULL,
@@ -411,30 +1002,30 @@ CREATE TABLE public.test_groups (
   group_level_prompt text,
   lab_id uuid,
   to_be_copied boolean DEFAULT false,
+  description text,
+  department text,
+  tat_hours numeric,
   CONSTRAINT test_groups_pkey PRIMARY KEY (id),
   CONSTRAINT test_groups_lab_id_fkey FOREIGN KEY (lab_id) REFERENCES public.labs(id)
 );
-
-CREATE TABLE public.tests (
+CREATE TABLE public.test_workflow_map (
   id uuid NOT NULL DEFAULT gen_random_uuid(),
-  name character varying NOT NULL,
-  category character varying NOT NULL,
-  method character varying NOT NULL,
-  sample_type USER-DEFINED NOT NULL,
-  price numeric NOT NULL CHECK (price >= 0::numeric),
-  turnaround_time character varying NOT NULL,
-  reference_range text NOT NULL,
-  units character varying,
+  lab_id uuid NOT NULL,
+  test_code text NOT NULL,
+  workflow_version_id uuid NOT NULL,
+  is_default boolean NOT NULL DEFAULT false,
+  created_at timestamp with time zone NOT NULL DEFAULT now(),
+  test_group_id uuid,
+  analyte_id uuid,
+  priority integer DEFAULT 100,
+  conditions jsonb,
   description text,
-  is_active boolean DEFAULT true,
-  requires_fasting boolean DEFAULT false,
-  critical_values text,
-  interpretation text,
-  created_at timestamp with time zone DEFAULT now(),
-  updated_at timestamp with time zone DEFAULT now(),
-  CONSTRAINT tests_pkey PRIMARY KEY (id)
+  is_active boolean,
+  CONSTRAINT test_workflow_map_pkey PRIMARY KEY (id),
+  CONSTRAINT test_workflow_map_workflow_version_id_fkey FOREIGN KEY (workflow_version_id) REFERENCES public.workflow_versions(id),
+  CONSTRAINT test_workflow_map_test_group_id_fkey FOREIGN KEY (test_group_id) REFERENCES public.test_groups(id),
+  CONSTRAINT test_workflow_map_analyte_id_fkey FOREIGN KEY (analyte_id) REFERENCES public.analytes(id)
 );
-
 CREATE TABLE public.users (
   id uuid NOT NULL DEFAULT gen_random_uuid(),
   name character varying NOT NULL,
@@ -449,24 +1040,111 @@ CREATE TABLE public.users (
   created_at timestamp with time zone DEFAULT now(),
   updated_at timestamp with time zone DEFAULT now(),
   department_id uuid,
-  lab_id uuid,
+  lab_id uuid CHECK (lab_id IS NOT NULL),
+  whatsapp_user_id uuid,
+  whatsapp_sync_status character varying DEFAULT 'pending'::character varying CHECK (whatsapp_sync_status::text = ANY (ARRAY['pending'::character varying, 'synced'::character varying, 'failed'::character varying, 'disabled'::character varying]::text[])),
+  whatsapp_last_sync timestamp with time zone,
+  whatsapp_sync_error text,
+  whatsapp_config jsonb DEFAULT '{}'::jsonb,
+  whatsapp_auto_sync boolean DEFAULT true,
   CONSTRAINT users_pkey PRIMARY KEY (id),
-  CONSTRAINT users_department_id_fkey FOREIGN KEY (department_id) REFERENCES public.departments(id),
-  CONSTRAINT users_lab_id_fkey FOREIGN KEY (lab_id) REFERENCES public.labs(id)
+  CONSTRAINT users_lab_id_fkey FOREIGN KEY (lab_id) REFERENCES public.labs(id),
+  CONSTRAINT users_department_id_fkey FOREIGN KEY (department_id) REFERENCES public.departments(id)
 );
-```
-
-## Key Observations:
-
-1. **Orders table already has sample tracking fields**: The `orders` table already contains `color_code`, `color_name`, and `qr_code_data` columns.
-
-2. **Patients table does NOT have sample tracking fields**: The `patients` table does not contain the `qr_code_data`, `color_code`, `color_name`, or `display_id` columns that the migration was trying to reference.
-
-3. **Current Architecture**: The system is already partially migrated to order-based sample tracking, so we mainly need to ensure all orders have proper sample data.
-
-## Migration Strategy:
-The migration should focus on:
-- Adding missing sample tracking columns to orders table (if not already present)
-- Generating sample data for existing orders that lack it
-- Creating proper indexes and constraints
-- Building supporting views for daily sample management
+CREATE TABLE public.workflow_ai_configs (
+  id uuid NOT NULL DEFAULT gen_random_uuid(),
+  workflow_version_id uuid NOT NULL,
+  test_group_id uuid,
+  analyte_id uuid,
+  model_provider text NOT NULL DEFAULT 'openai'::text,
+  model_name text NOT NULL DEFAULT 'gpt-4o-mini'::text,
+  temperature numeric NOT NULL DEFAULT 0.0,
+  parser_prompt text NOT NULL,
+  validator_prompt text NOT NULL,
+  analyte_map jsonb NOT NULL DEFAULT '{}'::jsonb,
+  unit_map jsonb NOT NULL DEFAULT '{}'::jsonb,
+  required_fields jsonb NOT NULL DEFAULT '[]'::jsonb,
+  numeric_rules jsonb NOT NULL DEFAULT '{}'::jsonb,
+  enum_rules jsonb NOT NULL DEFAULT '{}'::jsonb,
+  flags_rules jsonb NOT NULL DEFAULT '{}'::jsonb,
+  created_at timestamp with time zone NOT NULL DEFAULT now(),
+  CONSTRAINT workflow_ai_configs_pkey PRIMARY KEY (id),
+  CONSTRAINT workflow_ai_configs_analyte_id_fkey FOREIGN KEY (analyte_id) REFERENCES public.analytes(id),
+  CONSTRAINT workflow_ai_configs_workflow_version_id_fkey FOREIGN KEY (workflow_version_id) REFERENCES public.workflow_versions(id),
+  CONSTRAINT workflow_ai_configs_test_group_id_fkey FOREIGN KEY (test_group_id) REFERENCES public.test_groups(id)
+);
+CREATE TABLE public.workflow_results (
+  id uuid NOT NULL DEFAULT gen_random_uuid(),
+  workflow_instance_id uuid NOT NULL UNIQUE,
+  step_id text NOT NULL,
+  order_id uuid,
+  patient_id uuid,
+  lab_id uuid,
+  test_group_id uuid,
+  test_name text,
+  test_code text,
+  review_status text,
+  sample_id text,
+  qc_summary text,
+  payload jsonb NOT NULL,
+  extracted jsonb,
+  status text NOT NULL DEFAULT 'received'::text,
+  created_by uuid,
+  created_at timestamp with time zone NOT NULL DEFAULT now(),
+  committed_at timestamp with time zone,
+  error text,
+  detail text,
+  CONSTRAINT workflow_results_pkey PRIMARY KEY (id)
+);
+CREATE TABLE public.workflow_step_events (
+  id uuid NOT NULL DEFAULT gen_random_uuid(),
+  instance_id uuid NOT NULL,
+  step_id text NOT NULL,
+  event_type text NOT NULL,
+  payload jsonb,
+  created_at timestamp with time zone NOT NULL DEFAULT now(),
+  CONSTRAINT workflow_step_events_pkey PRIMARY KEY (id),
+  CONSTRAINT workflow_step_events_instance_id_fkey FOREIGN KEY (instance_id) REFERENCES public.order_workflow_instances(id)
+);
+CREATE TABLE public.workflow_tasks (
+  id uuid NOT NULL DEFAULT gen_random_uuid(),
+  workflow_version_id uuid NOT NULL,
+  type text NOT NULL CHECK (type = ANY (ARRAY['vision_color'::text, 'ocr'::text, 'text_extract'::text, 'cell_count'::text, 'custom_webhook'::text])),
+  model_name text,
+  tool_url text,
+  input_selector jsonb NOT NULL DEFAULT '{}'::jsonb,
+  params jsonb NOT NULL DEFAULT '{}'::jsonb,
+  output_map jsonb NOT NULL DEFAULT '{}'::jsonb,
+  run_order integer NOT NULL DEFAULT 10,
+  enabled boolean NOT NULL DEFAULT true,
+  created_at timestamp with time zone NOT NULL DEFAULT now(),
+  CONSTRAINT workflow_tasks_pkey PRIMARY KEY (id),
+  CONSTRAINT workflow_tasks_workflow_version_id_fkey FOREIGN KEY (workflow_version_id) REFERENCES public.workflow_versions(id)
+);
+CREATE TABLE public.workflow_versions (
+  id uuid NOT NULL DEFAULT gen_random_uuid(),
+  workflow_id uuid NOT NULL,
+  version text NOT NULL,
+  definition jsonb NOT NULL,
+  created_at timestamp with time zone NOT NULL DEFAULT now(),
+  active boolean,
+  description text,
+  name text,
+  CONSTRAINT workflow_versions_pkey PRIMARY KEY (id),
+  CONSTRAINT workflow_versions_workflow_id_fkey FOREIGN KEY (workflow_id) REFERENCES public.workflows(id)
+);
+CREATE TABLE public.workflows (
+  id uuid NOT NULL DEFAULT gen_random_uuid(),
+  name text NOT NULL,
+  scope text NOT NULL DEFAULT 'lab'::text,
+  lab_id uuid,
+  active boolean NOT NULL DEFAULT true,
+  created_at timestamp with time zone NOT NULL DEFAULT now(),
+  category text,
+  description text,
+  is_active boolean,
+  type text,
+  updated_at timestamp with time zone,
+  CONSTRAINT workflows_pkey PRIMARY KEY (id),
+  CONSTRAINT workflows_lab_id_fkey FOREIGN KEY (lab_id) REFERENCES public.labs(id)
+);
