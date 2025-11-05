@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
-import { Workflow, Settings, TestTube, Users, BarChart3, Loader2, Plus, AlertCircle, Trash2 } from 'lucide-react';
-import { WorkflowConfigurator } from '../components/Workflow/WorkflowConfigurator';
+import { Plus, Settings, Trash2, AlertCircle, Edit, Workflow, TestTube, Loader2, CheckCircle } from 'lucide-react';
 import { FlowManager } from '../components/Workflow/FlowManager';
+import VisualWorkflowManager from '../components/Workflow/VisualWorkflowManager';
 import { useAuth } from '../contexts/AuthContext';
 import { database } from '../utils/supabase';
 
@@ -12,8 +12,11 @@ interface WorkflowManagementProps {
 interface TestGroup {
   id: string;
   name: string;
-  description?: string;
+  code: string;
+  category: string;
   lab_id: string;
+  price: number;
+  is_active: boolean;
 }
 
 interface WorkflowVersion {
@@ -21,6 +24,9 @@ interface WorkflowVersion {
   name: string;
   description?: string;
   active: boolean;
+  definition?: any;
+  created_at?: string;
+  version?: string;
 }
 
 interface WorkflowMapping {
@@ -30,22 +36,22 @@ interface WorkflowMapping {
   is_default: boolean;
   is_active: boolean;
   priority: number;
-  test_groups: { id: string; name: string };
-  workflow_versions: { id: string; name: string };
+  test_groups?: { id: string; name: string; code: string };
+  workflow_versions?: { id: string; name: string };
 }
 
 export const WorkflowManagement: React.FC<WorkflowManagementProps> = ({
   className = ''
 }) => {
   const { user } = useAuth();
-  const [activeTab, setActiveTab] = useState<'mappings' | 'config' | 'demo'>('mappings');
+  const [activeTab, setActiveTab] = useState<'mappings' | 'builder' | 'visual-builder'>('mappings');
   const [labId, setLabId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  
+
   // State for mappings
   const [mappings, setMappings] = useState<WorkflowMapping[]>([]);
-  const [testGroups, setTestGroups] = useState<TestGroup[]>([]);
+  const [unmappedTestGroups, setUnmappedTestGroups] = useState<TestGroup[]>([]);
   const [workflows, setWorkflows] = useState<WorkflowVersion[]>([]);
   
   // State for creation
@@ -56,6 +62,11 @@ export const WorkflowManagement: React.FC<WorkflowManagementProps> = ({
     is_default: false,
     priority: 1
   });
+
+  // State for visual builder
+  // State for visual builder (to be implemented)
+  // const [showVisualBuilder, setShowVisualBuilder] = useState(false);
+  // const [selectedWorkflowForEdit, setSelectedWorkflowForEdit] = useState<WorkflowVersion | null>(null);
   
   const [demoSettings, setDemoSettings] = useState({
     orderId: 'ORDER-12345',
@@ -65,54 +76,56 @@ export const WorkflowManagement: React.FC<WorkflowManagementProps> = ({
   });
 
   useEffect(() => {
-    const loadLabId = async () => {
-      try {
-        setLoading(true);
-        const currentLabId = await database.getCurrentUserLabId();
-        if (!currentLabId) {
-          setError('No lab ID found for current user');
-          return;
-        }
-        setLabId(currentLabId);
-        setDemoSettings(prev => ({ ...prev, labId: currentLabId }));
-        
-        // Load workflow mappings
-        await loadWorkflowMappings(currentLabId);
-      } catch (err) {
-        console.error('Failed to load lab ID:', err);
-        setError('Failed to load lab context');
-      } finally {
-        setLoading(false);
-      }
-    };
-
     if (user) {
-      loadLabId();
+      loadWorkflowData();
     }
   }, [user]);
 
-  const loadWorkflowMappings = async (currentLabId?: string) => {
-    const labIdToUse = currentLabId || labId;
-    if (!labIdToUse) return;
+  const loadWorkflowData = async () => {
+    setLoading(true);
+    setError(null);
 
     try {
+      const currentLabId = await database.getCurrentUserLabId();
+      if (!currentLabId) {
+        throw new Error('No lab context available');
+      }
+      setLabId(currentLabId);
+
       // Load all required data
       const [mappingsResult, testGroupsResult, workflowsResult] = await Promise.all([
-        database.testWorkflowMap.getAll(labIdToUse),
-        database.testGroups.getByLabId ? database.testGroups.getByLabId(labIdToUse) : database.testGroups.list(labIdToUse),
-        database.workflowVersions ? database.workflowVersions.getAll() : { data: [], error: null }
+        database.testWorkflowMap.getAll(),
+        database.testGroups.getByLabId(currentLabId),
+        database.workflowVersions.getAll()
       ]);
 
       if (mappingsResult.error) throw mappingsResult.error;
       if (testGroupsResult.error) throw testGroupsResult.error;
       if (workflowsResult.error) throw workflowsResult.error;
 
-      setMappings(mappingsResult.data || []);
-      setTestGroups(testGroupsResult.data || []);
-      setWorkflows(workflowsResult.data || []);
-    } catch (err) {
-      console.error('Error loading workflow mappings:', err);
-      setError(err.message || 'Failed to load workflow mappings');
+      const allMappings = mappingsResult.data || [];
+      const allTestGroupsData = testGroupsResult.data || [];
+      const workflowsData = workflowsResult.data || [];
+
+      // Filter out test groups that already have mappings
+      const mappedTestGroupIds = new Set(
+        allMappings
+          .filter(m => m.test_group_id)
+          .map(m => m.test_group_id)
+      );
+
+      const unmapped = allTestGroupsData.filter(tg => 
+        tg.is_active && !mappedTestGroupIds.has(tg.id)
+      );
+
+      setMappings(allMappings as any);
+      setUnmappedTestGroups(unmapped);
+      setWorkflows(workflowsData as any);
+    } catch (err: any) {
+      console.error('Error loading workflow data:', err);
+      setError(err.message || 'Failed to load workflow data');
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -123,13 +136,25 @@ export const WorkflowManagement: React.FC<WorkflowManagementProps> = ({
     }
 
     try {
+      // Get the selected test group info
+      const selectedTestGroup = unmappedTestGroups.find(tg => tg.id === newMapping.test_group_id);
+      if (!selectedTestGroup) {
+        throw new Error('Selected test group not found');
+      }
+
+      // Ensure test_code is not null or empty
+      const testCode = selectedTestGroup.code?.trim();
+      if (!testCode) {
+        throw new Error(`Test group "${selectedTestGroup.name}" does not have a valid test code`);
+      }
+
       const { error } = await database.testWorkflowMap.create({
         test_group_id: newMapping.test_group_id,
         workflow_version_id: newMapping.workflow_version_id,
+        test_code: testCode,
         is_default: newMapping.is_default,
         is_active: true,
-        priority: newMapping.priority,
-        lab_id: labId
+        priority: newMapping.priority
       });
 
       if (error) throw error;
@@ -142,8 +167,8 @@ export const WorkflowManagement: React.FC<WorkflowManagementProps> = ({
         priority: 1
       });
       
-      await loadWorkflowMappings();
-    } catch (err) {
+      await loadWorkflowData(); // Reload to update unmapped list
+    } catch (err: any) {
       console.error('Error creating mapping:', err);
       setError(err.message || 'Failed to create mapping');
     }
@@ -155,11 +180,11 @@ export const WorkflowManagement: React.FC<WorkflowManagementProps> = ({
     }
 
     try {
-      const { error } = await database.testWorkflowMap.delete(mappingId, labId);
+      const { error } = await database.testWorkflowMap.delete(mappingId);
       if (error) throw error;
       
-      await loadWorkflowMappings();
-    } catch (err) {
+      await loadWorkflowData(); // This will update both mappings and unmapped test groups
+    } catch (err: any) {
       console.error('Error deleting mapping:', err);
       setError(err.message || 'Failed to delete mapping');
     }
@@ -169,11 +194,11 @@ export const WorkflowManagement: React.FC<WorkflowManagementProps> = ({
     try {
       const { error } = await database.testWorkflowMap.update(mappingId, {
         is_active: !currentStatus
-      }, labId);
+      });
       
       if (error) throw error;
-      await loadWorkflowMappings();
-    } catch (err) {
+      await loadWorkflowData();
+    } catch (err: any) {
       console.error('Error updating mapping:', err);
       setError(err.message || 'Failed to update mapping status');
     }
@@ -189,21 +214,27 @@ export const WorkflowManagement: React.FC<WorkflowManagementProps> = ({
       for (const defaultMapping of currentDefaults) {
         await database.testWorkflowMap.update(defaultMapping.id, {
           is_default: false
-        }, labId);
+        });
       }
       
       // Then set the new default
       const { error } = await database.testWorkflowMap.update(mappingId, {
         is_default: true
-      }, labId);
+      });
       
       if (error) throw error;
-      await loadWorkflowMappings();
-    } catch (err) {
+      await loadWorkflowData();
+    } catch (err: any) {
       console.error('Error setting default:', err);
       setError(err.message || 'Failed to set default mapping');
     }
   };
+
+  // Visual builder function (to be implemented)
+  // const openVisualBuilder = (workflow?: WorkflowVersion) => {
+  //   setSelectedWorkflowForEdit(workflow || null);
+  //   setShowVisualBuilder(true);
+  // };
 
   const tabs = [
     {
@@ -213,16 +244,16 @@ export const WorkflowManagement: React.FC<WorkflowManagementProps> = ({
       description: 'Configure workflow mappings for test groups'
     },
     {
-      id: 'config',
-      name: 'Workflow Builder',
+      id: 'builder',
+      name: 'AI Workflow Builder',
       icon: Workflow,
       description: 'Create and configure new workflows'
     },
     {
-      id: 'demo',
-      name: 'Demo Runner',
-      icon: TestTube,
-      description: 'Test workflow execution with sample data'
+      id: 'visual-builder',
+      name: 'Visual Form Builder',
+      icon: Edit,
+      description: 'Create workflows with visual form builder'
     }
   ];
 
@@ -429,133 +460,95 @@ export const WorkflowManagement: React.FC<WorkflowManagementProps> = ({
             </div>
           )}
 
-          {activeTab === 'config' && (
+          {activeTab === 'builder' && (
             <div>
               <div className="mb-6">
-                <h3 className="text-lg font-semibold text-gray-900 mb-2">Workflow Configuration</h3>
+                <h3 className="text-lg font-semibold text-gray-900 mb-2">AI Workflow Builder</h3>
                 <p className="text-gray-600">
-                  Map Survey.js workflows to test groups and individual analytes. Higher priority workflows
-                  take precedence when multiple mappings exist.
+                  Create new workflows for test groups that don't have workflow configurations yet.
+                  Select a test group to start building its workflow.
                 </p>
               </div>
-              {labId ? (
-                <WorkflowConfigurator labId={labId} />
+
+              {/* Unmapped Test Groups Section */}
+              {unmappedTestGroups.length > 0 ? (
+                <div className="bg-white rounded-lg shadow-sm border border-gray-200">
+                  <div className="p-6 border-b border-gray-200">
+                    <h4 className="text-lg font-medium text-gray-900">Test Groups Without Workflows</h4>
+                    <p className="text-gray-600 mt-1">
+                      These test groups need workflow configurations. Click "Configure Workflow" to start building.
+                    </p>
+                  </div>
+                  <div className="p-6">
+                    <div className="grid gap-4">
+                      {unmappedTestGroups.map((testGroup) => (
+                        <div
+                          key={testGroup.id}
+                          className="border border-gray-200 rounded-lg p-4 hover:border-gray-300 transition-colors"
+                        >
+                          <div className="flex items-center justify-between">
+                            <div className="flex-1">
+                              <h5 className="text-lg font-medium text-gray-900">{testGroup.name}</h5>
+                              <div className="flex items-center gap-2 mt-1">
+                                <span className="px-2 py-1 text-xs font-medium bg-gray-100 text-gray-700 rounded-full">
+                                  {testGroup.code}
+                                </span>
+                                <span className="px-2 py-1 text-xs font-medium bg-blue-100 text-blue-700 rounded-full">
+                                  {testGroup.category}
+                                </span>
+                                <span className="text-sm text-gray-500">
+                                  Price: ${testGroup.price}
+                                </span>
+                              </div>
+                            </div>
+                            <div className="ml-4">
+                              <a
+                                href={`/workflow-configurator?testGroupId=${testGroup.id}`}
+                                className="inline-flex items-center px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-md hover:bg-blue-700 transition-colors"
+                              >
+                                <Workflow className="h-4 w-4 mr-2" />
+                                Configure Workflow
+                              </a>
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </div>
               ) : (
-                <div className="text-center text-gray-500">Loading lab context...</div>
+                <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-6">
+                  <div className="flex items-center">
+                    <CheckCircle className="h-5 w-5 text-yellow-400 mr-2" />
+                    <h4 className="text-yellow-800 font-medium">All Test Groups Configured</h4>
+                  </div>
+                  <p className="text-yellow-700 mt-2">
+                    All test groups in your lab have workflow configurations. 
+                    You can manage existing mappings in the "Test Group Mappings" tab.
+                  </p>
+                </div>
               )}
             </div>
           )}
 
-          {activeTab === 'demo' && (
+          {activeTab === 'visual-builder' && (
             <div>
               <div className="mb-6">
-                <h3 className="text-lg font-semibold text-gray-900 mb-2">Workflow Demo</h3>
+                <h3 className="text-lg font-semibold text-gray-900 mb-2">Visual Workflow Manager</h3>
                 <p className="text-gray-600">
-                  Test workflow execution with sample data. Configure the demo settings below.
+                  Comprehensive workflow management with visual editing, cloning, and organization features.
                 </p>
               </div>
 
-              {/* Demo Settings */}
-              <div className="bg-gray-50 rounded-lg p-4 mb-6">
-                <h4 className="font-medium text-gray-900 mb-3">Demo Settings</h4>
-                <div className="grid grid-cols-2 gap-4">
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">
-                      Order ID
-                    </label>
-                    <input
-                      type="text"
-                      value={demoSettings.orderId}
-                      onChange={(e) => setDemoSettings(prev => ({ ...prev, orderId: e.target.value }))}
-                      className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-blue-500 focus:border-blue-500"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">
-                      Lab ID
-                    </label>
-                    <input
-                      type="text"
-                      value={demoSettings.labId}
-                      onChange={(e) => setDemoSettings(prev => ({ ...prev, labId: e.target.value }))}
-                      className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-blue-500 focus:border-blue-500"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">
-                      Test Group ID
-                    </label>
-                    <input
-                      type="text"
-                      value={demoSettings.testGroupId}
-                      onChange={(e) => setDemoSettings(prev => ({ ...prev, testGroupId: e.target.value }))}
-                      className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-blue-500 focus:border-blue-500"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">
-                      Analyte IDs (comma-separated)
-                    </label>
-                    <input
-                      type="text"
-                      value={demoSettings.analyteIds.join(', ')}
-                      onChange={(e) => setDemoSettings(prev => ({ 
-                        ...prev, 
-                        analyteIds: e.target.value.split(',').map(id => id.trim()).filter(Boolean)
-                      }))}
-                      className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-blue-500 focus:border-blue-500"
-                    />
-                  </div>
-                </div>
+              <div className="bg-white rounded-lg border border-gray-200">
+                <VisualWorkflowManager />
               </div>
-
-              {/* Demo Flow Manager */}
-              <FlowManager
-                orderId={demoSettings.orderId}
-                testGroupId={demoSettings.testGroupId}
-                analyteIds={demoSettings.analyteIds}
-                labId={demoSettings.labId}
-                onComplete={(results) => {
-                  console.log('Demo workflow completed:', results);
-                  alert('Demo workflow completed! Check console for results.');
-                }}
-              />
             </div>
           )}
 
-          {activeTab === 'analytics' && (
-            <div>
-              <div className="mb-6">
-                <h3 className="text-lg font-semibold text-gray-900 mb-2">Workflow Analytics</h3>
-                <p className="text-gray-600">
-                  Monitor workflow performance, completion rates, and user feedback.
-                </p>
-              </div>
 
-              {/* Analytics Placeholder */}
-              <div className="border-2 border-dashed border-gray-300 rounded-lg p-12 text-center">
-                <BarChart3 className="h-12 w-12 mx-auto text-gray-400 mb-4" />
-                <h4 className="text-lg font-medium text-gray-700 mb-2">Analytics Dashboard</h4>
-                <p className="text-gray-500 mb-4">
-                  Workflow analytics will be displayed here once sufficient data is collected.
-                </p>
-                <div className="grid grid-cols-3 gap-4 max-w-md mx-auto">
-                  <div className="bg-gray-50 rounded-lg p-4">
-                    <div className="text-2xl font-bold text-gray-600">0</div>
-                    <div className="text-sm text-gray-500">Total Workflows</div>
-                  </div>
-                  <div className="bg-gray-50 rounded-lg p-4">
-                    <div className="text-2xl font-bold text-gray-600">0%</div>
-                    <div className="text-sm text-gray-500">Completion Rate</div>
-                  </div>
-                  <div className="bg-gray-50 rounded-lg p-4">
-                    <div className="text-2xl font-bold text-gray-600">0m</div>
-                    <div className="text-sm text-gray-500">Avg Duration</div>
-                  </div>
-                </div>
-              </div>
-            </div>
-          )}
+
+
         </div>
       </div>
 
@@ -621,9 +614,9 @@ export const WorkflowManagement: React.FC<WorkflowManagementProps> = ({
                     className="w-full border border-gray-300 rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
                   >
                     <option value="">Select Test Group</option>
-                    {testGroups.map((group) => (
+                    {unmappedTestGroups.map((group: TestGroup) => (
                       <option key={group.id} value={group.id}>
-                        {group.name}
+                        {group.name || 'Unnamed Test Group'} ({group.code || 'No Code'})
                       </option>
                     ))}
                   </select>
@@ -696,3 +689,5 @@ export const WorkflowManagement: React.FC<WorkflowManagementProps> = ({
     </div>
   );
 };
+
+export default WorkflowManagement;

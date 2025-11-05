@@ -57,8 +57,8 @@ The `database` object provides:
 
 ### Core Components
 
-1. **SimpleWorkflowRunner** - Executes Survey.js workflows with database integration
-2. **FlowManager** - Orchestrates multiple workflows for complex procedures  
+1. **FlowManager** - Orchestrates multiple workflows for complex procedures
+2. **WorkflowRunner** - Executes Survey.js workflows with database integration
 3. **WorkflowConfigurator** - No-code workflow design interface
 4. **WorkflowDemo** - `/workflow-demo` route for testing workflows safely
 
@@ -66,7 +66,7 @@ The `database` object provides:
 
 Workflows use a versioned approach:
 ```sql
-workflows → workflow_versions → workflow_instances → workflow_step_events
+workflows → workflow_versions → order_workflow_instances → workflow_step_events
 ```
 
 **Key workflow tables**:
@@ -81,7 +81,7 @@ workflows → workflow_versions → workflow_instances → workflow_step_events
 // Order-gated workflow execution in FlowManager
 <FlowManager
   orderId={order.id}
-  testGroupId={testGroup.id} 
+  testGroupId={testGroup.id}
   analyteIds={analytes.map(a => a.id)}
   labId={lab.id}
   onComplete={(results) => {
@@ -90,11 +90,26 @@ workflows → workflow_versions → workflow_instances → workflow_step_events
 />
 ```
 
+### Workflow Configuration & Management
+
+**Test Group Mapping System**:
+- Navigate to `/workflows` for workflow configuration interface
+- Filter test groups by lab context to prevent constraint violations
+- Display unmapped test groups prominently for workflow assignment
+- Use `database.testWorkflowMap` functions with proper lab filtering
+
+**Visual Form Builder Integration**:
+- SurveyJS Creator integration at `/visual-form-builder`
+- Auto-generates AI specifications from form structure
+- Configurable workflow properties (step types, timers, image capture)
+- File upload questions auto-configured for camera capture
+
 **Critical Workflow Rules**:
 - Always test workflows via `/workflow-demo` before production use
 - Workflows are lab-scoped and order-gated (require valid order)
-- Results flow: Survey.js → SimpleWorkflowRunner → database.results.create()
+- Results flow: Survey.js → WorkflowRunner → database.results.create()
 - Use existing `results` and `result_values` tables (no separate workflow tables needed)
+- Test group mappings must include proper `test_code` from test group
 
 ## Development Conventions
 
@@ -130,7 +145,7 @@ Result editing follows security patterns:
 ```typescript
 interface ResultWithSecurity {
   is_locked?: boolean;
-  can_edit?: boolean; 
+  can_edit?: boolean;
   restriction_reason?: string;
 }
 ```
@@ -146,6 +161,8 @@ npm run dev  # Runs on http://localhost:5173
 
 **Key Development Routes**:
 - `/workflow-demo` - Test workflows without database changes
+- `/workflows` - Workflow configuration and test group mapping interface
+- `/visual-form-builder` - SurveyJS visual workflow builder
 - `/dashboard2` - Modern dashboard (newer version)
 - `/orders/:id` - Order detail with workflow capabilities
 
@@ -206,7 +223,7 @@ interface ComponentProps {
 
 const Component: React.FC<ComponentProps> = ({ prop1, prop2 }) => {
   // Hooks and state
-  // Event handlers  
+  // Event handlers
   // Render JSX
 };
 
@@ -233,9 +250,9 @@ export default Component;
 
 Always use **safe migrations** with `IF NOT EXISTS` guards:
 ```sql
-DO $$ 
+DO $$
 BEGIN
-    IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns
                    WHERE table_name = 'orders' AND column_name = 'new_field') THEN
         ALTER TABLE orders ADD COLUMN new_field TEXT;
     END IF;
@@ -290,3 +307,5 @@ const {
 - Missing foreign key relationships (use the established patterns)
 - Bypassing the verification workflow for result modifications
 - Creating new workflow systems (extend existing Survey.js integration)
+- Mapping test groups without proper lab filtering (causes constraint violations)
+- Missing `test_code` in workflow mappings (use test group's code)

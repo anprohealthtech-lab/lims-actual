@@ -28,6 +28,7 @@ import "./styles/print.css";
 
 // ⬇️ New modern dashboard page
 import Dashboard2 from './pages/Dashboard2';
+import VisualFormBuilder from './pages/VisualFormBuilder';
 
 // ⬇️ New AI-integrated results page
 import Result2 from './pages/result2';
@@ -101,6 +102,7 @@ const AppRoutes: React.FC = () => {
                 <Route path="/workflow-configurator" element={<WorkflowConfiguratorPage />} />
                 <Route path="/workflow-evaluator/:protocolId" element={<WorkflowEvaluatorPage />} />
                 <Route path="/workflow-explainer-demo" element={<WorkflowExplainerDemo />} />
+                <Route path="/visual-form-builder" element={<VisualFormBuilder />} />
                 <Route path="/orders/:id" element={<OrderDetail />} />
                 <Route path="/template-studio" element={<TemplateStudio />} />
                 <Route path="/template-studio-cke" element={<TemplateStudioCKE />} />

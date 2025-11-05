@@ -4,12 +4,13 @@ import WorkflowProgress from './WorkflowProgress';
 import ManualUploader from './ManualUploader';
 import DraftReviewer from './DraftReviewer';
 import FinalApprover from './FinalApprover';
+import TestGroupSelector from './TestGroupSelector';
 import { database } from '../../../utils/supabase';
 
 const WorkflowConfigurator: React.FC = () => {
-  const [searchParams] = useSearchParams();
+  const [searchParams, setSearchParams] = useSearchParams();
   const [labId, setLabId] = useState<string | null>(null);
-  const [stage, setStage] = useState<'upload' | 'review' | 'approve'>('upload');
+  const [stage, setStage] = useState<'select' | 'upload' | 'review' | 'approve'>('select');
   const [protocolId, setProtocolId] = useState<string | null>(null);
   const [draftData, setDraftData] = useState<any>(null);
   const [contextualizedData, setContextualizedData] = useState<any>(null);
@@ -17,6 +18,7 @@ const WorkflowConfigurator: React.FC = () => {
   const [completionPayload, setCompletionPayload] = useState<any>(null);
   const [labLoading, setLabLoading] = useState(true);
   const [labError, setLabError] = useState<string | null>(null);
+  const [selectedTestGroup, setSelectedTestGroup] = useState<any>(null);
 
   const testGroupId = searchParams.get('testGroupId') || undefined;
   const testCode = searchParams.get('testCode') || undefined;
@@ -25,11 +27,11 @@ const WorkflowConfigurator: React.FC = () => {
     const resolveLabId = async () => {
       setLabLoading(true);
       try {
-        const resolvedLabId = await database.getCurrentUserLabId();
-        if (!resolvedLabId) {
+        const labId = await database.getCurrentUserLabId();
+        if (!labId) {
           setLabError('Unable to determine lab context. Please ensure you are logged in.');
         } else {
-          setLabId(resolvedLabId);
+          setLabId(labId);
         }
       } catch (error) {
         console.error('Failed to resolve lab ID:', error);
@@ -41,6 +43,44 @@ const WorkflowConfigurator: React.FC = () => {
 
     resolveLabId();
   }, []);
+
+  // If testGroupId is provided in URL, skip test group selection
+  useEffect(() => {
+    if (testGroupId && labId) {
+      setStage('upload');
+      loadTestGroupData(testGroupId);
+    }
+  }, [testGroupId, labId]);
+
+  const loadTestGroupData = async (id: string) => {
+    try {
+      if (!labId) return;
+      const { data: testGroups } = await database.testGroups.getByLabId(labId);
+      const testGroup = testGroups?.find(tg => tg.id === id);
+      if (testGroup) {
+        setSelectedTestGroup(testGroup);
+      }
+    } catch (error) {
+      console.error('Error loading test group data:', error);
+    }
+  };
+
+  const handleTestGroupSelected = (testGroupId: string, testGroup: any) => {
+    setSelectedTestGroup(testGroup);
+    setSearchParams({ testGroupId });
+    setStage('upload');
+  };
+
+  const handleBackToSelection = () => {
+    setSelectedTestGroup(null);
+    setDraftData(null);
+    setContextualizedData(null);
+    setProtocolId(null);
+    setWorkflowVersionId(null);
+    setCompletionPayload(null);
+    setSearchParams({});
+    setStage('select');
+  };
 
   const handleManualProcessed = (newProtocolId: string, drafts: any) => {
     setProtocolId(newProtocolId);
@@ -70,9 +110,41 @@ const WorkflowConfigurator: React.FC = () => {
     );
   }
 
+  // Show test group selector if no test group is selected
+  if (stage === 'select') {
+    return (
+      <TestGroupSelector
+        onTestGroupSelected={handleTestGroupSelected}
+        onCancel={() => window.history.back()}
+      />
+    );
+  }
+
   return (
     <div className="max-w-6xl mx-auto py-8 space-y-6">
-      <WorkflowProgress currentStage={stage} />
+      {/* Header with selected test group info and back button */}
+      {selectedTestGroup && (
+        <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-4">
+          <div className="flex items-center justify-between">
+            <div>
+              <h2 className="text-lg font-semibold text-gray-900">
+                Configuring Workflow for: {selectedTestGroup.name}
+              </h2>
+              <p className="text-sm text-gray-600">
+                Test Code: {selectedTestGroup.test_code} | {selectedTestGroup.description}
+              </p>
+            </div>
+            <button
+              onClick={handleBackToSelection}
+              className="px-3 py-2 text-sm text-gray-600 hover:text-gray-900 hover:bg-gray-100 rounded-md transition-colors"
+            >
+              ← Change Test Group
+            </button>
+          </div>
+        </div>
+      )}
+
+      <WorkflowProgress currentStage={stage as 'upload' | 'review' | 'approve'} />
 
       {stage === 'upload' && (
         <ManualUploader labId={labId} testGroupId={testGroupId} onProcessed={handleManualProcessed} />
@@ -109,6 +181,12 @@ const WorkflowConfigurator: React.FC = () => {
             The workflow version is now active and mapped to the test code. You can manage it from the workflow
             dashboard, or assign it to additional tests as needed.
           </p>
+          <button
+            onClick={handleBackToSelection}
+            className="mt-3 bg-emerald-600 text-white px-4 py-2 rounded-md hover:bg-emerald-700 transition-colors"
+          >
+            Configure Another Test Group
+          </button>
         </div>
       )}
     </div>

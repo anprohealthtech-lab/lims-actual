@@ -3016,28 +3016,152 @@ export const database = {
           description,
           active,
           created_at,
-          version
+          version,
+          definition,
+          workflow_id
         `)
         .order('created_at', { ascending: false });
 
       return { data, error };
+    },
+
+    delete: async (versionId: string) => {
+      const { error } = await supabase
+        .from('workflow_versions')
+        .delete()
+        .eq('id', versionId);
+
+      return { error };
     }
   },
 
   testWorkflowMap: {
-    create: async (payload: {
-      test_code: string;
-      workflow_version_id: string;
-      test_group_id?: string | null;
-      lab_id?: string | null;
-      is_default?: boolean;
-    }) => {
+    async getAll() {
+      const labId = await database.getCurrentUserLabId();
+      if (!labId) {
+        return { data: null, error: new Error('No lab context') };
+      }
+
       const { data, error } = await supabase
         .from('test_workflow_map')
-        .insert({
-          ...payload,
+        .select(`
+          id,
+          test_group_id,
+          workflow_version_id,
+          test_code,
+          is_default,
+          is_active,
+          priority,
+          created_at,
+          test_groups (
+            id,
+            name,
+            code,
+            category,
+            price
+          ),
+          workflow_versions (
+            id,
+            name,
+            description,
+            active
+          )
+        `)
+        .eq('lab_id', labId)
+        .order('priority', { ascending: true });
+
+      return { data, error };
+    },
+
+    async getByTestGroupId(testGroupId: string) {
+      const labId = await database.getCurrentUserLabId();
+      if (!labId) {
+        return { data: null, error: new Error('No lab context') };
+      }
+
+      const { data, error } = await supabase
+        .from('test_workflow_map')
+        .select(`
+          *,
+          workflow_versions (
+            id,
+            name,
+            description,
+            definition,
+            active
+          )
+        `)
+        .eq('test_group_id', testGroupId)
+        .eq('lab_id', labId)
+        .eq('is_active', true)
+        .order('priority', { ascending: true });
+
+      return { data, error };
+    },
+
+    async create(mappingData: any) {
+      const labId = await database.getCurrentUserLabId();
+      if (!labId) {
+        return { data: null, error: new Error('No lab context') };
+      }
+
+      // Verify the test group belongs to the current lab
+      const { data: testGroup } = await supabase
+        .from('test_groups')
+        .select('lab_id, code')
+        .eq('id', mappingData.test_group_id)
+        .eq('lab_id', labId)
+        .single();
+
+      if (!testGroup) {
+        return { data: null, error: new Error('Test group not found or access denied') };
+      }
+
+      const { data, error } = await supabase
+        .from('test_workflow_map')
+        .insert([{
+          ...mappingData,
+          lab_id: labId,
+          test_code: mappingData.test_code || testGroup.code,
           created_at: new Date().toISOString()
+        }])
+        .select()
+        .single();
+
+      return { data, error };
+    },
+
+    async update(id: string, updates: any) {
+      const labId = await database.getCurrentUserLabId();
+      if (!labId) {
+        return { data: null, error: new Error('No lab context') };
+      }
+
+      const { data, error } = await supabase
+        .from('test_workflow_map')
+        .update({
+          ...updates,
+          updated_at: new Date().toISOString()
         })
+        .eq('id', id)
+        .eq('lab_id', labId)
+        .select()
+        .single();
+
+      return { data, error };
+    },
+
+    async delete(id: string) {
+      const labId = await database.getCurrentUserLabId();
+      if (!labId) {
+        return { data: null, error: new Error('No lab context') };
+      }
+
+      const { data, error } = await supabase
+        .from('test_workflow_map')
+        .delete()
+        .eq('id', id)
+        .eq('lab_id', labId)
         .select()
         .single();
 
@@ -5501,6 +5625,7 @@ export const testWorkflowMap = {
     test_group_id?: string;
     analyte_id?: string;
     workflow_version_id: string;
+    test_code: string;
     is_active?: boolean;
     is_default?: boolean;
     priority?: number;
@@ -5509,6 +5634,10 @@ export const testWorkflowMap = {
     const labId = mappingData.lab_id || await database.getCurrentUserLabId();
     if (!labId) {
       return { data: null, error: new Error('No lab_id found for current user') };
+    }
+
+    if (!mappingData.test_code) {
+      return { data: null, error: new Error('test_code is required') };
     }
 
     const payload = {
