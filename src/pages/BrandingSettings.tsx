@@ -139,10 +139,6 @@ export const BrandingSettings: React.FC = () => {
       if (!currentLabId) {
         throw new Error('No lab ID found for current user');
       }
-  setLabId(currentLabId);
-
-  const { user } = await auth.getCurrentUser();
-  setCurrentUserId(user?.id || null);
 
       // Load branding assets
       const { data: assets, error: assetsError } = await database.labBrandingAssets.getAll(currentLabId);
