@@ -1258,7 +1258,119 @@ const Tests: React.FC = () => {
             onSubmit={async (data) => {
               try {
                 setError(null);
-                // After successful submission, refresh data
+                
+                // Check if we're editing or creating
+                if (useEnhancedFormForEdit && editingTestGroup) {
+                  // UPDATE existing test group
+                  const { error: updateError } = await supabase
+                    .from('test_groups')
+                    .update({
+                      name: data.name,
+                      test_code: data.code,
+                      category: data.category,
+                      clinical_purpose: data.clinicalPurpose,
+                      price: data.price,
+                      turnaround_time: parseInt(data.turnaroundTime) || null,
+                      sample_type: data.sampleType,
+                      requires_fasting: data.requiresFasting,
+                      is_active: data.isActive,
+                      default_ai_processing_type: data.default_ai_processing_type,
+                      group_level_prompt: data.group_level_prompt,
+                      test_type: data.testType,
+                      gender: data.gender,
+                      sample_color: data.sampleColor,
+                      barcode_suffix: data.barcodeSuffix,
+                      lmp_required: data.lmpRequired,
+                      id_required: data.idRequired,
+                      consent_form: data.consentForm,
+                      pre_collection_guidelines: data.preCollectionGuidelines,
+                      flabs_id: data.flabsId,
+                      only_female: data.onlyFemale,
+                      only_male: data.onlyMale,
+                      only_billing: data.onlyBilling,
+                      start_from_next_page: data.startFromNextPage,
+                      to_be_copied: data.to_be_copied || false,
+                      updated_at: new Date().toISOString()
+                    })
+                    .eq('id', editingTestGroup.id);
+
+                  if (updateError) throw updateError;
+
+                  // Update analyte relationships
+                  // First delete existing relationships
+                  const { error: deleteError } = await supabase
+                    .from('test_group_analytes')
+                    .delete()
+                    .eq('test_group_id', editingTestGroup.id);
+
+                  if (deleteError) throw deleteError;
+
+                  // Insert new relationships
+                  if (data.analytes && data.analytes.length > 0) {
+                    const relationships = data.analytes.map((analyteId: string) => ({
+                      test_group_id: editingTestGroup.id,
+                      analyte_id: analyteId
+                    }));
+
+                    const { error: insertError } = await supabase
+                      .from('test_group_analytes')
+                      .insert(relationships);
+
+                    if (insertError) throw insertError;
+                  }
+                } else {
+                  // CREATE new test group
+                  const { data: newTestGroup, error: insertError } = await supabase
+                    .from('test_groups')
+                    .insert({
+                      name: data.name,
+                      test_code: data.code,
+                      category: data.category,
+                      clinical_purpose: data.clinicalPurpose,
+                      price: data.price,
+                      turnaround_time: parseInt(data.turnaroundTime) || null,
+                      sample_type: data.sampleType,
+                      requires_fasting: data.requiresFasting,
+                      is_active: data.isActive,
+                      default_ai_processing_type: data.default_ai_processing_type,
+                      group_level_prompt: data.group_level_prompt,
+                      test_type: data.testType,
+                      gender: data.gender,
+                      sample_color: data.sampleColor,
+                      barcode_suffix: data.barcodeSuffix,
+                      lmp_required: data.lmpRequired,
+                      id_required: data.idRequired,
+                      consent_form: data.consentForm,
+                      pre_collection_guidelines: data.preCollectionGuidelines,
+                      flabs_id: data.flabsId,
+                      only_female: data.onlyFemale,
+                      only_male: data.onlyMale,
+                      only_billing: data.onlyBilling,
+                      start_from_next_page: data.startFromNextPage,
+                      to_be_copied: data.to_be_copied || false,
+                      lab_id: data.lab_id
+                    })
+                    .select()
+                    .single();
+
+                  if (insertError) throw insertError;
+
+                  // Add analyte relationships
+                  if (data.analytes && data.analytes.length > 0 && newTestGroup) {
+                    const relationships = data.analytes.map((analyteId: string) => ({
+                      test_group_id: newTestGroup.id,
+                      analyte_id: analyteId
+                    }));
+
+                    const { error: relationshipError } = await supabase
+                      .from('test_group_analytes')
+                      .insert(relationships);
+
+                    if (relationshipError) throw relationshipError;
+                  }
+                }
+                
+                // Refresh data to show the updates
                 await fetchData();
                 setShowTestGroupFormModal(false);
                 setUseEnhancedFormForEdit(false);
