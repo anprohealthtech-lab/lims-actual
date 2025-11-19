@@ -2,6 +2,8 @@ import React, { useState, useEffect } from 'react';
 import { Plus, Edit2, Trash2, Search, Filter, X, Save, AlertCircle } from 'lucide-react';
 import { supabase } from '../utils/supabase';
 import { SimpleAnalyteEditor } from '../components/TestGroups/SimpleAnalyteEditor';
+import TestGroupForm from '../components/Tests/TestGroupForm';
+import { AITestConfigurator } from '../components/AITools/AITestConfigurator';
 
 interface Analyte {
   id: string;
@@ -51,6 +53,9 @@ const Tests: React.FC = () => {
   const [showAnalyteSearchModal, setShowAnalyteSearchModal] = useState(false);
   const [analyteSearchTerm, setAnalyteSearchTerm] = useState('');
   const [showAITestModal, setShowAITestModal] = useState(false);
+  const [showTestGroupFormModal, setShowTestGroupFormModal] = useState(false);
+  const [showAIConfigurator, setShowAIConfigurator] = useState(false);
+  const [useEnhancedFormForEdit, setUseEnhancedFormForEdit] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const [formData, setFormData] = useState({
@@ -238,14 +243,9 @@ const Tests: React.FC = () => {
 
     fetchFullTestGroup();
     
-    setFormData({
-      name: testGroup.name,
-      category: testGroup.category,
-      description: testGroup.description || '',
-      selectedAnalytes: testGroup.analytes?.map(a => a.id) || []
-    });
-    setAnalyteSearchTerm(''); // Reset search term when opening edit modal
-    setShowEditModal(true);
+    // Use enhanced form for editing
+    setUseEnhancedFormForEdit(true);
+    setShowTestGroupFormModal(true);
   };
 
   const handleUpdateTestGroup = async (e: React.FormEvent) => {
@@ -495,11 +495,18 @@ const Tests: React.FC = () => {
         </div>
         <div className="flex space-x-3">
           <button
-            onClick={() => setShowAITestModal(true)}
+            onClick={() => setShowTestGroupFormModal(true)}
+            className="flex items-center space-x-2 px-4 py-2 bg-indigo-600 text-white rounded-md hover:bg-indigo-700"
+          >
+            <span>✨</span>
+            <span>Enhanced Form</span>
+          </button>
+          <button
+            onClick={() => setShowAIConfigurator(true)}
             className="flex items-center space-x-2 px-4 py-2 bg-purple-600 text-white rounded-md hover:bg-purple-700"
           >
             <span>🤖</span>
-            <span>AI Test Configuration</span>
+            <span>AI Test Configurator</span>
           </button>
           <button
             onClick={() => setShowAnalyteSearchModal(true)}
@@ -644,8 +651,8 @@ const Tests: React.FC = () => {
 
       {/* Create Modal */}
       {showCreateModal && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-          <div className="bg-white rounded-lg p-6 w-full max-w-2xl max-h-[90vh] overflow-y-auto">
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-40">
+          <div className="bg-white rounded-lg p-6 w-full max-w-2xl max-h-[90vh] overflow-y-auto ml-64">
             <div className="flex justify-between items-center mb-6">
               <h2 className="text-xl font-semibold">Create Test Group</h2>
               <button onClick={() => setShowCreateModal(false)} className="text-gray-400 hover:text-gray-600">
@@ -728,8 +735,8 @@ const Tests: React.FC = () => {
 
       {/* Edit Modal */}
       {showEditModal && editingTestGroup && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-          <div className="bg-white rounded-lg p-6 w-full max-w-4xl max-h-[90vh] overflow-y-auto">
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-40">
+          <div className="bg-white rounded-lg p-6 w-full max-w-4xl max-h-[90vh] overflow-y-auto ml-64">
             <div className="flex justify-between items-center mb-6">
               <h2 className="text-xl font-semibold">Edit Test Group</h2>
               <button onClick={() => {
@@ -1067,8 +1074,8 @@ const Tests: React.FC = () => {
 
       {/* Analyte Search & Edit Modal */}
       {showAnalyteSearchModal && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-          <div className="bg-white rounded-lg p-6 w-full max-w-6xl max-h-[90vh] overflow-y-auto">
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-40">
+          <div className="bg-white rounded-lg p-6 w-full max-w-6xl max-h-[90vh] overflow-y-auto ml-64">
             <div className="flex justify-between items-center mb-6">
               <h2 className="text-xl font-semibold">Search & Edit Analytes</h2>
               <button
@@ -1197,6 +1204,67 @@ const Tests: React.FC = () => {
                   (analyte.description || '').toLowerCase().includes(analyteSearchTerm.toLowerCase())
                 ).length} of {analytes.length} analytes
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Enhanced TestGroupForm Modal */}
+      {showTestGroupFormModal && (
+        <div style={{ position: 'fixed', inset: 0, zIndex: 40, marginLeft: '16rem' }}>
+          <TestGroupForm
+            testGroup={useEnhancedFormForEdit ? editingTestGroup : undefined}
+            onClose={() => {
+              setShowTestGroupFormModal(false);
+              setUseEnhancedFormForEdit(false);
+              setEditingTestGroup(null);
+            }}
+            onSubmit={async (data) => {
+              try {
+                setError(null);
+                // After successful submission, refresh data
+                await fetchData();
+                setShowTestGroupFormModal(false);
+                setUseEnhancedFormForEdit(false);
+                setEditingTestGroup(null);
+              } catch (err) {
+                console.error('Error with test group form:', err);
+                setError(err instanceof Error ? err.message : 'Failed to process test group');
+              }
+            }}
+          />
+        </div>
+      )}
+
+      {/* AI Test Configurator Modal */}
+      {showAIConfigurator && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-40">
+          <div className="bg-white rounded-lg w-full max-w-3xl max-h-[90vh] overflow-y-auto ml-64">
+            <div className="flex justify-between items-center p-6 border-b border-gray-200 sticky top-0 bg-white">
+              <h2 className="text-2xl font-bold text-gray-900">AI Test Configuration Assistant</h2>
+              <button
+                onClick={() => setShowAIConfigurator(false)}
+                className="text-gray-400 hover:text-gray-600"
+              >
+                <X className="w-6 h-6" />
+              </button>
+            </div>
+            
+            <div className="p-6">
+              <AITestConfigurator
+                onConfigurationGenerated={async (config) => {
+                  try {
+                    setError(null);
+                    // After successful creation, refresh data
+                    await fetchData();
+                    setShowAIConfigurator(false);
+                  } catch (err) {
+                    console.error('Error creating AI configuration:', err);
+                    setError(err instanceof Error ? err.message : 'Failed to create configuration');
+                  }
+                }}
+                existingTests={testGroups.map(tg => tg.name)}
+              />
             </div>
           </div>
         </div>
