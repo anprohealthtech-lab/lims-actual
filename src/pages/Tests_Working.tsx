@@ -231,21 +231,56 @@ const Tests: React.FC = () => {
 
         if (error) throw error;
 
-        setEditingTestGroup({
-          ...testGroup,
-          ...fullTestGroup // Merge all database fields
-        });
+        // Transform database fields to match TestGroupForm interface
+        const transformedData = {
+          id: fullTestGroup.id,
+          name: fullTestGroup.name,
+          code: fullTestGroup.test_code || fullTestGroup.code || '',
+          category: fullTestGroup.category,
+          clinicalPurpose: fullTestGroup.clinical_purpose || '',
+          analytes: testGroup.analytes?.map(a => a.id) || [], // Extract analyte IDs
+          price: fullTestGroup.price || 0,
+          turnaroundTime: fullTestGroup.turnaround_time?.toString() || '',
+          sampleType: fullTestGroup.sample_type || '',
+          requiresFasting: fullTestGroup.requires_fasting || false,
+          isActive: fullTestGroup.is_active !== false,
+          createdDate: fullTestGroup.created_at,
+          lab_id: fullTestGroup.lab_id,
+          to_be_copied: fullTestGroup.to_be_copied || false,
+          default_ai_processing_type: fullTestGroup.default_ai_processing_type || 'ocr_report',
+          group_level_prompt: fullTestGroup.group_level_prompt || '',
+          testType: fullTestGroup.test_type || 'Default',
+          gender: fullTestGroup.gender || 'Both',
+          sampleColor: fullTestGroup.sample_color || 'Red',
+          barcodeSuffix: fullTestGroup.barcode_suffix || '',
+          lmpRequired: fullTestGroup.lmp_required || false,
+          idRequired: fullTestGroup.id_required || false,
+          consentForm: fullTestGroup.consent_form || false,
+          preCollectionGuidelines: fullTestGroup.pre_collection_guidelines || '',
+          flabsId: fullTestGroup.flabs_id || '',
+          onlyFemale: fullTestGroup.only_female || false,
+          onlyMale: fullTestGroup.only_male || false,
+          onlyBilling: fullTestGroup.only_billing || false,
+          startFromNextPage: fullTestGroup.start_from_next_page || false,
+        };
+
+        setEditingTestGroup(transformedData as any);
+        
+        // Wait a bit for state to update before opening modal
+        setTimeout(() => {
+          setUseEnhancedFormForEdit(true);
+          setShowTestGroupFormModal(true);
+        }, 100);
+        
       } catch (err) {
         console.error('Error fetching full test group:', err);
         setEditingTestGroup(testGroup); // Fallback to original data
+        setUseEnhancedFormForEdit(true);
+        setShowTestGroupFormModal(true);
       }
     };
 
     fetchFullTestGroup();
-    
-    // Use enhanced form for editing
-    setUseEnhancedFormForEdit(true);
-    setShowTestGroupFormModal(true);
   };
 
   const handleUpdateTestGroup = async (e: React.FormEvent) => {
