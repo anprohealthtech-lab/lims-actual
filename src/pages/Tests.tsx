@@ -1100,13 +1100,7 @@ const Tests: React.FC = () => {
 
   const handleEditTestGroup = (group: TestGroup) => {
     setEditingTestGroup(group);
-    setFormData({
-      name: group.name,
-      category: group.category,
-      description: group.description || '',
-      selectedAnalytes: group.analytes?.map(a => a.id) || []
-    });
-    setShowEditModal(true);
+    setShowTestGroupForm(true);
   };
 
   const handleEditAnalyte = (analyte: Analyte) => {
