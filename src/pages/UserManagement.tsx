@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { useAuth } from '../contexts/AuthContext';
 import { 
   Users, 
   Plus, 
@@ -16,7 +17,7 @@ import {
   Calendar
 } from 'lucide-react';
 import { supabase, database } from '../utils/supabase';
-import AddUserModal from '../components/Users/AddUserModal';
+import AddUserMinimalModal from '../components/Users/AddUserMinimalModal';
 import EditUserModal from '../components/Users/EditUserModal';
 
 interface User {
@@ -427,19 +428,19 @@ const UserManagement: React.FC = () => {
         )}
       </div>
 
-      {/* Add/Edit User Modal */}
+      {/* Add User Modal (minimal - auth only) */}
       {showUserModal && (
-        <AddUserModal
-          user={editingUser}
+        <AddUserMinimalModal
           onClose={() => {
             setShowUserModal(false);
             setEditingUser(null);
           }}
-          onSuccess={() => {
+          onSuccess={(userId, email) => {
             setShowUserModal(false);
             setEditingUser(null);
             loadUsers();
           }}
+          labId={authUser?.lab_id}
         />
       )}
 
