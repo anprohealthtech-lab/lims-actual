@@ -1,4 +1,7 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
+import { useAuth } from '../contexts/AuthContext';
+import { database, supabase } from '../utils/supabase';
+import EditUserModal from '../components/Users/EditUserModal';
 import { 
   Users, 
   Shield, 
@@ -72,19 +75,89 @@ interface UsageStats {
 }
 
 // Define UserForm component outside of Settings
-const UserFormComponent: React.FC<{ onClose: () => void; user?: User; permissions: Permission[] }> = ({ onClose, user, permissions }) => {
+const UserFormComponent: React.FC<{ 
+  onClose: () => void; 
+  user?: User; 
+  permissions: Permission[],
+  availableRoles: any[],
+  labId?: string,
+  onSave?: () => void
+}> = ({ onClose, user, permissions, availableRoles, labId, onSave }) => {
+  // Initialize roleId by finding matching role from availableRoles
+  const initialRoleId = user ? availableRoles.find(r => r.role_name === user.role)?.id || '' : '';
+  
   const [formData, setFormData] = useState({
     name: user?.name || '',
     email: user?.email || '',
-    role: user?.role || 'Technician',
+    roleId: initialRoleId,
     department: user?.department || '',
     phone: user?.phone || '',
     permissions: user?.permissions || [],
   });
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    onClose();
+    
+    if (!labId) {
+      setError('Lab context not found');
+      return;
+    }
+
+    try {
+      setSaving(true);
+      setError(null);
+
+      // Find role ID from role selection
+      const selectedRole = availableRoles.find(r => r.id === formData.roleId);
+      
+      if (!selectedRole) {
+        setError('Please select a valid role');
+        return;
+      }
+
+      if (user) {
+        // Update existing user
+        const { error: updateError } = await supabase
+          .from('users')
+          .update({
+            name: formData.name,
+            email: formData.email,
+            role_id: selectedRole.id,
+            department: formData.department,
+            phone: formData.phone,
+            updated_at: new Date().toISOString(),
+          })
+          .eq('id', user.id);
+
+        if (updateError) throw updateError;
+      } else {
+        // Create new user (note: this should ideally be done through Auth system)
+        const { error: insertError } = await supabase
+          .from('users')
+          .insert({
+            name: formData.name,
+            email: formData.email,
+            role_id: selectedRole.id,
+            department: formData.department,
+            phone: formData.phone,
+            lab_id: labId,
+            status: 'Active',
+            join_date: new Date().toISOString(),
+            created_at: new Date().toISOString(),
+          });
+
+        if (insertError) throw insertError;
+      }
+
+      onSave?.();
+      onClose();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to save user');
+    } finally {
+      setSaving(false);
+    }
   };
 
   const handlePermissionToggle = (permissionId: string) => {
@@ -107,6 +180,12 @@ const UserFormComponent: React.FC<{ onClose: () => void; user?: User; permission
             <XCircle className="h-6 w-6" />
           </button>
         </div>
+
+        {error && (
+          <div className="p-4 bg-red-50 border-b border-red-200">
+            <div className="text-sm text-red-700">{error}</div>
+          </div>
+        )}
 
         <form onSubmit={handleSubmit} className="p-6 space-y-6">
           <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
@@ -140,12 +219,13 @@ const UserFormComponent: React.FC<{ onClose: () => void; user?: User; permission
               </label>
               <select
                 required
-                value={formData.role}
-                onChange={(e) => setFormData(prev => ({ ...prev, role: e.target.value as any }))}
+                value={formData.roleId}
+                onChange={(e) => setFormData(prev => ({ ...prev, roleId: e.target.value }))}
                 className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
               >
-                {['Admin', 'Lab Manager', 'Technician', 'Receptionist', 'Doctor'].map(role => (
-                  <option key={role} value={role}>{role}</option>
+                <option value="">Select a role</option>
+                {availableRoles.map(role => (
+                  <option key={role.id} value={role.id}>{role.role_name}</option>
                 ))}
               </select>
             </div>
@@ -204,9 +284,10 @@ const UserFormComponent: React.FC<{ onClose: () => void; user?: User; permission
             </button>
             <button
               type="submit"
-              className="px-6 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700"
+              disabled={saving}
+              className="px-6 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:bg-gray-400"
             >
-              {user ? 'Update User' : 'Create User'}
+              {saving ? 'Saving...' : user ? 'Update User' : 'Create User'}
             </button>
           </div>
         </form>
@@ -216,86 +297,146 @@ const UserFormComponent: React.FC<{ onClose: () => void; user?: User; permission
 };
 
 const Settings: React.FC = () => {
+  const { user: authUser } = useAuth();
   const [activeTab, setActiveTab] = useState<'team' | 'permissions' | 'usage' | 'system' | 'notifications' | 'appearance'>('team');
   const [showUserForm, setShowUserForm] = useState(false);
+  const [showEditUserModal, setShowEditUserModal] = useState(false);
   const [selectedUser, setSelectedUser] = useState<User | null>(null);
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedRole, setSelectedRole] = useState('All');
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
-  // Mock data
-  const [users] = useState<User[]>([
-    {
-      id: 'USR001',
-      name: 'Dr. Sarah Wilson',
-      email: 'sarah.wilson@medilab.com',
-      role: 'Admin',
-      department: 'Administration',
-      status: 'Active',
-      lastLogin: '2024-01-20T10:30:00Z',
-      permissions: ['all_access', 'user_management', 'system_config'],
-      phone: '+91 98765 43210',
-      joinDate: '2023-01-15',
-    },
-    {
-      id: 'USR002',
-      name: 'Priya Sharma',
-      email: 'priya.sharma@medilab.com',
-      role: 'Lab Manager',
-      department: 'Laboratory',
-      status: 'Active',
-      lastLogin: '2024-01-20T09:15:00Z',
-      permissions: ['test_management', 'result_approval', 'report_generation'],
-      phone: '+91 87654 32109',
-      joinDate: '2023-03-20',
-    },
-    {
-      id: 'USR003',
-      name: 'Rajesh Kumar',
-      email: 'rajesh.kumar@medilab.com',
-      role: 'Technician',
-      department: 'Laboratory',
-      status: 'Active',
-      lastLogin: '2024-01-20T08:45:00Z',
-      permissions: ['result_entry', 'sample_processing'],
-      phone: '+91 76543 21098',
-      joinDate: '2023-06-10',
-    },
-    {
-      id: 'USR004',
-      name: 'Amit Patel',
-      email: 'amit.patel@medilab.com',
-      role: 'Receptionist',
-      department: 'Front Office',
-      status: 'Inactive',
-      lastLogin: '2024-01-18T17:30:00Z',
-      permissions: ['patient_registration', 'appointment_management'],
-      phone: '+91 65432 10987',
-      joinDate: '2023-08-05',
-    },
-  ]);
-
-  const [permissions] = useState<Permission[]>([
-    { id: 'all_access', name: 'All Access', description: 'Complete system access', category: 'System', isDefault: false },
-    { id: 'user_management', name: 'User Management', description: 'Manage users and permissions', category: 'Administration', isDefault: false },
-    { id: 'patient_registration', name: 'Patient Registration', description: 'Register and manage patients', category: 'Patient Management', isDefault: true },
-    { id: 'test_management', name: 'Test Management', description: 'Manage tests and analytes', category: 'Laboratory', isDefault: false },
-    { id: 'result_entry', name: 'Result Entry', description: 'Enter test results', category: 'Laboratory', isDefault: true },
-    { id: 'result_approval', name: 'Result Approval', description: 'Approve and validate results', category: 'Laboratory', isDefault: false },
-    { id: 'report_generation', name: 'Report Generation', description: 'Generate and send reports', category: 'Reports', isDefault: false },
-    { id: 'billing_management', name: 'Billing Management', description: 'Manage invoices and payments', category: 'Finance', isDefault: false },
-    { id: 'system_config', name: 'System Configuration', description: 'Configure system settings', category: 'System', isDefault: false },
-  ]);
-
-  const [usageStats] = useState<UsageStats>({
-    totalUsers: 15,
-    activeUsers: 12,
-    totalTests: 2847,
-    totalPatients: 1256,
-    storageUsed: 2.4, // GB
-    storageLimit: 10, // GB
-    apiCalls: 45230,
+  // Real database state
+  const [users, setUsers] = useState<User[]>([]);
+  const [permissions, setPermissions] = useState<Permission[]>([]);
+  const [availableRoles, setAvailableRoles] = useState<any[]>([]);
+  const [usageStats, setUsageStats] = useState<UsageStats>({
+    totalUsers: 0,
+    activeUsers: 0,
+    totalTests: 0,
+    totalPatients: 0,
+    storageUsed: 0,
+    storageLimit: 10,
+    apiCalls: 0,
     apiLimit: 100000,
   });
+
+  // Load data from database
+  useEffect(() => {
+    const loadData = async () => {
+      try {
+        setLoading(true);
+        setError(null);
+
+        if (!authUser?.lab_id) {
+          setError('Lab context not found');
+          return;
+        }
+
+        // Load users for this lab
+        const { data: labUsers, error: usersError } = await supabase
+          .from('users')
+          .select(`
+            id,
+            name,
+            email,
+            phone,
+            department,
+            status,
+            last_login,
+            join_date,
+            user_roles(role_name, role_code)
+          `)
+          .eq('lab_id', authUser.lab_id)
+          .order('name');
+
+        if (usersError) throw usersError;
+
+        // Transform users data
+        const transformedUsers: User[] = (labUsers || []).map((u: any) => ({
+          id: u.id,
+          name: u.name,
+          email: u.email,
+          role: u.user_roles?.role_name || 'Technician',
+          department: u.department || '',
+          status: u.status === 'Active' ? 'Active' : u.status === 'Inactive' ? 'Inactive' : 'Suspended',
+          lastLogin: u.last_login || 'Never',
+          permissions: [], // Will be loaded separately
+          phone: u.phone || '',
+          joinDate: u.join_date || new Date().toISOString(),
+        }));
+
+        setUsers(transformedUsers);
+
+        // Load user roles
+        const { data: rolesData, error: rolesError } = await supabase
+          .from('user_roles')
+          .select('id, role_name, role_code, is_active')
+          .eq('is_active', true)
+          .order('role_name');
+
+        if (rolesError) throw rolesError;
+        setAvailableRoles(rolesData || []);
+
+        // Load permissions
+        const { data: permsData, error: permsError } = await supabase
+          .from('permissions')
+          .select('id, permission_name, description, category, is_active')
+          .eq('is_active', true)
+          .order('category, permission_name');
+
+        if (permsError) throw permsError;
+
+        const transformedPermissions: Permission[] = (permsData || []).map((p: any) => ({
+          id: p.id,
+          name: p.permission_name,
+          description: p.description || '',
+          category: p.category || 'General',
+          isDefault: false,
+        }));
+
+        setPermissions(transformedPermissions);
+
+        // Load usage stats
+        const { count: totalUsersCount } = await supabase
+          .from('users')
+          .select('id', { count: 'exact' })
+          .eq('lab_id', authUser.lab_id);
+
+        const { count: activeUsersCount } = await supabase
+          .from('users')
+          .select('id', { count: 'exact' })
+          .eq('lab_id', authUser.lab_id)
+          .eq('status', 'Active');
+
+        const { count: totalTestsCount } = await supabase
+          .from('order_tests')
+          .select('id', { count: 'exact' })
+          .eq('lab_id', authUser.lab_id);
+
+        const { count: totalPatientsCount } = await supabase
+          .from('patients')
+          .select('id', { count: 'exact' })
+          .eq('lab_id', authUser.lab_id);
+
+        setUsageStats(prev => ({
+          ...prev,
+          totalUsers: totalUsersCount || 0,
+          activeUsers: activeUsersCount || 0,
+          totalTests: totalTestsCount || 0,
+          totalPatients: totalPatientsCount || 0,
+        }));
+      } catch (err) {
+        console.error('Error loading settings data:', err);
+        setError(err instanceof Error ? err.message : 'Failed to load data');
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    loadData();
+  }, [authUser?.lab_id]);
 
   const tabs = [
     { id: 'team', name: 'Team Management', icon: Users },
@@ -306,7 +447,9 @@ const Settings: React.FC = () => {
     { id: 'appearance', name: 'Appearance', icon: Palette },
   ];
 
-  const roles = ['All', 'Admin', 'Lab Manager', 'Technician', 'Receptionist', 'Doctor'];
+  const roles = availableRoles.length > 0 
+    ? ['All', ...availableRoles.map(r => r.role_name)]
+    : ['All', 'Admin', 'Lab Manager', 'Technician', 'Receptionist', 'Doctor'];
 
   const filteredUsers = users.filter(user => {
     const matchesSearch = user.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
@@ -314,6 +457,24 @@ const Settings: React.FC = () => {
     const matchesRole = selectedRole === 'All' || user.role === selectedRole;
     return matchesSearch && matchesRole;
   });
+
+  // Delete user (soft delete)
+  const handleDeleteUser = async (userId: string) => {
+    if (!window.confirm('Are you sure you want to delete this user?')) return;
+
+    try {
+      const { error } = await supabase
+        .from('users')
+        .update({ status: 'Inactive', updated_at: new Date().toISOString() })
+        .eq('id', userId);
+
+      if (error) throw error;
+
+      setUsers(users.filter(u => u.id !== userId));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to delete user');
+    }
+  };
 
   const getStatusColor = (status: string) => {
     switch (status) {
@@ -333,150 +494,6 @@ const Settings: React.FC = () => {
       case 'Doctor': return 'text-red-600 bg-red-100';
       default: return 'text-gray-600 bg-gray-100';
     }
-  };
-
-  const UserForm: React.FC<{ onClose: () => void; user?: User }> = ({ onClose, user }) => {
-    const [formData, setFormData] = useState({
-      name: user?.name || '',
-      email: user?.email || '',
-      role: user?.role || 'Technician',
-      department: user?.department || '',
-      phone: user?.phone || '',
-      permissions: user?.permissions || [],
-    });
-
-    const handleSubmit = (e: React.FormEvent) => {
-      e.preventDefault();
-      // Handle form submission
-      onClose();
-    };
-
-    const handlePermissionToggle = (permissionId: string) => {
-      setFormData(prev => ({
-        ...prev,
-        permissions: prev.permissions.includes(permissionId)
-          ? prev.permissions.filter(id => id !== permissionId)
-          : [...prev.permissions, permissionId]
-      }));
-    };
-
-    return (
-      <div className="fixed inset-0 bg-gray-600 bg-opacity-75 flex items-center justify-center z-50 p-4">
-        <div className="bg-white rounded-lg shadow-xl w-full max-w-4xl max-h-[90vh] overflow-y-auto">
-          <div className="flex items-center justify-between p-6 border-b border-gray-200">
-            <h2 className="text-xl font-semibold text-gray-900">
-              {user ? 'Edit User' : 'Add New User'}
-            </h2>
-            <button onClick={onClose} className="text-gray-400 hover:text-gray-500">
-              <XCircle className="h-6 w-6" />
-            </button>
-          </div>
-
-          <form onSubmit={handleSubmit} className="p-6 space-y-6">
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">
-                  Full Name *
-                </label>
-                <input
-                  type="text"
-                  required
-                  value={formData.name}
-                  onChange={(e) => setFormData(prev => ({ ...prev, name: e.target.value }))}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
-                />
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">
-                  Email Address *
-                </label>
-                <input
-                  type="email"
-                  required
-                  value={formData.email}
-                  onChange={(e) => setFormData(prev => ({ ...prev, email: e.target.value }))}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
-                />
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">
-                  Role *
-                </label>
-                <select
-                  required
-                  value={formData.role}
-                  onChange={(e) => setFormData(prev => ({ ...prev, role: e.target.value as any }))}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
-                >
-                  {roles.slice(1).map(role => (
-                    <option key={role} value={role}>{role}</option>
-                  ))}
-                </select>
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">
-                  Department
-                </label>
-                <input
-                  type="text"
-                  value={formData.department}
-                  onChange={(e) => setFormData(prev => ({ ...prev, department: e.target.value }))}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
-                />
-              </div>
-              <div className="md:col-span-2">
-                <label className="block text-sm font-medium text-gray-700 mb-1">
-                  Phone Number
-                </label>
-                <input
-                  type="tel"
-                  value={formData.phone}
-                  onChange={(e) => setFormData(prev => ({ ...prev, phone: e.target.value }))}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
-                />
-              </div>
-            </div>
-
-            <div>
-              <h3 className="text-lg font-medium text-gray-900 mb-4">Permissions</h3>
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                {permissions.map(permission => (
-                  <label key={permission.id} className="flex items-start p-3 border border-gray-200 rounded-lg hover:bg-gray-50 cursor-pointer">
-                    <input
-                      type="checkbox"
-                      checked={formData.permissions.includes(permission.id)}
-                      onChange={() => handlePermissionToggle(permission.id)}
-                      className="h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded mt-1"
-                    />
-                    <div className="ml-3">
-                      <div className="text-sm font-medium text-gray-900">{permission.name}</div>
-                      <div className="text-xs text-gray-500">{permission.description}</div>
-                      <div className="text-xs text-blue-600">{permission.category}</div>
-                    </div>
-                  </label>
-                ))}
-              </div>
-            </div>
-
-            <div className="flex items-center justify-end space-x-4 pt-6 border-t border-gray-200">
-              <button
-                type="button"
-                onClick={onClose}
-                className="px-4 py-2 border border-gray-300 rounded-md text-gray-700 hover:bg-gray-50"
-              >
-                Cancel
-              </button>
-              <button
-                type="submit"
-                className="px-6 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700"
-              >
-                {user ? 'Update User' : 'Create User'}
-              </button>
-            </div>
-          </form>
-        </div>
-      </div>
-    );
   };
 
   return (
@@ -521,6 +538,17 @@ const Settings: React.FC = () => {
       {/* Team Management Tab */}
       {activeTab === 'team' && (
         <div className="space-y-6">
+          {loading && (
+            <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-8 text-center">
+              <div className="text-gray-500">Loading team data...</div>
+            </div>
+          )}
+
+          {error && (
+            <div className="bg-red-50 border border-red-200 rounded-lg p-4">
+              <div className="text-sm text-red-700">{error}</div>
+            </div>
+          )}
           {/* Team Stats */}
           <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
             <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
@@ -603,6 +631,39 @@ const Settings: React.FC = () => {
                 Add User
               </button>
             </div>
+
+            {/* Debug: Test Edit Modal */}
+            <div className="flex items-center space-x-4 mb-4">
+              <button
+                onClick={() => {
+                  if (users.length > 0) {
+                    setSelectedUser(users[0]);
+                    setShowEditUserModal(true);
+                  }
+                }}
+                className="px-4 py-2 bg-green-600 text-white rounded-md hover:bg-green-700"
+              >
+                🔧 Test Edit Current User
+              </button>
+              <select
+                onChange={(e) => {
+                  const userId = e.target.value;
+                  const user = users.find(u => u.id === userId);
+                  if (user) {
+                    setSelectedUser(user);
+                    setShowEditUserModal(true);
+                  }
+                }}
+                className="px-4 py-2 border border-gray-300 rounded-md"
+              >
+                <option value="">Select user to edit...</option>
+                {users.map(user => (
+                  <option key={user.id} value={user.id}>
+                    {user.name} ({user.email})
+                  </option>
+                ))}
+              </select>
+            </div>
           </div>
 
           {/* Users Table */}
@@ -663,12 +724,15 @@ const Settings: React.FC = () => {
                           <Eye className="h-4 w-4" />
                         </button>
                         <button
-                          onClick={() => { setSelectedUser(user); setShowUserForm(true); }}
+                          onClick={() => { setSelectedUser(user); setShowEditUserModal(true); }}
                           className="text-gray-600 hover:text-gray-900 p-1 rounded"
                         >
                           <Edit className="h-4 w-4" />
                         </button>
-                        <button className="text-red-600 hover:text-red-900 p-1 rounded">
+                        <button
+                          onClick={() => handleDeleteUser(user.id)}
+                          className="text-red-600 hover:text-red-900 p-1 rounded"
+                        >
                           <Trash2 className="h-4 w-4" />
                         </button>
                       </td>
@@ -1052,12 +1116,77 @@ const Settings: React.FC = () => {
         </div>
       )}
 
-      {/* User Form Modal */}
+      {/* User Form Modal (for adding new users) */}
       {showUserForm && (
         <UserFormComponent
           onClose={() => { setShowUserForm(false); setSelectedUser(null); }}
           user={selectedUser || undefined}
           permissions={permissions}
+          availableRoles={availableRoles}
+          labId={authUser?.lab_id}
+          onSave={() => {
+            // Reload users after save
+            setSelectedUser(null);
+            // Trigger reload
+            if (authUser?.lab_id) {
+              const reloadUsers = async () => {
+                const { data: labUsers } = await supabase
+                  .from('users')
+                  .select('*')
+                  .eq('lab_id', authUser.lab_id)
+                  .order('name');
+                
+                setUsers((labUsers || []).map((u: any) => ({
+                  id: u.id,
+                  name: u.name,
+                  email: u.email,
+                  role: u.role || 'Technician',
+                  department: u.department || '',
+                  status: u.status === 'Active' ? 'Active' : u.status === 'Inactive' ? 'Inactive' : 'Suspended',
+                  lastLogin: u.last_login || 'Never',
+                  permissions: [],
+                  phone: u.phone || '',
+                  joinDate: u.join_date || new Date().toISOString(),
+                })));
+              };
+              reloadUsers();
+            }
+          }}
+        />
+      )}
+
+      {/* Edit User Modal (for editing existing users - no auth changes) */}
+      {showEditUserModal && selectedUser && (
+        <EditUserModal
+          user={selectedUser}
+          onClose={() => { setShowEditUserModal(false); setSelectedUser(null); }}
+          onSuccess={() => {
+            // Reload users after successful edit
+            if (authUser?.lab_id) {
+              const reloadUsers = async () => {
+                const { data: labUsers } = await supabase
+                  .from('users')
+                  .select('*')
+                  .eq('lab_id', authUser.lab_id)
+                  .order('name');
+                
+                setUsers((labUsers || []).map((u: any) => ({
+                  id: u.id,
+                  name: u.name,
+                  email: u.email,
+                  role: u.role || 'Technician',
+                  department: u.department || '',
+                  status: u.status === 'Active' ? 'Active' : u.status === 'Inactive' ? 'Inactive' : 'Suspended',
+                  lastLogin: u.last_login || 'Never',
+                  permissions: [],
+                  phone: u.phone || '',
+                  joinDate: u.join_date || new Date().toISOString(),
+                })));
+              };
+              reloadUsers();
+            }
+          }}
+          isAdmin={authUser?.role === 'Admin'}
         />
       )}
     </div>

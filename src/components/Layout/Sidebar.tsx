@@ -73,16 +73,6 @@ const navigation = [
 
 const Sidebar: React.FC<SidebarProps> = ({ isOpen, onToggle }) => {
   const location = useLocation();
-  
-  React.useEffect(() => {
-    console.log('📍 CURRENT ROUTE:', location.pathname);
-    const currentNav = navigation.find(item => item.href === location.pathname);
-    if (currentNav) {
-      console.log('✅ ACTIVE PAGE:', currentNav.name, '| ROUTE:', location.pathname);
-    } else {
-      console.log('⚠️ ROUTE NOT FOUND IN NAVIGATION:', location.pathname);
-    }
-  }, [location.pathname]);
 
   return (
     <>
@@ -146,7 +136,6 @@ const Sidebar: React.FC<SidebarProps> = ({ isOpen, onToggle }) => {
             </h3>
             {navigation.filter(item => item.category === 'management').map((item) => {
               const isActive = location.pathname === item.href;
-              isActive && console.log('📝 MANAGEMENT PAGE ACTIVE:', item.name, 'Route:', item.href);
               return (
                 <Link
                   key={item.name}

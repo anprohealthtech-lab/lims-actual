@@ -8,7 +8,7 @@ import Signup from './components/Auth/Signup';
 import Layout from './components/Layout/Layout';
 import Dashboard from './pages/Dashboard';
 import Patients from './pages/Patients';
-import Tests from './pages/Tests';
+import Tests from './pages/Tests_Working';
 import Orders from './pages/Orders';
 import Results from './pages/Results';
 import Reports from './pages/Reports';

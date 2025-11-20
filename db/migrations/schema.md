@@ -591,6 +591,12 @@ CREATE TABLE public.labs (
   registration_number text,
   default_report_header_html text,
   default_report_footer_html text,
+  watermark_enabled boolean DEFAULT false,
+  watermark_image_url text,
+  watermark_opacity numeric DEFAULT 0.15 CHECK (watermark_opacity IS NULL OR watermark_opacity >= 0.05 AND watermark_opacity <= 0.50),
+  watermark_position character varying DEFAULT 'center'::character varying,
+  watermark_size character varying DEFAULT 'medium'::character varying,
+  watermark_rotation integer DEFAULT 0 CHECK (watermark_rotation IS NULL OR watermark_rotation >= '-45'::integer AND watermark_rotation <= 45),
   CONSTRAINT labs_pkey PRIMARY KEY (id)
 );
 CREATE TABLE public.locations (
@@ -711,14 +717,18 @@ CREATE TABLE public.orders (
   billing_status text NOT NULL DEFAULT 'pending'::text CHECK (billing_status = ANY (ARRAY['pending'::text, 'partial'::text, 'billed'::text])),
   account_id uuid,
   testRequestFile text,
+  approved_by uuid,
+  sample_collector_id uuid,
   CONSTRAINT orders_pkey PRIMARY KEY (id),
+  CONSTRAINT orders_sample_collector_id_fkey FOREIGN KEY (sample_collector_id) REFERENCES public.users(id),
   CONSTRAINT orders_patient_id_fkey FOREIGN KEY (patient_id) REFERENCES public.patients(id),
   CONSTRAINT orders_referring_doctor_id_fkey FOREIGN KEY (referring_doctor_id) REFERENCES public.doctors(id),
   CONSTRAINT orders_location_id_fkey FOREIGN KEY (location_id) REFERENCES public.locations(id),
   CONSTRAINT orders_parent_order_id_fkey FOREIGN KEY (parent_order_id) REFERENCES public.orders(id),
   CONSTRAINT orders_created_by_fkey FOREIGN KEY (created_by) REFERENCES auth.users(id),
   CONSTRAINT orders_lab_id_fkey FOREIGN KEY (lab_id) REFERENCES public.labs(id),
-  CONSTRAINT orders_account_id_fkey FOREIGN KEY (account_id) REFERENCES public.accounts(id)
+  CONSTRAINT orders_account_id_fkey FOREIGN KEY (account_id) REFERENCES public.accounts(id),
+  CONSTRAINT orders_approved_by_fkey FOREIGN KEY (approved_by) REFERENCES public.users(id)
 );
 CREATE TABLE public.package_test_groups (
   id uuid NOT NULL DEFAULT gen_random_uuid(),
@@ -812,6 +822,17 @@ CREATE TABLE public.payments (
   CONSTRAINT payments_received_by_fkey FOREIGN KEY (received_by) REFERENCES public.users(id),
   CONSTRAINT payments_location_id_fkey FOREIGN KEY (location_id) REFERENCES public.locations(id)
 );
+CREATE TABLE public.permissions (
+  id uuid NOT NULL DEFAULT gen_random_uuid(),
+  permission_name character varying NOT NULL UNIQUE,
+  permission_code character varying NOT NULL UNIQUE,
+  description text,
+  category character varying,
+  is_active boolean DEFAULT true,
+  created_at timestamp with time zone DEFAULT now(),
+  updated_at timestamp with time zone DEFAULT now(),
+  CONSTRAINT permissions_pkey PRIMARY KEY (id)
+);
 CREATE TABLE public.quality_control_results (
   id uuid NOT NULL DEFAULT gen_random_uuid(),
   test_group_id uuid,
@@ -877,17 +898,13 @@ CREATE TABLE public.result_values (
   extracted_by_ai boolean,
   CONSTRAINT result_values_pkey PRIMARY KEY (id),
   CONSTRAINT result_values_result_id_fkey FOREIGN KEY (result_id) REFERENCES public.results(id),
-  CONSTRAINT result_values_analyte_id_fkey FOREIGN KEY (analyte_id) REFERENCES public.analytes(id),
-  CONSTRAINT rv_tg_analyte_fkey FOREIGN KEY (analyte_id) REFERENCES public.test_group_analytes(test_group_id),
-  CONSTRAINT rv_tg_analyte_fkey FOREIGN KEY (test_group_id) REFERENCES public.test_group_analytes(test_group_id),
-  CONSTRAINT rv_tg_analyte_fkey FOREIGN KEY (analyte_id) REFERENCES public.test_group_analytes(analyte_id),
-  CONSTRAINT rv_tg_analyte_fkey FOREIGN KEY (test_group_id) REFERENCES public.test_group_analytes(analyte_id),
   CONSTRAINT result_values_order_id_fkey FOREIGN KEY (order_id) REFERENCES public.orders(id),
   CONSTRAINT rv_order_test_id_fkey FOREIGN KEY (order_test_id) REFERENCES public.order_tests(id),
   CONSTRAINT rv_test_group_id_fkey FOREIGN KEY (test_group_id) REFERENCES public.test_groups(id),
   CONSTRAINT rv_lab_id_fkey FOREIGN KEY (lab_id) REFERENCES public.labs(id),
   CONSTRAINT rv_order_test_group_id_fkey FOREIGN KEY (order_test_group_id) REFERENCES public.order_test_groups(id),
-  CONSTRAINT rv_verified_by_fkey FOREIGN KEY (verified_by) REFERENCES public.users(id)
+  CONSTRAINT rv_verified_by_fkey FOREIGN KEY (verified_by) REFERENCES public.users(id),
+  CONSTRAINT result_values_analyte_id_fkey FOREIGN KEY (analyte_id) REFERENCES public.analytes(id)
 );
 CREATE TABLE public.result_verification_audit (
   id uuid NOT NULL DEFAULT gen_random_uuid(),
@@ -965,6 +982,15 @@ CREATE TABLE public.results (
   CONSTRAINT results_lab_id_fkey FOREIGN KEY (lab_id) REFERENCES public.labs(id),
   CONSTRAINT results_order_test_id_fkey FOREIGN KEY (order_test_id) REFERENCES public.order_tests(id)
 );
+CREATE TABLE public.role_permissions (
+  id uuid NOT NULL DEFAULT gen_random_uuid(),
+  role_id uuid,
+  permission_id uuid,
+  created_at timestamp with time zone DEFAULT now(),
+  CONSTRAINT role_permissions_pkey PRIMARY KEY (id),
+  CONSTRAINT role_permissions_role_id_fkey FOREIGN KEY (role_id) REFERENCES public.user_roles(id),
+  CONSTRAINT role_permissions_permission_id_fkey FOREIGN KEY (permission_id) REFERENCES public.permissions(id)
+);
 CREATE TABLE public.samples (
   id text NOT NULL,
   order_id uuid NOT NULL,
@@ -1038,6 +1064,19 @@ CREATE TABLE public.test_groups (
   description text,
   department text,
   tat_hours numeric,
+  test_type character varying DEFAULT 'Default'::character varying,
+  gender character varying DEFAULT 'Both'::character varying,
+  sample_color character varying DEFAULT 'Red'::character varying,
+  barcode_suffix character varying,
+  lmp_required boolean DEFAULT false,
+  id_required boolean DEFAULT false,
+  consent_form boolean DEFAULT false,
+  pre_collection_guidelines text,
+  flabs_id character varying,
+  only_female boolean DEFAULT false,
+  only_male boolean DEFAULT false,
+  only_billing boolean DEFAULT false,
+  start_from_next_page boolean DEFAULT false,
   CONSTRAINT test_groups_pkey PRIMARY KEY (id),
   CONSTRAINT test_groups_lab_id_fkey FOREIGN KEY (lab_id) REFERENCES public.labs(id)
 );
@@ -1058,6 +1097,27 @@ CREATE TABLE public.test_workflow_map (
   CONSTRAINT test_workflow_map_workflow_version_id_fkey FOREIGN KEY (workflow_version_id) REFERENCES public.workflow_versions(id),
   CONSTRAINT test_workflow_map_test_group_id_fkey FOREIGN KEY (test_group_id) REFERENCES public.test_groups(id),
   CONSTRAINT test_workflow_map_analyte_id_fkey FOREIGN KEY (analyte_id) REFERENCES public.analytes(id)
+);
+CREATE TABLE public.user_centers (
+  id uuid NOT NULL DEFAULT gen_random_uuid(),
+  user_id uuid,
+  location_id uuid,
+  is_primary boolean DEFAULT false,
+  created_at timestamp with time zone DEFAULT now(),
+  CONSTRAINT user_centers_pkey PRIMARY KEY (id),
+  CONSTRAINT user_centers_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.users(id),
+  CONSTRAINT user_centers_location_id_fkey FOREIGN KEY (location_id) REFERENCES public.locations(id)
+);
+CREATE TABLE public.user_roles (
+  id uuid NOT NULL DEFAULT gen_random_uuid(),
+  role_name character varying NOT NULL UNIQUE,
+  role_code character varying NOT NULL UNIQUE,
+  description text,
+  is_system_role boolean DEFAULT false,
+  is_active boolean DEFAULT true,
+  created_at timestamp with time zone DEFAULT now(),
+  updated_at timestamp with time zone DEFAULT now(),
+  CONSTRAINT user_roles_pkey PRIMARY KEY (id)
 );
 CREATE TABLE public.users (
   id uuid NOT NULL DEFAULT gen_random_uuid(),
@@ -1080,9 +1140,17 @@ CREATE TABLE public.users (
   whatsapp_sync_error text,
   whatsapp_config jsonb DEFAULT '{}'::jsonb,
   whatsapp_auto_sync boolean DEFAULT true,
+  is_phlebotomist boolean DEFAULT false,
+  role_id uuid,
+  username character varying UNIQUE,
+  contact_number character varying,
+  gender character varying,
+  auth_user_id uuid UNIQUE,
+  clinic_keywords text,
   CONSTRAINT users_pkey PRIMARY KEY (id),
   CONSTRAINT users_lab_id_fkey FOREIGN KEY (lab_id) REFERENCES public.labs(id),
-  CONSTRAINT users_department_id_fkey FOREIGN KEY (department_id) REFERENCES public.departments(id)
+  CONSTRAINT users_department_id_fkey FOREIGN KEY (department_id) REFERENCES public.departments(id),
+  CONSTRAINT users_role_id_fkey FOREIGN KEY (role_id) REFERENCES public.user_roles(id)
 );
 CREATE TABLE public.workflow_ai_configs (
   id uuid NOT NULL DEFAULT gen_random_uuid(),

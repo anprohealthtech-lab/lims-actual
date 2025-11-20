@@ -17,6 +17,7 @@ import {
 } from 'lucide-react';
 import { supabase, database } from '../utils/supabase';
 import AddUserModal from '../components/Users/AddUserModal';
+import EditUserModal from '../components/Users/EditUserModal';
 
 interface User {
   id: string;
@@ -43,6 +44,8 @@ const UserManagement: React.FC = () => {
   const [roleFilter, setRoleFilter] = useState('all');
   const [statusFilter, setStatusFilter] = useState('all');
   const [showAddUser, setShowAddUser] = useState(false);
+  const [showUserModal, setShowUserModal] = useState(false);
+  const [showEditModal, setShowEditModal] = useState(false);
   const [editingUser, setEditingUser] = useState<User | null>(null);
   const [error, setError] = useState('');
 
@@ -400,7 +403,7 @@ const UserManagement: React.FC = () => {
                         <button
                           onClick={() => {
                             setEditingUser(user);
-                            setShowUserModal(true);
+                            setShowEditModal(true);
                           }}
                           className="text-blue-600 hover:text-blue-900 p-1 rounded hover:bg-blue-50"
                           title="Edit user"
@@ -434,6 +437,22 @@ const UserManagement: React.FC = () => {
           }}
           onSuccess={() => {
             setShowUserModal(false);
+            setEditingUser(null);
+            loadUsers();
+          }}
+        />
+      )}
+
+      {/* Edit User Modal (for existing users only) */}
+      {showEditModal && editingUser && (
+        <EditUserModal
+          user={editingUser}
+          onClose={() => {
+            setShowEditModal(false);
+            setEditingUser(null);
+          }}
+          onSuccess={() => {
+            setShowEditModal(false);
             setEditingUser(null);
             loadUsers();
           }}
