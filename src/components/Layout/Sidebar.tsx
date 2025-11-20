@@ -67,6 +67,7 @@ const navigation = [
   { name: 'AI Prompt Manager', href: '/ai-prompts', icon: Brain, category: 'tools' },
   { name: 'Template Studio', href: '/template-studio', icon: Palette, category: 'tools' },
   { name: 'Template Studio (CKE)', href: '/template-studio-cke', icon: Palette, category: 'tools' },
+  { name: 'User Management', href: '/user-management', icon: Users, category: 'tools' },
   { name: 'Branding & Signatures', href: '/settings/branding', icon: Image, category: 'tools' },
   { name: 'Settings', href: '/settings', icon: Settings, category: 'tools' },
 ];

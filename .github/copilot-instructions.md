@@ -2,310 +2,269 @@
 
 ## Project Overview
 
-This is a Laboratory Information Management System (LIMS) v2 built with React/TypeScript + Vite, featuring multi-lab support, AI-powered workflows, and comprehensive test result management. The system manages patients, orders, test results, billing, and workflow automation using a **patient-centric architecture** with advanced Survey.js-based workflows.
+This is a Laboratory Information Management System (LIMS) v2 built with **React/TypeScript + Vite**, featuring multi-lab support, AI-powered workflows, comprehensive test result management, and advanced billing/invoicing. The system manages patients, orders, test results, result verification, billing, and workflow automation using a **patient-centric architecture** with Survey.js-based workflows.
 
-## Architecture Patterns
+**Key Stack**: React 18.3, TypeScript, Vite | Supabase (PostgreSQL) | Puppeteer + PDF.co API | Survey.js 1.9.x | CKEditor 5 | Netlify Functions
 
-### 1. Database Layer - Supabase with Generic Relationships
+## Core Data Access Layer
 
-**Critical Pattern**: The system uses a **generic attachment system** without foreign keys:
+**Always use centralized API in `src/utils/supabase.ts`**:
 ```typescript
-// Attachments link to ANY table via related_table + related_id
-interface Attachment {
-  related_table: 'orders' | 'patients' | 'results' | 'labs';
-  related_id: string; // UUID of the related entity
-}
-```
-
-**Multi-lab Architecture**: Every operation must consider `lab_id` context:
-- Users belong to labs (`users.lab_id`)
-- Lab-specific analyte configurations (`lab_analytes` overrides `analytes`)
-- All queries should filter by user's lab context
-- Use `database.getCurrentUserLabId()` to get the current user's lab
-
-### 2. Component Organization
-
-```
-src/components/
-├── [Domain]/           # Business domain folders (Patients/, Orders/, Results/, etc.)
-├── ui/                # Reusable UI components
-├── Layout/            # App shell components
-└── Workflow/          # Survey.js workflow system
-```
-
-**Naming Convention**: Use descriptive domain-based names. Components ending in `Modal`, `Console`, `Demo` indicate their UI patterns.
-
-### 3. Data Access Pattern
-
-**Always use the centralized API in `src/utils/supabase.ts`**:
-```typescript
-// ❌ Don't call supabase directly in components
+// ❌ Wrong: Direct Supabase in components
 const { data } = await supabase.from('orders').select('*');
 
-// ✅ Use the database object methods
-const { data } = await database.orders.getAll();
+// ✅ Correct: Use database object
+const { data, error } = await database.orders.getAll();
+const lab_id = await database.getCurrentUserLabId();
 ```
 
-The `database` object provides:
-- Consistent error handling
-- Proper joins and relationships
-- Lab-scoped filtering
-- Standardized response format
-- Automatic order status updates via `checkAndUpdateStatus()`
+The `database` object exports these namespaces with CRUD operations: `patients`, `orders`, `results`, `invoices`, `payments`, `labs`, `users`, `doctors`, `locations`, `testWorkflowMap`, `workflows`, `workflowVersions`, `aiProtocols`. Each provides built-in error handling, lab-scoped filtering, and automatic order status updates.
+
+## Multi-Lab Architecture
+
+**Every operation respects lab boundaries:**
+- Users belong to ONE lab (`users.lab_id`)
+- All queries must filter by lab context
+- Lab-specific test overrides: `lab_analytes` supersedes `analytes`
+- Test group mappings: Lab-scoped via `WHERE lab_id = current_lab`
+
+```typescript
+// Always derive, never hardcode
+const lab_id = await database.getCurrentUserLabId();
+if (!lab_id) throw new Error('No lab context');
+```
 
 ## Workflow System (Survey.js)
 
 ### Core Components
-
-1. **FlowManager** - Orchestrates multiple workflows for complex procedures
-2. **WorkflowRunner** - Executes Survey.js workflows with database integration
-3. **WorkflowConfigurator** - No-code workflow design interface
-4. **WorkflowDemo** - `/workflow-demo` route for testing workflows safely
+- **FlowManager** (`src/components/Workflow/FlowManager.tsx`) - Multi-step orchestration
+- **WorkflowRunner** - Executes Survey.js → saves results
+- **WorkflowConfigurator** - No-code design interface
+- **WorkflowDemo** (`/workflow-demo`) - Safe testing (read-only)
 
 ### Database Schema
-
-Workflows use a versioned approach:
-```sql
+```
 workflows → workflow_versions → order_workflow_instances → workflow_step_events
+results ← auto-saved from Survey.js responses
+test_workflow_map (lab-scoped mappings with test_code)
 ```
 
-**Key workflow tables**:
-- `workflows` - Workflow definitions and metadata
-- `workflow_versions` - Versioned workflow configurations with Survey.js JSON
-- `order_workflow_instances` - Active workflow executions per order
-- `workflow_step_events` - Audit trail of workflow steps
+### Critical Rules
+- ✅ Test at `/workflow-demo` before production
+- ✅ Workflows are **lab-scoped + order-gated** (require valid order + lab)
+- ✅ Results: Survey.js form → WorkflowRunner → `database.results.create()`
+- ✅ Test mappings MUST include `test_code` from test group
+- ❌ Don't create new workflow tables - use existing `results` + `result_values`
 
-### Integration Pattern
-
-```typescript
-// Order-gated workflow execution in FlowManager
-<FlowManager
-  orderId={order.id}
-  testGroupId={testGroup.id}
-  analyteIds={analytes.map(a => a.id)}
-  labId={lab.id}
-  onComplete={(results) => {
-    // Results automatically saved to results/result_values tables
-  }}
-/>
-```
-
-### Workflow Configuration & Management
-
-**Test Group Mapping System**:
-- Navigate to `/workflows` for workflow configuration interface
-- Filter test groups by lab context to prevent constraint violations
-- Display unmapped test groups prominently for workflow assignment
-- Use `database.testWorkflowMap` functions with proper lab filtering
-
-**Visual Form Builder Integration**:
-- SurveyJS Creator integration at `/visual-form-builder`
+### Visual Form Builder (`/visual-form-builder`)
+- SurveyJS Creator integration for no-code design
 - Auto-generates AI specifications from form structure
-- Configurable workflow properties (step types, timers, image capture)
-- File upload questions auto-configured for camera capture
+- Configurable: step types, timers, image capture, file uploads
+- File upload questions → camera capture on mobile
 
-**Critical Workflow Rules**:
-- Always test workflows via `/workflow-demo` before production use
-- Workflows are lab-scoped and order-gated (require valid order)
-- Results flow: Survey.js → WorkflowRunner → database.results.create()
-- Use existing `results` and `result_values` tables (no separate workflow tables needed)
-- Test group mappings must include proper `test_code` from test group
+## Result Verification State Machine
+
+Multi-stage with security:
+```
+pending_verification → verified/needs_clarification → approved (locked)
+```
+
+**Security Pattern**:
+```typescript
+interface ResultWithSecurity {
+  is_locked?: boolean;        // Prevents edits
+  can_edit?: boolean;         // Permission check
+  restriction_reason?: string;
+}
+// Always check can_edit before edit UI
+```
+
+**Batch Operations**: Use `ResultVerificationConsole` hook for bulk approve/reject.
+
+## PDF Report & Billing System
+
+### PDF Pipeline: Context → HTML → Browser → Puppeteer → Storage
+1. `buildSampleTemplateContext()` - create context in `pdfService.ts`
+2. `buildReportHtmlBundle()` or `renderLabTemplateHtmlBundle()` - create HTML bundle
+3. `generateAndSavePDFReportWithProgress()` - Puppeteer render
+4. `savePDFToStorage()` - Supabase Storage → public URL
+5. Distribute: Email/WhatsApp on result approval
+
+**Warmup Puppeteer** (see `App.tsx` line 47-56):
+```typescript
+useEffect(() => {
+  setTimeout(() => warmupPuppeteer().catch(console.warn), 2000);
+}, []);
+```
+
+### Lab Branding & Signatures
+- Stored in `lab_branding_assets` with variants (optimized/original URLs)
+- File paths: `attachments/labs/{lab_id}/branding/{asset_type}/{timestamp}_{filename}`
+- Signatures: `lab_user_signatures` (digital/handwritten/text types)
+- Templates: Nunjucks `{{ variable }}` syntax for dynamic content
+
+### Invoicing & Payments
+- **Invoices**: `invoices` + `invoice_items` with discount/tax/payment tracking
+- **Payments**: `payments` table tracks method, date, reference
+- **Cash Reconciliation**: Daily settlement via `CashReconciliation` page
+- **Credit Transactions**: Track credit account per patient
+
+## Build & Development
+
+```bash
+npm run dev          # Dev server (http://localhost:5173)
+npm run build        # Production build
+npm run lint         # ESLint check
+npm run preview      # Preview production locally
+npm run deploy:prod  # Deploy to Netlify
+```
+
+## Component Organization
+
+```
+src/components/
+├── [Domain]/        # Patients/, Orders/, Results/, Billing/, etc.
+├── ui/              # Reusable UI components
+├── Layout/          # App shell
+├── Workflow/        # Survey.js workflows
+├── Masters/         # DoctorMaster, LocationMaster
+└── WhatsApp/        # WhatsApp integration
+```
+
+**Naming**: Domain-based + suffix (`Modal`, `Console`, `Demo` indicate UI patterns).
 
 ## Development Conventions
 
-### 1. State Management
-
-- Use React Context for global state (`AuthContext`)
-- Local state with `useState` for component-specific data
-- Custom hooks for complex data operations (`useOrderStatus`, `useVerificationConsole`)
-
-### 2. Error Handling
-
+### Component Structure
 ```typescript
-// Consistent error handling pattern
-try {
-  const { data, error } = await database.orders.create(orderData);
-  if (error) throw error;
-  // Handle success
-} catch (error) {
-  console.error('Operation failed:', error);
-  // Show user-friendly error message
-}
-```
-
-### 3. TypeScript Usage
-
-- Use interfaces for data structures (`interface Order`, `interface Patient`)
-- Define component props interfaces
-- Use union types for status enums: `'pending' | 'completed' | 'verified'`
-
-### 4. Security & Permissions
-
-Result editing follows security patterns:
-```typescript
-interface ResultWithSecurity {
-  is_locked?: boolean;
-  can_edit?: boolean;
-  restriction_reason?: string;
-}
-```
-
-Check permissions before allowing modifications.
-
-### 5. Development Commands & Debugging
-
-**Start Development Server**:
-```bash
-npm run dev  # Runs on http://localhost:5173
-```
-
-**Key Development Routes**:
-- `/workflow-demo` - Test workflows without database changes
-- `/workflows` - Workflow configuration and test group mapping interface
-- `/visual-form-builder` - SurveyJS visual workflow builder
-- `/dashboard2` - Modern dashboard (newer version)
-- `/orders/:id` - Order detail with workflow capabilities
-
-**File Upload Pattern**:
-```typescript
-// Always use the organized file path helper
-const filePath = generateFilePath(fileName, patientId, labId, 'reports');
-const { path, publicUrl } = await uploadFile(file, filePath);
-```
-
-**PDF Generation**: Use `src/hooks/usePDFGeneration.ts` for report generation with progress tracking.
-
-## Key Business Logic
-
-### 1. Order Management
-
-Orders have complex relationships:
-- `orders` → `order_tests` → `test_groups` → `test_group_analytes` → `analytes`
-- Patient-centric workflow: Orders can be grouped by `visit_group_id`
-- Order types: 'primary' vs 'additional' tests
-
-### 2. Result Verification
-
-Multi-stage verification process:
-```
-pending_verification → verified/needs_clarification → approved
-```
-
-Use `ResultVerificationConsole` for batch operations.
-
-### 3. AI Integration
-
-- Attachment processing: `attachments.ai_processed`, `ai_confidence`
-- Result extraction: `results.extracted_by_ai`
-- Workflow automation: AI protocols in `ai_protocols` table
-
-### 4. Billing & Invoicing
-
-- Package-based pricing: `packages` → `package_test_groups`
-- Invoice generation with line items: `invoices` → `invoice_items`
-- Cash reconciliation tracking
-
-## File Patterns
-
-### 1. Page Components (`src/pages/`)
-
-- Full-screen application pages
-- Handle routing and top-level state
-- Import domain-specific components
-
-### 2. Component Structure
-
-```typescript
-// Standard component pattern
 interface ComponentProps {
-  // Props interface
+  prop1: string;
+  onAction?: (data: any) => void;
 }
 
-const Component: React.FC<ComponentProps> = ({ prop1, prop2 }) => {
-  // Hooks and state
-  // Event handlers
-  // Render JSX
+const Component: React.FC<ComponentProps> = ({ prop1, onAction }) => {
+  const [state, setState] = useState<Type>(initialValue);
+  const handleEvent = () => { /* impl */ };
+  return <div>{/* JSX */}</div>;
 };
 
 export default Component;
 ```
 
-### 3. Utility Files
+### TypeScript Patterns
+- Interfaces for all data: `Patient`, `Order`, `Result`
+- Union types for status: `'pending' | 'completed' | 'verified'`
+- Component props interfaces alongside component
 
-- `src/utils/supabase.ts` - Central database API
-- `src/utils/workflowAPI.ts` - Workflow-specific operations
-- `src/utils/localStorage.ts` - Local data persistence
-
-## Development Workflow
-
-### 1. Adding New Features
-
-1. Design database schema (if needed) in `supabase/migrations/`
-2. Update TypeScript interfaces in `src/types/`
-3. Add API methods to `src/utils/supabase.ts`
-4. Create/update components following domain organization
-5. Test via demo pages (`WorkflowDemo`, `OrderDetail`)
-
-### 2. Database Changes
-
-Always use **safe migrations** with `IF NOT EXISTS` guards:
-```sql
-DO $$
-BEGIN
-    IF NOT EXISTS (SELECT 1 FROM information_schema.columns
-                   WHERE table_name = 'orders' AND column_name = 'new_field') THEN
-        ALTER TABLE orders ADD COLUMN new_field TEXT;
-    END IF;
-END $$;
-```
-
-### 3. Testing Workflow Changes
-
-Use `http://localhost:5173/workflow-demo` to test workflow modifications without affecting production data.
-
-### 4. Order Status Management
-
-Order status updates are **automatic** via triggers:
-- `Order Created` → `In Progress` (when samples collected)
-- `In Progress` → `Pending Approval` (when all results submitted)
-- `Pending Approval` → `Completed` (when all results approved)
-- Manual: `Completed` → `Delivered` (via `database.orders.markAsDelivered()`)
-
-**Sample Tracking**: Orders automatically get:
-- `sample_id` (date-based with sequence)
-- `color_code` + `color_name` (for physical sample identification)
-- `qr_code_data` (JSON with order metadata)
-
-### 5. Verification Console Pattern
-
-Use `useVerificationConsole` hook for batch result operations:
+### Error Handling
 ```typescript
-const {
-  results,
-  selectedIds,
-  bulkApprove,
-  bulkReject,
-  focusResult
-} = useVerificationConsole(filters);
+try {
+  const { data, error } = await database.orders.create(orderData);
+  if (error) throw error;
+} catch (error) {
+  console.error('Failed:', error);
+  // User-friendly message
+}
 ```
 
-**Security**: Results can be locked (`is_locked: true`) preventing edits. Always check `can_edit` before showing edit UI.
+### State Management
+- Auth: `AuthContext` in `src/contexts/AuthContext.tsx`
+- Local: `useState` for component-specific data
+- Complex: Custom hooks (`useOrderStatus`, `useVerificationConsole`, `useWhatsAppAutoSync`)
 
-## Common Patterns to Follow
+## Business Logic
 
-1. **Lab Context**: Always filter data by user's lab_id
-2. **Generic Attachments**: Use `related_table` + `related_id` pattern for file attachments
-3. **Workflow Integration**: Gate workflows behind order selection
-4. **Security Checks**: Verify permissions before data modifications
-5. **Error Boundaries**: Graceful error handling with user feedback
-6. **Responsive Design**: Use Tailwind CSS for consistent styling
+### Order Management
+- Relationships: `orders → order_tests → test_groups → test_group_analytes → analytes`
+- Patient-centric: Grouped by `visit_group_id` for multi-visit workflows
+- Types: `'primary'` vs `'additional'` tests
+- Status: Auto-managed by database triggers
 
-## Avoid These Patterns
+### Order Status Flow (Auto-Managed)
+```
+Created → In Progress    (sample_collected = true)
+       → Pending Approval (all results submitted)
+       → Completed       (all results approved)
+       → Delivered       (manual: database.orders.markAsDelivered())
+```
 
-- Direct Supabase client usage in components (use `database` object)
-- Hard-coded lab IDs (always derive from user context)
-- Missing foreign key relationships (use the established patterns)
-- Bypassing the verification workflow for result modifications
-- Creating new workflow systems (extend existing Survey.js integration)
-- Mapping test groups without proper lab filtering (causes constraint violations)
-- Missing `test_code` in workflow mappings (use test group's code)
+Sample tracking auto-generated: `sample_id`, `color_code`, `qr_code_data`
+
+### AI Integration
+- Attachment processing: `attachments.ai_processed`, `ai_confidence`
+- Result extraction: `results.extracted_by_ai`
+- AI protocols: `ai_protocols` table for workflow automation
+- Gemini API: `src/utils/geminiAI.ts`
+
+### WhatsApp Auto-Sync
+- Initialize: `useWhatsAppAutoSync()` hook in `App.tsx`
+- Connection: `src/utils/whatsappConnection.ts`
+- User sync: `src/utils/whatsappUserSync.ts`
+- Messaging: `src/utils/whatsappAPI.ts`
+- Delivery: Automatic on result approval
+
+## File Upload & Image Optimization
+
+### Organized File Paths
+```typescript
+// Auto-organize by category, patient, lab
+const filePath = generateFilePath(fileName, patientId, labId, 'reports');
+const { path, publicUrl } = await uploadFile(file, filePath);
+
+// Branding: attachments/labs/{lab_id}/branding/{type}/{timestamp}_{filename}
+// Signatures: attachments/labs/{lab_id}/users/{userId}/signature/{timestamp}_{filename}
+```
+
+### Image Optimization
+```typescript
+import { smartOptimizeImage, compressImageAdvanced, optimizeBatch } from './utils/imageOptimizer';
+
+const optimized = await smartOptimizeImage(file);  // Auto-compress
+const results = await optimizeBatch(files, {
+  concurrency: 3,
+  minSizeReduction: 0.8  // Prevent overload
+});
+```
+
+## Key Routes
+
+| Route | Purpose | Safe? |
+|-------|---------|-------|
+| `/workflow-demo` | Test workflows | ✅ Yes |
+| `/workflows` | Map test groups to workflows | ⚠️ Lab-scoped |
+| `/visual-form-builder` | Design workflows | ✅ Yes |
+| `/results-verification` | Bulk verify results | ⚠️ Final approvals |
+| `/orders/:id` | Order + workflow execution | ⚠️ Creates results |
+| `/billing` | Invoice + payments | ✅ View, ⚠️ Create |
+
+## Patterns to Follow
+
+1. Lab context filtering
+2. Generic attachments: `related_table` + `related_id`
+3. Workflow gating: Require valid order + lab
+4. Security checks: Verify permissions before modifications
+5. Error boundaries with user feedback
+6. Tailwind CSS for consistency
+
+## Patterns to Avoid
+
+- ❌ Direct Supabase in components
+- ❌ Hard-coded lab IDs
+- ❌ Bypassing verification workflow
+- ❌ Creating new workflow/report systems
+- ❌ Test mapping without lab filtering
+- ❌ Missing `test_code` in mappings
+- ❌ File paths without `generateFilePath()` helper
+
+## Key Files Reference
+
+| File | Purpose |
+|------|---------|
+| `src/utils/supabase.ts` | Central database API (6400+ lines) |
+| `src/contexts/AuthContext.tsx` | Auth state & user context |
+| `src/utils/pdfService.ts` | PDF generation, Puppeteer, templating |
+| `src/utils/workflowAPI.ts` | Workflow CRUD |
+| `src/utils/whatsappAPI.ts` | WhatsApp messaging |
+| `src/components/Workflow/FlowManager.tsx` | Multi-workflow orchestration |
+| `src/pages/WorkflowManagement.tsx` | Test group → workflow mapping UI |
+| `src/types/index.ts` | Core TypeScript definitions |

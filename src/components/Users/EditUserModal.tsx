@@ -46,6 +46,7 @@ const EditUserModal: React.FC<EditUserModalProps> = ({ user, onClose, onSuccess,
   const [error, setError] = useState<string | null>(null);
   const [availableRoles, setAvailableRoles] = useState<Role[]>([]);
   const [departments, setDepartments] = useState<Department[]>([]);
+  const [rolePermissions, setRolePermissions] = useState<any[]>([]);
   
   const [formData, setFormData] = useState({
     name: user.name || '',
@@ -60,6 +61,26 @@ const EditUserModal: React.FC<EditUserModalProps> = ({ user, onClose, onSuccess,
   useEffect(() => {
     loadRolesAndDepartments();
   }, []);
+
+  useEffect(() => {
+    if (formData.role_id) {
+      loadRolePermissions(formData.role_id);
+    }
+  }, [formData.role_id]);
+
+  const loadRolePermissions = async (roleId: string) => {
+    try {
+      const { data, error } = await supabase
+        .from('role_permissions')
+        .select('permissions(id, permission_code, permission_name, description, category)')
+        .eq('role_id', roleId);
+
+      if (error) throw error;
+      setRolePermissions(data?.map((rp: any) => rp.permissions).filter(Boolean) || []);
+    } catch (err) {
+      console.error('Error loading role permissions:', err);
+    }
+  };
 
   const loadRolesAndDepartments = async () => {
     try {
@@ -260,6 +281,35 @@ const EditUserModal: React.FC<EditUserModalProps> = ({ user, onClose, onSuccess,
                 </select>
               </div>
             </div>
+
+            {/* Role Permissions Display */}
+            {rolePermissions.length > 0 && (
+              <div className="mt-6 p-4 bg-blue-50 border border-blue-200 rounded-lg">
+                <h4 className="text-sm font-semibold text-blue-900 mb-3">
+                  🔒 Permissions for {selectedRole?.role_name} ({rolePermissions.length} total)
+                </h4>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                  {rolePermissions.map((perm: any) => (
+                    <div key={perm.id} className="bg-white p-3 rounded border border-blue-100">
+                      <div className="flex items-start justify-between">
+                        <div className="flex-1">
+                          <p className="text-sm font-medium text-gray-900">{perm.permission_name}</p>
+                          {perm.description && (
+                            <p className="text-xs text-gray-500 mt-1">{perm.description}</p>
+                          )}
+                          {perm.category && (
+                            <span className="inline-block mt-2 px-2 py-1 text-xs bg-blue-100 text-blue-700 rounded">
+                              {perm.category}
+                            </span>
+                          )}
+                        </div>
+                        <span className="ml-2 text-green-600 text-lg">✓</span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
 
           {/* Special Roles */}

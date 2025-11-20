@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { X, AlertCircle, CheckCircle, Loader } from 'lucide-react';
-import { supabase } from '../../utils/supabase';
+import { supabase, database } from '../../utils/supabase';
 import { useAuth } from '../../contexts/AuthContext';
 
 interface AddUserMinimalModalProps {
@@ -53,17 +53,35 @@ const AddUserMinimalModal: React.FC<AddUserMinimalModalProps> = ({ onClose, onSu
     setLoading(true);
 
     try {
-      const targetLabId = labId || authUser?.lab_id;
+      let targetLabId = labId;
+      
+      // If no labId provided, try to get it from database
+      if (!targetLabId) {
+        console.warn('AddUserMinimalModal: No labId prop provided, fetching from database...');
+        targetLabId = await database.getCurrentUserLabId();
+      }
+      
       if (!targetLabId) {
         throw new Error('Lab context not found');
       }
 
-      // Call Netlify Edge Function to create auth user
-      const response = await fetch('/.netlify/functions/create-auth-user', {
+      // Get auth session for authorization
+      const { data: sessionData, error: sessionError } = await supabase.auth.getSession();
+      if (sessionError || !sessionData?.session?.access_token) {
+        throw new Error('Not authenticated. Please log in.');
+      }
+
+      // Call Supabase Edge Function to create auth user
+      const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
+      if (!supabaseUrl) {
+        throw new Error('Supabase URL not configured');
+      }
+
+      const response = await fetch(`${supabaseUrl}/functions/v1/create-auth-user`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${(await supabase.auth.getSession()).data.session?.access_token || ''}`,
+          'Authorization': `Bearer ${sessionData.session.access_token}`,
         },
         body: JSON.stringify({
           email: formData.email,
@@ -76,7 +94,12 @@ const AddUserMinimalModal: React.FC<AddUserMinimalModalProps> = ({ onClose, onSu
       const result = await response.json();
 
       if (!response.ok) {
+        console.error('Create auth user error:', result);
         throw new Error(result.error || 'Failed to create user');
+      }
+
+      if (!result || !result.user_id) {
+        throw new Error('Invalid response from server');
       }
 
       setSuccess(true);

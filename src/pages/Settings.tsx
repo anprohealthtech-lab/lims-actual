@@ -101,7 +101,8 @@ const UserFormComponent: React.FC<{
     e.preventDefault();
     
     if (!labId) {
-      setError('Lab context not found');
+      console.error('labId is missing in UserFormComponent', { labId, user });
+      setError('Lab context not found. Please refresh the page and try again.');
       return;
     }
 
@@ -134,6 +135,7 @@ const UserFormComponent: React.FC<{
         if (updateError) throw updateError;
       } else {
         // Create new user (note: this should ideally be done through Auth system)
+        console.log('Creating user with lab_id:', labId);
         const { error: insertError } = await supabase
           .from('users')
           .insert({
@@ -154,6 +156,7 @@ const UserFormComponent: React.FC<{
       onSave?.();
       onClose();
     } catch (err) {
+      console.error('Error creating user:', err);
       setError(err instanceof Error ? err.message : 'Failed to save user');
     } finally {
       setSaving(false);
@@ -306,6 +309,7 @@ const Settings: React.FC = () => {
   const [selectedRole, setSelectedRole] = useState('All');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [labId, setLabId] = useState<string | null>(null);
 
   // Real database state
   const [users, setUsers] = useState<User[]>([]);
@@ -329,10 +333,25 @@ const Settings: React.FC = () => {
         setLoading(true);
         setError(null);
 
-        if (!authUser?.lab_id) {
-          setError('Lab context not found');
+        if (!authUser?.id) {
+          setError('User not authenticated');
+          console.error('Auth user not found');
           return;
         }
+
+        // Get lab_id using the centralized method
+        const currentLabId = await database.getCurrentUserLabId();
+        console.log('getCurrentUserLabId result:', currentLabId, 'for user:', authUser.email);
+        
+        if (!currentLabId) {
+          setError('Lab context not found. User may not be assigned to any lab.');
+          console.error('No lab_id found for user:', authUser.email);
+          return;
+        }
+        
+        // Store lab_id in state for use in modal
+        setLabId(currentLabId);
+        console.log('Lab ID set to state:', currentLabId);
 
         // Load users for this lab
         const { data: labUsers, error: usersError } = await supabase
@@ -348,7 +367,7 @@ const Settings: React.FC = () => {
             join_date,
             user_roles(role_name, role_code)
           `)
-          .eq('lab_id', authUser.lab_id)
+          .eq('lab_id', currentLabId)
           .order('name');
 
         if (usersError) throw usersError;
@@ -402,23 +421,23 @@ const Settings: React.FC = () => {
         const { count: totalUsersCount } = await supabase
           .from('users')
           .select('id', { count: 'exact' })
-          .eq('lab_id', authUser.lab_id);
+          .eq('lab_id', currentLabId);
 
         const { count: activeUsersCount } = await supabase
           .from('users')
           .select('id', { count: 'exact' })
-          .eq('lab_id', authUser.lab_id)
+          .eq('lab_id', currentLabId)
           .eq('status', 'Active');
 
         const { count: totalTestsCount } = await supabase
           .from('order_tests')
           .select('id', { count: 'exact' })
-          .eq('lab_id', authUser.lab_id);
+          .eq('lab_id', currentLabId);
 
         const { count: totalPatientsCount } = await supabase
           .from('patients')
           .select('id', { count: 'exact' })
-          .eq('lab_id', authUser.lab_id);
+          .eq('lab_id', currentLabId);
 
         setUsageStats(prev => ({
           ...prev,
@@ -436,7 +455,7 @@ const Settings: React.FC = () => {
     };
 
     loadData();
-  }, [authUser?.lab_id]);
+  }, [authUser?.id]);
 
   const tabs = [
     { id: 'team', name: 'Team Management', icon: Users },
@@ -624,8 +643,15 @@ const Settings: React.FC = () => {
                 ))}
               </select>
               <button
-                onClick={() => setShowUserForm(true)}
-                className="flex items-center px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700"
+                onClick={() => {
+                  if (!labId) {
+                    alert('Lab context is still loading. Please wait...');
+                    return;
+                  }
+                  setShowUserForm(true);
+                }}
+                disabled={!labId}
+                className="flex items-center px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:bg-gray-400 disabled:cursor-not-allowed"
               >
                 <Plus className="h-4 w-4 mr-2" />
                 Add User
@@ -1117,23 +1143,23 @@ const Settings: React.FC = () => {
       )}
 
       {/* User Form Modal (for adding new users) */}
-      {showUserForm && (
+      {showUserForm && labId && (
         <UserFormComponent
           onClose={() => { setShowUserForm(false); setSelectedUser(null); }}
           user={selectedUser || undefined}
           permissions={permissions}
           availableRoles={availableRoles}
-          labId={authUser?.lab_id}
+          labId={labId}
           onSave={() => {
             // Reload users after save
             setSelectedUser(null);
             // Trigger reload
-            if (authUser?.lab_id) {
+            if (labId) {
               const reloadUsers = async () => {
                 const { data: labUsers } = await supabase
                   .from('users')
                   .select('*')
-                  .eq('lab_id', authUser.lab_id)
+                  .eq('lab_id', labId)
                   .order('name');
                 
                 setUsers((labUsers || []).map((u: any) => ({
@@ -1156,18 +1182,18 @@ const Settings: React.FC = () => {
       )}
 
       {/* Edit User Modal (for editing existing users - no auth changes) */}
-      {showEditUserModal && selectedUser && (
+      {showEditUserModal && selectedUser && labId && (
         <EditUserModal
           user={selectedUser}
           onClose={() => { setShowEditUserModal(false); setSelectedUser(null); }}
           onSuccess={() => {
             // Reload users after successful edit
-            if (authUser?.lab_id) {
+            if (labId) {
               const reloadUsers = async () => {
                 const { data: labUsers } = await supabase
                   .from('users')
                   .select('*')
-                  .eq('lab_id', authUser.lab_id)
+                  .eq('lab_id', labId)
                   .order('name');
                 
                 setUsers((labUsers || []).map((u: any) => ({
@@ -1186,7 +1212,7 @@ const Settings: React.FC = () => {
               reloadUsers();
             }
           }}
-          isAdmin={authUser?.role === 'Admin'}
+          isAdmin={authUser?.user_metadata?.role === 'Admin'}
         />
       )}
     </div>

@@ -23,7 +23,13 @@ type CreateAuthUserPayload = {
 const json = (data: unknown, status = 200) =>
   new Response(JSON.stringify(data), {
     status,
-    headers: { "Content-Type": "application/json", "Cache-Control": "no-store" },
+    headers: { 
+      "Content-Type": "application/json",
+      "Cache-Control": "no-store",
+      "Access-Control-Allow-Origin": "*",
+      "Access-Control-Allow-Methods": "POST, OPTIONS",
+      "Access-Control-Allow-Headers": "Content-Type, Authorization",
+    },
   });
 
 const bad = (msg: string, status = 400) => json({ error: msg }, status);
@@ -69,6 +75,18 @@ async function assertCallerIsAdminOfLab(
 }
 
 Deno.serve(async (req: Request) => {
+  // Handle CORS preflight request
+  if (req.method === "OPTIONS") {
+    return new Response(null, {
+      status: 204,
+      headers: {
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Methods": "POST, OPTIONS",
+        "Access-Control-Allow-Headers": "Content-Type, Authorization",
+      },
+    });
+  }
+
   try {
     if (req.method !== "POST") return bad("Use POST", 405);
 
@@ -117,7 +135,41 @@ Deno.serve(async (req: Request) => {
     const newUserId = data.user?.id;
     if (!newUserId) throw new Error("User creation returned no id");
 
-    // Note: public.users record is auto-created by the webhook trigger
+    // Get default technician role ID
+    let technicianRoleId: string | null = null;
+    if (!role_id) {
+      const { data: roles } = await supabaseAdmin
+        .from("user_roles")
+        .select("id")
+        .eq("role_code", "technician")
+        .single();
+      technicianRoleId = roles?.id || null;
+    }
+
+    // Create public.users record (fallback - webhook may not fire reliably)
+    const { error: userError } = await supabaseAdmin
+      .from("users")
+      .upsert({
+        id: newUserId,
+        name,
+        email,
+        role: "Technician", // Use enum value directly
+        role_id: role_id || technicianRoleId,
+        status: "Active",
+        lab_id,
+        join_date: new Date().toISOString().split("T")[0],
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      }, { 
+        onConflict: "id"
+      });
+
+    if (userError) {
+      console.warn("Warning: Failed to create public.users record:", userError);
+      // Don't fail the entire operation, just warn
+    }
+
+    // Note: public.users record should also be created by webhook trigger
     // on_auth_user_created in public.handle_new_user()
 
     return json({

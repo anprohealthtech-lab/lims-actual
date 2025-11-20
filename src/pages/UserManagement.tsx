@@ -38,12 +38,14 @@ interface User {
 }
 
 const UserManagement: React.FC = () => {
+  const { user: authUser } = useAuth();
   const [users, setUsers] = useState<User[]>([]);
   const [filteredUsers, setFilteredUsers] = useState<User[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
   const [roleFilter, setRoleFilter] = useState('all');
   const [statusFilter, setStatusFilter] = useState('all');
+  const [labId, setLabId] = useState<string | null>(null);
   const [showAddUser, setShowAddUser] = useState(false);
   const [showUserModal, setShowUserModal] = useState(false);
   const [showEditModal, setShowEditModal] = useState(false);
@@ -83,17 +85,19 @@ const UserManagement: React.FC = () => {
       setLoading(true);
       setError('');
 
-      const labId = await database.getCurrentUserLabId();
-      if (!labId) {
+      const currentLabId = await database.getCurrentUserLabId();
+      if (!currentLabId) {
         setError('No lab context found');
         return;
       }
+      
+      setLabId(currentLabId);
 
       // Load users with permissions and roles from the view
       const { data, error } = await supabase
         .from('v_users_with_permissions')
         .select('*')
-        .eq('lab_id', labId)
+        .eq('lab_id', currentLabId)
         .order('name');
 
       if (error) throw error;
@@ -191,10 +195,15 @@ const UserManagement: React.FC = () => {
         </div>
         <button
           onClick={() => {
+            if (!labId) {
+              alert('Lab context is still loading. Please wait...');
+              return;
+            }
             setEditingUser(null);
             setShowUserModal(true);
           }}
-          className="flex items-center px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
+          disabled={!labId}
+          className="flex items-center px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:bg-gray-400 disabled:cursor-not-allowed"
         >
           <Plus className="h-4 w-4 mr-2" />
           Add User
@@ -429,18 +438,18 @@ const UserManagement: React.FC = () => {
       </div>
 
       {/* Add User Modal (minimal - auth only) */}
-      {showUserModal && (
+      {showUserModal && labId && (
         <AddUserMinimalModal
           onClose={() => {
             setShowUserModal(false);
             setEditingUser(null);
           }}
-          onSuccess={(userId, email) => {
+          onSuccess={(_userId, _email) => {
             setShowUserModal(false);
             setEditingUser(null);
             loadUsers();
           }}
-          labId={authUser?.lab_id}
+          labId={labId}
         />
       )}
 
