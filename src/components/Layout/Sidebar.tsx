@@ -25,6 +25,8 @@ import {
   Upload,
   Bot,
   Zap,
+  ChevronLeft,
+  ChevronRight,
 } from 'lucide-react';
 
 interface SidebarProps {
@@ -74,6 +76,7 @@ const navigation = [
 
 const Sidebar: React.FC<SidebarProps> = ({ isOpen, onToggle }) => {
   const location = useLocation();
+  const [isCollapsed, setIsCollapsed] = React.useState(false);
 
   return (
     <>
@@ -84,38 +87,52 @@ const Sidebar: React.FC<SidebarProps> = ({ isOpen, onToggle }) => {
       
       {/* Sidebar */}
       <div className={`
-        fixed inset-y-0 left-0 z-30 w-64 bg-white shadow-lg transform transition-transform duration-300 ease-in-out overflow-y-auto
+        fixed inset-y-0 left-0 z-30 bg-white shadow-lg transform transition-all duration-300 ease-in-out overflow-y-auto
         lg:translate-x-0
         ${isOpen ? 'translate-x-0' : '-translate-x-full'}
+        ${isCollapsed ? 'w-20' : 'w-64'}
       `}>
         <div className="flex items-center justify-between h-16 px-6 bg-blue-600">
           <div className="flex items-center">
             <TestTube className="h-8 w-8 text-white" />
-            <span className="ml-2 text-xl font-bold text-white">LIMS Builder</span>
+            {!isCollapsed && <span className="ml-2 text-xl font-bold text-white">LIMS Builder</span>}
           </div>
-          <button
-            onClick={onToggle}
-            className="lg:hidden text-white hover:text-gray-200"
-          >
-            <X className="h-6 w-6" />
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => setIsCollapsed(!isCollapsed)}
+              className="hidden lg:block text-white hover:text-gray-200 transition-colors"
+              title={isCollapsed ? 'Expand Sidebar' : 'Collapse Sidebar'}
+            >
+              {isCollapsed ? <ChevronRight className="h-5 w-5" /> : <ChevronLeft className="h-5 w-5" />}
+            </button>
+            <button
+              onClick={onToggle}
+              className="lg:hidden text-white hover:text-gray-200"
+            >
+              <X className="h-6 w-6" />
+            </button>
+          </div>
         </div>
         
         <nav className="mt-8 px-4 space-y-1">
           {/* Core Laboratory Workflow */}
           <div className="mb-6">
-            <h3 className="px-4 text-xs font-semibold text-gray-500 uppercase tracking-wider mb-3">
-              🔬 Daily Operations
-            </h3>
+            {!isCollapsed && (
+              <h3 className="px-4 text-xs font-semibold text-gray-500 uppercase tracking-wider mb-3">
+                🔬 Daily Operations
+              </h3>
+            )}
             {navigation.filter(item => item.category === 'core').map((item) => {
               const isActive = location.pathname === item.href;
               return (
                 <Link
                   key={item.name}
                   to={item.href}
+                  title={isCollapsed ? item.name : ''}
                   className={`
-                    flex items-center px-4 py-3 rounded-lg text-sm font-medium transition-colors duration-200 mb-1
+                    flex items-center rounded-lg text-sm font-medium transition-colors duration-200 mb-1
                     border-l-4 border-l-blue-500
+                    ${isCollapsed ? 'justify-center px-2 py-3' : 'px-4 py-3'}
                     ${isActive
                       ? 'bg-blue-50 text-blue-700 border-l-blue-700'
                       : 'text-gray-600 hover:bg-blue-50 hover:text-blue-700 border-l-transparent hover:border-l-blue-300'
@@ -123,8 +140,8 @@ const Sidebar: React.FC<SidebarProps> = ({ isOpen, onToggle }) => {
                   `}
                   onClick={() => window.innerWidth < 1024 && onToggle()}
                 >
-                  <item.icon className={`h-5 w-5 mr-3 ${isActive ? 'text-blue-700' : 'text-gray-400'}`} />
-                  {item.name}
+                  <item.icon className={`h-5 w-5 ${isCollapsed ? '' : 'mr-3'} ${isActive ? 'text-blue-700' : 'text-gray-400'}`} />
+                  {!isCollapsed && item.name}
                 </Link>
               );
             })}

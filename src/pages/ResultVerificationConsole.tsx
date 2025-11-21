@@ -26,9 +26,11 @@ import {
   ChevronRight,
   Eye,
   Expand,
-  Minimize
+  Minimize,
+  FileImage
 } from "lucide-react";
 import { supabase } from "../utils/supabase";
+import AttachmentSelector from "../components/Reports/AttachmentSelector";
 
 /* =========================================
    Types
@@ -365,6 +367,10 @@ const ResultVerificationConsole: React.FC = () => {
   const [showTrendModal, setShowTrendModal] = useState(false);
   const [selectedAnalyteTrend, setSelectedAnalyteTrend] = useState<{ parameter: string; patientId: string } | null>(null);
   const [loadingTrend, setLoadingTrend] = useState(false);
+  
+  // attachment selector
+  const [showAttachmentSelector, setShowAttachmentSelector] = useState(false);
+  const [selectedOrderForAttachments, setSelectedOrderForAttachments] = useState<string | null>(null);
 
     /* ----------------- Load attachments ----------------- */
   const loadAttachments = async (orderId: string) => {
@@ -476,8 +482,8 @@ const ResultVerificationConsole: React.FC = () => {
       .eq("result_id", result_id)
       .order("parameter", { ascending: true });
 
-    if (!error) {
-      setRowsByResult((s) => ({ ...s, [result_id]: (data || []) as Analyte[] }));
+    if (!error && data) {
+      setRowsByResult((s) => ({ ...s, [result_id]: data as unknown as Analyte[] }));
     } else {
       // Fallback if verify_* columns do not exist
       if (String(error.message || "").includes("column") && String(error.message).includes("verify_status")) {
@@ -938,18 +944,31 @@ const ResultVerificationConsole: React.FC = () => {
             </button>
 
             {!isOpen && (
-              <button
-                disabled={busy[row.result_id]}
-                onClick={() => approveAllInPanel(row)}
-                className="inline-flex items-center px-4 py-2 bg-gradient-to-r from-green-600 to-emerald-600 text-white rounded-xl hover:from-green-700 hover:to-emerald-700 transition-all duration-200 shadow-sm font-semibold disabled:opacity-50"
-              >
-                {busy[row.result_id] ? (
-                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                ) : (
-                  <CheckCircle2 className="h-4 w-4 mr-2" />
-                )}
-                Approve All
-              </button>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => {
+                    setSelectedOrderForAttachments(row.order_id);
+                    setShowAttachmentSelector(true);
+                  }}
+                  className="inline-flex items-center px-4 py-2 bg-gradient-to-r from-purple-600 to-indigo-600 text-white rounded-xl hover:from-purple-700 hover:to-indigo-700 transition-all duration-200 shadow-sm font-semibold"
+                  title="Manage which attachments to include in final report"
+                >
+                  <FileImage className="h-4 w-4 mr-2" />
+                  Manage Attachments
+                </button>
+                <button
+                  disabled={busy[row.result_id]}
+                  onClick={() => approveAllInPanel(row)}
+                  className="inline-flex items-center px-4 py-2 bg-gradient-to-r from-green-600 to-emerald-600 text-white rounded-xl hover:from-green-700 hover:to-emerald-700 transition-all duration-200 shadow-sm font-semibold disabled:opacity-50"
+                >
+                  {busy[row.result_id] ? (
+                    <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                  ) : (
+                    <CheckCircle2 className="h-4 w-4 mr-2" />
+                  )}
+                  Approve All
+                </button>
+              </div>
             )}
           </div>
         </div>
@@ -1441,6 +1460,25 @@ const ResultVerificationConsole: React.FC = () => {
                       >
                         Clear Selection
                       </button>
+                      <button
+                        onClick={() => {
+                          if (selectedPanels.size === 1) {
+                            const resultId = Array.from(selectedPanels)[0];
+                            const panel = panels.find(p => p.result_id === resultId);
+                            if (panel) {
+                              setSelectedOrderForAttachments(panel.order_id);
+                              setShowAttachmentSelector(true);
+                            }
+                          } else {
+                            alert('Please select exactly one panel to manage attachments');
+                          }
+                        }}
+                        disabled={selectedPanels.size !== 1}
+                        className="w-full px-4 py-2 text-sm border-2 border-purple-300 bg-purple-50 text-purple-700 rounded-lg hover:bg-purple-100 hover:border-purple-400 transition-colors font-medium disabled:opacity-50 flex items-center justify-center gap-2"
+                      >
+                        <FileImage className="h-4 w-4" />
+                        Manage Report Attachments
+                      </button>
                     </div>
                   </div>
                 </div>
@@ -1612,6 +1650,28 @@ const ResultVerificationConsole: React.FC = () => {
 
       {/* Trend Modal */}
       <TrendModal />
+      
+      {/* Attachment Selector Modal */}
+      {showAttachmentSelector && selectedOrderForAttachments && (
+        <AttachmentSelector
+          orderId={selectedOrderForAttachments}
+          onClose={() => {
+            setShowAttachmentSelector(false);
+            setSelectedOrderForAttachments(null);
+          }}
+          onSave={() => {
+            // Reload attachments after save
+            if (selectedOrderForAttachments) {
+              setAttachmentsByOrder(prev => {
+                const updated = { ...prev };
+                delete updated[selectedOrderForAttachments];
+                return updated;
+              });
+              loadAttachments(selectedOrderForAttachments);
+            }
+          }}
+        />
+      )}
     </div>
   );
 };

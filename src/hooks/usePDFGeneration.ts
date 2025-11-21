@@ -85,6 +85,7 @@ export const usePDFGeneration = () => {
 
       setState(prev => ({ ...prev, stage: 'Generating PDF...', progress: 75 }));
 
+      // Use old service with direct PDF.co API for all reports (includes attachment support)
       const pdfUrl = await generateAndSavePDFReportWithProgress(
         orderId,
         reportData,
@@ -96,7 +97,7 @@ export const usePDFGeneration = () => {
           }));
         },
         isDraft,
-        allTemplates  // Pass all templates for multi-test-group support
+        allTemplates
       );
 
       if (pdfUrl) {

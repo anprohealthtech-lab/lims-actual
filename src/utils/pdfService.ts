@@ -2022,6 +2022,71 @@ const prepareReportHtml = async (
     finalHtml = await injectWatermarkIfEnabled(finalHtml, context.labId);
   }
 
+  // Fetch and inject attachments marked for report inclusion
+  try {
+    const orderId = reportData.report?.reportId || context?.orderId;
+    if (!orderId) {
+      console.warn('No order ID available for attachment fetching');
+    } else {
+      const { data: reportAttachments, error: attachmentError } = await supabase
+        .from('attachments')
+        .select(`
+          id,
+          file_url,
+          file_name,
+          description,
+          order_test_id,
+          order_tests(
+            test_groups(name)
+          )
+        `)
+        .eq('order_id', orderId)
+        .eq('tag', 'include_in_report')
+        .order('order_test_id', { ascending: true });
+
+      if (!attachmentError && reportAttachments && reportAttachments.length > 0) {
+        console.log('📎 Found', reportAttachments.length, 'attachments for report');
+      
+      // Group attachments by test
+      const groupedAttachments: Record<string, Array<{ url: string; heading: string; fileName: string }>> = {};
+      reportAttachments.forEach((att: any) => {
+        const testName = att.order_tests?.test_groups?.name || 'Additional Information';
+        if (!groupedAttachments[testName]) {
+          groupedAttachments[testName] = [];
+        }
+        groupedAttachments[testName].push({
+          url: att.file_url,
+          heading: att.description || att.file_name || 'Attachment',
+          fileName: att.file_name || 'attachment'
+        });
+      });
+
+      // Generate HTML for attachments
+      let attachmentHtml = '<div style="page-break-before: always; padding: 20px;">';
+      attachmentHtml += '<h2 style="text-align: center; margin-bottom: 30px; color: #333; border-bottom: 2px solid #4A90E2; padding-bottom: 10px;">Supporting Documentation</h2>';
+      
+      for (const [testName, attachments] of Object.entries(groupedAttachments)) {
+        attachmentHtml += `<h3 style="margin-top: 30px; margin-bottom: 15px; color: #555; font-size: 18px;">${testName}</h3>`;
+        
+        attachments.forEach((att) => {
+          attachmentHtml += '<div style="margin-bottom: 30px; border: 1px solid #ddd; border-radius: 8px; padding: 15px; background-color: #f9f9f9;">';
+          attachmentHtml += `<h4 style="margin: 0 0 10px 0; color: #333; font-size: 16px;">${att.heading}</h4>`;
+          attachmentHtml += `<img src="${att.url}" alt="${att.fileName}" style="max-width: 100%; height: auto; border-radius: 4px; box-shadow: 0 2px 4px rgba(0,0,0,0.1);" />`;
+          attachmentHtml += '</div>';
+        });
+      }
+      
+      attachmentHtml += '</div>';
+      
+      // Insert attachment HTML before closing body tag
+      finalHtml = finalHtml.replace('</body>', `${attachmentHtml}</body>`);
+      console.log('✅ Attachments injected into report HTML');
+    }
+    }
+  } catch (error) {
+    console.error('Failed to fetch attachments:', error);
+  }
+
   return {
     html: finalHtml,
     bundle,
@@ -2058,6 +2123,12 @@ export const generatePDFWithAPI = async (
     headerHtml = await convertHtmlImagestoBase64(rawHeaderHtml);
     footerHtml = await convertHtmlImagestoBase64(rawFooterHtml);
   }
+
+  console.log('📄 Generating PDF with PDF.co API (direct call)...');
+  console.log('  HTML length:', ready.html.length);
+  console.log('  Has header:', !!headerHtml);
+  console.log('  Has footer:', !!footerHtml);
+  console.log('  Has attachments:', ready.html.includes('Supporting Documentation'));
 
   try {
     return await sendHtmlToPdfCo(ready.html, filename, {

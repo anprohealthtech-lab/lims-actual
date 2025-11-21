@@ -113,6 +113,8 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
 
   // Test selection
   const [selectedTests, setSelectedTests] = useState<string[]>([]);
+  const [testSearch, setTestSearch] = useState<string>('');
+  const [showTestList, setShowTestList] = useState<boolean>(false);
 
   // Searches / dropdown visibility
   const [patientSearch, setPatientSearch] = useState<string>('');
@@ -811,21 +813,21 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
           </section>
 
           {/* Patient Section */}
-          <section className="space-y-3">
+          <section className="space-y-3 pb-6">
             <h3 className="text-lg font-medium text-gray-900 flex items-center gap-2">
               <User className="h-5 w-5" />
               Patient Information
             </h3>
 
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <div>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4" style={{ minHeight: '320px' }}>
+              <div className="relative">
                 <label className="block text-sm font-medium text-gray-700 mb-1">
                   Select Patient *
                 </label>
                 <div className="relative">
                   <div className="flex items-center gap-2">
                     <div className="relative flex-1">
-                      <Search className="w-4 h-4 text-gray-400 absolute left-2 top-2.5" />
+                      <Search className="w-4 h-4 text-gray-400 absolute left-2 top-2.5 pointer-events-none z-10" />
                       <input
                         type="text"
                         value={patientSearch}
@@ -834,22 +836,22 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
                           setShowPatientDropdown(true);
                         }}
                         onFocus={() => setShowPatientDropdown(true)}
+                        onBlur={() => setTimeout(() => setShowPatientDropdown(false), 200)}
                         placeholder="Search by name, phone, or ID…"
-                        className="w-full pl-8 pr-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                        className="w-full pl-8 pr-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 relative z-0"
                       />
                       {showPatientDropdown && filteredPatients.length > 0 && (
-                        <div className="absolute z-10 w-full mt-1 bg-white border border-gray-200 rounded-lg shadow-lg max-h-56 overflow-y-auto">
+                        <div className="absolute z-[100] w-full mt-1 bg-white border border-gray-300 rounded-lg shadow-2xl max-h-64 overflow-y-auto">
                           {filteredPatients.map((p) => (
                             <button
                               key={p.id}
                               type="button"
                               onClick={() => onPickPatient(p)}
-                              className="w-full px-3 py-2 text-left hover:bg-gray-50"
+                              className="w-full px-4 py-3 text-left hover:bg-blue-50 border-b border-gray-100 last:border-b-0 transition-colors"
                             >
-                              <div className="font-medium">{p.name}</div>
-                              <div className="text-xs text-gray-500">
-                                {(p.age ?? '-') + 'y'}, {p.gender ?? '-'} • {p.phone ?? '-'} •{' '}
-                                {p.id.slice(-8)}
+                              <div className="font-semibold text-gray-900 text-sm">{p.name}</div>
+                              <div className="text-xs text-gray-600 mt-0.5">
+                                {(p.age ?? '-') + 'y'}, {p.gender ?? '-'} • {p.phone ?? '-'} • ID: {p.id.slice(-8)}
                               </div>
                             </button>
                           ))}
@@ -861,7 +863,7 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
                       <button
                         type="button"
                         onClick={() => setShowNewPatientModal(true)}
-                        className="px-3 py-2 text-sm bg-blue-50 text-blue-700 rounded-md hover:bg-blue-100"
+                        className="px-3 py-2 text-sm bg-blue-50 text-blue-700 rounded-md hover:bg-blue-100 whitespace-nowrap"
                       >
                         <span className="inline-flex items-center gap-1">
                           <Plus className="h-4 w-4" /> Add Patient
@@ -901,33 +903,79 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
             {loadingTests ? (
               <div className="p-4 text-center text-gray-500">Loading tests…</div>
             ) : (
-              <div className="border border-gray-200 rounded-lg divide-y max-h-64 overflow-y-auto">
-                {testGroups.length === 0 ? (
-                  <div className="p-4 text-gray-500 text-sm">No tests found.</div>
-                ) : (
-                  testGroups.map((t) => (
-                    <label
-                      key={t.id}
-                      className="flex items-center justify-between p-3 hover:bg-gray-50"
-                    >
-                      <div className="flex items-center gap-3">
-                        <input
-                          type="checkbox"
-                          checked={selectedTests.includes(t.id)}
-                          onChange={() => handleToggleTest(t.id)}
-                          className="w-4 h-4"
-                        />
-                        <div>
-                          <div className="text-sm font-medium text-gray-900">{t.name}</div>
-                          <div className="text-xs text-gray-500">
-                            {(t.category ?? 'General') +
-                              (t.requiresFasting ? ' • Fasting' : '')}
-                          </div>
-                        </div>
-                      </div>
-                      <div className="text-sm font-semibold text-gray-900">₹{t.price ?? 0}</div>
-                    </label>
-                  ))
+              <div className="space-y-3">
+                {/* Test Search */}
+                <div className="relative">
+                  <Search className="w-4 h-4 text-gray-400 absolute left-3 top-3 pointer-events-none" />
+                  <input
+                    type="text"
+                    value={testSearch}
+                    onChange={(e) => {
+                      setTestSearch(e.target.value);
+                      setShowTestList(true);
+                    }}
+                    onFocus={() => setShowTestList(true)}
+                    placeholder="Search tests by name or category..."
+                    className="w-full pl-9 pr-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  />
+                </div>
+
+                {/* Collapsible Test List */}
+                {showTestList && (
+                  <div className="border border-gray-200 rounded-lg divide-y max-h-80 overflow-y-auto bg-white shadow-lg">
+                    {testGroups.length === 0 ? (
+                      <div className="p-4 text-gray-500 text-sm">No tests found.</div>
+                    ) : (
+                      testGroups
+                        .filter((t) => {
+                          if (!testSearch) return true;
+                          const search = testSearch.toLowerCase();
+                          return (
+                            t.name.toLowerCase().includes(search) ||
+                            (t.category && t.category.toLowerCase().includes(search))
+                          );
+                        })
+                        .map((t) => (
+                          <label
+                            key={t.id}
+                            className="flex items-center justify-between p-3 hover:bg-blue-50 cursor-pointer transition-colors"
+                          >
+                            <div className="flex items-center gap-3">
+                              <input
+                                type="checkbox"
+                                checked={selectedTests.includes(t.id)}
+                                onChange={() => handleToggleTest(t.id)}
+                                className="w-4 h-4 text-blue-600"
+                              />
+                              <div>
+                                <div className="text-sm font-medium text-gray-900">{t.name}</div>
+                                <div className="text-xs text-gray-500">
+                                  {(t.category ?? 'General') +
+                                    (t.requiresFasting ? ' • Fasting' : '')}
+                                </div>
+                              </div>
+                            </div>
+                            <div className="text-sm font-semibold text-gray-900">₹{t.price ?? 0}</div>
+                          </label>
+                        ))
+                    )}
+                  </div>
+                )}
+
+                {/* Show selected count when collapsed */}
+                {!showTestList && selectedTests.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => setShowTestList(true)}
+                    className="w-full p-3 bg-blue-50 border border-blue-200 rounded-lg text-left hover:bg-blue-100 transition-colors"
+                  >
+                    <div className="flex items-center justify-between">
+                      <span className="text-sm font-medium text-blue-900">
+                        {selectedTests.length} test{selectedTests.length !== 1 ? 's' : ''} selected
+                      </span>
+                      <span className="text-xs text-blue-700">Click to view/edit</span>
+                    </div>
+                  </button>
                 )}
               </div>
             )}
@@ -1018,7 +1066,7 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
               </div>
 
               {/* Referring Doctor */}
-              <div className="md:col-span-3">
+              <div className="md:col-span-3 relative" style={{ minHeight: showDoctorDropdown && filteredDoctors.length > 0 ? '230px' : 'auto' }}>
                 <label className="block text-sm font-medium text-gray-700 mb-1">
                   Referring Doctor
                 </label>
@@ -1032,10 +1080,11 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
                       setShowDoctorDropdown(true);
                     }}
                     onFocus={() => setShowDoctorDropdown(true)}
+                    onBlur={() => setTimeout(() => setShowDoctorDropdown(false), 200)}
                     className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
                   />
                   {showDoctorDropdown && filteredDoctors.length > 0 && (
-                    <div className="absolute z-10 w-full mt-1 bg-white border border-gray-200 rounded-lg shadow-lg max-h-48 overflow-y-auto">
+                    <div className="absolute z-[100] w-full mt-1 bg-white border border-gray-300 rounded-lg shadow-2xl max-h-48 overflow-y-auto">
                       {filteredDoctors.map((doctor) => (
                         <button
                           key={doctor.id}
@@ -1045,9 +1094,9 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
                             setDoctorSearch(doctor.name);
                             setShowDoctorDropdown(false);
                           }}
-                          className="w-full px-4 py-2 text-left hover:bg-gray-50"
+                          className="w-full px-4 py-2 text-left hover:bg-blue-50 transition-colors"
                         >
-                          <div className="font-medium">{doctor.name}</div>
+                          <div className="font-medium text-gray-900">{doctor.name}</div>
                           {doctor.specialization && (
                             <div className="text-xs text-gray-500">{doctor.specialization}</div>
                           )}
@@ -1059,7 +1108,7 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
               </div>
 
               {/* Location (collection/origin) */}
-              <div className="md:col-span-3">
+              <div className="md:col-span-3 relative" style={{ minHeight: showLocationDropdown && filteredLocations.length > 0 ? '230px' : 'auto' }}>
                 <label className="block text-sm font-medium text-gray-700 mb-1">
                   Location {paymentType !== 'self' && '(required if no Account)'}
                 </label>
@@ -1073,10 +1122,11 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
                       setShowLocationDropdown(true);
                     }}
                     onFocus={() => setShowLocationDropdown(true)}
+                    onBlur={() => setTimeout(() => setShowLocationDropdown(false), 200)}
                     className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
                   />
                   {showLocationDropdown && filteredLocations.length > 0 && (
-                    <div className="absolute z-10 w-full mt-1 bg-white border border-gray-200 rounded-lg shadow-lg max-h-48 overflow-y-auto">
+                    <div className="absolute z-[100] w-full mt-1 bg-white border border-gray-300 rounded-lg shadow-2xl max-h-48 overflow-y-auto">
                       {filteredLocations.map((location) => (
                         <button
                           key={location.id}
@@ -1086,11 +1136,11 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
                             setLocationSearch(location.name);
                             setShowLocationDropdown(false);
                           }}
-                          className="w-full px-4 py-2 text-left hover:bg-gray-50 flex items-center gap-2"
+                          className="w-full px-4 py-2 text-left hover:bg-blue-50 flex items-center gap-2 transition-colors"
                         >
                           <Building className="w-4 h-4 text-gray-400" />
                           <div>
-                            <div className="font-medium">{location.name}</div>
+                            <div className="font-medium text-gray-900">{location.name}</div>
                             <div className="text-xs text-gray-500">
                               {location.type.replace(/_/g, ' ')}
                               {location.credit_limit ? ` • Credit: ₹${location.credit_limit}` : ''}
@@ -1104,7 +1154,7 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
               </div>
 
               {/* Bill-to Account (optional, used for B2B) */}
-              <div className="md:col-span-3">
+              <div className="md:col-span-3 relative" style={{ minHeight: showAccountDropdown && filteredAccounts.length > 0 ? '230px' : 'auto' }}>
                 <label className="block text-sm font-medium text-gray-700 mb-1">
                   Bill-to Account (optional for credit/corporate/insurance)
                 </label>
@@ -1118,10 +1168,11 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
                       setShowAccountDropdown(true);
                     }}
                     onFocus={() => setShowAccountDropdown(true)}
+                    onBlur={() => setTimeout(() => setShowAccountDropdown(false), 200)}
                     className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
                   />
                   {showAccountDropdown && filteredAccounts.length > 0 && (
-                    <div className="absolute z-10 w-full mt-1 bg-white border border-gray-200 rounded-lg shadow-lg max-h-48 overflow-y-auto">
+                    <div className="absolute z-[100] w-full mt-1 bg-white border border-gray-300 rounded-lg shadow-2xl max-h-48 overflow-y-auto">
                       {filteredAccounts.map((account) => (
                         <button
                           key={account.id}
@@ -1131,11 +1182,11 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
                             setAccountSearch(account.name);
                             setShowAccountDropdown(false);
                           }}
-                          className="w-full px-4 py-2 text-left hover:bg-gray-50 flex items-center gap-2"
+                          className="w-full px-4 py-2 text-left hover:bg-blue-50 flex items-center gap-2 transition-colors"
                         >
                           <Briefcase className="w-4 h-4 text-gray-400" />
                           <div>
-                            <div className="font-medium">{account.name}</div>
+                            <div className="font-medium text-gray-900">{account.name}</div>
                             <div className="text-xs text-gray-500">
                               {account.type}
                               {account.credit_limit ? ` • Credit: ₹${account.credit_limit}` : ''}
