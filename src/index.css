@@ -2,6 +2,54 @@
 @tailwind components;
 @tailwind utilities;
 
+/* Safe area insets for mobile devices (Android notches, iOS safe areas) */
+:root {
+  --safe-area-inset-top: env(safe-area-inset-top, 0px);
+  --safe-area-inset-right: env(safe-area-inset-right, 0px);
+  --safe-area-inset-bottom: env(safe-area-inset-bottom, 0px);
+  --safe-area-inset-left: env(safe-area-inset-left, 0px);
+  
+  /* Mobile edge margins */
+  --mobile-edge-margin: 16px;
+  --mobile-content-padding: 12px;
+}
+
+/* Base mobile optimizations */
+* {
+  -webkit-tap-highlight-color: transparent;
+  touch-action: manipulation;
+  box-sizing: border-box;
+}
+
+html {
+  font-size: 16px;
+  -webkit-text-size-adjust: 100%;
+  -moz-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
+
+html,
+body {
+  overscroll-behavior: none;
+  -webkit-overflow-scrolling: touch;
+  width: 100%;
+  overflow-x: hidden;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  padding-left: var(--safe-area-inset-left);
+  padding-right: var(--safe-area-inset-right);
+  min-width: 320px;
+  max-width: 100vw;
+}
+
+#root {
+  width: 100%;
+  overflow-x: hidden;
+}
+
 /* Custom utilities */
 .line-clamp-2 {
   overflow: hidden;
@@ -40,4 +88,101 @@
 /* Ensure CKEditor sticky toolbar stays on top */
 .ck-sticky-panel__content {
   z-index: 10000 !important;
+}
+
+/* Mobile-specific margin utilities */
+@layer utilities {
+  .safe-area-top {
+    padding-top: max(var(--safe-area-inset-top), 8px);
+  }
+  
+  .safe-area-bottom {
+    padding-bottom: max(var(--safe-area-inset-bottom), 8px);
+  }
+  
+  .safe-area-left {
+    padding-left: max(var(--safe-area-inset-left), var(--mobile-edge-margin));
+  }
+  
+  .safe-area-right {
+    padding-right: max(var(--safe-area-inset-right), var(--mobile-edge-margin));
+  }
+  
+  .safe-area-x {
+    padding-left: max(var(--safe-area-inset-left), var(--mobile-edge-margin));
+    padding-right: max(var(--safe-area-inset-right), var(--mobile-edge-margin));
+  }
+  
+  .safe-area-y {
+    padding-top: max(var(--safe-area-inset-top), 8px);
+    padding-bottom: max(var(--safe-area-inset-bottom), 8px);
+  }
+  
+  .safe-area-all {
+    padding-top: max(var(--safe-area-inset-top), 8px);
+    padding-right: max(var(--safe-area-inset-right), var(--mobile-edge-margin));
+    padding-bottom: max(var(--safe-area-inset-bottom), 8px);
+    padding-left: max(var(--safe-area-inset-left), var(--mobile-edge-margin));
+  }
+  
+  /* Mobile edge margins */
+  @media (max-width: 768px) {
+    * {
+      max-width: 100vw;
+    }
+    
+    body, html, #root {
+      overflow-x: hidden !important;
+      width: 100% !important;
+      max-width: 100vw !important;
+    }
+    
+    .mobile-edge-padding {
+      padding-left: var(--mobile-edge-margin);
+      padding-right: var(--mobile-edge-margin);
+    }
+    
+    .mobile-content-padding {
+      padding: var(--mobile-content-padding);
+    }
+    
+    /* Reduce default padding on mobile */
+    .container {
+      padding-left: var(--mobile-edge-margin);
+      padding-right: var(--mobile-edge-margin);
+      max-width: 100vw;
+      overflow-x: hidden;
+    }
+    
+    /* Cards on mobile should have proper margins */
+    .card-mobile {
+      margin-left: var(--mobile-edge-margin);
+      margin-right: var(--mobile-edge-margin);
+      margin-bottom: 12px;
+    }
+    
+    /* Full bleed sections on mobile */
+    .mobile-full-bleed {
+      margin-left: calc(-1 * var(--mobile-edge-margin));
+      margin-right: calc(-1 * var(--mobile-edge-margin));
+      padding-left: var(--mobile-edge-margin);
+      padding-right: var(--mobile-edge-margin);
+    }
+  }
+  
+  /* Touch-friendly tap targets */
+  @media (max-width: 768px) {
+    button,
+    a,
+    .clickable {
+      min-height: 44px;
+      min-width: 44px;
+    }
+    
+    /* Improve spacing for mobile buttons */
+    .btn-mobile {
+      padding: 12px 16px;
+      font-size: 16px;
+    }
+  }
 }

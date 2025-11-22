@@ -847,11 +847,11 @@ const Reports: React.FC = () => {
   return (
     <div className="min-h-screen bg-gray-50">
       {/* Enhanced Header */}
-      <div className="bg-white border-b shadow-sm px-6 py-6">
-        <div className="flex items-center justify-between">
-          <div>
-            <h1 className="text-3xl font-bold text-gray-900">Lab Reports</h1>
-            <p className="text-gray-600 mt-2">Generate and manage laboratory test reports</p>
+      <div className="bg-white border-b shadow-sm px-4 md:px-6 py-4 md:py-6 safe-area-x">
+        <div className="flex flex-col lg:flex-row items-start lg:items-center justify-between gap-4">
+          <div className="flex-1 min-w-0">
+            <h1 className="text-xl md:text-3xl font-bold text-gray-900">Lab Reports</h1>
+            <p className="text-sm md:text-base text-gray-600 mt-1 md:mt-2">Generate and manage laboratory test reports</p>
           </div>
 
           {/* Quick Stats */}
@@ -904,16 +904,16 @@ const Reports: React.FC = () => {
       </div>
 
       {/* Enhanced Filters Section */}
-      <div className="bg-white border-b shadow-sm px-6 py-4">
+      <div className="bg-white border-b shadow-sm px-4 md:px-6 py-4 safe-area-x">
         <div className="space-y-4">
           {/* Primary Search Bar */}
-          <div className="flex flex-col sm:flex-row gap-4">
-            <div className="flex-1 relative">
-              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-400" />
+          <div className="flex flex-col sm:flex-row gap-3 md:gap-4">
+            <div className="flex-1 relative min-w-0">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 md:w-5 md:h-5 text-gray-400" />
               <input
                 type="text"
-                placeholder="Search patients, tests, samples, or order IDs..."
-                className="w-full pl-10 pr-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-base"
+                placeholder="Search patients, tests, samples..."
+                className="w-full pl-9 md:pl-10 pr-4 py-2.5 md:py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm md:text-base"
                 value={searchTerm}
                 onChange={(e) => setSearchTerm(e.target.value)}
               />

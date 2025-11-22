@@ -14,7 +14,7 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
       <Sidebar isOpen={sidebarOpen} onToggle={() => setSidebarOpen(!sidebarOpen)} />
       <div className="flex-1 flex flex-col lg:pl-64">
         <Header onMenuClick={() => setSidebarOpen(!sidebarOpen)} />
-        <main className="flex-1 p-6">
+        <main className="flex-1 p-6 safe-area-x safe-area-bottom md:p-6">
           {children}
         </main>
       </div>

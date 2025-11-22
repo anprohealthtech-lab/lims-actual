@@ -2,6 +2,7 @@ import React, { useState, useCallback, useRef } from 'react';
 import { Upload, X, Camera, FileText, Image as ImageIcon, AlertCircle, Check, Loader } from 'lucide-react';
 import { database, supabase, uploadFile } from '../../utils/supabase';
 import { useAuth } from '../../contexts/AuthContext';
+import { capturePhoto, isNative } from '../../utils/androidFileUpload';
 
 export interface UploadedFile {
   id: string;
@@ -179,7 +180,66 @@ const MultiImageUploader: React.FC<MultiImageUploaderProps> = ({
     if (fileInputRef.current) fileInputRef.current.value = '';
   };
 
-  // Handle camera input
+  // Handle camera input (native or web)
+  const handleCameraCapture = async () => {
+    if (isNative()) {
+      // Use native camera on Android
+      try {
+        // First check and request permissions
+        const { Camera } = await import('@capacitor/camera');
+        const permissions = await Camera.checkPermissions();
+        
+        if (permissions.camera !== 'granted') {
+          const requested = await Camera.requestPermissions();
+          if (requested.camera !== 'granted') {
+            setError('Camera permission is required to take photos. Please enable it in Settings.');
+            return;
+          }
+        }
+
+        // Now try to capture the photo
+        const { CameraResultType, CameraSource } = await import('@capacitor/camera');
+        const photo = await Camera.getPhoto({
+          quality: 90,
+          allowEditing: false,
+          resultType: CameraResultType.DataUrl,
+          source: CameraSource.Camera,
+          saveToGallery: false,
+          correctOrientation: true
+        });
+
+        if (!photo.dataUrl) {
+          throw new Error('No image data received from camera');
+        }
+
+        // Convert base64 to blob for upload
+        const response = await fetch(photo.dataUrl);
+        const blob = await response.blob();
+        const fileName = `camera_capture_${Date.now()}.${photo.format || 'jpg'}`;
+        const file = new File([blob], fileName, { type: `image/${photo.format || 'jpeg'}` });
+        
+        addFiles([file]);
+        console.log('Photo captured successfully');
+      } catch (error: any) {
+        console.error('Camera capture error:', error);
+        // More specific error messages
+        if (error.message?.includes('User cancelled') || error.message?.includes('cancelled')) {
+          console.log('Camera capture cancelled by user');
+        } else if (error.message?.includes('No camera') || error.message?.includes('not available')) {
+          alert('No camera available on this device');
+        } else if (error.message?.includes('permission')) {
+          alert('Camera permission denied. Please enable camera access in Settings > Apps > LIMS Builder > Permissions.');
+        } else {
+          alert(`Failed to capture photo: ${error.message || 'Unknown error'}. Please try again.`);
+        }
+      }
+    } else {
+      // Use HTML5 camera input on web
+      cameraInputRef.current?.click();
+    }
+  };
+
+  // Handle web camera input fallback
   const handleCameraInput = (e: React.ChangeEvent<HTMLInputElement>) => {
     const capturedFiles = e.target.files ? Array.from(e.target.files) : [];
     addFiles(capturedFiles);
@@ -422,18 +482,18 @@ const MultiImageUploader: React.FC<MultiImageUploaderProps> = ({
             <div className="flex flex-col sm:flex-row gap-3 justify-center">
               <button
                 onClick={() => fileInputRef.current?.click()}
-                className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 flex items-center gap-2"
+                className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 flex items-center gap-2 min-h-touch"
               >
                 <Upload className="h-4 w-4" />
                 Choose Files
               </button>
               
               <button
-                onClick={() => cameraInputRef.current?.click()}
-                className="px-4 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 flex items-center gap-2"
+                onClick={handleCameraCapture}
+                className="px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 flex items-center gap-2 min-h-touch"
               >
                 <Camera className="h-4 w-4" />
-                Take Photos
+                {isNative() ? 'Open Camera' : 'Take Photos'}
               </button>
             </div>
           </div>

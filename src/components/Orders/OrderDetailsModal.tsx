@@ -48,6 +48,7 @@ import SingleImageViewer from "../Upload/SingleImageViewer";
 import PopoutInput from "./PopoutInput";
 import PhlebotomistSelector from "../Users/PhlebotomistSelector";
 import { OrderStatusDisplay } from "./OrderStatusDisplay";
+import { capturePhoto, isNative } from "../../utils/androidFileUpload";
 
 interface WorkflowStep {
   name: string;
@@ -1113,6 +1114,68 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
     if (file) handleFileUpload(file);
   };
 
+  // Handle native camera capture
+  const handleCameraCapture = async () => {
+    if (isNative()) {
+      try {
+        // First check and request permissions
+        const { Camera } = await import('@capacitor/camera');
+        const permissions = await Camera.checkPermissions();
+        
+        if (permissions.camera !== 'granted') {
+          const requested = await Camera.requestPermissions();
+          if (requested.camera !== 'granted') {
+            alert('Camera permission is required to take photos. Please enable it in Settings.');
+            return;
+          }
+        }
+
+        // Now try to capture the photo
+        const { CameraResultType, CameraSource } = await import('@capacitor/camera');
+        const photo = await Camera.getPhoto({
+          quality: 90,
+          allowEditing: false,
+          resultType: CameraResultType.DataUrl,
+          source: CameraSource.Camera,
+          saveToGallery: false,
+          correctOrientation: true
+        });
+
+        if (!photo.dataUrl) {
+          throw new Error('No image data received from camera');
+        }
+
+        // Convert base64 to blob for upload
+        const response = await fetch(photo.dataUrl);
+        const blob = await response.blob();
+
+        // Create a File object
+        const fileName = `camera_capture_${Date.now()}.${photo.format || 'jpg'}`;
+        const file = new File([blob], fileName, { type: `image/${photo.format || 'jpeg'}` });
+
+        // Process the file using existing handler
+        handleFileUpload(file);
+        
+        console.log('Photo captured and uploaded successfully');
+      } catch (error: any) {
+        console.error('Camera capture error:', error);
+        // More specific error messages
+        if (error.message?.includes('User cancelled') || error.message?.includes('cancelled')) {
+          console.log('Camera capture cancelled by user');
+        } else if (error.message?.includes('No camera') || error.message?.includes('not available')) {
+          alert('No camera available on this device');
+        } else if (error.message?.includes('permission')) {
+          alert('Camera permission denied. Please enable camera access in Settings > Apps > LIMS Builder > Permissions.');
+        } else {
+          alert(`Failed to capture photo: ${error.message || 'Unknown error'}. Please try again.`);
+        }
+      }
+    } else {
+      // Fallback to HTML file input with camera
+      document.getElementById("file-upload")?.click();
+    }
+  };
+
   // Handle multi-image batch upload completion
   const handleBatchUploadComplete = async (batch: any) => {
     try {
@@ -1945,29 +2008,43 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
             </div>
             
             <div className="space-y-3">
-              {/* Single File Upload */}
-              <button
-                onClick={() => document.getElementById("file-upload")?.click()}
-                disabled={isUploading || (uploadScope === 'test' && !selectedTestId)}
-                className="flex items-center justify-center mx-auto px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 disabled:bg-purple-400 disabled:cursor-not-allowed transition-colors"
-              >
-                {isUploading ? (
-                  <>
-                    <span className="animate-spin rounded-full h-4 w-4 border-2 border-white border-t-transparent mr-2" />
-                    Uploading...
-                  </>
-                ) : (
-                  <>
-                    <Upload className="h-4 w-4 mr-2" />
-                    Single{" "}
-                    {aiProcessingConfig?.type === "vision_card"
-                      ? "Test Card"
-                      : aiProcessingConfig?.type === "vision_color"
-                      ? "Color Image"
-                      : "Document"}
-                  </>
+              {/* Single File Upload with Camera Option */}
+              <div className="flex flex-col sm:flex-row gap-2 justify-center">
+                <button
+                  onClick={() => document.getElementById("file-upload")?.click()}
+                  disabled={isUploading || (uploadScope === 'test' && !selectedTestId)}
+                  className="flex items-center justify-center px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 disabled:bg-purple-400 disabled:cursor-not-allowed transition-colors min-h-touch"
+                >
+                  {isUploading ? (
+                    <>
+                      <span className="animate-spin rounded-full h-4 w-4 border-2 border-white border-t-transparent mr-2" />
+                      Uploading...
+                    </>
+                  ) : (
+                    <>
+                      <Upload className="h-4 w-4 mr-2" />
+                      Single{" "}
+                      {aiProcessingConfig?.type === "vision_card"
+                        ? "Test Card"
+                        : aiProcessingConfig?.type === "vision_color"
+                        ? "Color Image"
+                        : "Document"}
+                    </>
+                  )}
+                </button>
+
+                {/* Camera Button */}
+                {isNative() && (
+                  <button
+                    onClick={handleCameraCapture}
+                    disabled={isUploading || (uploadScope === 'test' && !selectedTestId)}
+                    className="flex items-center justify-center px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 disabled:bg-green-400 disabled:cursor-not-allowed transition-colors min-h-touch"
+                  >
+                    <Camera className="h-4 w-4 mr-2" />
+                    Camera
+                  </button>
                 )}
-              </button>
+              </div>
 
               {/* Multi-Image Upload Button */}
               <div className="text-center">

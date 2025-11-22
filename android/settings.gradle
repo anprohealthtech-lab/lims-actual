@@ -1,0 +1,16 @@
+include ':app'
+include ':capacitor-cordova-android-plugins'
+project(':capacitor-cordova-android-plugins').projectDir = new File('./capacitor-cordova-android-plugins/')
+
+apply from: 'capacitor.settings.gradle'
+
+// Configure toolchain to use available Java version
+gradle.beforeProject { project ->
+    project.plugins.withId('java') {
+        project.java {
+            toolchain {
+                languageVersion = JavaLanguageVersion.of(23)
+            }
+        }
+    }
+}

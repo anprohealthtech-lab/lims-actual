@@ -26,6 +26,7 @@ import WhatsApp from './pages/WhatsApp';
 import WhatsAppUserSyncManager from './components/WhatsApp/WhatsAppUserSyncManager';
 import { useWhatsAppAutoSync } from './hooks/useWhatsAppAutoSync';
 import { warmupPuppeteer } from './utils/pdfService';
+import { initializeNativePlatform, cleanupNativePlatform } from './utils/nativeInit';
 import "./styles/print.css";
 
 // ⬇️ New modern dashboard page
@@ -53,6 +54,17 @@ const AppRoutes: React.FC = () => {
   
   // Initialize WhatsApp auto-sync when user is authenticated
   useWhatsAppAutoSync();
+
+  // Initialize native platform features
+  useEffect(() => {
+    initializeNativePlatform().catch(err => {
+      console.warn('Native platform initialization failed:', err);
+    });
+
+    return () => {
+      cleanupNativePlatform();
+    };
+  }, []);
 
   // Warm up Puppeteer instance for faster PDF generation
   useEffect(() => {

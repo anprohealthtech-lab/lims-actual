@@ -14,12 +14,12 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick }) => {
   };
 
   return (
-    <header className="bg-white shadow-sm border-b border-gray-200">
-      <div className="flex items-center justify-between h-16 px-6">
+    <header className="bg-white shadow-sm border-b border-gray-200 safe-area-top safe-area-x">
+      <div className="flex items-center justify-between h-16 px-4 md:px-6">
         <div className="flex items-center">
           <button
             onClick={onMenuClick}
-            className="lg:hidden p-2 rounded-md text-gray-400 hover:text-gray-500 hover:bg-gray-100"
+            className="lg:hidden p-2 rounded-md text-gray-400 hover:text-gray-500 hover:bg-gray-100 min-w-[44px] min-h-[44px]"
           >
             <Menu className="h-6 w-6" />
           </button>
@@ -36,13 +36,13 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick }) => {
           </div>
         </div>
         
-        <div className="flex items-center space-x-4">
-          <button className="p-2 text-gray-400 hover:text-gray-500 relative">
+        <div className="flex items-center space-x-2 md:space-x-4">
+          <button className="p-2 text-gray-400 hover:text-gray-500 relative min-w-[44px] min-h-[44px]">
             <Bell className="h-6 w-6" />
             <span className="absolute top-0 right-0 h-2 w-2 bg-red-500 rounded-full"></span>
           </button>
           
-          <div className="flex items-center space-x-3 relative group">
+          <div className="flex items-center space-x-2 md:space-x-3 relative group">
             <div className="text-right hidden sm:block">
               <div className="text-sm font-medium text-gray-900">
                 {user?.user_metadata?.full_name || user?.email}
@@ -51,7 +51,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick }) => {
                 {user?.user_metadata?.role || 'User'}
               </div>
             </div>
-            <div className="h-8 w-8 bg-blue-500 rounded-full flex items-center justify-center">
+            <div className="h-10 w-10 bg-blue-500 rounded-full flex items-center justify-center">
               <span className="text-white text-sm font-medium">
                 {user?.user_metadata?.full_name?.charAt(0) || user?.email?.charAt(0) || 'U'}
               </span>
