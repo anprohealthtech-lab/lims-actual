@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { X, Edit2, Save, AlertCircle, Plus } from 'lucide-react';
-import { supabase } from '../../utils/supabase';
+import { database } from '../../utils/supabase';
 
 interface Analyte {
   id: string;
@@ -48,22 +48,28 @@ export const EditAnalyteModal: React.FC<EditAnalyteModalProps> = ({
         throw new Error('Analyte name is required');
       }
 
-      // Update analyte in database
-      const { error: updateError } = await supabase
-        .from('analytes')
-        .update({
+      // Get current lab ID
+      const labId = await database.getCurrentUserLabId();
+      if (!labId) {
+        throw new Error('Unable to determine lab context');
+      }
+
+      // Update lab_analytes table (lab-specific) instead of global analytes
+      const { data, error: updateError } = await database.labAnalytes.updateLabSpecific(
+        labId,
+        formData.id, // analyte_id
+        {
+          // Update actual values
           name: formData.name.trim(),
           unit: formData.unit.trim(),
           reference_range: formData.reference_range.trim(),
           category: formData.category,
-          method: formData.method?.trim() || null,
-          description: formData.description?.trim() || null,
-          is_critical: formData.is_critical || false,
-          normal_range_min: formData.normal_range_min || null,
-          normal_range_max: formData.normal_range_max || null,
-          updated_at: new Date().toISOString()
-        })
-        .eq('id', formData.id);
+          // Set lab_specific_* fields to mark as customized
+          lab_specific_name: formData.name.trim(),
+          lab_specific_unit: formData.unit.trim(),
+          lab_specific_reference_range: formData.reference_range.trim(),
+        }
+      );
 
       if (updateError) {
         throw updateError;

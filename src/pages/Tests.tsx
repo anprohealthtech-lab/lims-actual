@@ -9,7 +9,7 @@ import TestDetailModal from '../components/Tests/TestDetailModal';
 import AnalyteDetailModal from '../components/Tests/AnalyteDetailModal';
 import TestGroupDetailModal from '../components/Tests/TestGroupDetailModal';
 import PackageDetailModal from '../components/Tests/PackageDetailModal';
-import EditAnalyteModal from '../components/Tests/EditAnalyteModal';
+import { SimpleAnalyteEditor } from '../components/TestGroups/SimpleAnalyteEditor';
 
 interface Test {
   id: string;
@@ -410,28 +410,48 @@ const Tests: React.FC = () => {
     
     console.log('Updating analyte with data:', formData);
     try {
-      const { data: updatedAnalyte, error } = await database.analytes.update(editingAnalyte.id, {
-        name: formData.name,
-        unit: formData.unit,
-        reference_range: formData.referenceRange,
-        low_critical: formData.lowCritical,
-        high_critical: formData.highCritical,
-        interpretation_low: formData.interpretation?.low,
-        interpretation_normal: formData.interpretation?.normal,
-        interpretation_high: formData.interpretation?.high,
-        category: formData.category,
-        is_active: formData.isActive,
-      });
+      // Get current lab ID
+      const labId = await database.getCurrentUserLabId();
+      if (!labId) {
+        alert('Unable to determine lab context. Please try again.');
+        return;
+      }
+
+      // Update lab_analytes table (lab-specific copy) instead of global analytes
+      const { data: updatedAnalyte, error } = await database.labAnalytes.updateLabSpecific(
+        labId,
+        editingAnalyte.id, // This is the analyte_id
+        {
+          // Update actual values in lab_analytes
+          name: formData.name,
+          unit: formData.unit,
+          reference_range: formData.referenceRange,
+          low_critical: formData.lowCritical,
+          high_critical: formData.highCritical,
+          interpretation_low: formData.interpretation?.low,
+          interpretation_normal: formData.interpretation?.normal,
+          interpretation_high: formData.interpretation?.high,
+          category: formData.category,
+          is_active: formData.isActive,
+          // Set lab_specific_* fields to mark customization (prevents global sync overwrite)
+          lab_specific_name: formData.name,
+          lab_specific_unit: formData.unit,
+          lab_specific_reference_range: formData.referenceRange,
+          lab_specific_interpretation_low: formData.interpretation?.low,
+          lab_specific_interpretation_normal: formData.interpretation?.normal,
+          lab_specific_interpretation_high: formData.interpretation?.high,
+        }
+      );
       
       if (error) {
-        console.error('Error updating analyte:', error);
+        console.error('Error updating lab analyte:', error);
         alert('Failed to update analyte. Please try again.');
         return;
       }
       
       if (updatedAnalyte) {
         const transformedAnalyte = {
-          id: updatedAnalyte.id,
+          id: updatedAnalyte.analyte_id || editingAnalyte.id, // Use analyte_id from lab_analytes
           name: updatedAnalyte.name,
           unit: updatedAnalyte.unit,
           referenceRange: updatedAnalyte.reference_range,
@@ -446,7 +466,7 @@ const Tests: React.FC = () => {
         setAnalytes(prev => prev.map(a => a.id === editingAnalyte.id ? transformedAnalyte : a));
         setShowEditAnalyteModal(false);
         setEditingAnalyte(null);
-        alert('Analyte updated successfully!');
+        alert('Analyte updated successfully! (Lab-specific customization saved)');
       }
     } catch (error) {
       console.error('Unexpected error:', error);
@@ -881,11 +901,10 @@ const Tests: React.FC = () => {
 
       {/* Edit Analyte Modal */}
       {showEditAnalyteModal && editingAnalyte && (
-        <EditAnalyteModal
+        <SimpleAnalyteEditor
           analyte={editingAnalyte}
-          isOpen={showEditAnalyteModal}
-          onClose={handleCloseAnalyteModal}
           onSave={handleUpdateAnalyte}
+          onCancel={handleCloseAnalyteModal}
         />
       )}
     </div>

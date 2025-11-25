@@ -12,6 +12,7 @@
 // ===========================================================
 
 import React, { useState } from "react";
+import ReactDOM from "react-dom";
 import {
   X,
   Upload,
@@ -196,7 +197,7 @@ const getWorkflowSteps = (currentStatus: string, order?: any): WorkflowStep[] =>
 const getNextSteps = (currentStatus: string, order: any): NextStep[] => {
   // Normalize status - handle both old and new status names
   const hasSample = !!order?.sample_collected_at;
-  
+
   switch (currentStatus) {
     case "Order Created":
     case "Pending Collection":
@@ -287,39 +288,39 @@ const getNextSteps = (currentStatus: string, order: any): NextStep[] => {
   }
 };
 
-  // Delete a single attachment (from batch thumbnail outside viewer)
-  const handleDeleteAttachment = async (attachmentId: string) => {
-    if (!confirm('Are you sure you want to delete this image?')) return;
-    try {
-      const { data: att, error: fetchError } = await supabase
+// Delete a single attachment (from batch thumbnail outside viewer)
+const handleDeleteAttachment = async (attachmentId: string) => {
+  if (!confirm('Are you sure you want to delete this image?')) return;
+  try {
+    const { data: att, error: fetchError } = await supabase
+      .from('attachments')
+      .select('file_path')
+      .eq('id', attachmentId)
+      .single();
+    if (fetchError) throw fetchError;
+
+    if (att?.file_path) {
+      const { error: storageError } = await supabase.storage
         .from('attachments')
-        .select('file_path')
-        .eq('id', attachmentId)
-        .single();
-      if (fetchError) throw fetchError;
-
-      if (att?.file_path) {
-        const { error: storageError } = await supabase.storage
-          .from('attachments')
-          .remove([att.file_path]);
-        if (storageError) console.warn('Storage delete error:', storageError);
-      }
-
-      const { error: deleteError } = await supabase
-        .from('attachments')
-        .delete()
-        .eq('id', attachmentId);
-      if (deleteError) throw deleteError;
-
-      // Refresh lists
-      fetchUploadBatches();
-      fetchAttachmentsForOrder();
-
-    } catch (error) {
-      console.error('Error deleting attachment:', error);
-      alert('Failed to delete image');
+        .remove([att.file_path]);
+      if (storageError) console.warn('Storage delete error:', storageError);
     }
-  };
+
+    const { error: deleteError } = await supabase
+      .from('attachments')
+      .delete()
+      .eq('id', attachmentId);
+    if (deleteError) throw deleteError;
+
+    // Refresh lists
+    fetchUploadBatches();
+    fetchAttachmentsForOrder();
+
+  } catch (error) {
+    console.error('Error deleting attachment:', error);
+    alert('Failed to delete image');
+  }
+};
 
 const getAvailableStatusActions = (
   currentStatus: string,
@@ -368,7 +369,7 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
   const [isOCRProcessing, setIsOCRProcessing] = useState(false);
   const [ocrResults, setOcrResults] = useState<any>(null);
   const [ocrError, setOcrError] = useState<string | null>(null);
-  
+
   // Multi-image batch support
   const [showMultiUpload, setShowMultiUpload] = useState(false);
   const [uploadBatches, setUploadBatches] = useState<any[]>([]);
@@ -376,12 +377,12 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
   const [showBatchViewer, setShowBatchViewer] = useState(false);
   const [selectedImageId, setSelectedImageId] = useState<string | null>(null);
   const [showImageViewer, setShowImageViewer] = useState(false);
-  
+
   // AI analysis for multi-image
   const [selectedBatchForAI, setSelectedBatchForAI] = useState<any | null>(null);
   const [multiImageAIInstructions, setMultiImageAIInstructions] = useState<string>('');
   const [availableImagesForAI, setAvailableImagesForAI] = useState<any[]>([]);
-  
+
   // Test-level attachment support
   const [uploadScope, setUploadScope] = useState<'order' | 'test'>('order');
   const [selectedTestId, setSelectedTestId] = useState<string>('');
@@ -400,7 +401,7 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
     ts?: string;
   };
 
-  const [aiPhase, setAiPhase] = useState<"idle"|"running"|"done"|"error">("idle");
+  const [aiPhase, setAiPhase] = useState<"idle" | "running" | "done" | "error">("idle");
   const [aiSteps, setAiSteps] = useState<AiStep[]>([]);
   const [aiProgress, setAiProgress] = useState(0);
   const [aiMatchedCount, setAiMatchedCount] = useState(0);
@@ -471,13 +472,13 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
     setAiProgress(4);
     setAiMatchedCount(0);
     setAiSteps([
-      { id: "prep",   label: "Preparing runtime",              status: "doing", ts: new Date().toISOString() },
-      { id: "attach", label: "Validating uploaded attachment", status: "todo"  },
-      { id: "vision", label: "Extracting text (Vision OCR)",   status: "todo"  },
-      { id: "nlp",    label: "Parsing & normalizing (Gemini)", status: "todo"  },
-      { id: "match",  label: "Matching to analytes catalog",   status: "todo"  },
-      { id: "fill",   label: "Autofilling result grid",        status: "todo"  },
-      { id: "final",  label: "Finalizing",                     status: "todo"  },
+      { id: "prep", label: "Preparing runtime", status: "doing", ts: new Date().toISOString() },
+      { id: "attach", label: "Validating uploaded attachment", status: "todo" },
+      { id: "vision", label: "Extracting text (Vision OCR)", status: "todo" },
+      { id: "nlp", label: "Parsing & normalizing (Gemini)", status: "todo" },
+      { id: "match", label: "Matching to analytes catalog", status: "todo" },
+      { id: "fill", label: "Autofilling result grid", status: "todo" },
+      { id: "final", label: "Finalizing", status: "todo" },
     ]);
   };
 
@@ -513,7 +514,7 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
   // Get all available order tests for test selection
   const availableOrderTests = React.useMemo(() => {
     return testGroups
-      .filter(tg => tg.order_test_id) 
+      .filter(tg => tg.order_test_id)
       .map(tg => ({
         id: tg.order_test_id!,
         name: tg.test_group_name
@@ -567,12 +568,12 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
         }));
 
         setAttachments(resolvedData);
-        
+
         // Set active attachment and enable AI if images exist
         if (!activeAttachment && resolvedData.length) {
           setActiveAttachment(resolvedData[0]);
           setAttachmentId(resolvedData[0].id);
-          
+
           // Check if there are multiple images in the same batch
           const sameBatch = resolvedData.filter(att => att.batch_id === resolvedData[0].batch_id);
           if (sameBatch.length > 1) {
@@ -582,7 +583,7 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
               batchId: resolvedData[0]?.batch_id,
               files: sameBatch,
             });
-            
+
             const imageReferences = sameBatch.map((att: any) => att.image_label || `Image ${att.batch_sequence || 1}`).join(', ');
             setMultiImageAIInstructions(
               `Analyze uploaded images (${imageReferences}):\n` +
@@ -1007,10 +1008,10 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
     try {
       // Refresh the batches list
       await fetchUploadBatches();
-      
+
       // Refresh the attachments list
       await fetchAttachmentsForOrder();
-      
+
       // Update AI analysis state for the new batch
       if (batch.files && batch.files.length > 0) {
         const normalizedFiles = batch.files.map((file: any) => ({
@@ -1025,12 +1026,12 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
           files: normalizedFiles,
         });
         setAvailableImagesForAI(normalizedFiles);
-        
+
         // Set default multi-image AI instructions
-        const imageReferences = normalizedFiles.map((file: any, index: number) => 
+        const imageReferences = normalizedFiles.map((file: any, index: number) =>
           `Image ${index + 1}`
         ).join(', ');
-        
+
         setMultiImageAIInstructions(
           `Please analyze the uploaded images (${imageReferences}):\n` +
           `- From Image 1: Extract primary test results and measurements\n` +
@@ -1038,19 +1039,19 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
           (normalizedFiles.length > 2 ? `- From Image 3+: Extract additional data and quality indicators\n` : '') +
           `\nProvide results mapped to each image reference.`
         );
-        
+
         // Set the first attachment for compatibility with existing AI system
         setAttachmentId(normalizedFiles[0].id);
         setActiveAttachment(normalizedFiles[0]);
         setUploadedFile(normalizedFiles[0].file || null);
       }
-      
+
       // Close the multi-upload modal
       setShowMultiUpload(false);
-      
+
       // Show success message with AI hint
       alert(`Successfully uploaded ${batch.totalFiles} files as batch! AI analysis is now available for multi-image processing.`);
-      
+
     } catch (error) {
       console.error('Error handling batch completion:', error);
       alert('Upload completed but failed to refresh the file list.');
@@ -1092,13 +1093,13 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
         ...attachment,
         resolved_file_url: attachment.resolved_file_url || attachment.imagekit_url || attachment.processed_url || attachment.file_url,
       };
-      
+
       setAttachmentId(enrichedAttachment.id);
       setUploadedFile(file);
       // refresh visible list
       setAttachments(prev => [enrichedAttachment, ...prev]);
       if (!activeAttachment) setActiveAttachment(enrichedAttachment);
-      
+
       // mark("upload", "ok", { name: file.name }); // Comment out until mark function is available
     } catch (err) {
       console.error("Error uploading file:", err);
@@ -1121,7 +1122,7 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
         // First check and request permissions
         const { Camera } = await import('@capacitor/camera');
         const permissions = await Camera.checkPermissions();
-        
+
         if (permissions.camera !== 'granted') {
           const requested = await Camera.requestPermissions();
           if (requested.camera !== 'granted') {
@@ -1155,7 +1156,7 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
 
         // Process the file using existing handler
         handleFileUpload(file);
-        
+
         console.log('Photo captured and uploaded successfully');
       } catch (error: any) {
         console.error('Camera capture error:', error);
@@ -1181,7 +1182,7 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
     try {
       // Refresh attachment list
       await fetchAttachmentsForOrder();
-      
+
       const normalizedBatch = {
         ...batch,
         files: (batch.files || []).map((file: any) => ({
@@ -1192,13 +1193,13 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
 
       // Add to batch list
       setUploadBatches(prev => [normalizedBatch, ...prev]);
-      
+
       // Close multi-upload interface
       setShowMultiUpload(false);
-      
+
       // Show success message
       alert(`Successfully uploaded ${batch.files.length} images in batch!`);
-      
+
     } catch (error) {
       console.error('Error handling batch upload completion:', error);
     }
@@ -1213,7 +1214,7 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
   // Handle deleting a batch
   const handleDeleteBatch = async (batch: any) => {
     const confirmMessage = `Are you sure you want to delete this batch with ${batch.total_files} images? This action cannot be undone.`;
-    
+
     if (confirm(confirmMessage)) {
       try {
         // Fetch attachments for the batch
@@ -1261,7 +1262,7 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
         await loadExistingAttachments();
 
         alert('Batch deleted successfully');
-        
+
       } catch (error) {
         console.error('Error deleting batch:', error);
         alert('Failed to delete batch. Please try again.');
@@ -1284,14 +1285,14 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
 
     try {
       aiMark("attach", { status: "doing" });
-      
+
       // Check for attachments (single or batch)
-      if (!attachmentId && (!selectedBatchForAI || !availableImagesForAI.length)) { 
-        aiFail("attach","No attachments found. Upload images first."); 
-        setIsOCRProcessing(false); 
-        return; 
+      if (!attachmentId && (!selectedBatchForAI || !availableImagesForAI.length)) {
+        aiFail("attach", "No attachments found. Upload images first.");
+        setIsOCRProcessing(false);
+        return;
       }
-      
+
       // Determine target test group FIRST (before filtering images)
       const targetTestGroup =
         (selectedTestGroup && testGroups.find((tg) => tg.test_group_id === selectedTestGroup)) ||
@@ -1302,11 +1303,11 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
         testGroups[0];
 
       const targetTestGroupId = targetTestGroup?.test_group_id || null;
-      
+
       // Filter images for the selected test group ONLY
       // If user selected a specific test group, only use images tagged for that test group
       let imagesForThisTest = availableImagesForAI;
-      
+
       if (targetTestGroupId && availableImagesForAI.length > 1) {
         // Filter to only images assigned to this test group
         const filteredImages = availableImagesForAI.filter((img: any) => {
@@ -1315,7 +1316,7 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
           // If no test group assigned to image, OR matches target test group
           return !imgTestGroupId || imgTestGroupId === targetTestGroupId;
         });
-        
+
         if (filteredImages.length > 0) {
           imagesForThisTest = filteredImages;
           console.log(`Filtered ${imagesForThisTest.length} images for test group:`, targetTestGroup?.test_group_name);
@@ -1324,17 +1325,17 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
           console.warn(`No images found for test group ${targetTestGroup?.test_group_name}, using all available images`);
         }
       }
-      
+
       const isMultiImage = imagesForThisTest.length > 1;
-      const attachmentDetail = isMultiImage 
-        ? `${imagesForThisTest.length} images for ${targetTestGroup?.test_group_name || 'test'}` 
+      const attachmentDetail = isMultiImage
+        ? `${imagesForThisTest.length} images for ${targetTestGroup?.test_group_name || 'test'}`
         : "Single image";
-      
+
       aiMark("attach", { status: "done", detail: attachmentDetail });
 
       aiMark("vision", { status: "doing" });
       const processingType = analyteConfig?.type || aiProcessingConfig?.type || "ocr_report";
-      const customPrompt   = analyteConfig?.prompt || aiProcessingConfig?.prompt;
+      const customPrompt = analyteConfig?.prompt || aiProcessingConfig?.prompt;
 
       const activeTestGroupKey = targetTestGroupId || 'order';
 
@@ -1385,7 +1386,7 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
       // Use filtered images for reference
       // When using batch mode with multiple images, include ALL images in referenceImages
       const useAllImagesInBatch = !attachmentId && imagesForThisTest.length > 0;
-      
+
       const referenceImagesForVision = imagesForThisTest
         .filter((img: any) => useAllImagesInBatch || !attachmentId || img.id !== attachmentId)
         .map((img: any) => {
@@ -1416,21 +1417,21 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
           customPrompt || (imagesForThisTest.length > 1 ? multiImageAIInstructions : undefined),
       };
 
-      const visionResponse = await supabase.functions.invoke("vision-ocr", { 
+      const visionResponse = await supabase.functions.invoke("vision-ocr", {
         body: visionPayload
       });
       if (visionResponse.error) throw new Error(visionResponse.error.message);
-      aiMark("vision", { status: "done", detail: (visionResponse.data?.fullText || "").slice(0,80) + "…" });
+      aiMark("vision", { status: "done", detail: (visionResponse.data?.fullText || "").slice(0, 80) + "…" });
 
       aiMark("nlp", { status: "doing" });
       const analytesToExtract = manualValues.filter(v => !v.value || (typeof v.value === 'string' && v.value.trim() === "")).map(v => v.parameter);
-      
+
       // Use the detected processing type from vision-ocr response (auto-detection result)
       const detectedProcessingType = visionResponse.data?.metadata?.aiProcessingType || processingType;
-      
+
       // Extract custom prompt from vision-ocr response (if available) or use manual selection
       const detectedCustomPrompt = visionResponse.data?.customPrompt || customPrompt || (imagesForThisTest.length > 1 ? multiImageAIInstructions : undefined);
-      
+
       // Prepare request body with multi-image support - USE FILTERED IMAGES
       const requestBody = {
         rawText: visionResponse.data?.fullText,
@@ -1455,11 +1456,11 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
         batchId: visionPayload.batchId,
         referenceImages: visionPayload.referenceImages,
       };
-      
+
       const geminiResponse = await supabase.functions.invoke("gemini-nlp", {
         body: requestBody,
-        headers: { 
-          "x-attachment-id": attachmentId, 
+        headers: {
+          "x-attachment-id": attachmentId,
           "x-order-id": order.id,
           "x-batch-id": visionPayload.batchId || "",
           "x-multi-image": imagesForThisTest.length > 1 ? "true" : "false",
@@ -1476,7 +1477,7 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
       // your existing shape-handling remains
       const foundCount =
         Array.isArray(result?.extractedParameters) ? result.extractedParameters.length :
-        (result && typeof result === "object" && !Array.isArray(result)) ? Object.keys(result).length : 0;
+          (result && typeof result === "object" && !Array.isArray(result)) ? Object.keys(result).length : 0;
 
       if (foundCount > 0) {
         if (
@@ -1608,16 +1609,16 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
       f === "H" || f === "High"
         ? "text-red-600 bg-red-100"
         : f === "L" || f === "Low"
-        ? "text-blue-600 bg-blue-100"
-        : f === "C" || f === "Critical"
-        ? "text-orange-600 bg-orange-100"
-        : "",
+          ? "text-blue-600 bg-blue-100"
+          : f === "C" || f === "Critical"
+            ? "text-orange-600 bg-orange-100"
+            : "",
     confidence: (c: number) =>
       c >= 0.95
         ? "text-green-600 bg-green-100"
         : c >= 0.9
-        ? "text-yellow-600 bg-yellow-100"
-        : "text-red-600 bg-red-100",
+          ? "text-yellow-600 bg-yellow-100"
+          : "text-red-600 bg-red-100",
   };
 
   const getAIProcessingTypeLabel = styleUtils.aiProcessingType.label;
@@ -1643,13 +1644,13 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
           const m = submitted.find((s) => s.parameter === a.name);
           return m
             ? {
-                ...a,
-                existing_result: {
-                  id: "local",
-                  value: m.value,
-                  status: "pending_verification",
-                },
-              }
+              ...a,
+              existing_result: {
+                id: "local",
+                value: m.value,
+                status: "pending_verification",
+              },
+            }
             : a;
         }),
       }))
@@ -1673,16 +1674,16 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
 
   // Popout input helpers
   const openPopoutInput = (
-    index: number, 
-    fieldName: keyof ExtractedValue, 
+    index: number,
+    fieldName: keyof ExtractedValue,
     currentValue: string,
     parameterName: string
   ) => {
-    const suggestions = fieldName === 'unit' 
+    const suggestions = fieldName === 'unit'
       ? ['mg/dL', 'g/dL', 'mmol/L', 'IU/L', 'ng/mL', '%', 'cells/μL', 'K/uL', 'M/uL', 'fl', 'pg']
       : fieldName === 'reference'
-      ? ['Normal', 'See lab reference', '0.5-1.2 mg/dL', '70-99 mg/dL', '4 - 11', '4.5 - 5.5', '11.5 - 14.5', '80 - 100', '27 - 31', '32 - 36']
-      : [];
+        ? ['Normal', 'See lab reference', '0.5-1.2 mg/dL', '70-99 mg/dL', '4 - 11', '4.5 - 5.5', '11.5 - 14.5', '80 - 100', '27 - 31', '32 - 36']
+        : [];
 
     setPopoutInput({
       isOpen: true,
@@ -1885,8 +1886,8 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
         {aiProcessingConfig?.type === "vision_card"
           ? "Test Card Image"
           : aiProcessingConfig?.type === "vision_color"
-          ? "Color Analysis Image"
-          : "Lab Result Document"}
+            ? "Color Analysis Image"
+            : "Lab Result Document"}
       </label>
 
       <div className="border-2 border-dashed border-purple-300 rounded-lg p-4 text-center hover:border-purple-400 transition-colors">
@@ -1920,7 +1921,7 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
                 <Upload className="h-8 w-8 text-purple-600" />
               </div>
             </div>
-            
+
             {/* Test selection for upload scope */}
             <div className="space-y-3 mb-4">
               <div className="flex items-center justify-center space-x-4">
@@ -1962,7 +1963,7 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
                   ))}
                 </select>
               )}
-              
+
               {uploadScope === 'test' && !selectedTestId && (
                 <p className="text-xs text-amber-600 text-center">
                   Please select a test to upload a test-specific attachment
@@ -1989,7 +1990,7 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
               <p className="text-xs text-gray-500 mt-1">
                 Reduces file size by up to 70% while maintaining quality. Recommended for faster uploads.
               </p>
-              
+
               {/* Optimization Progress */}
               {optimizationProgress && (
                 <div className="mt-3 p-2 bg-white rounded border">
@@ -1998,15 +1999,15 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
                     <span>{Math.round(optimizationProgress.progress)}%</span>
                   </div>
                   <div className="w-full bg-gray-200 rounded-full h-2">
-                    <div 
-                      className="bg-blue-600 h-2 rounded-full transition-all duration-300 ease-out" 
+                    <div
+                      className="bg-blue-600 h-2 rounded-full transition-all duration-300 ease-out"
                       style={{ width: `${optimizationProgress.progress}%` }}
                     />
                   </div>
                 </div>
               )}
             </div>
-            
+
             <div className="space-y-3">
               {/* Single File Upload with Camera Option */}
               <div className="flex flex-col sm:flex-row gap-2 justify-center">
@@ -2027,8 +2028,8 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
                       {aiProcessingConfig?.type === "vision_card"
                         ? "Test Card"
                         : aiProcessingConfig?.type === "vision_color"
-                        ? "Color Image"
-                        : "Document"}
+                          ? "Color Image"
+                          : "Document"}
                     </>
                   )}
                 </button>
@@ -2050,7 +2051,7 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
               <div className="text-center">
                 <span className="text-xs text-gray-400">or</span>
               </div>
-              
+
               <button
                 onClick={() => setShowMultiUpload(true)}
                 disabled={isUploading || (uploadScope === 'test' && !selectedTestId)}
@@ -2061,7 +2062,7 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
               </button>
 
               <p className="text-xs text-gray-500 mt-2">
-                Single: {aiProcessingConfig?.type === "ocr_report" ? "JPG, PNG, PDF" : "JPG, PNG"} (max 10MB)<br/>
+                Single: {aiProcessingConfig?.type === "ocr_report" ? "JPG, PNG, PDF" : "JPG, PNG"} (max 10MB)<br />
                 Multiple: JPG, PNG (up to 5 images, max 10MB each)
               </p>
               {aiProcessingConfig && (
@@ -2089,17 +2090,17 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
     entryMode: "manual" | "ai";
   }> = ({ testGroup, entryMode }) => {
     // ✅ Memoize expensive calculations to prevent re-renders
-    const testGroupValues = React.useMemo(() => 
+    const testGroupValues = React.useMemo(() =>
       manualValues.filter((v) => testGroup.analytes.some((a) => a.name === v.parameter)),
       [manualValues, testGroup.analytes]
     );
-    
-    const completedCount = React.useMemo(() => 
+
+    const completedCount = React.useMemo(() =>
       testGroupValues.filter((v) => v.value && typeof v.value === 'string' && v.value.trim() !== "").length,
       [testGroupValues]
     );
 
-    const pendingCount = React.useMemo(() => 
+    const pendingCount = React.useMemo(() =>
       testGroupValues.length - completedCount,
       [testGroupValues.length, completedCount]
     );
@@ -2109,17 +2110,16 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
         <div className="flex items-center justify-between mb-4">
           <div className="flex items-center space-x-4">
             <h4 className="text-lg font-medium">{testGroup.test_group_name}</h4>
-            
+
             {/* Sample Collection Status */}
             <div className="flex items-center gap-2">
-              <span className={`px-2 py-1 rounded-full text-xs font-medium ${
-                order.sample_collected_at 
-                  ? 'bg-green-100 text-green-800' 
-                  : 'bg-yellow-100 text-yellow-800'
-              }`}>
+              <span className={`px-2 py-1 rounded-full text-xs font-medium ${order.sample_collected_at
+                ? 'bg-green-100 text-green-800'
+                : 'bg-yellow-100 text-yellow-800'
+                }`}>
                 {order.sample_collected_at ? 'Sample Collected' : 'Sample Pending'}
               </span>
-              
+
               {/* Sample Collection Action Buttons */}
               {order.sample_collected_at ? (
                 <button
@@ -2171,7 +2171,7 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
               )}
             </div>
           </div>
-          
+
           <div className="flex items-center space-x-3">
             <span className="text-sm text-gray-500">
               {completedCount}/{testGroupValues.length} completed • {pendingCount} pending
@@ -2195,9 +2195,8 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
                 <div
                   key={analyte.id}
                   onClick={() => handleSelectAnalyteForAI(analyte)}
-                  className={`p-2 border rounded cursor-pointer transition-all ${
-                    selectedAnalyteForAI?.id === analyte.id ? "border-purple-500 bg-purple-100" : "border-gray-200 hover:border-gray-300"
-                  }`}
+                  className={`p-2 border rounded cursor-pointer transition-all ${selectedAnalyteForAI?.id === analyte.id ? "border-purple-500 bg-purple-100" : "border-gray-200 hover:border-gray-300"
+                    }`}
                 >
                   <div className="text-sm font-medium">{analyte.name}</div>
                   <span
@@ -2235,16 +2234,15 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
                         {value.parameter}
                       </div>
                     </td>
-                    
+
                     {/* ✅ Pop-out Value Input */}
                     <td className="px-4 py-3 min-w-[140px]">
                       <button
                         onClick={() => openPopoutInput(globalIndex, 'value', value.value, value.parameter)}
-                        className={`w-full px-3 py-2 border rounded-lg text-left transition-colors ${
-                          value.value && typeof value.value === 'string' && value.value.trim() 
-                            ? 'border-green-300 bg-green-50 hover:bg-green-100 text-green-800' 
-                            : 'border-gray-300 hover:border-blue-400 hover:bg-blue-50 text-gray-500'
-                        }`}
+                        className={`w-full px-3 py-2 border rounded-lg text-left transition-colors ${value.value && typeof value.value === 'string' && value.value.trim()
+                          ? 'border-green-300 bg-green-50 hover:bg-green-100 text-green-800'
+                          : 'border-gray-300 hover:border-blue-400 hover:bg-blue-50 text-gray-500'
+                          }`}
                       >
                         {value.value || 'Click to enter value...'}
                       </button>
@@ -2254,11 +2252,10 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
                     <td className="px-4 py-3 min-w-[120px]">
                       <button
                         onClick={() => openPopoutInput(globalIndex, 'unit', value.unit, value.parameter)}
-                        className={`w-full px-3 py-2 border rounded-lg text-left transition-colors ${
-                          value.unit && typeof value.unit === 'string' && value.unit.trim()
-                            ? 'border-blue-300 bg-blue-50 hover:bg-blue-100 text-blue-800'
-                            : 'border-gray-300 hover:border-blue-400 hover:bg-blue-50 text-gray-500'
-                        }`}
+                        className={`w-full px-3 py-2 border rounded-lg text-left transition-colors ${value.unit && typeof value.unit === 'string' && value.unit.trim()
+                          ? 'border-blue-300 bg-blue-50 hover:bg-blue-100 text-blue-800'
+                          : 'border-gray-300 hover:border-blue-400 hover:bg-blue-50 text-gray-500'
+                          }`}
                       >
                         {value.unit || 'Unit...'}
                       </button>
@@ -2268,11 +2265,10 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
                     <td className="px-4 py-3 min-w-[180px]">
                       <button
                         onClick={() => openPopoutInput(globalIndex, 'reference', value.reference, value.parameter)}
-                        className={`w-full px-3 py-2 border rounded-lg text-left transition-colors ${
-                          value.reference && typeof value.reference === 'string' && value.reference.trim()
-                            ? 'border-purple-300 bg-purple-50 hover:bg-purple-100 text-purple-800'
-                            : 'border-gray-300 hover:border-blue-400 hover:bg-blue-50 text-gray-500'
-                        }`}
+                        className={`w-full px-3 py-2 border rounded-lg text-left transition-colors ${value.reference && typeof value.reference === 'string' && value.reference.trim()
+                          ? 'border-purple-300 bg-purple-50 hover:bg-purple-100 text-purple-800'
+                          : 'border-gray-300 hover:border-blue-400 hover:bg-blue-50 text-gray-500'
+                          }`}
                       >
                         {value.reference || 'Reference range...'}
                       </button>
@@ -2328,7 +2324,7 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
   // #region Render
   // =========================================================
 
-  return (
+  return ReactDOM.createPortal(
     <div className="fixed inset-0 bg-gray-600 bg-opacity-75 flex items-center justify-center z-50 p-2 sm:p-4">
       <div className="bg-white rounded-lg shadow-xl w-full max-w-6xl max-h-[92vh] sm:max-h-[90vh] overflow-y-auto">
         {/* Header */}
@@ -2347,17 +2343,15 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
           <div className="flex space-x-6 sm:space-x-8 px-4 sm:px-6 overflow-x-auto">
             <button
               onClick={() => setActiveTab("details")}
-              className={`py-3 sm:py-4 text-sm font-medium border-b-2 transition-colors ${
-                activeTab === "details" ? "border-blue-500 text-blue-600" : "border-transparent text-gray-500 hover:text-gray-700"
-              }`}
+              className={`py-3 sm:py-4 text-sm font-medium border-b-2 transition-colors ${activeTab === "details" ? "border-blue-500 text-blue-600" : "border-transparent text-gray-500 hover:text-gray-700"
+                }`}
             >
               Order Details
             </button>
             <button
               onClick={() => setActiveTab("results")}
-              className={`py-3 sm:py-4 text-sm font-medium border-b-2 transition-colors ${
-                activeTab === "results" ? "border-blue-500 text-blue-600" : "border-transparent text-gray-500 hover:text-gray-700"
-              }`}
+              className={`py-3 sm:py-4 text-sm font-medium border-b-2 transition-colors ${activeTab === "results" ? "border-blue-500 text-blue-600" : "border-transparent text-gray-500 hover:text-gray-700"
+                }`}
             >
               AI Result Entry
             </button>
@@ -2393,100 +2387,148 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
                   <div className="text-sm text-gray-500">No attachments.</div>
                 ) : (
                   <>
-                    <div className="flex gap-2 overflow-x-auto pb-2">
-                      {attachments.map(a => (
-                        <button
-                          key={a.id}
-                          onClick={() => setActiveAttachment(a)}
-                          className={`px-3 py-2 rounded-lg border text-left whitespace-nowrap ${
-                            activeAttachment?.id === a.id ? "border-blue-500 ring-2 ring-blue-200" : "border-gray-200"
-                          }`}
-                          title={a.original_filename}
-                        >
-                          <div className="text-sm font-medium truncate max-w-[220px]">{a.original_filename}</div>
-                          <div className="text-xs text-gray-500">
-                            {(Number(a.file_size || 0) / 1048576).toFixed(2)} MB • {a.file_type || "file"}
-                          </div>
-                        </button>
-                      ))}
+                    {/* Horizontal Scroll List - Compact */}
+                    <div className="flex gap-3 overflow-x-auto pb-2 snap-x">
+                      {attachments.map(a => {
+                        const shortName = a.original_filename.length > 15
+                          ? a.original_filename.substring(0, 12) + '...' + a.original_filename.split('.').pop()
+                          : a.original_filename;
+
+                        return (
+                          <button
+                            key={a.id}
+                            onClick={() => setActiveAttachment(a)}
+                            className={`flex-shrink-0 w-32 p-2 rounded-lg border text-left snap-start transition-all ${activeAttachment?.id === a.id
+                              ? "border-blue-500 bg-blue-50 ring-1 ring-blue-500"
+                              : "border-gray-200 bg-white hover:border-gray-300"
+                              }`}
+                            title={a.original_filename}
+                          >
+                            <div className="h-20 bg-gray-100 rounded mb-2 overflow-hidden flex items-center justify-center">
+                              {a.file_type?.startsWith("image/") ? (
+                                <img
+                                  src={resolveAttachmentUrl(a)}
+                                  alt=""
+                                  className="w-full h-full object-cover"
+                                />
+                              ) : (
+                                <FileText className="h-8 w-8 text-gray-400" />
+                              )}
+                            </div>
+                            <div className="text-xs font-medium text-gray-900 truncate">{shortName}</div>
+                            <div className="text-[10px] text-gray-500 truncate">
+                              {(Number(a.file_size || 0) / 1024).toFixed(0)} KB
+                            </div>
+                          </button>
+                        );
+                      })}
                     </div>
 
-                    {/* Action Buttons */}
+                    {/* Active Attachment Details & Preview */}
                     {activeAttachment && (
-                      <div className="mt-3 flex gap-2 mb-2">
-                        {activeAttachment.file_type?.startsWith("image/") && (
+                      <div className="mt-4 space-y-4">
+                        {/* Info Grid */}
+                        <div className="bg-gray-50 rounded-lg p-3 grid grid-cols-2 gap-x-4 gap-y-2 text-xs">
+                          <div>
+                            <span className="text-gray-500 block">Filename</span>
+                            <span className="font-medium text-gray-900 break-all line-clamp-1">{activeAttachment.original_filename}</span>
+                          </div>
+                          <div>
+                            <span className="text-gray-500 block">Type</span>
+                            <span className="font-medium text-gray-900">{activeAttachment.file_type || "Unknown"}</span>
+                          </div>
+                          <div>
+                            <span className="text-gray-500 block">Size</span>
+                            <span className="font-medium text-gray-900">{(Number(activeAttachment.file_size || 0) / 1024).toFixed(1)} KB</span>
+                          </div>
+                          <div>
+                            <span className="text-gray-500 block">Uploaded</span>
+                            <span className="font-medium text-gray-900">{new Date(activeAttachment.upload_timestamp).toLocaleDateString()}</span>
+                          </div>
+                          {activeAttachment.description && (
+                            <div className="col-span-2 mt-1 pt-2 border-t border-gray-200">
+                              <span className="text-gray-500 block mb-1">Description</span>
+                              <details className="group">
+                                <summary className="font-medium text-gray-900 cursor-pointer list-none flex items-center gap-1">
+                                  <span className="line-clamp-1 group-open:hidden">{activeAttachment.description}</span>
+                                  <span className="hidden group-open:inline">{activeAttachment.description}</span>
+                                </summary>
+                              </details>
+                            </div>
+                          )}
+                        </div>
+
+                        {/* Action Buttons - Compact Row */}
+                        <div className="flex gap-2 overflow-x-auto no-scrollbar">
+                          {activeAttachment.file_type?.startsWith("image/") && (
+                            <button
+                              onClick={() => {
+                                setSelectedImageId(activeAttachment.id);
+                                setShowImageViewer(true);
+                              }}
+                              className="flex-shrink-0 px-3 py-2 bg-white border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 text-xs font-medium flex items-center gap-1.5"
+                            >
+                              <Maximize2 className="h-3.5 w-3.5" />
+                              View
+                            </button>
+                          )}
                           <button
                             onClick={() => {
-                              setSelectedImageId(activeAttachment.id);
-                              setShowImageViewer(true);
+                              const url = resolveAttachmentUrl(activeAttachment);
+                              if (url) window.open(url, '_blank');
                             }}
-                            className="px-3 py-1.5 bg-blue-100 text-blue-700 rounded-lg hover:bg-blue-200 transition-colors flex items-center gap-2 text-sm"
+                            className="flex-shrink-0 px-3 py-2 bg-white border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 text-xs font-medium flex items-center gap-1.5"
                           >
-                            <Maximize2 className="h-4 w-4" />
-                            View Full Size
+                            <ExternalLink className="h-3.5 w-3.5" />
+                            Open
                           </button>
-                        )}
-                        <button
-                          onClick={() => {
-                            const url = resolveAttachmentUrl(activeAttachment);
-                            if (url) {
-                              window.open(url, '_blank');
-                            }
-                          }}
-                          className="px-3 py-1.5 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 transition-colors flex items-center gap-2 text-sm"
-                        >
-                          <ExternalLink className="h-4 w-4" />
-                          Open in New Tab
-                        </button>
-                        <button
-                          onClick={() => {
-                            const link = document.createElement('a');
-                            const url = resolveAttachmentUrl(activeAttachment);
-                            if (!url) {
-                              console.warn('No resolved URL available for attachment download');
-                              return;
-                            }
-                            link.href = url;
-                            link.download = activeAttachment.original_filename;
-                            link.click();
-                          }}
-                          className="px-3 py-1.5 bg-green-100 text-green-700 rounded-lg hover:bg-green-200 transition-colors flex items-center gap-2 text-sm"
-                        >
-                          <Download className="h-4 w-4" />
-                          Download
-                        </button>
+                          <button
+                            onClick={() => {
+                              const link = document.createElement('a');
+                              const url = resolveAttachmentUrl(activeAttachment);
+                              if (!url) return;
+                              link.href = url;
+                              link.download = activeAttachment.original_filename;
+                              link.click();
+                            }}
+                            className="flex-shrink-0 px-3 py-2 bg-white border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 text-xs font-medium flex items-center gap-1.5"
+                          >
+                            <Download className="h-3.5 w-3.5" />
+                            Download
+                          </button>
+                        </div>
+
+                        {/* Preview Area */}
+                        <div className="border rounded-lg bg-gray-100 h-[300px] flex items-center justify-center overflow-hidden relative">
+                          {activeAttachment.file_type?.startsWith("image/") ? (
+                            <img
+                              src={resolveAttachmentUrl(activeAttachment)}
+                              alt={activeAttachment.original_filename}
+                              className="max-h-full max-w-full object-contain"
+                            />
+                          ) : activeAttachment.file_type === "application/pdf" ? (
+                            <iframe
+                              src={resolvePdfSrc(activeAttachment)}
+                              className="w-full h-full"
+                              title={activeAttachment.original_filename}
+                            />
+                          ) : (
+                            <div className="text-center p-4">
+                              <FileText className="h-12 w-12 text-gray-400 mx-auto mb-2" />
+                              <div className="text-sm text-gray-600">Preview not available</div>
+                              <a
+                                href={resolveAttachmentUrl(activeAttachment)}
+                                target="_blank"
+                                rel="noreferrer"
+                                className="text-xs text-blue-600 underline mt-1 block"
+                              >
+                                Open File
+                              </a>
+                            </div>
+                          )}
+                        </div>
                       </div>
                     )}
-
-                    <div className="border rounded-lg bg-gray-50 h-[420px] flex items-center justify-center overflow-hidden">
-                      {!activeAttachment ? (
-                        <div className="text-sm text-gray-500">Select an attachment to preview</div>
-                      ) : activeAttachment.file_type?.startsWith("image/") ? (
-                        <img
-                          src={resolveAttachmentUrl(activeAttachment)}
-                          alt={activeAttachment.original_filename}
-                          className="max-h-[400px] max-w-full object-contain"
-                        />
-                      ) : activeAttachment.file_type === "application/pdf" ? (
-                        <iframe
-                          src={resolvePdfSrc(activeAttachment)}
-                          className="w-full h-[420px]"
-                          title={activeAttachment.original_filename}
-                        />
-                      ) : (
-                        <div className="text-sm text-gray-600">
-                          Preview not available.{" "}
-                          <a
-                            href={resolveAttachmentUrl(activeAttachment)}
-                            target="_blank"
-                            rel="noreferrer"
-                            className="text-blue-600 underline"
-                          >
-                            Open
-                          </a>
-                        </div>
-                      )}
-                    </div>
                   </>
                 )}
               </div>
@@ -2515,13 +2557,12 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
                               {new Date(batch.created_at).toLocaleTimeString()}
                             </div>
                           </div>
-                          <span className={`px-2 py-1 text-xs font-medium rounded ${
-                            batch.batch_status === 'completed' 
-                              ? 'bg-green-100 text-green-800'
-                              : batch.batch_status === 'failed'
-                              ? 'bg-red-100 text-red-800' 
+                          <span className={`px-2 py-1 text-xs font-medium rounded ${batch.batch_status === 'completed'
+                            ? 'bg-green-100 text-green-800'
+                            : batch.batch_status === 'failed'
+                              ? 'bg-red-100 text-red-800'
                               : 'bg-yellow-100 text-yellow-800'
-                          }`}>
+                            }`}>
                             {batch.batch_status}
                           </span>
                         </div>
@@ -2807,9 +2848,8 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
                     {getWorkflowSteps(order.status, order).map((step, index) => (
                       <div key={step.name} className="flex items-center space-x-3">
                         <div
-                          className={`w-8 h-8 rounded-full flex items-center justify-center text-sm font-medium ${
-                            step.completed ? "bg-green-500 text-white" : step.current ? "bg-blue-500 text-white" : "bg-gray-200 text-gray-600"
-                          }`}
+                          className={`w-8 h-8 rounded-full flex items-center justify-center text-sm font-medium ${step.completed ? "bg-green-500 text-white" : step.current ? "bg-blue-500 text-white" : "bg-gray-200 text-gray-600"
+                            }`}
                         >
                           {step.completed ? <CheckCircle className="h-4 w-4" /> : index + 1}
                         </div>
@@ -2836,9 +2876,8 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
                     {getNextSteps(order.status, order).map((step, index) => (
                       <div
                         key={index}
-                        className={`p-4 rounded-lg border-l-4 ${
-                          step.urgent ? "bg-red-50 border-red-400" : step.priority === "high" ? "bg-orange-50 border-orange-400" : "bg-blue-50 border-blue-400"
-                        }`}
+                        className={`p-4 rounded-lg border-l-4 ${step.urgent ? "bg-red-50 border-red-400" : step.priority === "high" ? "bg-orange-50 border-orange-400" : "bg-blue-50 border-blue-400"
+                          }`}
                       >
                         <div className={`font-medium ${step.urgent ? "text-red-900" : step.priority === "high" ? "text-orange-900" : "text-blue-900"}`}>
                           {step.action}
@@ -2890,7 +2929,7 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
                           ))}
                         </div>
                       </div>
-                      
+
                       {/* AI Instructions Preview */}
                       <details className="mt-3">
                         <summary className="text-xs text-blue-600 cursor-pointer hover:text-blue-800">
@@ -2920,8 +2959,8 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
                         className="inline-flex items-center px-3 py-1.5 rounded-md bg-gradient-to-r from-purple-600 to-blue-600 text-white
                                    disabled:from-gray-400 disabled:to-gray-400"
                       >
-                        {isOCRProcessing ? "Analysing…" : 
-                         availableImagesForAI.length > 1 ? "Analyze All Images" : "Process with AI"}
+                        {isOCRProcessing ? "Analysing…" :
+                          availableImagesForAI.length > 1 ? "Analyze All Images" : "Process with AI"}
                       </button>
                     </div>
                   </div>
@@ -2946,8 +2985,8 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
                           <div key={s.id} className="flex items-start gap-2">
                             <span className={`mt-1 h-3 w-3 rounded-full
                                               ${s.status === "done" ? "bg-green-400" :
-                                                s.status === "doing" ? "bg-cyan-400" :
-                                                s.status === "error" ? "bg-red-400" : "bg-slate-600"}`} />
+                                s.status === "doing" ? "bg-cyan-400" :
+                                  s.status === "error" ? "bg-red-400" : "bg-slate-600"}`} />
                             <div>
                               <div className="text-[11px]">
                                 <span className="text-slate-300">{s.label}</span>
@@ -2963,9 +3002,9 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
                         <div className={`mt-3 p-2 rounded ${aiPhase === "done" && aiMatchedCount > 0
                           ? "bg-green-700/30 text-green-200"
                           : aiPhase === "done"
-                          ? "bg-yellow-700/30 text-yellow-200"
-                          : "bg-red-700/30 text-red-200"}`}>
-                          {aiPhase === "done" && aiMatchedCount > 0 && <>AI filled <b>{aiMatchedCount}</b> parameter{aiMatchedCount>1?"s":""}. Review & submit.</>}
+                            ? "bg-yellow-700/30 text-yellow-200"
+                            : "bg-red-700/30 text-red-200"}`}>
+                          {aiPhase === "done" && aiMatchedCount > 0 && <>AI filled <b>{aiMatchedCount}</b> parameter{aiMatchedCount > 1 ? "s" : ""}. Review & submit.</>}
                           {aiPhase === "done" && aiMatchedCount === 0 && <>No parameters recognized. Please enter values manually.</>}
                           {aiPhase === "error" && <>AI processing failed. Try again or enter manually.</>}
                         </div>
@@ -2974,14 +3013,14 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
                   </div>
 
                   {aiPhase === "done" && (
-                    <div className={`mt-4 p-3 rounded-lg ${aiMatchedCount>0 ? "bg-green-50 border border-green-200 text-green-800"
-                                                                             : "bg-yellow-50 border border-yellow-200 text-yellow-800"}`}>
+                    <div className={`mt-4 p-3 rounded-lg ${aiMatchedCount > 0 ? "bg-green-50 border border-green-200 text-green-800"
+                      : "bg-yellow-50 border border-yellow-200 text-yellow-800"}`}>
                       <div className="flex items-start justify-between">
                         <div>
-                          {aiMatchedCount>0
+                          {aiMatchedCount > 0
                             ? <>AI filled <b>{aiMatchedCount}</b> parameters. Review & submit.</>
                             : <>No parameters recognized. Please enter values manually.</>}
-                          
+
                           {/* Multi-image processing summary */}
                           {availableImagesForAI.length > 1 && (
                             <div className="mt-2 text-sm opacity-75">
@@ -2997,7 +3036,7 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
                             </div>
                           )}
                         </div>
-                        
+
                         {availableImagesForAI.length > 1 && (
                           <button
                             onClick={() => setShowBatchViewer(true)}
@@ -3038,17 +3077,15 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
                   <div className="flex bg-gray-100 rounded-lg p-1">
                     <button
                       onClick={() => setActiveEntryMode("manual")}
-                      className={`px-4 py-2 rounded-md text-sm font-medium transition-colors ${
-                        activeEntryMode === "manual" ? "bg-white text-blue-600 shadow-sm" : "text-gray-600 hover:text-gray-900"
-                      }`}
+                      className={`px-4 py-2 rounded-md text-sm font-medium transition-colors ${activeEntryMode === "manual" ? "bg-white text-blue-600 shadow-sm" : "text-gray-600 hover:text-gray-900"
+                        }`}
                     >
                       Manual Entry
                     </button>
                     <button
                       onClick={() => setActiveEntryMode("ai")}
-                      className={`px-4 py-2 rounded-md text-sm font-medium transition-colors ${
-                        activeEntryMode === "ai" ? "bg-white text-blue-600 shadow-sm" : "text-gray-600 hover:text-gray-900"
-                      }`}
+                      className={`px-4 py-2 rounded-md text-sm font-medium transition-colors ${activeEntryMode === "ai" ? "bg-white text-blue-600 shadow-sm" : "text-gray-600 hover:text-gray-900"
+                        }`}
                     >
                       AI Upload
                     </button>
@@ -3083,11 +3120,10 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
 
                 {saveMessage && (
                   <div
-                    className={`mt-4 p-3 rounded-lg ${
-                      saveMessage.includes("successfully")
-                        ? "bg-green-50 border border-green-200 text-green-700"
-                        : "bg-red-50 border border-red-200 text-red-700"
-                    }`}
+                    className={`mt-4 p-3 rounded-lg ${saveMessage.includes("successfully")
+                      ? "bg-green-50 border border-green-200 text-green-700"
+                      : "bg-red-50 border border-red-200 text-red-700"
+                      }`}
                   >
                     <div className="flex items-center">
                       {saveMessage.includes("successfully") ? (
@@ -3229,7 +3265,7 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
                   fetchAttachmentsForOrder();
                   setShowBatchViewer(false);
                   setSelectedBatch(null);
-                  
+
                   // Update AI state if this was the selected batch for AI
                   if (selectedBatchForAI?.id === batchId) {
                     setSelectedBatchForAI(null);
@@ -3280,7 +3316,8 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
         suggestions={popoutInput?.suggestions}
       />
 
-    </div>
+    </div>,
+    document.body
   );
 };
 

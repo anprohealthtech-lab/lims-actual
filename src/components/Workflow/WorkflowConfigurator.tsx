@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { Plus, Trash2, Settings, Save, X, TestTube, Zap } from 'lucide-react';
-import { supabase } from '../../utils/supabase';
+import { supabase, database } from '../../utils/supabase';
 
 interface TestGroup {
   id: string;
@@ -62,17 +62,24 @@ export const WorkflowConfigurator: React.FC<WorkflowConfiguratorProps> = ({
     try {
       setLoading(true);
 
-      // Load test groups
+      // Get current user's lab_id
+      const lab_id = await database.getCurrentUserLabId();
+      if (!lab_id) {
+        console.error('No lab context found');
+        setLoading(false);
+        return;
+      }
+
+      // Load test groups (lab-scoped)
       const { data: testGroupsData } = await supabase
         .from('test_groups')
         .select('id, name, category, code')
+        .eq('is_active', true)
+        .or(`lab_id.eq.${lab_id},lab_id.is.null`)
         .order('name');
 
-      // Load analytes
-      const { data: analytesData } = await supabase
-        .from('analytes')
-        .select('id, name, unit, category')
-        .order('name');
+      // Load analytes (lab-scoped using database API)
+      const { data: analytesData } = await database.analytes.getAll();
 
       // Load workflow versions
       const { data: workflowVersionsData } = await supabase

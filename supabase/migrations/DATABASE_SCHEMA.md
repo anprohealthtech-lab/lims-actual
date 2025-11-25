@@ -168,9 +168,9 @@ CREATE TABLE public.analyte_aliases (
 );
 CREATE TABLE public.analytes (
   id uuid NOT NULL DEFAULT gen_random_uuid(),
-  name character varying NOT NULL UNIQUE,
+  name character varying NOT NULL,
   unit character varying NOT NULL,
-  reference_range text NOT NULL,
+  reference_range text,
   low_critical character varying,
   high_critical character varying,
   interpretation_low text,
@@ -187,6 +187,7 @@ CREATE TABLE public.analytes (
   to_be_copied boolean DEFAULT false,
   reference_range_male text,
   reference_range_female text,
+  test_kind text,
   CONSTRAINT analytes_pkey PRIMARY KEY (id)
 );
 CREATE TABLE public.attachment_batches (
@@ -459,8 +460,8 @@ CREATE TABLE public.lab_analytes (
   low_critical numeric,
   high_critical numeric,
   CONSTRAINT lab_analytes_pkey PRIMARY KEY (id),
-  CONSTRAINT lab_analytes_lab_id_fkey FOREIGN KEY (lab_id) REFERENCES public.labs(id),
-  CONSTRAINT lab_analytes_analyte_id_fkey FOREIGN KEY (analyte_id) REFERENCES public.analytes(id)
+  CONSTRAINT lab_analytes_analyte_id_fkey FOREIGN KEY (analyte_id) REFERENCES public.analytes(id),
+  CONSTRAINT lab_analytes_lab_id_fkey FOREIGN KEY (lab_id) REFERENCES public.labs(id)
 );
 CREATE TABLE public.lab_branding_assets (
   id uuid NOT NULL DEFAULT gen_random_uuid(),
@@ -1047,7 +1048,7 @@ CREATE TABLE public.test_group_analytes (
 CREATE TABLE public.test_groups (
   id uuid NOT NULL DEFAULT gen_random_uuid(),
   name character varying NOT NULL,
-  code character varying NOT NULL UNIQUE,
+  code character varying NOT NULL,
   category character varying NOT NULL,
   clinical_purpose text NOT NULL,
   price numeric NOT NULL CHECK (price >= 0::numeric),

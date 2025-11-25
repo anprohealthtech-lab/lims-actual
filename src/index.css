@@ -1,3 +1,6 @@
+/* Import mobile Android optimizations first */
+@import './styles/mobile-android.css';
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
@@ -185,4 +188,68 @@ body {
       font-size: 16px;
     }
   }
+}
+
+/* Global UI Improvements */
+:root {
+  --card-padding: 12px;
+  --btn-spacing: 8px;
+  --font-size-title: 18px;
+  --font-size-card-title: 16px;
+  --font-size-body: 14px;
+  --icon-size: 20px;
+}
+
+/* Button Alignment & Spacing */
+.btn-uniform {
+  height: 40px; /* Uniform height */
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--btn-spacing);
+}
+
+/* Compact Mobile Cards (Material You style) */
+.card-compact {
+  border-radius: 12px;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.12), 0 1px 2px rgba(0,0,0,0.24);
+  background-color: white; /* Default, can be overridden */
+  padding: var(--card-padding);
+}
+
+/* Font Size Adjustments */
+.text-title-responsive {
+  font-size: var(--font-size-title);
+}
+
+.text-card-title-responsive {
+  font-size: var(--font-size-card-title);
+}
+
+.text-body-responsive {
+  font-size: var(--font-size-body);
+}
+
+/* Icon Scaling */
+.icon-responsive {
+  width: var(--icon-size);
+  height: var(--icon-size);
+}
+
+/* 8dp Grid Utility */
+.grid-8 {
+  display: grid;
+  gap: 8px;
+}
+
+.gap-8dp {
+  gap: 8px;
+}
+
+.p-8dp {
+  padding: 8px;
+}
+
+.m-8dp {
+  margin: 8px;
 }

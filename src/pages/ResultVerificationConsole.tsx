@@ -950,23 +950,23 @@ const ResultVerificationConsole: React.FC = () => {
                     setSelectedOrderForAttachments(row.order_id);
                     setShowAttachmentSelector(true);
                   }}
-                  className="inline-flex items-center px-4 py-2 bg-gradient-to-r from-purple-600 to-indigo-600 text-white rounded-xl hover:from-purple-700 hover:to-indigo-700 transition-all duration-200 shadow-sm font-semibold"
+                  className="inline-flex items-center px-3 py-2 sm:px-4 sm:py-2 bg-gradient-to-r from-purple-600 to-indigo-600 text-white rounded-lg sm:rounded-xl hover:from-purple-700 hover:to-indigo-700 transition-all duration-200 shadow-sm font-semibold text-xs sm:text-sm"
                   title="Manage which attachments to include in final report"
                 >
-                  <FileImage className="h-4 w-4 mr-2" />
-                  Manage Attachments
+                  <FileImage className="h-4 w-4 sm:mr-2" />
+                  <span className="hidden sm:inline">Manage Attachments</span>
                 </button>
                 <button
                   disabled={busy[row.result_id]}
                   onClick={() => approveAllInPanel(row)}
-                  className="inline-flex items-center px-4 py-2 bg-gradient-to-r from-green-600 to-emerald-600 text-white rounded-xl hover:from-green-700 hover:to-emerald-700 transition-all duration-200 shadow-sm font-semibold disabled:opacity-50"
+                  className="inline-flex items-center px-3 py-2 sm:px-4 sm:py-2 bg-gradient-to-r from-green-600 to-emerald-600 text-white rounded-lg sm:rounded-xl hover:from-green-700 hover:to-emerald-700 transition-all duration-200 shadow-sm font-semibold disabled:opacity-50 text-xs sm:text-sm"
                 >
                   {busy[row.result_id] ? (
-                    <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                    <Loader2 className="h-4 w-4 sm:mr-2 animate-spin" />
                   ) : (
-                    <CheckCircle2 className="h-4 w-4 mr-2" />
+                    <CheckCircle2 className="h-4 w-4 sm:mr-2" />
                   )}
-                  Approve All
+                  <span className="hidden sm:inline">Approve All</span>
                 </button>
               </div>
             )}

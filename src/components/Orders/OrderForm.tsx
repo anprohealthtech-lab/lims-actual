@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import ReactDOM from 'react-dom';
 import {
   X,
   Search,
@@ -140,16 +141,16 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
   // Handle TRF modal close and apply edited values
   const handleTRFReviewClose = async () => {
     setShowTRFReview(false);
-    
+
     // If we have trfExtraction data, apply it (edited or original)
     if (trfExtraction && trfExtraction.success) {
       console.log('Applying TRF extraction data (including any edits)...');
-      
+
       // Check if we have a matched patient from the TRF extraction
       if (trfExtraction.matchedPatient && trfExtraction.matchedPatient.matchConfidence >= 0.7) {
         // Use matched patient if confidence is >= 70%
         console.log(`Using matched patient (${Math.round(trfExtraction.matchedPatient.matchConfidence * 100)}% confidence):`, trfExtraction.matchedPatient.name);
-        
+
         const matched = patients.find(p => p.id === trfExtraction.matchedPatient!.id);
         if (matched) {
           setSelectedPatient(matched);
@@ -174,10 +175,10 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
       } else if (trfExtraction.patientInfo) {
         // No matched patient or low confidence - create new patient with edited values
         const validation = validatePatientData(trfExtraction.patientInfo);
-        
+
         if (validation.isValid) {
           console.log('Creating NEW patient with edited values from TRF (no match or low confidence)...');
-          
+
           // Get current user's lab_id
           const { data: { user } } = await supabase.auth.getUser();
           if (user) {
@@ -186,22 +187,22 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
               .select('lab_id')
               .eq('id', user.id)
               .single();
-            
+
             if (userRecord?.lab_id) {
               // Create new patient with edited data
               const newPatient = await autoCreatePatientFromTRF(
                 trfExtraction.patientInfo,
                 userRecord.lab_id
               );
-              
+
               if (newPatient) {
                 console.log('✓ Patient created in database:', newPatient);
-                
+
                 // Refresh patients list
                 const updatedPatients = await database.patients.getAll();
                 if (updatedPatients && Array.isArray(updatedPatients)) {
                   setPatients(updatedPatients);
-                
+
                   // Try to find in refreshed list
                   const created = updatedPatients.find((p: any) => p.id === newPatient.id);
                   if (created) {
@@ -256,13 +257,13 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
             .select('lab_id')
             .eq('id', user.id)
             .single();
-          
+
           if (userRecord?.lab_id) {
             const matchedDoctor = await findDoctorByName(
               trfExtraction.doctorInfo.name,
               userRecord.lab_id
             );
-            
+
             if (matchedDoctor) {
               setSelectedDoctor(matchedDoctor.id);
               console.log('✓ Matched doctor with manual search:', matchedDoctor.name);
@@ -278,12 +279,12 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
         const selectedTestIds = trfExtraction.requestedTests
           .filter(test => test.isSelected && test.testGroupId)
           .map(test => test.testGroupId!);
-        
+
         if (selectedTestIds.length > 0) {
           setSelectedTests(selectedTestIds);
           console.log(`✓ Applied ${selectedTestIds.length} edited test selections`);
         }
-        
+
         // Track unmatched tests
         const unmatchedTests = trfExtraction.requestedTests.filter(test => !test.matched);
         if (unmatchedTests.length > 0) {
@@ -480,12 +481,12 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
   const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0] ?? null;
     if (!file) return;
-    
+
     if (file.size > 10 * 1024 * 1024) {
       alert('File size must be less than 10MB');
       return;
     }
-    
+
     setTestRequestFile(file);
 
     // Auto-process TRF with AI
@@ -507,7 +508,7 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
 
           // Auto-populate form if confidence is high
           const formData = trfToOrderFormData(result);
-          
+
           // Patient handling: auto-match or auto-create
           if (formData.matchedPatientId && formData.matchConfidence >= 0.7) {
             // High confidence match (≥70%) - auto-select existing patient
@@ -525,12 +526,12 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
               confidence: formData.matchConfidence,
               trfName: result.patientInfo?.name
             });
-            
+
             const validation = validatePatientData(result.patientInfo);
-            
+
             if (validation.isValid) {
               console.log('Auto-creating new patient from TRF...');
-              
+
               // Get current user's lab_id
               const { data: { user } } = await supabase.auth.getUser();
               if (user) {
@@ -539,19 +540,19 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
                   .select('lab_id')
                   .eq('id', user.id)
                   .single();
-                
+
                 if (userRecord?.lab_id) {
                   const newPatient = await autoCreatePatientFromTRF(
                     result.patientInfo,
                     userRecord.lab_id
                   );
-                  
+
                   if (newPatient) {
                     // Refresh patients list
                     const updatedPatients = await database.patients.getAll();
                     if (updatedPatients && Array.isArray(updatedPatients)) {
                       setPatients(updatedPatients);
-                    
+
                       // Select the new patient
                       const created = updatedPatients.find((p: any) => p.id === newPatient.id);
                       if (created) {
@@ -583,13 +584,13 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
                 .select('lab_id')
                 .eq('id', user.id)
                 .single();
-              
+
               if (userRecord?.lab_id) {
                 const matchedDoctor = await findDoctorByName(
                   result.doctorInfo.name,
                   userRecord.lab_id
                 );
-                
+
                 if (matchedDoctor) {
                   setSelectedDoctor(matchedDoctor.id);
                   console.log('✓ Matched existing doctor:', matchedDoctor.name);
@@ -670,11 +671,11 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
     const testsPayload =
       selectedTestDetails.length > 0
         ? selectedTestDetails.map((t) => ({
-            id: t.id,
-            name: t.name,
-            type: t.type ?? 'test',
-            price: t.price ?? 0
-          }))
+          id: t.id,
+          name: t.name,
+          type: t.type ?? 'test',
+          price: t.price ?? 0
+        }))
         : undefined;
 
     // Compose order payload (account layer included)
@@ -701,7 +702,7 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
   const selectedTestRows = testGroups.filter((t) => selectedTests.includes(t.id));
   const totalAmount = selectedTestRows.reduce((sum, t) => sum + (t.price ?? 0), 0);
 
-  return (
+  return ReactDOM.createPortal(
     <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
       <div className="bg-white rounded-lg shadow-xl w-full max-w-5xl max-h-[92vh] overflow-y-auto">
         {/* Header */}
@@ -738,7 +739,7 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
                 htmlFor="trf-upload-top"
                 className="block cursor-pointer border-2 border-dashed border-purple-300 bg-white rounded-lg p-6 text-center hover:border-purple-400 hover:bg-purple-50 transition-colors"
               >
-                {processingTRF ? (
+                {processingTRF && trfProgress ? (
                   <>
                     <Loader className="w-8 h-8 text-purple-600 mb-2 mx-auto animate-spin" />
                     <span className="text-sm font-medium text-purple-700">
@@ -758,6 +759,11 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
                       </div>
                     )}
                   </>
+                ) : processingTRF ? (
+                  <div className="flex flex-col items-center">
+                    <Loader className="w-8 h-8 text-purple-600 mb-2 animate-spin" />
+                    <span className="text-sm font-medium text-purple-700">Initializing...</span>
+                  </div>
                 ) : trfExtraction?.success ? (
                   <>
                     <CheckCircle className="w-8 h-8 text-green-600 mb-2 mx-auto" />
@@ -1053,11 +1059,10 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
                       key={type}
                       type="button"
                       onClick={() => setPaymentType(type)}
-                      className={`px-3 py-2 rounded-md text-sm font-medium ${
-                        paymentType === type
-                          ? 'bg-blue-600 text-white'
-                          : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
-                      }`}
+                      className={`px-3 py-2 rounded-md text-sm font-medium ${paymentType === type
+                        ? 'bg-blue-600 text-white'
+                        : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                        }`}
                     >
                       {type.charAt(0).toUpperCase() + type.slice(1)}
                     </button>
@@ -1206,20 +1211,18 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
             {/* Credit Info */}
             {creditInfo && paymentType !== 'self' && (
               <div
-                className={`p-4 rounded-lg ${
-                  creditInfo.allowed
-                    ? 'bg-green-50 border border-green-200'
-                    : 'bg-red-50 border border-red-200'
-                }`}
+                className={`p-4 rounded-lg ${creditInfo.allowed
+                  ? 'bg-green-50 border border-green-200'
+                  : 'bg-red-50 border border-red-200'
+                  }`}
               >
                 <div className="flex items-center gap-2 mb-2">
                   <CreditCard
                     className={`w-5 h-5 ${creditInfo.allowed ? 'text-green-600' : 'text-red-600'}`}
                   />
                   <h4
-                    className={`font-medium ${
-                      creditInfo.allowed ? 'text-green-900' : 'text-red-900'
-                    }`}
+                    className={`font-medium ${creditInfo.allowed ? 'text-green-900' : 'text-red-900'
+                      }`}
                   >
                     {creditInfo.kind === 'account' ? 'Account' : 'Location'} Credit
                   </h4>
@@ -1242,9 +1245,8 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
                   <div className="col-span-3">
                     <span className="text-gray-600">Available Credit:</span>{' '}
                     <span
-                      className={`font-medium ${
-                        creditInfo.allowed ? 'text-green-600' : 'text-red-600'
-                      }`}
+                      className={`font-medium ${creditInfo.allowed ? 'text-green-600' : 'text-red-600'
+                        }`}
                     >
                       ₹{creditInfo.availableCredit.toLocaleString()}
                     </span>
@@ -1463,13 +1465,12 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
                       <User className="w-4 h-4" />
                       Patient Information
                     </h4>
-                    <span className={`text-xs px-2 py-1 rounded-full ${
-                      formatConfidence(trfExtraction.patientInfo.confidence).bgColor
-                    } ${formatConfidence(trfExtraction.patientInfo.confidence).color}`}>
+                    <span className={`text-xs px-2 py-1 rounded-full ${formatConfidence(trfExtraction.patientInfo.confidence).bgColor
+                      } ${formatConfidence(trfExtraction.patientInfo.confidence).color}`}>
                       {formatConfidence(trfExtraction.patientInfo.confidence).label}
                     </span>
                   </div>
-                  
+
                   <div className="grid grid-cols-2 gap-4 bg-gray-50 p-4 rounded-lg">
                     <div>
                       <label className="text-xs text-gray-500 block mb-1">Name</label>
@@ -1592,16 +1593,15 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
                     <TestTube className="w-4 h-4" />
                     Requested Tests ({trfExtraction.requestedTests.filter(t => t.isSelected).length} selected)
                   </h4>
-                  
+
                   <div className="space-y-2">
                     {trfExtraction.requestedTests.map((test, idx) => (
-                      <div 
+                      <div
                         key={idx}
-                        className={`p-3 rounded-lg border ${
-                          test.matched 
-                            ? 'bg-green-50 border-green-200' 
-                            : 'bg-yellow-50 border-yellow-200'
-                        }`}
+                        className={`p-3 rounded-lg border ${test.matched
+                          ? 'bg-green-50 border-green-200'
+                          : 'bg-yellow-50 border-yellow-200'
+                          }`}
                       >
                         <div className="flex items-center justify-between">
                           <div className="flex items-center gap-3 flex-1">
@@ -1757,7 +1757,8 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
           </div>
         </div>
       )}
-    </div>
+    </div>,
+    document.body
   );
 };
 

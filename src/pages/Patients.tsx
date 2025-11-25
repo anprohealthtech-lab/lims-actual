@@ -2,6 +2,8 @@ import React, { useState } from 'react';
 import { Plus, Search, Filter, Edit, Eye, Phone, Mail, QrCode, Trash2, Users, Copy } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { generateQRCodeData } from '../utils/colorAssignment';
+import { useMobileOptimizations } from '../utils/platformHelper';
+import { MobileFAB } from '../components/ui/MobileFAB';
 import PatientForm from '../components/Patients/PatientForm';
 import PatientDetails from '../components/Patients/PatientDetails';
 import PatientTestHistory from '../components/Patients/PatientTestHistory';
@@ -349,8 +351,10 @@ const Patients: React.FC = () => {
     );
   }
 
+  const mobile = useMobileOptimizations();
+
   return (
-    <div className="space-y-6">
+    <div className={mobile.spacing}>
       {error && (
         <div className="bg-red-50 border border-red-200 rounded-lg p-4">
           <div className="text-red-700">{error}</div>
@@ -364,35 +368,37 @@ const Patients: React.FC = () => {
       )}
 
       <div className="flex items-center justify-between">
-        <h1 className="text-3xl font-bold text-gray-900">Patient Management</h1>
-        <div className="flex items-center space-x-3">
-          <button
-            onClick={() => {
-              if (patients.length === 0) {
-                alert('No patients available. Please add patients first.');
-                return;
-              }
-              // Use the first patient as default master for merge modal
-              setMergePatient(patients[0]);
-              setShowMergeModal(true);
-            }}
-            className="flex items-center px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 transition-colors"
-          >
-            <Users className="h-5 w-5 mr-2" />
-            Merge Patients
-          </button>
-          <button
-            onClick={() => setShowForm(true)}
-            className="flex items-center px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
-          >
-            <Plus className="h-5 w-5 mr-2" />
-            Register Patient
-          </button>
-        </div>
+        <h1 className={`${mobile.titleSize} font-bold text-gray-900`}>Patient Management</h1>
+        {!mobile.isMobile && (
+          <div className="flex items-center space-x-3">
+            <button
+              onClick={() => {
+                if (patients.length === 0) {
+                  alert('No patients available. Please add patients first.');
+                  return;
+                }
+                // Use the first patient as default master for merge modal
+                setMergePatient(patients[0]);
+                setShowMergeModal(true);
+              }}
+              className="flex items-center px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 transition-colors"
+            >
+              <Users className="h-5 w-5 mr-2" />
+              Merge Patients
+            </button>
+            <button
+              onClick={() => setShowForm(true)}
+              className="flex items-center px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
+            >
+              <Plus className="h-5 w-5 mr-2" />
+              Register Patient
+            </button>
+          </div>
+        )}
       </div>
 
-      {/* Search and Filter Bar */}
-      <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-4">
+      {/* Search and Filter Bar - Compact on mobile */}
+      <div className={`bg-white rounded-lg shadow-sm border border-gray-200 ${mobile.cardPadding}`}>
         <div className="flex flex-col sm:flex-row gap-4">
           <div className="flex-1 relative">
             <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-gray-400" />
@@ -629,6 +635,13 @@ const Patients: React.FC = () => {
           onUnmerge={handleUnmergeSuccess}
         />
       )}
+
+      {/* Mobile FAB - Add Patient */}
+      <MobileFAB
+        icon={Plus}
+        onClick={() => setShowForm(true)}
+        label="Add Patient"
+      />
     </div>
   );
 };

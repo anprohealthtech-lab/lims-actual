@@ -14,16 +14,16 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick }) => {
   };
 
   return (
-    <header className="bg-white shadow-sm border-b border-gray-200 safe-area-top safe-area-x">
-      <div className="flex items-center justify-between h-16 px-4 md:px-6">
+    <header className="bg-white shadow-sm border-b border-gray-200 safe-area-top safe-area-x relative z-50">
+      <div className="flex items-center justify-between h-14 md:h-16 px-4 md:px-6">
         <div className="flex items-center">
           <button
             onClick={onMenuClick}
-            className="lg:hidden p-2 rounded-md text-gray-400 hover:text-gray-500 hover:bg-gray-100 min-w-[44px] min-h-[44px]"
+            className="p-2 rounded-md text-gray-400 hover:text-gray-500 hover:bg-gray-100 min-w-[44px] min-h-[44px]"
           >
             <Menu className="h-6 w-6" />
           </button>
-          
+
           <div className="hidden md:flex items-center ml-4">
             <div className="relative">
               <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-gray-400" />
@@ -35,13 +35,13 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick }) => {
             </div>
           </div>
         </div>
-        
+
         <div className="flex items-center space-x-2 md:space-x-4">
           <button className="p-2 text-gray-400 hover:text-gray-500 relative min-w-[44px] min-h-[44px]">
             <Bell className="h-6 w-6" />
             <span className="absolute top-0 right-0 h-2 w-2 bg-red-500 rounded-full"></span>
           </button>
-          
+
           <div className="flex items-center space-x-2 md:space-x-3 relative group">
             <div className="text-right hidden sm:block">
               <div className="text-sm font-medium text-gray-900">
@@ -56,7 +56,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick }) => {
                 {user?.user_metadata?.full_name?.charAt(0) || user?.email?.charAt(0) || 'U'}
               </span>
             </div>
-            
+
             {/* Dropdown Menu */}
             <div className="absolute right-0 top-full mt-2 w-48 bg-white rounded-md shadow-lg border border-gray-200 opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all duration-200 z-50">
               <div className="py-1">

@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { Plus, Edit2, Trash2, Search, Filter, X, Save, AlertCircle } from 'lucide-react';
-import { supabase } from '../utils/supabase';
+import { supabase, database } from '../utils/supabase';
 import { SimpleAnalyteEditor } from '../components/TestGroups/SimpleAnalyteEditor';
 import TestGroupForm from '../components/Tests/TestGroupForm';
 import { AITestConfigurator } from '../components/AITools/AITestConfigurator';
@@ -74,10 +74,18 @@ const Tests: React.FC = () => {
       setLoading(true);
       setError(null);
 
-      // Fetch test groups from database
+      // Get current user's lab_id
+      const lab_id = await database.getCurrentUserLabId();
+      if (!lab_id) {
+        throw new Error('No lab context found. Please ensure you are logged in.');
+      }
+
+      // Fetch test groups from database (lab-scoped)
       const { data: testGroupsData, error: testGroupsError } = await supabase
         .from('test_groups')
         .select('*')
+        .eq('lab_id', lab_id)
+        .eq('is_active', true)
         .order('name');
 
       if (testGroupsError) {
@@ -85,11 +93,8 @@ const Tests: React.FC = () => {
         throw testGroupsError;
       }
 
-      // Fetch analytes from database
-      const { data: analytesData, error: analytesError } = await supabase
-        .from('analytes')
-        .select('*')
-        .order('name');
+      // Fetch analytes from database (lab-scoped using database API)
+      const { data: analytesData, error: analytesError } = await database.analytes.getAll();
 
       if (analytesError) {
         console.error('Analytes error:', analytesError);
@@ -180,13 +185,21 @@ const Tests: React.FC = () => {
     try {
       setError(null);
 
+      // Get current user's lab_id
+      const lab_id = await database.getCurrentUserLabId();
+      if (!lab_id) {
+        throw new Error('No lab context found');
+      }
+
       // Insert test group into database
       const { data: newTestGroup, error: insertError } = await supabase
         .from('test_groups')
         .insert({
           name: formData.name,
           category: formData.category,
-          description: formData.description
+          description: formData.description,
+          lab_id: lab_id,
+          is_active: true
         })
         .select()
         .single();
@@ -428,6 +441,12 @@ const Tests: React.FC = () => {
       setError(null);
       const { testGroup, analytes } = aiResponse.data;
 
+      // Get current user's lab_id
+      const lab_id = await database.getCurrentUserLabId();
+      if (!lab_id) {
+        throw new Error('No lab context found');
+      }
+
       // First create the test group
       const { data: newTestGroup, error: testGroupError } = await supabase
         .from('test_groups')
@@ -439,7 +458,9 @@ const Tests: React.FC = () => {
           price: testGroup.price,
           turnaround_time: testGroup.tat_hours,
           sample_type: testGroup.sample_type,
-          instructions: testGroup.instructions
+          instructions: testGroup.instructions,
+          lab_id: lab_id,
+          is_active: true
         })
         .select()
         .single();

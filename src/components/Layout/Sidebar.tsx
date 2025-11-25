@@ -6,7 +6,7 @@ import {
   TestTube,
   ClipboardList,
   FileText,
-  Receipt, 
+  Receipt,
   DollarSign,
   Brain,
   Settings,
@@ -21,10 +21,7 @@ import {
   Image,
   Cog,
   Play,
-  GitBranch,
-  Upload,
   Bot,
-  Zap,
   ChevronLeft,
   ChevronRight,
 } from 'lucide-react';
@@ -32,6 +29,9 @@ import {
 interface SidebarProps {
   isOpen: boolean;
   onToggle: () => void;
+  isMobile?: boolean;
+  isCollapsed: boolean;
+  setIsCollapsed: (value: boolean) => void;
 }
 
 const navigation = [
@@ -42,28 +42,28 @@ const navigation = [
   { name: 'Results Entry 2 (AI)', href: '/results2', icon: Brain, category: 'core' },
   { name: 'Results Verification', href: '/results-verification', icon: CheckCircle2, category: 'core' },
   { name: 'Reports', href: '/reports', icon: FileText, category: 'core' }, // Moved after Results Entry per request
-  
+
   // Patient & Sample Management
   { name: 'Patients', href: '/patients', icon: Users, category: 'management' },
   { name: 'Tests & Samples', href: '/tests', icon: TestTube, category: 'management' },
-  
+
   // Business & Administrative
   { name: 'Billing', href: '/billing', icon: Receipt, category: 'business' },
   { name: 'Cash Reconciliation', href: '/cash-reconciliation', icon: DollarSign, category: 'business' },
-  
+
   // Communication
   { name: 'WhatsApp Integration', href: '/whatsapp', icon: MessageCircle, category: 'communication' },
-  
+
   // Master Data Management
   { name: 'Doctor Master', href: '/masters/doctors', icon: UserCheck, category: 'masters' },
   { name: 'Location Master', href: '/masters/locations', icon: Building, category: 'masters' },
-  
+
   // AI Workflow Management
   { name: 'Workflow Management', href: '/workflows', icon: Workflow, category: 'workflows' },
   { name: 'Workflow Configurator', href: '/workflow-configurator', icon: Cog, category: 'workflows' },
   { name: 'Workflow Demo', href: '/workflow-demo', icon: Play, category: 'workflows' },
   { name: 'Workflow Explainer Demo', href: '/workflow-explainer-demo', icon: Bot, category: 'workflows' },
-  
+
   // Advanced Tools
   { name: 'AI Tools', href: '/ai-tools', icon: Brain, category: 'tools' },
   { name: 'AI Prompt Manager', href: '/ai-prompts', icon: Brain, category: 'tools' },
@@ -74,9 +74,15 @@ const navigation = [
   { name: 'Settings', href: '/settings', icon: Settings, category: 'tools' },
 ];
 
-const Sidebar: React.FC<SidebarProps> = ({ isOpen, onToggle }) => {
+const Sidebar: React.FC<SidebarProps> = ({ isOpen, onToggle, isMobile = false, isCollapsed, setIsCollapsed }) => {
   const location = useLocation();
-  const [isCollapsed, setIsCollapsed] = React.useState(false);
+
+  const handleNavClick = () => {
+    // Close sidebar on mobile after navigation
+    if (isMobile && isOpen) {
+      onToggle();
+    }
+  };
 
   return (
     <>
@@ -84,7 +90,7 @@ const Sidebar: React.FC<SidebarProps> = ({ isOpen, onToggle }) => {
       {isOpen && (
         <div className="fixed inset-0 bg-gray-600 bg-opacity-75 z-20 lg:hidden" onClick={onToggle} />
       )}
-      
+
       {/* Sidebar */}
       <div className={`
         fixed inset-y-0 left-0 z-30 bg-white shadow-lg transform transition-all duration-300 ease-in-out overflow-y-auto
@@ -113,7 +119,7 @@ const Sidebar: React.FC<SidebarProps> = ({ isOpen, onToggle }) => {
             </button>
           </div>
         </div>
-        
+
         <nav className="mt-8 px-4 space-y-1">
           {/* Core Laboratory Workflow */}
           <div className="mb-6">
@@ -138,7 +144,7 @@ const Sidebar: React.FC<SidebarProps> = ({ isOpen, onToggle }) => {
                       : 'text-gray-600 hover:bg-blue-50 hover:text-blue-700 border-l-transparent hover:border-l-blue-300'
                     }
                   `}
-                  onClick={() => window.innerWidth < 1024 && onToggle()}
+                  onClick={handleNavClick}
                 >
                   <item.icon className={`h-5 w-5 ${isCollapsed ? '' : 'mr-3'} ${isActive ? 'text-blue-700' : 'text-gray-400'}`} />
                   {!isCollapsed && item.name}
@@ -166,7 +172,7 @@ const Sidebar: React.FC<SidebarProps> = ({ isOpen, onToggle }) => {
                       : 'text-gray-600 hover:bg-green-50 hover:text-green-700 border-l-transparent hover:border-l-green-300'
                     }
                   `}
-                  onClick={() => window.innerWidth < 1024 && onToggle()}
+                  onClick={handleNavClick}
                 >
                   <item.icon className={`h-5 w-5 mr-3 ${isActive ? 'text-green-700' : 'text-gray-400'}`} />
                   {item.name}
@@ -194,7 +200,7 @@ const Sidebar: React.FC<SidebarProps> = ({ isOpen, onToggle }) => {
                       : 'text-gray-600 hover:bg-purple-50 hover:text-purple-700 border-l-transparent hover:border-l-purple-300'
                     }
                   `}
-                  onClick={() => window.innerWidth < 1024 && onToggle()}
+                  onClick={handleNavClick}
                 >
                   <item.icon className={`h-5 w-5 mr-3 ${isActive ? 'text-purple-700' : 'text-gray-400'}`} />
                   {item.name}
@@ -222,7 +228,7 @@ const Sidebar: React.FC<SidebarProps> = ({ isOpen, onToggle }) => {
                       : 'text-gray-600 hover:bg-sky-50 hover:text-sky-700 border-l-transparent hover:border-l-sky-300'
                     }
                   `}
-                  onClick={() => window.innerWidth < 1024 && onToggle()}
+                  onClick={handleNavClick}
                 >
                   <item.icon className={`h-5 w-5 mr-3 ${isActive ? 'text-sky-700' : 'text-gray-400'}`} />
                   {item.name}
@@ -250,7 +256,7 @@ const Sidebar: React.FC<SidebarProps> = ({ isOpen, onToggle }) => {
                       : 'text-gray-600 hover:bg-indigo-50 hover:text-indigo-700 border-l-transparent hover:border-l-indigo-300'
                     }
                   `}
-                  onClick={() => window.innerWidth < 1024 && onToggle()}
+                  onClick={handleNavClick}
                 >
                   <item.icon className={`h-5 w-5 mr-3 ${isActive ? 'text-indigo-700' : 'text-gray-400'}`} />
                   {item.name}
@@ -278,7 +284,7 @@ const Sidebar: React.FC<SidebarProps> = ({ isOpen, onToggle }) => {
                       : 'text-gray-600 hover:bg-orange-50 hover:text-orange-700 border-l-transparent hover:border-l-orange-300'
                     }
                   `}
-                  onClick={() => window.innerWidth < 1024 && onToggle()}
+                  onClick={handleNavClick}
                 >
                   <item.icon className={`h-5 w-5 mr-3 ${isActive ? 'text-orange-700' : 'text-gray-400'}`} />
                   {item.name}
@@ -306,7 +312,7 @@ const Sidebar: React.FC<SidebarProps> = ({ isOpen, onToggle }) => {
                       : 'text-gray-600 hover:bg-gray-50 hover:text-gray-700 border-l-transparent hover:border-l-gray-300'
                     }
                   `}
-                  onClick={() => window.innerWidth < 1024 && onToggle()}
+                  onClick={handleNavClick}
                 >
                   <item.icon className={`h-5 w-5 mr-3 ${isActive ? 'text-gray-700' : 'text-gray-400'}`} />
                   {item.name}
@@ -321,3 +327,4 @@ const Sidebar: React.FC<SidebarProps> = ({ isOpen, onToggle }) => {
 };
 
 export default Sidebar;
+

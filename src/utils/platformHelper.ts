@@ -49,6 +49,50 @@ export const getPlatformInfo = async (): Promise<PlatformInfo> => {
   return cachedPlatformInfo;
 };
 
+/**
+ * Hook for mobile-specific optimizations (Android only)
+ * Returns compact styles for native Android app, normal styles for web
+ */
+export const useMobileOptimizations = () => {
+  const isMobile = isNative() && isAndroid();
+  
+  return {
+    isMobile,
+    // Padding classes
+    padding: isMobile ? 'p-3' : 'p-6',
+    paddingX: isMobile ? 'px-3' : 'px-6',
+    paddingY: isMobile ? 'py-3' : 'py-6',
+    headerPadding: isMobile ? 'py-3' : 'py-8',
+    
+    // Card styling
+    cardPadding: isMobile ? 'p-3' : 'p-4',
+    cardSpacing: isMobile ? 'space-y-2' : 'space-y-4',
+    
+    // Typography
+    titleSize: isMobile ? 'text-xl' : 'text-3xl',
+    subtitleSize: isMobile ? 'text-base' : 'text-xl',
+    textSize: isMobile ? 'text-sm' : 'text-base',
+    
+    // Buttons
+    buttonSize: isMobile ? 'px-3 py-2 text-sm' : 'px-4 py-3 text-base',
+    iconButtonSize: isMobile ? 'p-2' : 'p-3',
+    
+    // Spacing
+    spacing: isMobile ? 'space-y-2' : 'space-y-4',
+    gap: isMobile ? 'gap-2' : 'gap-4',
+    
+    // Layout
+    containerPadding: isMobile ? 'px-4' : 'px-6',
+    maxWidth: isMobile ? 'max-w-full' : 'max-w-7xl',
+    
+    // Grid
+    gridCols: isMobile ? 'grid-cols-2' : 'grid-cols-4',
+    
+    // Safe areas (for Android bottom nav)
+    safeBottom: isMobile ? 'pb-16' : '',
+  };
+};
+
 export const isNative = (): boolean => {
   return Capacitor.isNativePlatform();
 };

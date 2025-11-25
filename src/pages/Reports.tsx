@@ -1,5 +1,7 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { supabase, database } from '../utils/supabase';
+import { useMobileOptimizations } from '../utils/platformHelper';
+import { MobileFAB } from '../components/ui/MobileFAB';
 import { 
   FileText, 
   Download, 
@@ -844,14 +846,18 @@ const Reports: React.FC = () => {
     </div>
   );
 
+  const mobile = useMobileOptimizations();
+
   return (
     <div className="min-h-screen bg-gray-50">
-      {/* Enhanced Header */}
-      <div className="bg-white border-b shadow-sm px-4 md:px-6 py-4 md:py-6 safe-area-x">
+      {/* Enhanced Header - Mobile optimized */}
+      <div className={`bg-white border-b shadow-sm ${mobile.containerPadding} ${mobile.headerPadding} safe-area-x`}>
         <div className="flex flex-col lg:flex-row items-start lg:items-center justify-between gap-4">
           <div className="flex-1 min-w-0">
-            <h1 className="text-xl md:text-3xl font-bold text-gray-900">Lab Reports</h1>
-            <p className="text-sm md:text-base text-gray-600 mt-1 md:mt-2">Generate and manage laboratory test reports</p>
+            <h1 className={`${mobile.titleSize} font-bold text-gray-900`}>Lab Reports</h1>
+            <p className={`${mobile.textSize} text-gray-600 mt-1 ${mobile.isMobile ? '' : 'md:mt-2'}`}>
+              {mobile.isMobile ? 'Generate & manage reports' : 'Generate and manage laboratory test reports'}
+            </p>
           </div>
 
           {/* Quick Stats */}
@@ -1613,6 +1619,13 @@ const Reports: React.FC = () => {
         stage={stage}
         progress={progress}
         onClose={resetState}
+      />
+
+      {/* Mobile FAB - Generate Report */}
+      <MobileFAB
+        icon={FileText}
+        onClick={handleTemplatePreview}
+        label="Preview Template"
       />
     </div>
   );

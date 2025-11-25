@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { X, Save, AlertCircle } from 'lucide-react';
-import { supabase } from '../../utils/supabase';
+import { database } from '../../utils/supabase';
 
 interface SimpleAnalyteEditorProps {
   analyte: {
@@ -45,32 +45,37 @@ export const SimpleAnalyteEditor: React.FC<SimpleAnalyteEditorProps> = ({
     setError(null);
 
     try {
-      const { error: updateError } = await supabase
-        .from('analytes')
-        .update({
+      // Get current lab ID
+      const labId = await database.getCurrentUserLabId();
+      if (!labId) {
+        throw new Error('Unable to determine lab context');
+      }
+
+      // Update lab_analytes table (lab-specific) instead of global analytes
+      const { data, error: updateError } = await database.labAnalytes.updateLabSpecific(
+        labId,
+        formData.id, // analyte_id
+        {
+          // Update actual values
           name: formData.name,
           unit: formData.unit,
           reference_range: formData.reference_range,
           category: formData.category,
-          method: formData.method,
-          description: formData.description,
-          is_critical: formData.is_critical,
-          normal_range_min: formData.normal_range_min,
-          normal_range_max: formData.normal_range_max,
           low_critical: formData.low_critical,
           high_critical: formData.high_critical,
           interpretation_low: formData.interpretation_low,
           interpretation_normal: formData.interpretation_normal,
           interpretation_high: formData.interpretation_high,
           is_active: formData.is_active,
-          ai_processing_type: formData.ai_processing_type,
-          ai_prompt_override: formData.ai_prompt_override,
-          group_ai_mode: formData.group_ai_mode,
-          is_global: formData.is_global,
-          to_be_copied: formData.to_be_copied,
-          updated_at: new Date().toISOString()
-        })
-        .eq('id', formData.id);
+          // Set lab_specific_* fields to mark as customized (prevents global sync overwrite)
+          lab_specific_name: formData.name,
+          lab_specific_unit: formData.unit,
+          lab_specific_reference_range: formData.reference_range,
+          lab_specific_interpretation_low: formData.interpretation_low,
+          lab_specific_interpretation_normal: formData.interpretation_normal,
+          lab_specific_interpretation_high: formData.interpretation_high,
+        }
+      );
 
       if (updateError) throw updateError;
       

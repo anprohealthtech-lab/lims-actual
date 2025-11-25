@@ -196,11 +196,20 @@ const PatientForm: React.FC<PatientFormProps> = ({
     const fetchTestData = async () => {
       setLoadingTestData(true);
       try {
-        // Fetch test groups
+        // Get current user's lab_id
+        const lab_id = await database.getCurrentUserLabId();
+        if (!lab_id) {
+          console.error('No lab context found');
+          setLoadingTestData(false);
+          return;
+        }
+
+        // Fetch test groups (lab-scoped)
         const { data: testGroupsData, error: testGroupsError } = await supabase
           .from('test_groups')
           .select('id, name, code, category, price, is_active')
           .eq('is_active', true)
+          .or(`lab_id.eq.${lab_id},lab_id.is.null`)
           .order('name');
         
         if (testGroupsError) {

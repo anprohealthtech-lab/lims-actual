@@ -53,7 +53,7 @@ export const WorkflowManagement: React.FC<WorkflowManagementProps> = ({
   const [mappings, setMappings] = useState<WorkflowMapping[]>([]);
   const [unmappedTestGroups, setUnmappedTestGroups] = useState<TestGroup[]>([]);
   const [workflows, setWorkflows] = useState<WorkflowVersion[]>([]);
-  
+
   // State for creation
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [newMapping, setNewMapping] = useState({
@@ -67,7 +67,7 @@ export const WorkflowManagement: React.FC<WorkflowManagementProps> = ({
   // State for visual builder (to be implemented)
   // const [showVisualBuilder, setShowVisualBuilder] = useState(false);
   // const [selectedWorkflowForEdit, setSelectedWorkflowForEdit] = useState<WorkflowVersion | null>(null);
-  
+
   const [demoSettings, setDemoSettings] = useState({
     orderId: 'ORDER-12345',
     testGroupId: 'test-group-id',
@@ -114,7 +114,7 @@ export const WorkflowManagement: React.FC<WorkflowManagementProps> = ({
           .map(m => m.test_group_id)
       );
 
-      const unmapped = allTestGroupsData.filter(tg => 
+      const unmapped = allTestGroupsData.filter(tg =>
         tg.is_active && !mappedTestGroupIds.has(tg.id)
       );
 
@@ -166,7 +166,7 @@ export const WorkflowManagement: React.FC<WorkflowManagementProps> = ({
         is_default: false,
         priority: 1
       });
-      
+
       await loadWorkflowData(); // Reload to update unmapped list
     } catch (err: any) {
       console.error('Error creating mapping:', err);
@@ -182,7 +182,7 @@ export const WorkflowManagement: React.FC<WorkflowManagementProps> = ({
     try {
       const { error } = await database.testWorkflowMap.delete(mappingId);
       if (error) throw error;
-      
+
       await loadWorkflowData(); // This will update both mappings and unmapped test groups
     } catch (err: any) {
       console.error('Error deleting mapping:', err);
@@ -195,7 +195,7 @@ export const WorkflowManagement: React.FC<WorkflowManagementProps> = ({
       const { error } = await database.testWorkflowMap.update(mappingId, {
         is_active: !currentStatus
       });
-      
+
       if (error) throw error;
       await loadWorkflowData();
     } catch (err: any) {
@@ -207,21 +207,21 @@ export const WorkflowManagement: React.FC<WorkflowManagementProps> = ({
   const setDefaultMapping = async (mappingId: string, testGroupId: string) => {
     try {
       // First, remove default from all mappings for this test group
-      const currentDefaults = mappings.filter(m => 
+      const currentDefaults = mappings.filter(m =>
         m.test_group_id === testGroupId && m.is_default
       );
-      
+
       for (const defaultMapping of currentDefaults) {
         await database.testWorkflowMap.update(defaultMapping.id, {
           is_default: false
         });
       }
-      
+
       // Then set the new default
       const { error } = await database.testWorkflowMap.update(mappingId, {
         is_default: true
       });
-      
+
       if (error) throw error;
       await loadWorkflowData();
     } catch (err: any) {
@@ -331,16 +331,15 @@ export const WorkflowManagement: React.FC<WorkflowManagementProps> = ({
             {tabs.map((tab) => {
               const Icon = tab.icon;
               const isActive = activeTab === tab.id;
-              
+
               return (
                 <button
                   key={tab.id}
                   onClick={() => setActiveTab(tab.id as any)}
-                  className={`py-4 px-4 border-b-2 font-medium text-sm whitespace-nowrap ${
-                    isActive
+                  className={`py-4 px-4 border-b-2 font-medium text-sm whitespace-nowrap ${isActive
                       ? 'border-blue-500 text-blue-600'
                       : 'border-transparent text-gray-500 hover:text-gray-700'
-                  }`}
+                    }`}
                 >
                   <div className="flex items-center space-x-2">
                     <Icon className="h-4 w-4" />
@@ -415,11 +414,10 @@ export const WorkflowManagement: React.FC<WorkflowManagementProps> = ({
                           </td>
                           <td className="px-6 py-4 whitespace-nowrap">
                             <span
-                              className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${
-                                mapping.is_active
+                              className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${mapping.is_active
                                   ? 'bg-green-100 text-green-800'
                                   : 'bg-red-100 text-red-800'
-                              }`}
+                                }`}
                             >
                               {mapping.is_active ? 'Active' : 'Inactive'}
                             </span>
@@ -470,33 +468,39 @@ export const WorkflowManagement: React.FC<WorkflowManagementProps> = ({
                 </p>
               </div>
 
-              {/* Unmapped Test Groups Section */}
+              {/* Unmapped Test Groups Section - Collapsible */}
               {unmappedTestGroups.length > 0 ? (
-                <div className="bg-white rounded-lg shadow-sm border border-gray-200">
-                  <div className="p-6 border-b border-gray-200">
-                    <h4 className="text-lg font-medium text-gray-900">Test Groups Without Workflows</h4>
-                    <p className="text-gray-600 mt-1">
-                      These test groups need workflow configurations. Click "Configure Workflow" to start building.
-                    </p>
-                  </div>
-                  <div className="p-6">
-                    <div className="grid gap-4">
+                <details className="group bg-white rounded-lg shadow-sm border border-gray-200" open>
+                  <summary className="flex items-center justify-between p-4 cursor-pointer hover:bg-gray-50 transition-colors select-none border-b border-gray-200">
+                    <div>
+                      <h4 className="text-lg font-medium text-gray-900">Test Groups Without Workflows</h4>
+                      <p className="text-sm text-gray-600 mt-0.5">
+                        {unmappedTestGroups.length} test groups need configuration
+                      </p>
+                    </div>
+                    <svg className="w-5 h-5 text-gray-500 transform group-open:rotate-180 transition-transform" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                    </svg>
+                  </summary>
+
+                  <div className="p-4">
+                    <div className="grid gap-3">
                       {unmappedTestGroups.map((testGroup) => (
                         <div
                           key={testGroup.id}
-                          className="border border-gray-200 rounded-lg p-4 hover:border-gray-300 transition-colors"
+                          className="border border-gray-200 rounded-lg p-3 hover:border-gray-300 transition-colors"
                         >
                           <div className="flex items-center justify-between">
                             <div className="flex-1">
-                              <h5 className="text-lg font-medium text-gray-900">{testGroup.name}</h5>
+                              <h5 className="text-base font-medium text-gray-900">{testGroup.name}</h5>
                               <div className="flex items-center gap-2 mt-1">
-                                <span className="px-2 py-1 text-xs font-medium bg-gray-100 text-gray-700 rounded-full">
+                                <span className="px-2 py-0.5 text-xs font-medium bg-gray-100 text-gray-700 rounded-full">
                                   {testGroup.code}
                                 </span>
-                                <span className="px-2 py-1 text-xs font-medium bg-blue-100 text-blue-700 rounded-full">
+                                <span className="px-2 py-0.5 text-xs font-medium bg-blue-100 text-blue-700 rounded-full">
                                   {testGroup.category}
                                 </span>
-                                <span className="text-sm text-gray-500">
+                                <span className="text-xs text-gray-500">
                                   Price: ${testGroup.price}
                                 </span>
                               </div>
@@ -504,10 +508,10 @@ export const WorkflowManagement: React.FC<WorkflowManagementProps> = ({
                             <div className="ml-4">
                               <a
                                 href={`/workflow-configurator?testGroupId=${testGroup.id}`}
-                                className="inline-flex items-center px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-md hover:bg-blue-700 transition-colors"
+                                className="inline-flex items-center px-3 py-1.5 bg-blue-600 text-white text-xs font-medium rounded-md hover:bg-blue-700 transition-colors"
                               >
-                                <Workflow className="h-4 w-4 mr-2" />
-                                Configure Workflow
+                                <Workflow className="h-3 w-3 mr-1.5" />
+                                Configure
                               </a>
                             </div>
                           </div>
@@ -515,15 +519,15 @@ export const WorkflowManagement: React.FC<WorkflowManagementProps> = ({
                       ))}
                     </div>
                   </div>
-                </div>
+                </details>
               ) : (
-                <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-6">
+                <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4">
                   <div className="flex items-center">
                     <CheckCircle className="h-5 w-5 text-yellow-400 mr-2" />
                     <h4 className="text-yellow-800 font-medium">All Test Groups Configured</h4>
                   </div>
-                  <p className="text-yellow-700 mt-2">
-                    All test groups in your lab have workflow configurations. 
+                  <p className="text-sm text-yellow-700 mt-1">
+                    All test groups in your lab have workflow configurations.
                     You can manage existing mappings in the "Test Group Mappings" tab.
                   </p>
                 </div>
@@ -545,54 +549,58 @@ export const WorkflowManagement: React.FC<WorkflowManagementProps> = ({
               </div>
             </div>
           )}
-
-
-
-
         </div>
       </div>
 
-      {/* Quick Actions */}
-      <div className="bg-white rounded-lg shadow-sm border p-6">
-        <h3 className="text-lg font-semibold text-gray-900 mb-4">Quick Actions</h3>
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-          <button className="p-4 border-2 border-dashed border-gray-300 rounded-lg hover:border-blue-300 hover:bg-blue-50 transition-colors text-left">
-            <div className="flex items-center space-x-3">
-              <div className="bg-blue-100 p-2 rounded">
-                <Workflow className="h-5 w-5 text-blue-600" />
-              </div>
-              <div>
-                <h4 className="font-medium text-gray-900">Create New Workflow</h4>
-                <p className="text-sm text-gray-600">Design a new Survey.js workflow</p>
-              </div>
-            </div>
-          </button>
+      {/* Quick Actions - Collapsible */}
+      <details className="group bg-white rounded-lg shadow-sm border border-gray-200" open>
+        <summary className="flex items-center justify-between p-4 cursor-pointer hover:bg-gray-50 transition-colors select-none border-b border-gray-200 group-open:border-b">
+          <h3 className="text-lg font-semibold text-gray-900">Quick Actions</h3>
+          <svg className="w-5 h-5 text-gray-500 transform group-open:rotate-180 transition-transform" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+          </svg>
+        </summary>
 
-          <button className="p-4 border-2 border-dashed border-gray-300 rounded-lg hover:border-green-300 hover:bg-green-50 transition-colors text-left">
-            <div className="flex items-center space-x-3">
-              <div className="bg-green-100 p-2 rounded">
-                <TestTube className="h-5 w-5 text-green-600" />
+        <div className="p-4">
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <button className="p-3 border-2 border-dashed border-gray-300 rounded-lg hover:border-blue-300 hover:bg-blue-50 transition-colors text-left">
+              <div className="flex items-center space-x-3">
+                <div className="bg-blue-100 p-2 rounded">
+                  <Workflow className="h-4 w-4 text-blue-600" />
+                </div>
+                <div>
+                  <h4 className="font-medium text-sm text-gray-900">Create New Workflow</h4>
+                  <p className="text-xs text-gray-600">Design a new Survey.js workflow</p>
+                </div>
               </div>
-              <div>
-                <h4 className="font-medium text-gray-900">Import Templates</h4>
-                <p className="text-sm text-gray-600">Import pre-built workflow templates</p>
-              </div>
-            </div>
-          </button>
+            </button>
 
-          <button className="p-4 border-2 border-dashed border-gray-300 rounded-lg hover:border-purple-300 hover:bg-purple-50 transition-colors text-left">
-            <div className="flex items-center space-x-3">
-              <div className="bg-purple-100 p-2 rounded">
-                <Settings className="h-5 w-5 text-purple-600" />
+            <button className="p-3 border-2 border-dashed border-gray-300 rounded-lg hover:border-green-300 hover:bg-green-50 transition-colors text-left">
+              <div className="flex items-center space-x-3">
+                <div className="bg-green-100 p-2 rounded">
+                  <TestTube className="h-4 w-4 text-green-600" />
+                </div>
+                <div>
+                  <h4 className="font-medium text-sm text-gray-900">Import Templates</h4>
+                  <p className="text-xs text-gray-600">Import pre-built workflow templates</p>
+                </div>
               </div>
-              <div>
-                <h4 className="font-medium text-gray-900">Bulk Configuration</h4>
-                <p className="text-sm text-gray-600">Configure multiple mappings at once</p>
+            </button>
+
+            <button className="p-3 border-2 border-dashed border-gray-300 rounded-lg hover:border-purple-300 hover:bg-purple-50 transition-colors text-left">
+              <div className="flex items-center space-x-3">
+                <div className="bg-purple-100 p-2 rounded">
+                  <Settings className="h-4 w-4 text-purple-600" />
+                </div>
+                <div>
+                  <h4 className="font-medium text-sm text-gray-900">Bulk Configuration</h4>
+                  <p className="text-xs text-gray-600">Configure multiple mappings at once</p>
+                </div>
               </div>
-            </div>
-          </button>
+            </button>
+          </div>
         </div>
-      </div>
+      </details>
 
       {/* Create Mapping Modal */}
       {showCreateModal && (
@@ -602,7 +610,7 @@ export const WorkflowManagement: React.FC<WorkflowManagementProps> = ({
               <h3 className="text-lg font-medium text-gray-900 mb-4">
                 Create Workflow Mapping
               </h3>
-              
+
               <div className="space-y-4">
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1">

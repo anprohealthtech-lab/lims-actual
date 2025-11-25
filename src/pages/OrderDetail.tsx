@@ -40,8 +40,8 @@ type AnalyteLite = {
 type TestGroupForOrder = {
   test_group_id: string;
   test_group_name: string;
-  order_test_group_id?: string | null;
-  order_test_id?: string | null;
+  order_test_group_id: string | null;
+  order_test_id: string | null;
   analytes: AnalyteLite[];
 };
 
@@ -426,40 +426,35 @@ export default function OrderDetail() {
   // =========================================================
 
   return (
-    <div className="container mx-auto px-4 py-6 max-w-4xl">
+    <div className="container mx-auto px-4 py-4 max-w-4xl">
       {/* Header */}
-      <div className="mb-6">
+      <div className="mb-4">
         <button
           onClick={() => navigate("/orders")}
-          className="flex items-center text-gray-600 hover:text-gray-900 mb-4 transition-colors"
+          className="flex items-center text-gray-600 hover:text-gray-900 mb-2 transition-colors text-sm"
         >
-          <svg className="h-4 w-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <svg className="h-4 w-4 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
           </svg>
           Back to Orders
         </button>
 
-        <div className="flex items-center justify-between">
-          <h1 className="text-2xl font-bold">Order #{order.order_number}</h1>
+        <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+          <div>
+            <h1 className="text-xl font-bold text-gray-900">Order #{order.order_number}</h1>
+            <p className="text-sm text-gray-500 mt-0.5">
+              Created on {new Date(order.created_at).toLocaleDateString()}
+            </p>
+          </div>
+
           <div className="flex items-center space-x-3">
-            <span className={getStatusBadge(order.status)}>
-              {order.status === "pending_collection"
-                ? "Pending Collection"
-                : order.status === "in_process"
-                ? "In Process"
-                : order.status === "pending_approval"
-                ? "Pending Approval"
-                : order.status}
-            </span>
-            
             {/* WhatsApp Send Button - Show for completed orders */}
             {(order.status === 'completed' || order.status === 'delivered') && (
               <WhatsAppSendButton
-                // Use enhanced mode for direct sending with connection management
                 enhanced={true}
                 userId={user?.id}
                 labId={order.lab_id}
-                fileUrl={`https://your-report-service.com/reports/${order.id}/download`} // Replace with actual report URL
+                fileUrl={`https://your-report-service.com/reports/${order.id}/download`}
                 fileName={`Order_${order.order_number}_Report.pdf`}
                 phoneNumber={order.patient_phone}
                 patientName={order.patient_name}
@@ -468,20 +463,53 @@ export default function OrderDetail() {
                 size="sm"
                 onSuccess={(messageId) => {
                   console.log(`Report sent successfully via WhatsApp! Message ID: ${messageId || 'N/A'}`);
-                  // You could show a success toast here instead of alert
                 }}
                 onError={(error) => {
                   console.error(`Failed to send report: ${error}`);
-                  // You could show an error toast here instead of alert
                 }}
               />
             )}
           </div>
         </div>
+
+        {/* Progress Stepper */}
+        <div className="mt-6 mb-2">
+          <div className="relative">
+            <div className="overflow-hidden h-2 mb-4 text-xs flex rounded bg-gray-200">
+              <div
+                style={{
+                  width: `${order.status === 'completed' || order.status === 'delivered' ? '100%' :
+                    order.status === 'pending_approval' ? '75%' :
+                      order.status === 'in_process' ? '50%' :
+                        order.status === 'pending_collection' ? '25%' : '10%'
+                    }`
+                }}
+                className="shadow-none flex flex-col text-center whitespace-nowrap text-white justify-center bg-blue-500 transition-all duration-500"
+              ></div>
+            </div>
+            <div className="flex justify-between text-xs text-gray-600 font-medium">
+              <div className={`flex flex-col items-center ${['pending', 'pending_collection', 'in_process', 'pending_approval', 'completed', 'delivered'].includes(order.status) ? 'text-blue-600' : ''}`}>
+                <span>Pending</span>
+              </div>
+              <div className={`flex flex-col items-center ${['pending_collection', 'in_process', 'pending_approval', 'completed', 'delivered'].includes(order.status) ? 'text-blue-600' : ''}`}>
+                <span>Collection</span>
+              </div>
+              <div className={`flex flex-col items-center ${['in_process', 'pending_approval', 'completed', 'delivered'].includes(order.status) ? 'text-blue-600' : ''}`}>
+                <span>Processing</span>
+              </div>
+              <div className={`flex flex-col items-center ${['pending_approval', 'completed', 'delivered'].includes(order.status) ? 'text-blue-600' : ''}`}>
+                <span>Approval</span>
+              </div>
+              <div className={`flex flex-col items-center ${['completed', 'delivered'].includes(order.status) ? 'text-blue-600' : ''}`}>
+                <span>Completed</span>
+              </div>
+            </div>
+          </div>
+        </div>
       </div>
 
       {/* Tabs */}
-      <div className="border-b mb-6 overflow-x-auto">
+      <div className="border-b mb-4 overflow-x-auto">
         <nav className="flex space-x-8">
           <button onClick={() => setActiveTab("details")} className={getTabClasses("details")}>
             <svg className="h-4 w-4 inline mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -505,20 +533,20 @@ export default function OrderDetail() {
       </div>
 
       {/* Content */}
-      <div className="bg-white rounded-lg shadow border p-6">
+      <div className="bg-white rounded-lg shadow border p-4">
         {activeTab === "details" && (
-          <div className="space-y-6">
+          <div className="space-y-4">
             {/* Patient Information */}
             <div>
-              <h3 className="text-lg font-semibold mb-3">Patient Information</h3>
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <div className="bg-gray-50 p-3 rounded">
-                  <h4 className="text-sm font-medium text-gray-500 mb-1">Patient Name</h4>
-                  <p className="text-lg">{order.patient_name}</p>
+              <h3 className="text-sm font-semibold text-gray-900 mb-2 uppercase tracking-wider">Patient Information</h3>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                <div className="bg-gray-50 p-2.5 rounded border border-gray-100">
+                  <h4 className="text-xs font-medium text-gray-500 mb-0.5">Patient Name</h4>
+                  <p className="text-base font-medium text-gray-900">{order.patient_name}</p>
                 </div>
-                <div className="bg-gray-50 p-3 rounded">
-                  <h4 className="text-sm font-medium text-gray-500 mb-1">Gender & DOB</h4>
-                  <p>
+                <div className="bg-gray-50 p-2.5 rounded border border-gray-100">
+                  <h4 className="text-xs font-medium text-gray-500 mb-0.5">Gender & DOB</h4>
+                  <p className="text-sm text-gray-900">
                     {order.patient_gender} •{" "}
                     {order.patient_dob ? new Date(order.patient_dob).toLocaleDateString() : "Not provided"}
                   </p>
@@ -528,29 +556,29 @@ export default function OrderDetail() {
 
             {/* Test Information */}
             <div>
-              <h3 className="text-lg font-semibold mb-3">Test Information</h3>
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <div className="bg-gray-50 p-3 rounded">
-                  <h4 className="text-sm font-medium text-gray-500 mb-1">Test</h4>
-                  <p>{order.test_group_name || order.test_code || "Not specified"}</p>
+              <h3 className="text-sm font-semibold text-gray-900 mb-2 uppercase tracking-wider">Test Information</h3>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                <div className="bg-gray-50 p-2.5 rounded border border-gray-100">
+                  <h4 className="text-xs font-medium text-gray-500 mb-0.5">Test</h4>
+                  <p className="text-sm text-gray-900">{order.test_group_name || order.test_code || "Not specified"}</p>
                 </div>
-                <div className="bg-gray-50 p-3 rounded">
-                  <h4 className="text-sm font-medium text-gray-500 mb-1">Priority</h4>
-                  <p>{order.priority || "Normal"}</p>
+                <div className="bg-gray-50 p-2.5 rounded border border-gray-100">
+                  <h4 className="text-xs font-medium text-gray-500 mb-0.5">Priority</h4>
+                  <p className="text-sm text-gray-900">{order.priority || "Normal"}</p>
                 </div>
               </div>
             </div>
 
             {/* Sample Information */}
             <div>
-              <h3 className="text-lg font-semibold mb-3">Sample Information</h3>
-              <div className="bg-gray-50 p-3 rounded">
-                <h4 className="text-sm font-medium text-gray-500 mb-1">Sample ID</h4>
+              <h3 className="text-sm font-semibold text-gray-900 mb-2 uppercase tracking-wider">Sample Information</h3>
+              <div className="bg-gray-50 p-2.5 rounded border border-gray-100">
+                <h4 className="text-xs font-medium text-gray-500 mb-0.5">Sample ID</h4>
                 {order.sample_id ? (
-                  <p className="font-mono">{order.sample_id}</p>
+                  <p className="font-mono text-sm text-gray-900">{order.sample_id}</p>
                 ) : (
-                  <p className="text-yellow-600 flex items-center">
-                    <svg className="h-4 w-4 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <p className="text-yellow-600 text-sm flex items-center">
+                    <svg className="h-3.5 w-3.5 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L4.082 16.5c-.77.833.192 2.5 1.732 2.5z" />
                     </svg>
                     Sample not collected
@@ -561,14 +589,14 @@ export default function OrderDetail() {
 
             {/* Order Metadata */}
             <div>
-              <h3 className="text-lg font-semibold mb-3">Order Details</h3>
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <div className="bg-gray-50 p-3 rounded">
-                  <h4 className="text-sm font-medium text-gray-500 mb-1">Order Date</h4>
-                  <p>{new Date(order.created_at).toLocaleString()}</p>
+              <h3 className="text-sm font-semibold text-gray-900 mb-2 uppercase tracking-wider">Order Details</h3>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                <div className="bg-gray-50 p-2.5 rounded border border-gray-100">
+                  <h4 className="text-xs font-medium text-gray-500 mb-0.5">Order Date</h4>
+                  <p className="text-sm text-gray-900">{new Date(order.created_at).toLocaleString()}</p>
                 </div>
-                <div className="bg-gray-50 p-3 rounded">
-                  <h4 className="text-sm font-medium text-gray-500 mb-1">Status</h4>
+                <div className="bg-gray-50 p-2.5 rounded border border-gray-100">
+                  <h4 className="text-xs font-medium text-gray-500 mb-0.5">Status</h4>
                   <span className={getStatusBadge(order.status)}>{order.status}</span>
                 </div>
               </div>

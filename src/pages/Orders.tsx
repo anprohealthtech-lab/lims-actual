@@ -244,10 +244,10 @@ const Orders: React.FC = () => {
 
   const handleAddSelectedTests = async () => {
     if (selectedTests.length === 0 || !selectedOrderId) return;
-    
+
     try {
       console.log('Adding tests to order:', selectedOrderId, selectedTests);
-      
+
       // Find the current order to get existing data
       const currentOrder = orders.find(order => order.id === selectedOrderId);
       if (!currentOrder) {
@@ -261,48 +261,48 @@ const Orders: React.FC = () => {
         test_name: test.name,
         test_group_id: test.type === 'test' ? test.id : null
       }));
-      
+
       // Insert new tests into order_tests table
       const { error: testsError } = await supabase
         .from('order_tests')
         .insert(newOrderTests);
-      
+
       if (testsError) {
         console.error('Error inserting order tests:', testsError);
         alert('Failed to add tests. Please try again.');
         return;
       }
-      
+
       // Calculate new total amount and update the order
       const newTestsTotal = selectedTests.reduce((sum, test) => sum + test.price, 0);
       const updatedTotalAmount = currentOrder.total_amount + newTestsTotal;
-      
+
       // Update the order's total amount
       const { error: updateError } = await supabase
         .from('orders')
         .update({ total_amount: updatedTotalAmount })
         .eq('id', selectedOrderId);
-      
+
       if (updateError) {
         console.error('Error updating order total:', updateError);
         alert('Tests added but failed to update total amount.');
         return;
       }
-      
+
       console.log('Order updated successfully');
-      
+
       // Reset modal state
       setSelectedTests([]);
       setSearchQuery('');
       setShowAddTestModal(false);
       setSelectedOrderId(null);
-      
+
       // Refresh the orders data
       await fetchOrders();
-      
+
       // Show success message
       alert(`Successfully added ${selectedTests.length} tests to the order! Total cost: ₹${newTestsTotal.toLocaleString()}`);
-      
+
     } catch (error) {
       console.error('Error adding tests:', error);
       alert('Failed to add tests. Please try again.');
@@ -329,7 +329,7 @@ const Orders: React.FC = () => {
       console.error('No lab_id found for current user');
       return;
     }
-    
+
     // 1) base orders
     const { data: rows, error } = await supabase
       .from("orders")
@@ -383,7 +383,7 @@ const Orders: React.FC = () => {
       // Calculate totals correctly
       const expectedTotal = panels.reduce((sum, p) => sum + p.expected, 0);
       const enteredTotal = panels.reduce((sum, p) => sum + Math.min(p.entered, p.expected), 0);
-      
+
       // ✅ Fix: Calculate approved analytes correctly
       // Only count analytes from verified panels, not entire expected total
       const approvedAnalytes = panels.reduce((sum, p) => {
@@ -434,8 +434,8 @@ const Orders: React.FC = () => {
 
     // sort: date DESC, then daily seq DESC (002 above 001)
     const sorted = cards.sort((a, b) => {
-      const dA = new Date(a.order_date).setHours(0,0,0,0);
-      const dB = new Date(b.order_date).setHours(0,0,0,0);
+      const dA = new Date(a.order_date).setHours(0, 0, 0, 0);
+      const dB = new Date(b.order_date).setHours(0, 0, 0, 0);
       if (dA !== dB) return dB - dA;
       const nA = getDailySeq(a);
       const nB = getDailySeq(b);
@@ -481,14 +481,14 @@ const Orders: React.FC = () => {
         const orderDate = new Date(o.order_date);
         const fromDate = filters.from ? new Date(filters.from) : null;
         const toDate = filters.to ? new Date(filters.to) : null;
-        
+
         if (fromDate && orderDate < fromDate) return false;
         if (toDate && orderDate > toDate) return false;
         return true;
       };
 
       // Doctor filter
-      const matchesDoctor = !filters.doctor || 
+      const matchesDoctor = !filters.doctor ||
         (o.doctor || "").toLowerCase().includes((filters.doctor || "").toLowerCase());
 
       return matchesQ && matchesStatus && matchesPriority && matchesDateRange() && matchesDoctor;
@@ -583,7 +583,7 @@ const Orders: React.FC = () => {
       console.log('Creating new order:', orderData);
       console.log('Tests array:', orderData.tests, 'Length:', orderData.tests?.length);
       console.log('Test objects structure:', orderData.tests?.[0]);
-      
+
       // Create the order in the database
       const { data: order, error: orderError } = await database.orders.create(orderData);
       if (orderError) {
@@ -591,9 +591,9 @@ const Orders: React.FC = () => {
         alert('Failed to create order. Please try again.');
         return;
       }
-      
+
       console.log('Order created successfully:', order);
-      
+
       // Update any pending TRF attachments to link to this order
       const PENDING_ORDER_UUID = '00000000-0000-0000-0000-000000000000';
       const { error: updateError } = await supabase
@@ -602,20 +602,20 @@ const Orders: React.FC = () => {
         .eq('related_table', 'orders')
         .eq('related_id', PENDING_ORDER_UUID)
         .eq('description', 'Test Request Form for order creation');
-      
+
       if (updateError) {
         console.warn('Failed to update TRF attachment:', updateError);
         // Non-critical error, continue with order creation
       } else {
         console.log('Updated TRF attachment to link to order:', order.id);
       }
-      
+
       // Refresh the orders list
       await fetchOrders();
-      
+
       // Close the form
       setShowOrderForm(false);
-      
+
       // Show success message
       alert('Order created successfully!');
     } catch (error) {
@@ -648,22 +648,20 @@ const Orders: React.FC = () => {
             <div className="flex items-center space-x-2 bg-gray-100 rounded-lg p-1">
               <button
                 onClick={() => setViewMode('standard')}
-                className={`flex items-center px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${
-                  viewMode === 'standard' 
-                    ? 'bg-white text-blue-600 shadow-sm' 
-                    : 'text-gray-600 hover:text-gray-800'
-                }`}
+                className={`flex items-center px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${viewMode === 'standard'
+                  ? 'bg-white text-blue-600 shadow-sm'
+                  : 'text-gray-600 hover:text-gray-800'
+                  }`}
               >
                 <ToggleLeft className="h-4 w-4 mr-1" />
                 Standard View
               </button>
               <button
                 onClick={() => setViewMode('enhanced')}
-                className={`flex items-center px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${
-                  viewMode === 'enhanced' 
-                    ? 'bg-white text-blue-600 shadow-sm' 
-                    : 'text-gray-600 hover:text-gray-800'
-                }`}
+                className={`flex items-center px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${viewMode === 'enhanced'
+                  ? 'bg-white text-blue-600 shadow-sm'
+                  : 'text-gray-600 hover:text-gray-800'
+                  }`}
               >
                 <ToggleRight className="h-4 w-4 mr-1" />
                 Patient Visits
@@ -690,8 +688,8 @@ const Orders: React.FC = () => {
 
         {/* Modals */}
         {showOrderForm && (
-          <OrderForm 
-            onClose={() => setShowOrderForm(false)} 
+          <OrderForm
+            onClose={() => setShowOrderForm(false)}
             onSubmit={handleAddOrder}
           />
         )}
@@ -725,22 +723,20 @@ const Orders: React.FC = () => {
           <div className="flex items-center space-x-2 bg-gray-100 rounded-lg p-1">
             <button
               onClick={() => setViewMode('standard')}
-              className={`flex items-center px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${
-                viewMode === 'standard' 
-                  ? 'bg-white text-blue-600 shadow-sm' 
-                  : 'text-gray-600 hover:text-gray-800'
-              }`}
+              className={`flex items-center px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${viewMode === 'standard'
+                ? 'bg-white text-blue-600 shadow-sm'
+                : 'text-gray-600 hover:text-gray-800'
+                }`}
             >
               <ToggleLeft className="h-4 w-4 mr-1" />
               Standard View
             </button>
             <button
               onClick={() => setViewMode('enhanced')}
-              className={`flex items-center px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${
-                viewMode === 'enhanced' 
-                  ? 'bg-white text-blue-600 shadow-sm' 
-                  : 'text-gray-600 hover:text-gray-800'
-              }`}
+              className={`flex items-center px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${viewMode === 'enhanced'
+                ? 'bg-white text-blue-600 shadow-sm'
+                : 'text-gray-600 hover:text-gray-800'
+                }`}
             >
               <ToggleRight className="h-4 w-4 mr-1" />
               Patient Visits
@@ -749,7 +745,7 @@ const Orders: React.FC = () => {
         </div>
         <button
           onClick={() => setShowOrderForm(true)}
-          className="inline-flex items-center px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
+          className="hidden sm:inline-flex items-center px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
         >
           <Plus className="h-5 w-5 mr-2" />
           Create Order
@@ -757,50 +753,35 @@ const Orders: React.FC = () => {
       </div>
 
       {/* Overview cards */}
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-        <div className="bg-green-50 border border-green-200 rounded-lg p-4">
-          <div className="flex items-center justify-between">
-            <div>
-              <div className="text-2xl font-bold text-green-900">{filteredSummary.allDone}</div>
-              <div className="text-sm text-green-700">All Done</div>
-            </div>
-            <div className="bg-green-500 p-2 rounded-lg">
-              <CheckCircle className="h-5 w-5 text-white" />
-            </div>
+      {/* Overview cards - Compact Mobile Grid */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3 md:gap-4">
+        <div className="bg-green-50 border border-green-200 rounded-lg p-3 md:p-4 relative overflow-hidden">
+          <div className="relative z-10">
+            <div className="text-xl md:text-2xl font-bold text-green-900">{filteredSummary.allDone}</div>
+            <div className="text-xs md:text-sm text-green-700 font-medium">All Done</div>
           </div>
+          <CheckCircle className="absolute right-2 bottom-2 h-8 w-8 text-green-500/20 md:static md:h-5 md:w-5 md:text-white md:bg-green-500 md:p-1 md:rounded-lg md:opacity-100" />
         </div>
-        <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
-          <div className="flex items-center justify-between">
-            <div>
-              <div className="text-2xl font-bold text-blue-900">{filteredSummary.mostlyDone}</div>
-              <div className="text-sm text-blue-700">Mostly Done</div>
-            </div>
-            <div className="bg-blue-500 p-2 rounded-lg">
-              <TrendingUp className="h-5 w-5 text-white" />
-            </div>
+        <div className="bg-blue-50 border border-blue-200 rounded-lg p-3 md:p-4 relative overflow-hidden">
+          <div className="relative z-10">
+            <div className="text-xl md:text-2xl font-bold text-blue-900">{filteredSummary.mostlyDone}</div>
+            <div className="text-xs md:text-sm text-blue-700 font-medium">Mostly Done</div>
           </div>
+          <TrendingUp className="absolute right-2 bottom-2 h-8 w-8 text-blue-500/20 md:static md:h-5 md:w-5 md:text-white md:bg-blue-500 md:p-1 md:rounded-lg md:opacity-100" />
         </div>
-        <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4">
-          <div className="flex items-center justify-between">
-            <div>
-              <div className="text-2xl font-bold text-yellow-900">{filteredSummary.pending}</div>
-              <div className="text-sm text-yellow-700">Pending</div>
-            </div>
-            <div className="bg-yellow-500 p-2 rounded-lg">
-              <ClockIcon className="h-5 w-5 text-white" />
-            </div>
+        <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-3 md:p-4 relative overflow-hidden">
+          <div className="relative z-10">
+            <div className="text-xl md:text-2xl font-bold text-yellow-900">{filteredSummary.pending}</div>
+            <div className="text-xs md:text-sm text-yellow-700 font-medium">Pending</div>
           </div>
+          <ClockIcon className="absolute right-2 bottom-2 h-8 w-8 text-yellow-500/20 md:static md:h-5 md:w-5 md:text-white md:bg-yellow-500 md:p-1 md:rounded-lg md:opacity-100" />
         </div>
-        <div className="bg-orange-50 border border-orange-200 rounded-lg p-4">
-          <div className="flex items-center justify-between">
-            <div>
-              <div className="text-2xl font-bold text-orange-900">{filteredSummary.awaitingApproval}</div>
-              <div className="text-sm text-orange-700">Awaiting Approval</div>
-            </div>
-            <div className="bg-orange-500 p-2 rounded-lg">
-              <AlertTriangle className="h-5 w-5 text-white" />
-            </div>
+        <div className="bg-orange-50 border border-orange-200 rounded-lg p-3 md:p-4 relative overflow-hidden">
+          <div className="relative z-10">
+            <div className="text-xl md:text-2xl font-bold text-orange-900">{filteredSummary.awaitingApproval}</div>
+            <div className="text-xs md:text-sm text-orange-700 font-medium">Approval</div>
           </div>
+          <AlertTriangle className="absolute right-2 bottom-2 h-8 w-8 text-orange-500/20 md:static md:h-5 md:w-5 md:text-white md:bg-orange-500 md:p-1 md:rounded-lg md:opacity-100" />
         </div>
       </div>
 
@@ -835,36 +816,36 @@ const Orders: React.FC = () => {
                   {g.orders.map((o) => {
                     const pct = o.expectedTotal > 0 ? Math.round((o.enteredTotal / o.expectedTotal) * 100) : 0;
                     const canAddTests = !['Completed', 'Delivered'].includes(o.status);
-                    
+
                     return (
                       <div
                         key={o.id}
                         role="button"
                         onClick={() => openDetails(o)}
-                        className="w-full p-4 border-2 rounded-lg hover:shadow-md transition-all cursor-pointer border-gray-200 bg-white"
+                        className="w-full p-3 md:p-4 border rounded-lg hover:shadow-md transition-all cursor-pointer border-gray-200 bg-white"
                       >
                         {/* Top row */}
                         <div className="flex items-start justify-between gap-3">
-                          <div className="flex items-center gap-3">
-                            <div className="flex items-center justify-center w-8 h-8 bg-blue-100 text-blue-700 rounded-full font-bold text-sm border-2 border-blue-200">
+                          <div className="flex items-center gap-2 md:gap-3">
+                            <div className="flex items-center justify-center w-6 h-6 md:w-8 md:h-8 bg-blue-100 text-blue-700 rounded-full font-bold text-xs md:text-sm border border-blue-200">
                               {String(getDailySeq(o)).padStart(3, "0")}
                             </div>
-                            <div className="flex items-center gap-3">
-                              <User className="h-6 w-6 text-blue-600 shrink-0" />
+                            <div className="flex items-center gap-2 md:gap-3">
+                              <User className="h-5 w-5 md:h-6 md:w-6 text-blue-600 shrink-0" />
                               <div>
-                                <div className="text-xl sm:text-2xl font-bold text-gray-900">
+                                <div className="text-base md:text-2xl font-bold text-gray-900 leading-tight">
                                   {o.patient?.name || o.patient_name}
                                 </div>
-                                <div className="text-sm sm:text-base text-gray-700">
+                                <div className="text-xs md:text-base text-gray-700">
                                   {(o.patient?.age || "N/A") + "y"} • {o.patient?.gender || "N/A"} • ID: {o.patient_id}
                                 </div>
                               </div>
                             </div>
                           </div>
 
-                          <div className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
-                            <span className="inline-flex items-center px-3 py-1.5 rounded-lg text-sm font-bold border-2 bg-blue-100 text-blue-800 border-blue-200">
-                              ● {o.status === "In Progress" ? "In Process" : o.status}
+                          <div className="flex items-center gap-1 md:gap-2" onClick={(e) => e.stopPropagation()}>
+                            <span className="inline-flex items-center px-2 py-0.5 md:px-3 md:py-1.5 rounded-lg text-xs md:text-sm font-bold border bg-blue-100 text-blue-800 border-blue-200 whitespace-nowrap">
+                              {o.status === "In Progress" ? "In Process" : o.status}
                             </span>
                             <button
                               className="p-2 text-gray-600 hover:bg-gray-100 rounded-lg"
@@ -906,41 +887,41 @@ const Orders: React.FC = () => {
                               <div className="flex flex-wrap gap-3">
                                 {o.panels.length > 0
                                   ? o.panels.map((p, i) => {
-                                      const progress = p.expected > 0 ? (p.entered / p.expected) * 100 : 0;
-                                      
-                                      // Modern minimalistic colors based on progress
-                                      const getMinimalColor = (percent: number) => {
-                                        if (percent === 0) return "bg-gray-100 border-gray-300 text-gray-700";
-                                        if (percent < 40) return "bg-red-50 border-red-200 text-red-800";
-                                        if (percent < 70) return "bg-orange-50 border-orange-200 text-orange-800";
-                                        if (percent < 90) return "bg-yellow-50 border-yellow-200 text-yellow-800";
-                                        return "bg-green-50 border-green-200 text-green-800";
-                                      };
+                                    const progress = p.expected > 0 ? (p.entered / p.expected) * 100 : 0;
 
-                                      const colorClass = getMinimalColor(progress);
+                                    // Modern minimalistic colors based on progress
+                                    const getMinimalColor = (percent: number) => {
+                                      if (percent === 0) return "bg-gray-100 border-gray-300 text-gray-700";
+                                      if (percent < 40) return "bg-red-50 border-red-200 text-red-800";
+                                      if (percent < 70) return "bg-orange-50 border-orange-200 text-orange-800";
+                                      if (percent < 90) return "bg-yellow-50 border-yellow-200 text-yellow-800";
+                                      return "bg-green-50 border-green-200 text-green-800";
+                                    };
 
-                                      return (
-                                        <div
-                                          key={`${p.name}-${i}`}
-                                          className={`border rounded-lg px-3 py-2 transition-all duration-300 ${colorClass}`}
-                                        >
-                                          <div className="font-medium text-sm mb-1">{p.name}</div>
-                                          <div className="flex items-center justify-between text-xs">
-                                            <span className="font-mono">
-                                              {p.entered}/{p.expected} analytes
-                                            </span>
-                                            <span className="text-xs opacity-75">
-                                              {progress === 0 ? "Pending" : progress < 100 ? "Partial" : "Complete"}
-                                            </span>
-                                          </div>
+                                    const colorClass = getMinimalColor(progress);
+
+                                    return (
+                                      <div
+                                        key={`${p.name}-${i}`}
+                                        className={`border rounded-lg px-3 py-2 transition-all duration-300 ${colorClass}`}
+                                      >
+                                        <div className="font-medium text-sm mb-1">{p.name}</div>
+                                        <div className="flex items-center justify-between text-xs">
+                                          <span className="font-mono">
+                                            {p.entered}/{p.expected} analytes
+                                          </span>
+                                          <span className="text-xs opacity-75">
+                                            {progress === 0 ? "Pending" : progress < 100 ? "Partial" : "Complete"}
+                                          </span>
                                         </div>
-                                      );
-                                    })
+                                      </div>
+                                    );
+                                  })
                                   : o.tests.map((t, i) => (
-                                      <span key={i} className="px-2 py-1 rounded text-sm bg-blue-100 text-blue-800">
-                                        {t}
-                                      </span>
-                                    ))}
+                                    <span key={i} className="px-2 py-1 rounded text-sm bg-blue-100 text-blue-800">
+                                      {t}
+                                    </span>
+                                  ))}
                               </div>
                             </div>
                           </div>
@@ -969,7 +950,7 @@ const Orders: React.FC = () => {
                                 <Eye className="h-4 w-4 mr-1" />
                                 View Full Details
                               </button>
-                              
+
                               {canAddTests && (
                                 <button
                                   onClick={(e) => {
@@ -996,36 +977,36 @@ const Orders: React.FC = () => {
                               {o.enteredTotal}/{o.expectedTotal} analytes
                             </span>
                           </div>
-                          
+
                           {/* Enhanced progress bar with dynamic colors and segments */}
                           <div className="relative w-full bg-gray-200 rounded-full h-4 mb-3 overflow-hidden border">
                             {/* Background gradient based on overall progress */}
-                            <div 
+                            <div
                               className="absolute left-0 top-0 h-4 transition-all duration-700 rounded-full"
-                              style={{ 
+                              style={{
                                 width: `${pct}%`,
                                 background: pct === 0 ? '#ef4444' : // red
-                                           pct < 25 ? `linear-gradient(90deg, #ef4444 0%, #f97316 100%)` : // red to orange
-                                           pct < 50 ? `linear-gradient(90deg, #f97316 0%, #eab308 100%)` : // orange to yellow  
-                                           pct < 75 ? `linear-gradient(90deg, #eab308 0%, #84cc16 100%)` : // yellow to lime
-                                           pct < 100 ? `linear-gradient(90deg, #84cc16 0%, #22c55e 100%)` : // lime to green
-                                           '#10b981', // emerald
+                                  pct < 25 ? `linear-gradient(90deg, #ef4444 0%, #f97316 100%)` : // red to orange
+                                    pct < 50 ? `linear-gradient(90deg, #f97316 0%, #eab308 100%)` : // orange to yellow  
+                                      pct < 75 ? `linear-gradient(90deg, #eab308 0%, #84cc16 100%)` : // yellow to lime
+                                        pct < 100 ? `linear-gradient(90deg, #84cc16 0%, #22c55e 100%)` : // lime to green
+                                          '#10b981', // emerald
                                 boxShadow: pct > 0 ? `0 0 12px ${pct < 50 ? '#ef444440' : '#22c55e40'}` : 'none'
                               }}
                             />
-                            
+
                             {/* Approved segment overlay (darker green) */}
-                            <div 
+                            <div
                               className="absolute left-0 top-0 h-4 bg-green-600 transition-all duration-500 rounded-full opacity-80"
                               style={{ width: `${o.expectedTotal > 0 ? (o.approvedAnalytes / o.expectedTotal) * 100 : 0}%` }}
                             />
-                            
+
                             {/* Progress indicator line */}
-                            <div 
+                            <div
                               className="absolute top-0 w-0.5 h-4 bg-white shadow-lg"
                               style={{ left: `${pct}%` }}
                             />
-                            
+
                             {/* Sparkle effect for high progress */}
                             {pct > 75 && (
                               <div className="absolute inset-0 rounded-full opacity-30">
@@ -1035,19 +1016,19 @@ const Orders: React.FC = () => {
                               </div>
                             )}
                           </div>
-                          
+
                           {/* Enhanced legend with better spacing and icons */}
                           <div className="grid grid-cols-2 lg:grid-cols-4 gap-2 text-sm">
                             <div className="inline-flex items-center bg-white rounded-md px-2 py-1 border border-gray-200">
-                              <span className="inline-block w-3 h-3 bg-red-400 rounded-full mr-2 shadow-sm" /> 
+                              <span className="inline-block w-3 h-3 bg-red-400 rounded-full mr-2 shadow-sm" />
                               <span className="text-gray-700">Pending: <strong>{o.pendingAnalytes}</strong></span>
                             </div>
                             <div className="inline-flex items-center bg-white rounded-md px-2 py-1 border border-amber-200">
-                              <span className="inline-block w-3 h-3 bg-amber-500 rounded-full mr-2 shadow-sm" /> 
+                              <span className="inline-block w-3 h-3 bg-amber-500 rounded-full mr-2 shadow-sm" />
                               <span className="text-amber-700">For approval: <strong>{o.forApprovalAnalytes}</strong></span>
                             </div>
                             <div className="inline-flex items-center bg-white rounded-md px-2 py-1 border border-green-200">
-                              <span className="inline-block w-3 h-3 bg-green-500 rounded-full mr-2 shadow-sm" /> 
+                              <span className="inline-block w-3 h-3 bg-green-500 rounded-full mr-2 shadow-sm" />
                               <span className="text-green-700">Approved: <strong>{o.approvedAnalytes}</strong></span>
                             </div>
                             <div className="inline-flex items-center bg-white rounded-md px-2 py-1 border border-blue-200 lg:justify-end">
@@ -1088,11 +1069,11 @@ const Orders: React.FC = () => {
               Avg TAT:{" "}
               {orders.length
                 ? Math.round(
-                    orders.reduce((sum, o) => {
-                      const diffHrs = (Date.now() - new Date(o.order_date).getTime()) / 36e5;
-                      return sum + diffHrs;
-                    }, 0) / orders.length
-                  )
+                  orders.reduce((sum, o) => {
+                    const diffHrs = (Date.now() - new Date(o.order_date).getTime()) / 36e5;
+                    return sum + diffHrs;
+                  }, 0) / orders.length
+                )
                 : 0}
               h
             </span>
@@ -1102,8 +1083,8 @@ const Orders: React.FC = () => {
 
       {/* Modals */}
       {showOrderForm && (
-        <OrderForm 
-          onClose={() => setShowOrderForm(false)} 
+        <OrderForm
+          onClose={() => setShowOrderForm(false)}
           onSubmit={handleAddOrder}
         />
       )}
@@ -1180,11 +1161,10 @@ const Orders: React.FC = () => {
                       <div
                         key={test.id}
                         onClick={() => toggleTestSelection(test)}
-                        className={`p-3 border-2 rounded-lg cursor-pointer transition-all ${
-                          isSelected
-                            ? 'border-blue-500 bg-blue-50'
-                            : 'border-gray-200 hover:border-gray-300'
-                        }`}
+                        className={`p-3 border-2 rounded-lg cursor-pointer transition-all ${isSelected
+                          ? 'border-blue-500 bg-blue-50'
+                          : 'border-gray-200 hover:border-gray-300'
+                          }`}
                       >
                         <div className="flex items-start justify-between">
                           <div className="flex-1">
@@ -1267,6 +1247,18 @@ const Orders: React.FC = () => {
           </div>
         </div>
       )}
+
+      {/* Floating Action Button for Mobile */}
+      <button
+        onClick={() => setShowOrderForm(true)}
+        className="sm:hidden fixed bottom-20 right-4 h-14 w-14 bg-blue-600 text-white rounded-full shadow-lg flex items-center justify-center hover:bg-blue-700 z-40 transition-transform active:scale-95"
+        aria-label="Create Order"
+      >
+        <Plus className="h-8 w-8" />
+      </button>
+
+      {/* Bottom spacer for FAB */}
+      <div className="h-20 sm:hidden"></div>
     </div>
   );
 };

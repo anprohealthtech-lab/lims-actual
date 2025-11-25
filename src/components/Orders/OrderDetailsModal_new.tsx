@@ -402,7 +402,14 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
       
       console.log('Test names in order:', testNames);
       
-      // Fetch test groups that match the test names
+      // Get current user's lab_id
+      const lab_id = await database.getCurrentUserLabId();
+      if (!lab_id) {
+        console.error('No lab context found');
+        return;
+      }
+
+      // Fetch test groups that match the test names (lab-scoped)
       const { data: testGroups, error: testGroupsError } = await supabase
         .from('test_groups')
         .select(`
@@ -420,7 +427,8 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
             )
           )
         `)
-        .in('name', testNames);
+        .in('name', testNames)
+        .or(`lab_id.eq.${lab_id},lab_id.is.null`);
       
       if (testGroupsError) {
         console.error('Error fetching test groups:', testGroupsError);

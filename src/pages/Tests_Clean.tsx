@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { Plus, Edit2, Trash2, Search, Filter, X, Save, AlertCircle } from 'lucide-react';
-import { supabase } from '../utils/supabase';
+import { supabase, database } from '../utils/supabase';
 
 interface Analyte {
   id: string;
@@ -53,19 +53,24 @@ const Tests: React.FC = () => {
       setLoading(true);
       setError(null);
 
-      // Fetch test groups
+      // Get current user's lab_id
+      const lab_id = await database.getCurrentUserLabId();
+      if (!lab_id) {
+        throw new Error('No lab context found');
+      }
+
+      // Fetch test groups (lab-scoped)
       const { data: testGroupsData, error: testGroupsError } = await supabase
         .from('test_groups')
         .select('*')
+        .or(`lab_id.eq.${lab_id},lab_id.is.null`)
+        .eq('is_active', true)
         .order('name');
 
       if (testGroupsError) throw testGroupsError;
 
-      // Fetch analytes
-      const { data: analytesData, error: analytesError } = await supabase
-        .from('analytes')
-        .select('*')
-        .order('name');
+      // Fetch analytes (lab-scoped using database API)
+      const { data: analytesData, error: analytesError } = await database.analytes.getAll();
 
       if (analytesError) throw analytesError;
 

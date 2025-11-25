@@ -3423,6 +3423,17 @@ export const database = {
     updateLabSpecific: async (labId: string, analyteId: string, updates: {
       is_active?: boolean;
       visible?: boolean;
+      name?: string;
+      unit?: string;
+      reference_range?: string;
+      low_critical?: number | null;
+      high_critical?: number | null;
+      interpretation_low?: string;
+      interpretation_normal?: string;
+      interpretation_high?: string;
+      category?: string;
+      lab_specific_name?: string;
+      lab_specific_unit?: string;
       lab_specific_reference_range?: string;
       lab_specific_interpretation_low?: string;
       lab_specific_interpretation_normal?: string;
@@ -4190,6 +4201,9 @@ export const attachments = {
     description?: string;
     tag?: string;
     optimize?: boolean; // Enable image optimization
+  }, options?: {
+    optimize?: boolean;
+    onOptimizationProgress?: (progress: number, fileName: string) => void;
   }) => {
     try {
       // Import optimization function dynamically to avoid circular imports
@@ -4199,7 +4213,12 @@ export const attachments = {
       let fileToUpload = file;
       let optimizationStats = null;
       
-      if (metadata.optimize !== false && file.type.startsWith('image/')) {
+      const shouldOptimize = options?.optimize ?? metadata.optimize ?? true;
+      
+      if (shouldOptimize !== false && file.type.startsWith('image/')) {
+        if (options?.onOptimizationProgress) {
+          options.onOptimizationProgress(10, file.name);
+        }
         console.log(`Optimizing image: ${file.name} (${(file.size / 1024 / 1024).toFixed(2)} MB)`);
         const result = await smartOptimizeImage(file);
         fileToUpload = result.file;
@@ -4207,6 +4226,9 @@ export const attachments = {
         
         if (optimizationStats) {
           console.log(`Image optimized: ${optimizationStats.savedPercent}% reduction`);
+        }
+        if (options?.onOptimizationProgress) {
+          options.onOptimizationProgress(100, file.name);
         }
       }
       

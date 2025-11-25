@@ -32,14 +32,15 @@ const WhatsApp: React.FC = () => {
             Send PDF reports and messages to patients via WhatsApp
           </p>
         </div>
-        
+
         <div className="flex items-center space-x-2">
-          <div className={`px-3 py-1 rounded-full text-sm font-medium ${
-            isConnected 
-              ? 'bg-green-100 text-green-800' 
+          <div className={`inline-flex items-center rounded-full px-3 py-1 text-sm font-medium ${isConnected
+              ? 'bg-green-100 text-green-800'
               : 'bg-red-100 text-red-800'
-          }`}>
-            {isConnected ? '🟢 Connected' : '🔴 Disconnected'}
+            }`}>
+            <span className={`w-2 h-2 rounded-full mr-2 ${isConnected ? 'bg-green-500' : 'bg-red-500'
+              }`}></span>
+            {isConnected ? 'Connected' : 'Disconnected'}
           </div>
         </div>
       </div>
@@ -58,8 +59,8 @@ const WhatsApp: React.FC = () => {
         </TabsContent>
 
         <TabsContent value="messaging" className="space-y-6">
-          <WhatsAppMessaging 
-            isConnected={isConnected} 
+          <WhatsAppMessaging
+            isConnected={isConnected}
             onMessageSent={handleMessageSent}
           />
         </TabsContent>
@@ -73,51 +74,63 @@ const WhatsApp: React.FC = () => {
         </TabsContent>
       </Tabs>
 
-      {/* Quick Start Guide */}
+      {/* Quick Start Guide - Accordion Style */}
       {!isConnected && (
-        <div className="bg-blue-50 border border-blue-200 rounded-lg p-6">
-          <h3 className="text-lg font-medium text-blue-900 mb-4">
-            Getting Started with WhatsApp Integration
-          </h3>
-          
-          <div className="space-y-4">
+        <details className="group bg-blue-50 border border-blue-200 rounded-lg overflow-hidden" open>
+          <summary className="flex items-center justify-between p-4 cursor-pointer hover:bg-blue-100 transition-colors select-none">
+            <div className="flex items-center space-x-2">
+              <div className="bg-blue-600 p-1.5 rounded-full">
+                <svg className="w-4 h-4 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                </svg>
+              </div>
+              <h3 className="text-lg font-medium text-blue-900">
+                Getting Started with WhatsApp Integration
+              </h3>
+            </div>
+            <svg className="w-5 h-5 text-blue-500 transform group-open:rotate-180 transition-transform" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+            </svg>
+          </summary>
+
+          <div className="p-6 pt-0 space-y-4 border-t border-blue-200/50 mt-4">
             <div className="flex items-start space-x-3">
-              <div className="flex-shrink-0 w-6 h-6 bg-blue-600 text-white rounded-full flex items-center justify-center text-sm font-bold">
+              <div className="flex-shrink-0 w-6 h-6 bg-blue-600 text-white rounded-full flex items-center justify-center text-sm font-bold shadow-sm">
                 1
               </div>
               <div>
                 <div className="font-medium text-blue-900">Connect WhatsApp</div>
-                <div className="text-sm text-blue-800">
+                <div className="text-sm text-blue-800 mt-0.5">
                   Go to the "Connection" tab and click "Connect" to generate a QR code
                 </div>
               </div>
             </div>
-            
+
             <div className="flex items-start space-x-3">
-              <div className="flex-shrink-0 w-6 h-6 bg-blue-600 text-white rounded-full flex items-center justify-center text-sm font-bold">
+              <div className="flex-shrink-0 w-6 h-6 bg-blue-600 text-white rounded-full flex items-center justify-center text-sm font-bold shadow-sm">
                 2
               </div>
               <div>
                 <div className="font-medium text-blue-900">Scan QR Code</div>
-                <div className="text-sm text-blue-800">
+                <div className="text-sm text-blue-800 mt-0.5">
                   Open WhatsApp on your phone, go to Settings → Linked Devices → Link a Device
                 </div>
               </div>
             </div>
-            
+
             <div className="flex items-start space-x-3">
-              <div className="flex-shrink-0 w-6 h-6 bg-blue-600 text-white rounded-full flex items-center justify-center text-sm font-bold">
+              <div className="flex-shrink-0 w-6 h-6 bg-blue-600 text-white rounded-full flex items-center justify-center text-sm font-bold shadow-sm">
                 3
               </div>
               <div>
                 <div className="font-medium text-blue-900">Start Sending Messages</div>
-                <div className="text-sm text-blue-800">
+                <div className="text-sm text-blue-800 mt-0.5">
                   Once connected, use the "Send Message" tab to send reports and messages to patients
                 </div>
               </div>
             </div>
           </div>
-        </div>
+        </details>
       )}
     </div>
   );
