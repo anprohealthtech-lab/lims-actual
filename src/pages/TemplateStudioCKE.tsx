@@ -366,11 +366,15 @@ const buildPremiumEditorConfig = (
     '|',
     'outdent',
     'indent',
-    '|',
-    'tableOfContents',
-    'mergeField',
-    'formatPainter',
   ];
+
+  const premiumToolbarItems: string[] = [];
+  if (TableOfContents) premiumToolbarItems.push('tableOfContents');
+  if (MergeFields) premiumToolbarItems.push('mergeField');
+  if (FormatPainter) premiumToolbarItems.push('formatPainter');
+  if (premiumToolbarItems.length) {
+    toolbarItems.push('|', ...premiumToolbarItems);
+  }
 
   // Build plugins array - add premium features conditionally (only if they exist)
   const plugins = [
@@ -474,6 +478,18 @@ const buildPremiumEditorConfig = (
         },
       ],
     },
+    pagination: Pagination
+      ? {
+        pageWidth: '210mm',
+        pageHeight: '297mm',
+        pageMargins: {
+          top: '15mm',
+          bottom: '15mm',
+          left: '15mm',
+          right: '15mm',
+        },
+      }
+      : undefined,
     image: {
       toolbar: [
         'toggleImageCaption',
@@ -1087,7 +1103,7 @@ const TemplateStudioCKE: React.FC = () => {
         } else {
           finalGroup = option.group || existing.group || 'lab';
         }
-        
+
         uniqueByPlaceholder.set(option.placeholder, {
           ...existing,
           group: finalGroup,
@@ -2165,7 +2181,7 @@ const TemplateStudioCKE: React.FC = () => {
     : null;
 
   return (
-    <div className="flex h-screen flex-col bg-white overflow-hidden">
+    <div className="flex h-screen w-full flex-col bg-white overflow-hidden">
       <style>{`
         :root {
           --ck-z-default: 100;
@@ -2201,25 +2217,27 @@ const TemplateStudioCKE: React.FC = () => {
           overflow-x: auto !important;
           overflow-y: auto !important;
         }
-        /* CKEditor container should not constrain width */
+        /* CKEditor container should stretch with the layout */
         .ck-editor {
-          min-width: 800px !important;
+          width: 100% !important;
+          min-width: 0 !important;
         }
         .ck-editor__main {
-          min-width: 100%;
+          width: 100% !important;
+          min-width: 0 !important;
           overflow: visible !important;
         }
         .ck-content {
-          min-width: 100%;
-          width: max-content !important;
-          max-width: none !important;
+          width: 100% !important;
+          max-width: 100% !important;
+          min-width: 0 !important;
           overflow: visible !important;
         }
-        /* Ensure the editor container doesn't limit width */
+        /* Ensure the editor container participates in flex sizing */
         .editor-wrapper {
-          min-width: 800px;
-          width: max-content;
-          display: inline-block;
+          width: 100%;
+          min-width: 0;
+          display: block;
         }
         /* Make CKEditor toolbar sticky */
         .ck-editor__top {
@@ -2247,101 +2265,103 @@ const TemplateStudioCKE: React.FC = () => {
           padding: 12px 24px;
         }
       `}</style>
-      <div className="shrink-0 flex flex-wrap items-center justify-between gap-3 border-b border-gray-200 px-6 py-4">
-        <div>
-          <h1 className="text-lg font-semibold text-gray-900">Template Studio · CKEditor</h1>
-          <p className="text-xs text-gray-500">Rich text editor with AI assistance and placeholder catalog.</p>
-          {verificationStatusBadge ? (
-            <span className={`mt-2 inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-[11px] ${verificationStatusBadge.classes}`}>
-              <CheckCircle2 className="h-3 w-3" />
-              {verificationStatusBadge.label}
-            </span>
-          ) : null}
-        </div>
-        <div className="flex flex-wrap items-center gap-2">
-          <button
-            type="button"
-            onClick={() => setSidebarCollapsed((v) => !v)}
-            className="inline-flex items-center gap-1 rounded-md border border-gray-300 px-3 py-1.5 text-xs font-medium text-gray-700 transition hover:bg-gray-50"
-            title={sidebarCollapsed ? 'Show Template Details' : 'Hide Template Details'}
-          >
-            {sidebarCollapsed ? (
-              <ChevronRight className="h-3.5 w-3.5" />
-            ) : (
-              <ChevronLeft className="h-3.5 w-3.5" />
-            )}
-            {sidebarCollapsed ? 'Show Details' : 'Hide Details'}
-          </button>
-          <button
-            type="button"
-            onClick={() => setIsSourcePreviewOpen(true)}
-            className="inline-flex items-center gap-1 rounded-md border border-gray-300 px-3 py-1.5 text-xs font-medium text-gray-700 transition hover:bg-gray-50"
-          >
-            <FileCode className="h-3.5 w-3.5" /> Source
-          </button>
-          <button
-            type="button"
-            onClick={() => setPlaceholderPickerOpen(true)}
-            className="inline-flex items-center gap-1 rounded-md border border-gray-300 px-3 py-1.5 text-xs font-medium text-gray-700 transition hover:bg-gray-50"
-          >
-            Placeholders
-          </button>
-          <button
-            type="button"
-            onClick={handleConvertToWatermark}
-            title="Select an image and click to send it to background as watermark"
-            className="inline-flex items-center gap-1 rounded-md border border-indigo-200 bg-indigo-50 px-3 py-1.5 text-xs font-medium text-indigo-700 transition hover:bg-indigo-100"
-          >
-            <svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 16V4m0 0L3 8m4-4l4 4m6 0v12m0 0l4-4m-4 4l-4-4" />
-            </svg>
-            Send to Background
-          </button>
-          <button
-            type="button"
-            onClick={handleAddImageOverlay}
-            title="Select an image and add text overlay on top of it"
-            className="inline-flex items-center gap-1 rounded-md border border-teal-200 bg-teal-50 px-3 py-1.5 text-xs font-medium text-teal-700 transition hover:bg-teal-100"
-          >
-            <svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 8h10M7 12h4m1 8l-4-4H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-3l-4 4z" />
-            </svg>
-            Add Text Overlay
-          </button>
-          <button
-            type="button"
-            onClick={() => setIsA4PreviewOpen(true)}
-            className="inline-flex items-center gap-1 rounded-md border border-orange-200 bg-orange-50 px-3 py-1.5 text-xs font-medium text-orange-700 transition hover:bg-orange-100"
-          >
-            <Eye className="h-3.5 w-3.5" /> A4 Full View
-          </button>
-          <button
-            type="button"
-            onClick={() => setIsAiConsoleOpen(true)}
-            className="inline-flex items-center gap-1 rounded-md border border-blue-200 bg-blue-50 px-3 py-1.5 text-xs font-medium text-blue-700 transition hover:bg-blue-100"
-          >
-            <Sparkles className="h-3.5 w-3.5" /> Assistant
-          </button>
-          <button
-            type="button"
-            onClick={handleRunAudit}
-            className="inline-flex items-center gap-1 rounded-md border border-purple-200 bg-purple-50 px-3 py-1.5 text-xs font-medium text-purple-700 transition hover:bg-purple-100"
-          >
-            <Wand2 className="h-3.5 w-3.5" /> Audit
-          </button>
-          <button
-            type="button"
-            onClick={handleSave}
-            disabled={isSaving}
-            className="inline-flex items-center gap-1 rounded-md bg-emerald-600 px-3 py-1.5 text-xs font-medium text-white shadow-sm transition hover:bg-emerald-700 disabled:cursor-not-allowed disabled:bg-emerald-400"
-          >
-            <Save className="h-3.5 w-3.5" />
-            {isSaving ? 'Saving…' : 'Save'}
-          </button>
+      <div className="shrink-0 border-b border-gray-200 bg-white px-6 py-4 w-full">
+        <div className="flex flex-col gap-4">
+          <div>
+            <h1 className="text-lg font-semibold text-gray-900">Template Studio · CKEditor</h1>
+            <p className="text-xs text-gray-500">Rich text editor with AI assistance and placeholder catalog.</p>
+            {verificationStatusBadge ? (
+              <span className={`mt-2 inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-[11px] ${verificationStatusBadge.classes}`}>
+                <CheckCircle2 className="h-3 w-3" />
+                {verificationStatusBadge.label}
+              </span>
+            ) : null}
+          </div>
+          <div className="flex flex-wrap items-center gap-2 text-xs">
+            <button
+              type="button"
+              onClick={() => setSidebarCollapsed((v) => !v)}
+              className="inline-flex items-center gap-1 rounded-md border border-gray-300 px-3 py-1.5 font-medium text-gray-700 transition hover:bg-gray-50"
+              title={sidebarCollapsed ? 'Show Template Details' : 'Hide Template Details'}
+            >
+              {sidebarCollapsed ? (
+                <ChevronRight className="h-3.5 w-3.5" />
+              ) : (
+                <ChevronLeft className="h-3.5 w-3.5" />
+              )}
+              {sidebarCollapsed ? 'Show Details' : 'Hide Details'}
+            </button>
+            <button
+              type="button"
+              onClick={() => setIsSourcePreviewOpen(true)}
+              className="inline-flex items-center gap-1 rounded-md border border-gray-300 px-3 py-1.5 font-medium text-gray-700 transition hover:bg-gray-50"
+            >
+              <FileCode className="h-3.5 w-3.5" /> Source
+            </button>
+            <button
+              type="button"
+              onClick={() => setPlaceholderPickerOpen(true)}
+              className="inline-flex items-center gap-1 rounded-md border border-gray-300 px-3 py-1.5 font-medium text-gray-700 transition hover:bg-gray-50"
+            >
+              Placeholders
+            </button>
+            <button
+              type="button"
+              onClick={handleConvertToWatermark}
+              title="Select an image and click to send it to background as watermark"
+              className="inline-flex items-center gap-1 rounded-md border border-indigo-200 bg-indigo-50 px-3 py-1.5 font-medium text-indigo-700 transition hover:bg-indigo-100"
+            >
+              <svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 16V4m0 0L3 8m4-4l4 4m6 0v12m0 0l4-4m-4 4l-4-4" />
+              </svg>
+              Send to Background
+            </button>
+            <button
+              type="button"
+              onClick={handleAddImageOverlay}
+              title="Select an image and add text overlay on top of it"
+              className="inline-flex items-center gap-1 rounded-md border border-teal-200 bg-teal-50 px-3 py-1.5 font-medium text-teal-700 transition hover:bg-teal-100"
+            >
+              <svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 8h10M7 12h4m1 8l-4-4H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-3l-4 4z" />
+              </svg>
+              Add Text Overlay
+            </button>
+            <button
+              type="button"
+              onClick={() => setIsA4PreviewOpen(true)}
+              className="inline-flex items-center gap-1 rounded-md border border-orange-200 bg-orange-50 px-3 py-1.5 font-medium text-orange-700 transition hover:bg-orange-100"
+            >
+              <Eye className="h-3.5 w-3.5" /> A4 Full View
+            </button>
+            <button
+              type="button"
+              onClick={() => setIsAiConsoleOpen(true)}
+              className="inline-flex items-center gap-1 rounded-md border border-blue-200 bg-blue-50 px-3 py-1.5 font-medium text-blue-700 transition hover:bg-blue-100"
+            >
+              <Sparkles className="h-3.5 w-3.5" /> Assistant
+            </button>
+            <button
+              type="button"
+              onClick={handleRunAudit}
+              className="inline-flex items-center gap-1 rounded-md border border-purple-200 bg-purple-50 px-3 py-1.5 font-medium text-purple-700 transition hover:bg-purple-100"
+            >
+              <Wand2 className="h-3.5 w-3.5" /> Audit
+            </button>
+            <button
+              type="button"
+              onClick={handleSave}
+              disabled={isSaving}
+              className="inline-flex items-center gap-1 rounded-md bg-emerald-600 px-3 py-1.5 font-medium text-white shadow-sm transition hover:bg-emerald-700 disabled:cursor-not-allowed disabled:bg-emerald-400"
+            >
+              <Save className="h-3.5 w-3.5" />
+              {isSaving ? 'Saving…' : 'Save'}
+            </button>
+          </div>
         </div>
       </div>
 
-      <div className="flex flex-1 overflow-hidden">
+      <div className="flex w-full flex-1 overflow-hidden">
         {!sidebarCollapsed && (
           <aside className="w-full max-w-xs shrink-0 overflow-y-auto border-r border-gray-200 bg-gray-50 px-4 py-4">
             <div className="space-y-4 text-sm">
@@ -2492,7 +2512,7 @@ const TemplateStudioCKE: React.FC = () => {
           </aside>
         )}
 
-        <main className="flex-1 overflow-x-auto overflow-y-auto px-6 py-6">
+        <main className="flex-1 w-full overflow-x-auto overflow-y-auto px-6 py-6">
           <div className="sticky-actions-bar">
             <div className="flex flex-wrap items-center gap-2">
               <button
@@ -2526,8 +2546,8 @@ const TemplateStudioCKE: React.FC = () => {
             </div>
           ) : null}
 
-          <div className="editor-wrapper" style={{ display: 'inline-block', minWidth: '100%' }}>
-            <div className="relative rounded-lg border border-gray-200 bg-white min-w-[800px]" style={{ width: 'max-content', minWidth: '100%' }}>
+          <div className="editor-wrapper" style={{ width: '100%' }}>
+            <div className="relative rounded-lg border border-gray-200 bg-white min-w-[800px]" style={{ width: '100%' }}>
               {editorBooting ? (
                 <div className="absolute inset-0 z-10 flex items-center justify-center bg-white/80">
                   <div className="flex items-center gap-2 text-sm text-gray-600">
@@ -2540,13 +2560,13 @@ const TemplateStudioCKE: React.FC = () => {
             </div>
 
             <div className="mt-6 min-w-[800px]">
-            <label className="text-xs font-semibold uppercase tracking-wide text-gray-500">Custom CSS (optional)</label>
-            <textarea
-              value={cssContent}
-              onChange={(event) => setCssContent(event.target.value)}
-              className="mt-2 h-40 w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-0"
-              placeholder="/* Add template-specific styles here */"
-            />
+              <label className="text-xs font-semibold uppercase tracking-wide text-gray-500">Custom CSS (optional)</label>
+              <textarea
+                value={cssContent}
+                onChange={(event) => setCssContent(event.target.value)}
+                className="mt-2 h-40 w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-0"
+                placeholder="/* Add template-specific styles here */"
+              />
             </div>
           </div>
 
@@ -2879,11 +2899,11 @@ const TemplateStudioCKE: React.FC = () => {
                           const headerRegion = document.querySelector('[data-report-region="header"]');
                           const bodyRegion = document.querySelector('[data-report-region="body"]') || editorContainerRef.current;
                           const footerRegion = document.querySelector('[data-report-region="footer"]');
-                          
+
                           let headerHtml = headerRegion?.innerHTML || 'Place header content here';
                           let bodyHtml = bodyRegion?.innerHTML || 'Place body content here';
                           let footerHtml = footerRegion?.innerHTML || 'Place footer content here';
-                          
+
                           // Render placeholders with sample data
                           const sampleContext = {
                             patientName: 'John Doe',
@@ -2899,7 +2919,7 @@ const TemplateStudioCKE: React.FC = () => {
                             approvedByName: 'Dr. Sarah Johnson',
                             approverName: 'Dr. Sarah Johnson',
                           };
-                          
+
                           // Simple placeholder replacement (regex-based for print preview)
                           const replacePlaceholders = (html: string) => {
                             let result = html;
@@ -2909,11 +2929,11 @@ const TemplateStudioCKE: React.FC = () => {
                             });
                             return result;
                           };
-                          
+
                           headerHtml = replacePlaceholders(headerHtml);
                           bodyHtml = replacePlaceholders(bodyHtml);
                           footerHtml = replacePlaceholders(footerHtml);
-                          
+
                           printWindow.document.write(`
                             <html>
                               <head>
