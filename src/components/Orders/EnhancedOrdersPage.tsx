@@ -269,6 +269,28 @@ const PatientVisitCard: React.FC<PatientVisitCardProps> = ({
                           )}
                         </div>
                       )}
+                      {/* Outsourced Tests Indicator */}
+                      {(() => {
+                        const orderTests = (order as any).order_tests || [];
+                        const outsourcedTests = orderTests.filter((ot: any) => ot.outsourced_lab_id);
+                        const inhouseTests = orderTests.filter((ot: any) => !ot.outsourced_lab_id);
+                        
+                        if (outsourcedTests.length > 0) {
+                          return (
+                            <div className="flex items-center justify-end gap-1 mt-1">
+                              {inhouseTests.length > 0 && (
+                                <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 text-xs font-medium bg-green-100 text-green-700 rounded">
+                                  🏠 {inhouseTests.length}
+                                </span>
+                              )}
+                              <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 text-xs font-medium bg-orange-100 text-orange-700 rounded">
+                                🏥 {outsourcedTests.length} outsourced
+                              </span>
+                            </div>
+                          );
+                        }
+                        return null;
+                      })()}
                     </div>
                   </div>
                   

@@ -48,10 +48,12 @@ import WorkflowExplainerDemo from './pages/WorkflowExplainerDemo';
 import AIPromptManager from './pages/AIPromptManager';
 import WorkflowExplainerTestPage from './pages/WorkflowExplainerTestPage';
 import OptimizationDemo from './pages/OptimizationDemo';
+import OutsourcedReportsConsole from './pages/OutsourcedReportsConsole';
+import OutsourcedLabsSettings from './pages/OutsourcedLabsSettings';
 
 const AppRoutes: React.FC = () => {
   const { user, loading } = useAuth();
-  
+
   // Initialize WhatsApp auto-sync when user is authenticated
   useWhatsAppAutoSync();
 
@@ -74,7 +76,7 @@ const AppRoutes: React.FC = () => {
         console.warn('Puppeteer warmup failed:', err);
       });
     }, 2000);
-    
+
     return () => clearTimeout(timer);
   }, []);
 
@@ -141,6 +143,8 @@ const AppRoutes: React.FC = () => {
                 <Route path="/whatsapp" element={<WhatsApp />} />
                 <Route path="/whatsapp/sync" element={<WhatsAppUserSyncManager />} />
                 {/* Master Data Routes */}
+                <Route path="/outsourced-reports" element={<OutsourcedReportsConsole />} />
+                <Route path="/settings/outsourced-labs" element={<OutsourcedLabsSettings />} />
                 <Route path="/masters/doctors" element={<DoctorMaster />} />
                 <Route path="/masters/locations" element={<LocationMaster />} />
               </Routes>

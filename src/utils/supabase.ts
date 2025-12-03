@@ -1574,7 +1574,7 @@ export const database = {
         .select(`
           *,
           patients(name, age, gender),
-          order_tests(test_name, created_at),
+          order_tests(test_name, created_at, outsourced_lab_id, outsourced_labs(name)),
           results(id, status, result_values(parameter, value, unit, reference_range, flag))
         `)
         .eq('lab_id', lab_id)
@@ -1617,7 +1617,7 @@ export const database = {
         .from('orders')
         .select(`
           *,
-          order_tests(*, created_at)
+          order_tests(*, created_at, outsourced_lab_id, outsourced_labs(name))
         `)
         .eq('id', id)
         .single();
@@ -1759,7 +1759,8 @@ export const database = {
             test_name: test.name,
             test_group_id: test.type === 'test' ? test.id : null, // Only include test_group_id for individual tests, not packages
             sample_id: updatedOrder.sample_id,
-            lab_id
+            lab_id,
+            outsourced_lab_id: test.outsourced_lab_id || null // Track which lab this test is outsourced to
           }));
         }
         

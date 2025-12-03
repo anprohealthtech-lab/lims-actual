@@ -1,5 +1,8 @@
-import React, { useState } from 'react';
-import { Plus, Search, Filter, Edit, Eye, Phone, Mail, QrCode, Trash2, Users, Copy } from 'lucide-react';
+import React, { useState, useMemo } from 'react';
+import {
+  Plus, Search, Filter, Edit, Eye, Phone, Mail, QrCode,
+  Trash2, Users, Copy, MoreVertical, ChevronDown, ChevronUp
+} from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { generateQRCodeData } from '../utils/colorAssignment';
 import { useMobileOptimizations } from '../utils/platformHelper';
@@ -43,22 +46,25 @@ interface Patient {
 
 const Patients: React.FC = () => {
   const navigate = useNavigate();
+  const mobile = useMobileOptimizations();
+
+  // State
   const [patients, setPatients] = useState<Patient[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [showForm, setShowForm] = useState(false);
-  const [showEditForm, setShowEditForm] = useState(false);
-  const [selectedPatient, setSelectedPatient] = useState<Patient | null>(null);
-  const [showTestHistory, setShowTestHistory] = useState(false);
-  const [isGeneratingCodes, setIsGeneratingCodes] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
   const [isAdmin, setIsAdmin] = useState(false);
-  const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
-  const [showMergeModal, setShowMergeModal] = useState(false);
-  const [showDuplicatesModal, setShowDuplicatesModal] = useState(false);
+
+  // Modals State
+  const [activeModal, setActiveModal] = useState<'form' | 'edit' | 'details' | 'history' | 'merge' | 'duplicates' | null>(null);
+  const [selectedPatient, setSelectedPatient] = useState<Patient | null>(null);
   const [mergePatient, setMergePatient] = useState<Patient | null>(null);
-  
-  // Load patients from Supabase on component mount
+
+  // UI State
+  const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
+  const [isGeneratingCodes, setIsGeneratingCodes] = useState(false);
+
+  // Load Data
   React.useEffect(() => {
     loadPatients();
     checkAdminStatus();
@@ -67,9 +73,7 @@ const Patients: React.FC = () => {
   const checkAdminStatus = async () => {
     try {
       const { user } = await auth.getCurrentUser();
-      if (user?.user_metadata?.role === 'Admin') {
-        setIsAdmin(true);
-      }
+      if (user?.user_metadata?.role === 'Admin') setIsAdmin(true);
     } catch (err) {
       console.error('Error checking admin status:', err);
     }
@@ -78,36 +82,36 @@ const Patients: React.FC = () => {
   const loadPatients = async () => {
     try {
       setLoading(true);
-      // Use v_patients_with_duplicates view to only show unique/master patients
       const { data, error } = await supabase
         .from('v_patients_with_duplicates')
         .select('*')
         .order('registration_date', { ascending: false });
-      
-      if (error) {
-        setError(error.message);
-        console.error('Error loading patients:', error);
-      } else {
-        setPatients(data || []);
-      }
-    } catch (err) {
-      setError('Failed to load patients');
-      console.error('Error:', err);
+
+      if (error) throw error;
+      setPatients(data || []);
+    } catch (err: any) {
+      setError(err.message || 'Failed to load patients');
     } finally {
       setLoading(false);
     }
   };
 
-  const filteredPatients = patients.filter(patient =>
-    patient.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-    patient.id.toLowerCase().includes(searchTerm.toLowerCase()) ||
-    patient.phone.includes(searchTerm)
-  );
+  // Filter Logic
+  const filteredPatients = useMemo(() => {
+    const lowerSearch = searchTerm.toLowerCase();
+    return patients.filter(p =>
+      p.name.toLowerCase().includes(lowerSearch) ||
+      p.id.toLowerCase().includes(lowerSearch) ||
+      p.phone.includes(lowerSearch) ||
+      (p.display_id && p.display_id.toLowerCase().includes(lowerSearch))
+    );
+  }, [patients, searchTerm]);
 
+  // Handlers
   const handleAddPatient = async (formData: any) => {
     try {
       const { ocrResults, attachmentId, requestedTests, selectedDoctorId, ...patientDetails } = formData;
-      
+
       const patientData = {
         name: `${patientDetails.firstName} ${patientDetails.lastName}`.trim(),
         age: parseInt(patientDetails.age),
@@ -126,55 +130,32 @@ const Patients: React.FC = () => {
         total_tests: 0,
         is_active: true,
         requestedTests: requestedTests || [],
-        referring_doctor: patientDetails.referring_doctor || null, // Use the doctor name for now
-        referring_doctor_id: selectedDoctorId || null, // Add the doctor ID
+        referring_doctor: patientDetails.referring_doctor || null,
+        referring_doctor_id: selectedDoctorId || null,
       };
 
       const { data, error } = await database.patients.create(patientData);
-      
-      
-      if (error) {
-        setError(error.message);
-        console.error('Error adding patient:', error);
-      } else {
-        // Update attachment record with actual patient ID if one was uploaded
-        if (attachmentId && data) {
-          try {
-            await supabase
-              .from('attachments')
-              .update({
-                patient_id: data.id,
-                related_id: data.id
-              })
-              .eq('id', attachmentId);
-          } catch (attachmentError) {
-            console.error('Error updating attachment with patient ID:', attachmentError);
-          }
-        }
-        
-        setPatients(prev => [data, ...prev]);
-        setShowForm(false);
-        
-        // Show success message if order was created
-        if (data.order_created) {
-          if (data.invoice_created) {
-            alert(`Patient registered successfully!\n\nOrder created: ${data.matched_tests} of ${data.total_tests} tests matched\nInvoice generated: ₹${data.total_amount.toFixed(2)} (unpaid)\nInvoice ID: ${data.invoice_id}`);
-          } else {
-            alert(`Patient registered successfully!\n\nOrder created: ${data.matched_tests} of ${data.total_tests} tests matched\n${data.invoice_error ? `Invoice creation failed: ${data.invoice_error}` : 'Invoice creation skipped'}`);
-          }
-        } else if (data.order_error) {
-          alert(`Patient registered successfully!\n\nNote: Order creation failed - ${data.order_error}`);
-        }
+
+      if (error) throw error;
+
+      if (attachmentId && data) {
+        await supabase.from('attachments').update({ patient_id: data.id, related_id: data.id }).eq('id', attachmentId);
       }
-    } catch (err) {
-      setError('Failed to add patient');
-      console.error('Error:', err);
+
+      setPatients(prev => [data, ...prev]);
+      setActiveModal(null);
+
+      // Success Feedback
+      if (data.order_created) {
+        alert(`Patient registered! Order: ${data.matched_tests}/${data.total_tests} tests. Invoice: ₹${data.total_amount?.toFixed(2) || '0'}`);
+      }
+    } catch (err: any) {
+      setError(err.message || 'Failed to add patient');
     }
   };
 
   const handleUpdatePatient = async (formData: any) => {
     if (!selectedPatient) return;
-
     try {
       const patientData = {
         name: `${formData.firstName} ${formData.lastName}`.trim(),
@@ -199,449 +180,267 @@ const Patients: React.FC = () => {
         .eq('id', selectedPatient.id)
         .select()
         .single();
-      
-      if (error) {
-        setError(error.message);
-        console.error('Error updating patient:', error);
-      } else {
-        setPatients(prev => prev.map(p => p.id === selectedPatient.id ? data : p));
-        setShowEditForm(false);
-        setSelectedPatient(null);
+
+      if (error) throw error;
+
+      setPatients(prev => prev.map(p => p.id === selectedPatient.id ? data : p));
+      setActiveModal(null);
+      setSelectedPatient(null);
+    } catch (err: any) {
+      setError(err.message || 'Failed to update patient');
+    }
+  };
+
+  const handleDeletePatient = async (patientId: string) => {
+    try {
+      const { data: orders } = await supabase.from('orders').select('id').eq('patient_id', patientId);
+      if (orders && orders.length > 0) {
+        setError(`Cannot delete: Patient has ${orders.length} active orders.`);
+        return;
       }
-    } catch (err) {
-      setError('Failed to update patient');
-      console.error('Error:', err);
+
+      const { error } = await database.patients.delete(patientId);
+      if (error) throw error;
+
+      setPatients(prev => prev.filter(p => p.id !== patientId));
+      setConfirmDelete(null);
+    } catch (err: any) {
+      setError(err.message || 'Failed to delete patient');
     }
   };
 
   const handleGenerateQrAndColor = async (patientId: string) => {
     try {
       setIsGeneratingCodes(true);
+      const { data: patient } = await database.patients.getById(patientId);
+      if (!patient) throw new Error('Patient not found');
 
-      // Get the patient's current details
-      const { data: patient, error: patientError } = await database.patients.getById(patientId);
-      
-      if (patientError || !patient) {
-        console.error('Error fetching patient:', patientError);
-        setError('Failed to fetch patient details');
-        return;
-      }
-      
-      // Generate QR code data
       const qrCodeData = generateQRCodeData({
         id: patient.id,
         name: patient.name,
         age: patient.age,
         gender: patient.gender
       });
-      
-      // Update the patient with QR code information
-      const { data: updatedPatient, error: updateError } = await supabase
+
+      const { data: updated, error } = await supabase
         .from('patients')
-        .update({
-          qr_code_data: qrCodeData
-        })
+        .update({ qr_code_data: qrCodeData })
         .eq('id', patientId)
         .select()
         .single();
-      
-      if (updateError) {
-        console.error('Error updating patient with QR data:', updateError);
-        setError('Failed to update patient with QR code');
-        return;
-      }
-      
-      if (!updatedPatient) {
-        console.warn('Warning: Patient update returned no data, but no explicit error was reported.');
-        setError('Failed to update patient with QR code - no data returned');
-        return;
-      }
-      
-      // Update the patient in the local state
-      setPatients(prev => prev.map(p => p.id === patientId ? updatedPatient : p));
-      
-      // If the selected patient is the one being updated, update it too
-      if (selectedPatient && selectedPatient.id === patientId) {
-        setSelectedPatient(updatedPatient);
-      }
 
-      console.log('Successfully generated QR code for patient:', updatedPatient);
+      if (error) throw error;
+      if (updated) {
+        setPatients(prev => prev.map(p => p.id === patientId ? updated : p));
+        if (selectedPatient?.id === patientId) setSelectedPatient(updated);
+      }
     } catch (err) {
-      console.error('Error generating QR code:', err);
-      setError('An unexpected error occurred while generating QR code');
+      console.error(err);
+      setError('Failed to generate QR code');
     } finally {
       setIsGeneratingCodes(false);
     }
   };
 
-  const handleDeletePatient = async (patientId: string) => {
-    try {
-      // First check if patient has any orders
-      const { data: orders, error: ordersError } = await supabase
-        .from('orders')
-        .select('id')
-        .eq('patient_id', patientId);
-      
-      if (ordersError) {
-        throw new Error(ordersError.message);
-      }
-      
-      if (orders && orders.length > 0) {
-        setError(`Cannot mask patient with ID ${patientId} because they have ${orders.length} active orders. Please complete or cancel these orders first.`);
-        return;
-      }
-      
-      // Soft delete by setting is_active to false
-      const { error } = await database.patients.delete(patientId);
-      
-      
-      if (error) {
-        setError('Error masking patient: ' + error.message);
-        console.error('Error masking patient:', error);
-      } else {
-        setPatients(prev => prev.filter(p => p.id !== patientId));
-        console.log(`Patient ${patientId} has been masked (soft deleted)`);
-      }
-    } catch (err) {
-      setError('Failed to mask patient');
-      console.error('Error during patient masking:', err);
-    }
-  };
+  // Render Helpers
+  const renderActionButtons = (patient: Patient) => (
+    <div className="flex items-center justify-end gap-1 flex-nowrap">
+      <button onClick={() => { setSelectedPatient(patient); setActiveModal('details'); }} className="p-1.5 text-blue-600 hover:bg-blue-50 rounded-md transition-colors shrink-0" title="View Details">
+        <Eye className="h-4 w-4" />
+      </button>
+      <button onClick={() => { setSelectedPatient(patient); setActiveModal('edit'); }} className="p-1.5 text-gray-600 hover:bg-gray-100 rounded-md transition-colors shrink-0" title="Edit">
+        <Edit className="h-4 w-4" />
+      </button>
+      {patient.duplicate_count && patient.duplicate_count > 0 ? (
+        <button onClick={() => { setSelectedPatient(patient); setActiveModal('duplicates'); }} className="p-1.5 text-amber-600 hover:bg-amber-50 rounded-md transition-colors shrink-0" title="View Duplicates">
+          <Users className="h-4 w-4" />
+        </button>
+      ) : null}
+      <button onClick={() => { setMergePatient(patient); setActiveModal('merge'); }} className="p-1.5 text-purple-600 hover:bg-purple-50 rounded-md transition-colors shrink-0" title="Merge">
+        <Copy className="h-4 w-4" />
+      </button>
+      {isAdmin && (
+        confirmDelete === patient.id ? (
+          <div className="flex items-center bg-red-50 rounded-md shrink-0">
+            <button onClick={() => handleDeletePatient(patient.id)} className="p-1.5 text-red-600 hover:text-red-800" title="Confirm">
+              <Trash2 className="h-4 w-4" />
+            </button>
+            <button onClick={() => setConfirmDelete(null)} className="p-1.5 text-gray-500 hover:text-gray-700" title="Cancel">
+              <span className="text-xs font-bold">✕</span>
+            </button>
+          </div>
+        ) : (
+          <button onClick={() => setConfirmDelete(patient.id)} className="p-1.5 text-red-400 hover:bg-red-50 hover:text-red-600 rounded-md transition-colors shrink-0" title="Delete">
+            <Trash2 className="h-4 w-4" />
+          </button>
+        )
+      )}
+    </div>
+  );
 
-  const handleEditPatient = (patient: any) => {
-    setSelectedPatient(patient);
-    setShowEditForm(true);
-  };
-
-  const handleCreateOrder = (patient: Patient) => {
-    // Navigate to orders page with patient pre-selected
-    navigate('/orders', { state: { selectedPatient: patient } });
-  };
-
-  const handleViewAllTests = (patient: any) => {
-    setSelectedPatient(patient);
-    setShowTestHistory(true);
-  };
-
-  const handleMergeClick = (patient: Patient) => {
-    setMergePatient(patient);
-    setShowMergeModal(true);
-  };
-
-  const handleViewDuplicates = (patient: Patient) => {
-    setSelectedPatient(patient);
-    setShowDuplicatesModal(true);
-  };
-
-  const handleMergeSuccess = () => {
-    setShowMergeModal(false);
-    setMergePatient(null);
-    loadPatients(); // Reload to refresh duplicate counts
-  };
-
-  const handleUnmergeSuccess = () => {
-    loadPatients(); // Reload to refresh duplicate counts
-  };
-  
-  if (loading) {
-    return (
-      <div className="flex items-center justify-center min-h-64">
-        <div className="animate-spin rounded-full h-12 w-12 border-4 border-blue-600 border-t-transparent"></div>
-      </div>
-    );
-  }
-
-  const mobile = useMobileOptimizations();
+  if (loading) return <div className="flex justify-center items-center h-64"><div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div></div>;
 
   return (
-    <div className={mobile.spacing}>
-      {error && (
-        <div className="bg-red-50 border border-red-200 rounded-lg p-4">
-          <div className="text-red-700">{error}</div>
-          <button 
-            onClick={() => setError(null)}
-            className="text-red-600 hover:text-red-800 text-sm mt-2"
-          >
-            Dismiss
-          </button>
+    <div className={`flex flex-col h-full bg-gray-50 ${mobile.isMobile ? 'p-2' : 'p-6'}`}>
+      {/* Header Section */}
+      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-6">
+        <div>
+          <h1 className="text-2xl font-bold text-gray-900 tracking-tight">Patient Management</h1>
+          <p className="text-sm text-gray-500 mt-1">Manage patient records, history, and merges.</p>
         </div>
-      )}
 
-      <div className="flex items-center justify-between">
-        <h1 className={`${mobile.titleSize} font-bold text-gray-900`}>Patient Management</h1>
-        {!mobile.isMobile && (
-          <div className="flex items-center space-x-3">
-            <button
-              onClick={() => {
-                if (patients.length === 0) {
-                  alert('No patients available. Please add patients first.');
-                  return;
-                }
-                // Use the first patient as default master for merge modal
-                setMergePatient(patients[0]);
-                setShowMergeModal(true);
-              }}
-              className="flex items-center px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 transition-colors"
-            >
-              <Users className="h-5 w-5 mr-2" />
-              Merge Patients
-            </button>
-            <button
-              onClick={() => setShowForm(true)}
-              className="flex items-center px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
-            >
-              <Plus className="h-5 w-5 mr-2" />
-              Register Patient
-            </button>
-          </div>
-        )}
-      </div>
-
-      {/* Search and Filter Bar - Compact on mobile */}
-      <div className={`bg-white rounded-lg shadow-sm border border-gray-200 ${mobile.cardPadding}`}>
-        <div className="flex flex-col sm:flex-row gap-4">
-          <div className="flex-1 relative">
-            <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-gray-400" />
-            <input
-              type="text"
-              placeholder="Search by name, patient ID, or phone..."
-              value={searchTerm}
-              onChange={(e) => setSearchTerm(e.target.value)}
-              className="pl-10 pr-4 py-2 w-full border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-            />
-          </div>
-          <button className="flex items-center px-4 py-2 border border-gray-300 rounded-md hover:bg-gray-50 transition-colors">
-            <Filter className="h-4 w-4 mr-2" />
-            Filter
-          </button>
+        <div className="flex items-center gap-3">
+          {!mobile.isMobile && (
+            <>
+              <button
+                onClick={() => setActiveModal('form')}
+                className="inline-flex items-center px-4 py-2 bg-blue-600 rounded-lg text-sm font-medium text-white hover:bg-blue-700 shadow-sm transition-all"
+              >
+                <Plus className="h-4 w-4 mr-2" />
+                New Patient
+              </button>
+            </>
+          )}
         </div>
       </div>
 
-      {/* Patients Table */}
-      <div className="bg-white rounded-lg shadow-sm border border-gray-200 overflow-hidden">
-        <div className="px-6 py-4 border-b border-gray-200">
-          <h3 className="text-lg font-semibold text-gray-900">
-            Registered Patients ({filteredPatients.length})
-          </h3>
+      {/* Search & Filter Bar */}
+      <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-4 mb-4">
+        <div className="relative">
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-400" />
+          <input
+            type="text"
+            placeholder="Search by name, ID, phone..."
+            value={searchTerm}
+            onChange={(e) => setSearchTerm(e.target.value)}
+            className="w-full pl-10 pr-4 py-2.5 bg-gray-50 border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all outline-none text-sm"
+          />
         </div>
-        
-        <div className="overflow-x-auto">
+      </div>
+
+      {/* Data Table */}
+      <div className="bg-white rounded-xl shadow-sm border border-gray-200 flex-1 overflow-hidden flex flex-col min-w-0">
+        <div className="flex-1 overflow-auto">
           <table className="min-w-full divide-y divide-gray-200">
-            <thead className="bg-gray-50">
+            <thead className="bg-gray-50/50 sticky top-0 z-10 backdrop-blur-sm">
               <tr>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                  Patient Details
-                </th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                  Contact
-                </th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                  Registration
-                </th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                  Tests
-                </th>
-                {isAdmin && (
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                    Admin
-                  </th>
-                )}
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                  Actions
-                </th>
+                <th scope="col" className="px-6 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider w-[28%]">Patient Info</th>
+                <th scope="col" className="px-6 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider w-[24%]">Contact</th>
+                <th scope="col" className="px-6 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider w-[20%]">Status</th>
+                <th scope="col" className="px-6 py-3 text-right text-xs font-semibold text-gray-500 uppercase tracking-wider w-[28%]">Actions</th>
               </tr>
             </thead>
-            <tbody className="bg-white divide-y divide-gray-200">
+            <tbody className="bg-white divide-y divide-gray-100">
               {filteredPatients.map((patient) => (
-                <tr key={patient.id} className="hover:bg-gray-50 transition-colors">
-                  <td className="px-6 py-4 whitespace-nowrap">
-                    <div>
-                      <div className="text-sm font-medium text-gray-900">{patient.name}</div>
-                      <div className="text-sm text-gray-500">
-                        {patient.display_id ? `Sample ID: ${patient.display_id} • ` : ''}ID: {patient.id} • {patient.age}y • {patient.gender}
+                <tr key={patient.id} className="group hover:bg-gray-50/80 transition-colors">
+                  <td className="px-6 py-3">
+                    <div className="flex flex-col">
+                      <span className="text-sm font-semibold text-gray-900 truncate max-w-[200px]" title={patient.name}>
+                        {patient.name}
+                      </span>
+                      <div className="flex items-center gap-2 text-xs text-gray-500 mt-0.5">
+                        <span className="font-mono bg-gray-100 px-1.5 py-0.5 rounded text-gray-600">{patient.display_id || 'ID: ' + patient.id.slice(0, 8)}</span>
+                        <span>•</span>
+                        <span>{patient.age}y {patient.gender}</span>
                       </div>
                     </div>
                   </td>
-                  <td className="px-6 py-4 whitespace-nowrap">
-                    <div className="space-y-1">
+                  <td className="px-6 py-3">
+                    <div className="flex flex-col gap-1">
                       <div className="flex items-center text-sm text-gray-600">
-                        <Phone className="h-3 w-3 mr-1" />
+                        <Phone className="h-3.5 w-3.5 mr-2 text-gray-400" />
                         {patient.phone}
                       </div>
-                      <div className="flex items-center text-sm text-gray-600">
-                        <Mail className="h-3 w-3 mr-1" />
-                        {patient.email || 'No email'}
-                      </div>
-                    </div>
-                  </td>
-                  <td className="px-6 py-4 whitespace-nowrap">
-                    <div className="text-sm">
-                      <div className="text-gray-900">{new Date(patient.registration_date).toLocaleDateString()}</div>
-                      <div className="text-gray-500">Last: {new Date(patient.last_visit).toLocaleDateString()}</div>
-                    </div>
-                  </td>
-                  <td className="px-6 py-4 whitespace-nowrap">
-                    <div className="flex items-center space-x-2">
-                      <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-blue-100 text-blue-800">
-                        {patient.test_count || 0} tests
-                      </span>
-                      {patient.duplicate_count && patient.duplicate_count > 0 && (
-                        <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-amber-100 text-amber-800">
-                          <Copy className="h-3 w-3 mr-1" />
-                          {patient.duplicate_count} duplicate{patient.duplicate_count > 1 ? 's' : ''}
-                        </span>
-                      )}
-                    </div>
-                  </td>
-                  {isAdmin && (
-                    <td className="px-6 py-4 whitespace-nowrap">
-                      {confirmDelete === patient.id ? (
-                        <div className="flex items-center space-x-2">
-                          <button
-                            onClick={() => handleDeletePatient(patient.id)}
-                            className="text-red-600 hover:text-red-900 p-1 rounded bg-red-50"
-                            title="Confirm Delete"
-                          >
-                            <Trash2 className="h-4 w-4" />
-                          </button>
-                          <button
-                            onClick={() => setConfirmDelete(null)}
-                            className="text-gray-600 hover:text-gray-900 p-1 rounded bg-gray-50"
-                            title="Cancel"
-                          >
-                            ×
-                          </button>
+                      {patient.email && (
+                        <div className="flex items-center text-xs text-gray-500 truncate max-w-[180px]" title={patient.email}>
+                          <Mail className="h-3.5 w-3.5 mr-2 text-gray-400" />
+                          {patient.email}
                         </div>
-                      ) : (
-                        <button
-                          onClick={() => setConfirmDelete(patient.id)}
-                          className="text-red-600 hover:text-red-900 p-1 rounded"
-                          title="Delete Patient"
-                        >
-                          <Trash2 className="h-4 w-4" />
-                        </button>
                       )}
-                    </td>
-                  )}
-                  <td className="px-6 py-4 whitespace-nowrap text-sm font-medium space-x-2">
-                    <button
-                      onClick={() => setSelectedPatient(patient)}
-                      className="text-blue-600 hover:text-blue-900 p-1 rounded" 
-                      title="View Patient Details"
-                    >
-                      <Eye className="h-4 w-4" />
-                    </button>
-                    <button 
-                      onClick={() => handleEditPatient(patient)}
-                      className="text-gray-600 hover:text-gray-900 p-1 rounded"
-                      title="Edit Patient"
-                    >
-                      <Edit className="h-4 w-4" />
-                    </button>
-                    {patient.duplicate_count && patient.duplicate_count > 0 && (
-                      <button
-                        onClick={() => handleViewDuplicates(patient)}
-                        className="text-amber-600 hover:text-amber-900 p-1 rounded"
-                        title="View Merged Duplicates"
-                      >
-                        <Users className="h-4 w-4" />
-                      </button>
-                    )}
-                    <button
-                      onClick={() => handleMergeClick(patient)}
-                      className="text-purple-600 hover:text-purple-900 p-1 rounded"
-                      title="Merge Duplicate into This Patient"
-                    >
-                      <Copy className="h-4 w-4" />
-                    </button>
-                    {patient.qr_code_data && (
-                      <button
-                        onClick={() => setSelectedPatient(patient)}
-                        className="text-red-600 hover:text-red-900 p-1 rounded" 
-                        title="View QR Code"
-                      >
-                        <QrCode className="h-4 w-4" />
-                      </button>
-                    )}
+                    </div>
+                  </td>
+                  <td className="px-6 py-3">
+                    <div className="flex flex-col gap-1.5 items-start">
+                      <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-blue-50 text-blue-700 border border-blue-100">
+                        {patient.test_count || 0} Tests
+                      </span>
+                      {patient.duplicate_count && patient.duplicate_count > 0 ? (
+                        <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-amber-50 text-amber-700 border border-amber-100">
+                          <Copy className="h-3 w-3 mr-1" />
+                          {patient.duplicate_count} Duplicates
+                        </span>
+                      ) : (
+                        <span className="text-[10px] text-gray-400">Last: {new Date(patient.last_visit).toLocaleDateString()}</span>
+                      )}
+                    </div>
+                  </td>
+                  <td className="px-6 py-3 text-right">
+                    {renderActionButtons(patient)}
                   </td>
                 </tr>
               ))}
+              {filteredPatients.length === 0 && (
+                <tr>
+                  <td colSpan={4} className="px-6 py-12 text-center text-gray-500">
+                    <div className="flex flex-col items-center justify-center">
+                      <Users className="h-12 w-12 text-gray-300 mb-3" />
+                      <p className="text-base font-medium">No patients found</p>
+                      <p className="text-sm mt-1">Try adjusting your search or add a new patient.</p>
+                    </div>
+                  </td>
+                </tr>
+              )}
             </tbody>
           </table>
         </div>
+        <div className="bg-gray-50 px-6 py-3 border-t border-gray-200 text-xs text-gray-500 flex justify-between items-center">
+          <span>Showing {filteredPatients.length} patients</span>
+          <span>Total: {patients.length}</span>
+        </div>
       </div>
 
-      {/* Patient Registration Form Modal */}
-      {showForm && (
-        <PatientForm
-          onClose={() => setShowForm(false)}
-          onSubmit={handleAddPatient}
-        />
+      {/* Modals */}
+      {activeModal === 'form' && (
+        <PatientForm onClose={() => setActiveModal(null)} onSubmit={handleAddPatient} />
       )}
 
-      {/* Patient Details Modal */}
-      {selectedPatient && !showEditForm && !showTestHistory && (
+      {activeModal === 'edit' && selectedPatient && (
+        <PatientForm onClose={() => setActiveModal(null)} onSubmit={handleUpdatePatient} patient={selectedPatient} />
+      )}
+
+      {activeModal === 'details' && selectedPatient && (
         <PatientDetails
           patient={selectedPatient}
           isGeneratingCodes={isGeneratingCodes}
           onGenerateQrAndColor={handleGenerateQrAndColor}
-          onClose={() => setSelectedPatient(null)}
-          onEditPatient={handleEditPatient}
-          onCreateOrder={handleCreateOrder}
-          onViewAllTests={handleViewAllTests}
+          onClose={() => setActiveModal(null)}
+          onEditPatient={(p) => { setSelectedPatient(p); setActiveModal('edit'); }}
+          onCreateOrder={(p) => navigate('/orders', { state: { selectedPatient: p } })}
+          onViewAllTests={(p) => { setSelectedPatient(p); setActiveModal('history'); }}
         />
       )}
 
-      {/* Patient Edit Form Modal */}
-      {showEditForm && selectedPatient && (
-        <PatientForm
-          onClose={() => setShowEditForm(false)}
-          onSubmit={handleUpdatePatient}
-          patient={selectedPatient}
-        />
+      {activeModal === 'history' && selectedPatient && (
+        <PatientTestHistory patient={selectedPatient} onClose={() => setActiveModal(null)} />
       )}
 
-      {/* Patient Test History Modal */}
-      {showTestHistory && selectedPatient && (
-        <PatientTestHistory
-          patient={selectedPatient}
-          onClose={() => {            
-            setShowTestHistory(false);
-            setSelectedPatient(null);
-          }}
-        />
-      )}
-
-      {/* Patient Merge Modal */}
-      {showMergeModal && mergePatient && (
+      {activeModal === 'merge' && mergePatient && (
         <PatientMergeModal
           masterPatient={mergePatient}
-          onClose={() => {
-            setShowMergeModal(false);
-            setMergePatient(null);
-          }}
-          onSuccess={handleMergeSuccess}
+          onClose={() => setActiveModal(null)}
+          onSuccess={() => { setActiveModal(null); loadPatients(); }}
         />
       )}
 
-      {/* View Duplicates Modal */}
-      {showDuplicatesModal && selectedPatient && (
+      {activeModal === 'duplicates' && selectedPatient && (
         <ViewDuplicatesModal
           patientId={selectedPatient.id}
-          onClose={() => {
-            setShowDuplicatesModal(false);
-            setSelectedPatient(null);
-          }}
-          onUnmerge={handleUnmergeSuccess}
+          onClose={() => setActiveModal(null)}
+          onUnmerge={() => loadPatients()}
         />
       )}
 
-      {/* Mobile FAB - Add Patient */}
-      <MobileFAB
-        icon={Plus}
-        onClick={() => setShowForm(true)}
-        label="Add Patient"
-      />
+      <MobileFAB icon={Plus} onClick={() => setActiveModal('form')} label="Add" />
     </div>
   );
 };

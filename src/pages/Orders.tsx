@@ -58,7 +58,13 @@ type OrderRow = {
 
   // relations
   patients: { name?: string | null; age?: string | null; gender?: string | null } | null;
-  order_tests: { id: string; test_group_id: string | null; test_name: string }[] | null;
+  order_tests: { 
+    id: string; 
+    test_group_id: string | null; 
+    test_name: string;
+    outsourced_lab_id?: string | null;
+    outsourced_labs?: { name: string } | null;
+  }[] | null;
 
   // daily sequence for sorting
   order_number?: number | null;
@@ -337,7 +343,7 @@ const Orders: React.FC = () => {
         id, patient_id, patient_name, status, priority, order_date, expected_date, total_amount, doctor,
         order_number, sample_id, color_code, color_name, sample_collected_at, sample_collected_by,
         patients(name, age, gender),
-        order_tests(id, test_group_id, test_name)
+        order_tests(id, test_group_id, test_name, outsourced_lab_id, outsourced_labs(name))
       `)
       .eq('lab_id', lab_id)
       .order("order_date", { ascending: false });
@@ -883,7 +889,21 @@ const Orders: React.FC = () => {
                             )}
 
                             <div className="flex-1">
-                              <div className="text-sm text-gray-600 mb-1">Tests ({o.tests.length})</div>
+                              <div className="text-sm text-gray-600 mb-1">
+                                Tests ({o.tests.length})
+                                {(() => {
+                                  const orderTests = (o as any).order_tests || [];
+                                  const outsourcedCount = orderTests.filter((ot: any) => ot.outsourced_lab_id).length;
+                                  if (outsourcedCount > 0) {
+                                    return (
+                                      <span className="ml-2 inline-flex items-center gap-0.5 px-1.5 py-0.5 text-xs font-medium bg-orange-100 text-orange-700 rounded">
+                                        🏥 {outsourcedCount} outsourced
+                                      </span>
+                                    );
+                                  }
+                                  return null;
+                                })()}
+                              </div>
                               <div className="flex flex-wrap gap-3">
                                 {o.panels.length > 0
                                   ? o.panels.map((p, i) => {
@@ -917,11 +937,25 @@ const Orders: React.FC = () => {
                                       </div>
                                     );
                                   })
-                                  : o.tests.map((t, i) => (
-                                    <span key={i} className="px-2 py-1 rounded text-sm bg-blue-100 text-blue-800">
-                                      {t}
-                                    </span>
-                                  ))}
+                                  : o.tests.map((t, i) => {
+                                    // Find corresponding order_test to check outsourcing status
+                                    const orderTests = (o as any).order_tests || [];
+                                    const orderTest = orderTests.find((ot: any) => ot.test_name === t);
+                                    const isOutsourced = orderTest?.outsourced_lab_id;
+                                    
+                                    return (
+                                      <span 
+                                        key={i} 
+                                        className={`px-2 py-1 rounded text-sm ${
+                                          isOutsourced 
+                                            ? 'bg-orange-100 text-orange-800 border border-orange-200' 
+                                            : 'bg-blue-100 text-blue-800'
+                                        }`}
+                                      >
+                                        {isOutsourced && '🏥 '}{t}
+                                      </span>
+                                    );
+                                  })}
                               </div>
                             </div>
                           </div>

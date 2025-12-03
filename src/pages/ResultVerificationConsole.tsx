@@ -31,7 +31,8 @@ import {
   FileImage,
   Sparkles,
   ClipboardList,
-  Stethoscope
+  Stethoscope,
+  Mail
 } from "lucide-react";
 import { supabase, database } from "../utils/supabase";
 import AttachmentSelector from "../components/Reports/AttachmentSelector";
@@ -450,7 +451,7 @@ const ResultVerificationConsole: React.FC = () => {
   const loadPanels = async () => {
     setLoading(true);
     setErr(null);
-    
+
     // Get current lab ID for filtering
     const labId = currentLabId || await database.getCurrentUserLabId();
     if (!labId) {
@@ -766,6 +767,49 @@ const ResultVerificationConsole: React.FC = () => {
     setBulkProcessing(false);
   };
 
+  const handleEmailReport = async (row: PanelRow) => {
+    if (!currentLabId) {
+      alert("Lab ID not found");
+      return;
+    }
+
+    const confirmSend = window.confirm(`Send report email to ${row.patient_name}?`);
+    if (!confirmSend) return;
+
+    setBusyFor(row.result_id, true);
+    try {
+      const response = await fetch('/.netlify/functions/send-email', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': 'Bearer ' + (await supabase.auth.getSession()).data.session?.access_token,
+        },
+        body: JSON.stringify({
+          to: 'patient@example.com', // TODO: Get actual patient email
+          subject: `Test Report: ${row.test_group_name} - ${row.patient_name}`,
+          templateId: 'patient_report',
+          labId: currentLabId,
+          data: {
+            patientName: row.patient_name,
+            reportDate: fmtDate(row.order_date),
+            labName: 'Your Lab Name', // TODO: Get from lab settings
+            downloadUrl: `${window.location.origin}/reports/${row.order_id}`, // Placeholder
+          }
+        }),
+      });
+
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || 'Failed to send email');
+
+      alert('Email sent successfully!');
+    } catch (error) {
+      console.error('Error sending email:', error);
+      alert('Failed to send email: ' + (error instanceof Error ? error.message : 'Unknown error'));
+    } finally {
+      setBusyFor(row.result_id, false);
+    }
+  };
+
   /* ----------------- Stats ----------------- */
   const stats = useMemo(() => {
     const total = panels.length;
@@ -935,8 +979,8 @@ const ResultVerificationConsole: React.FC = () => {
                     disabled={isBusy}
                     onClick={() => rejectAnalyte(a.id)}
                     className={`inline-flex items-center px-3 py-2 rounded-lg text-sm font-semibold transition-all duration-200 shadow-sm ${status === "rejected"
-                        ? "bg-gradient-to-r from-red-600 to-rose-600 text-white"
-                        : "bg-gradient-to-r from-red-100 to-rose-100 text-red-700 hover:from-red-200 hover:to-rose-200"
+                      ? "bg-gradient-to-r from-red-600 to-rose-600 text-white"
+                      : "bg-gradient-to-r from-red-100 to-rose-100 text-red-700 hover:from-red-200 hover:to-rose-200"
                       }`}
                   >
                     <XCircle className="h-4 w-4 mr-2" />
@@ -1034,8 +1078,8 @@ const ResultVerificationConsole: React.FC = () => {
                   <div className="w-24 bg-gray-200 h-3 rounded-full overflow-hidden">
                     <div
                       className={`h-3 rounded-full transition-all duration-500 ${pct >= 100 ? 'bg-gradient-to-r from-green-500 to-emerald-500' :
-                          pct >= 50 ? 'bg-gradient-to-r from-amber-500 to-orange-500' :
-                            'bg-gradient-to-r from-red-500 to-rose-500'
+                        pct >= 50 ? 'bg-gradient-to-r from-amber-500 to-orange-500' :
+                          'bg-gradient-to-r from-red-500 to-rose-500'
                         }`}
                       style={{ width: `${pct}%` }}
                     />
@@ -1118,6 +1162,15 @@ const ResultVerificationConsole: React.FC = () => {
                 >
                   <FileImage className="h-4 w-4 sm:mr-2" />
                   <span className="hidden sm:inline">Manage Attachments</span>
+                </button>
+                <button
+                  onClick={() => handleEmailReport(row)}
+                  disabled={busy[row.result_id]}
+                  className="inline-flex items-center px-3 py-2 sm:px-4 sm:py-2 bg-gradient-to-r from-blue-500 to-cyan-500 text-white rounded-lg sm:rounded-xl hover:from-blue-600 hover:to-cyan-600 transition-all duration-200 shadow-sm font-semibold text-xs sm:text-sm"
+                  title="Email Report to Patient"
+                >
+                  <Mail className="h-4 w-4 sm:mr-2" />
+                  <span className="hidden sm:inline">Email</span>
                 </button>
                 <button
                   disabled={busy[row.result_id]}
@@ -1298,8 +1351,8 @@ const ResultVerificationConsole: React.FC = () => {
                     <button
                       onClick={() => setAttachmentViewMode('test')}
                       className={`text-xs px-3 py-1 rounded-full transition-colors ${attachmentViewMode === 'test'
-                          ? 'bg-blue-100 text-blue-700 font-medium'
-                          : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+                        ? 'bg-blue-100 text-blue-700 font-medium'
+                        : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
                         }`}
                     >
                       Test Only
@@ -1312,8 +1365,8 @@ const ResultVerificationConsole: React.FC = () => {
                     <button
                       onClick={() => setAttachmentViewMode('all')}
                       className={`text-xs px-3 py-1 rounded-full transition-colors ${attachmentViewMode === 'all'
-                          ? 'bg-blue-100 text-blue-700 font-medium'
-                          : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+                        ? 'bg-blue-100 text-blue-700 font-medium'
+                        : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
                         }`}
                     >
                       All
@@ -1480,10 +1533,10 @@ const ResultVerificationConsole: React.FC = () => {
                               {trend.flag && (
                                 <span
                                   className={`inline-flex items-center px-2 py-1 rounded-full text-xs font-bold ${trend.flag === 'H' || trend.flag === 'Critical'
-                                      ? 'bg-red-100 text-red-800'
-                                      : trend.flag === 'L'
-                                        ? 'bg-blue-100 text-blue-800'
-                                        : 'bg-orange-100 text-orange-800'
+                                    ? 'bg-red-100 text-red-800'
+                                    : trend.flag === 'L'
+                                      ? 'bg-blue-100 text-blue-800'
+                                      : 'bg-orange-100 text-orange-800'
                                     }`}
                                 >
                                   {trend.flag}
@@ -1804,10 +1857,10 @@ const ResultVerificationConsole: React.FC = () => {
       try {
         // Save AI suggestions to result_values table (also updates the actual flag column)
         const result = await aiIntelligence.saveResultValueSuggestions(suggestions, true);
-        
+
         if (result.success > 0) {
           alert(`Successfully saved interpretations for ${result.success} analyte(s)!${result.failed > 0 ? ` (${result.failed} failed)` : ''}\n\nThe flags have been updated.`);
-          
+
           // Clear the cached analytes for this result to force reload
           const targetResultId = interpretationsTargetResultId;
           setRowsByResult(prev => {
@@ -1815,10 +1868,10 @@ const ResultVerificationConsole: React.FC = () => {
             delete newState[targetResultId];
             return newState;
           });
-          
+
           setShowInterpretationsModal(false);
           setInterpretationsTargetResultId(null);
-          
+
           // Reload panels to show updated flags
           await loadPanels();
         } else {
@@ -1901,7 +1954,7 @@ const ResultVerificationConsole: React.FC = () => {
                         </span>
                       </div>
                     </div>
-                    
+
                     <div className="grid md:grid-cols-2 gap-4">
                       {/* AI Suggested Flag */}
                       <div className={`rounded-lg p-3 border ${getFlagColor(suggestion.ai_suggested_flag)}`}>
@@ -2157,8 +2210,8 @@ const ResultVerificationConsole: React.FC = () => {
                 <button
                   onClick={() => setShowAdvancedFilters(!showAdvancedFilters)}
                   className={`inline-flex items-center px-4 py-4 border-2 rounded-xl transition-all duration-200 font-semibold ${showAdvancedFilters
-                      ? 'bg-blue-100 border-blue-300 text-blue-700'
-                      : 'border-gray-300 text-gray-700 hover:border-gray-400 hover:bg-gray-50'
+                    ? 'bg-blue-100 border-blue-300 text-blue-700'
+                    : 'border-gray-300 text-gray-700 hover:border-gray-400 hover:bg-gray-50'
                     }`}
                 >
                   <FilterIcon className="h-5 w-5 mr-2" />

@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { X, Layers, TestTube, DollarSign, Clock, Settings, Plus, Search, AlertCircle, Brain } from 'lucide-react';
+import { X, Layers, TestTube, DollarSign, Clock, Settings, Plus, Search, AlertCircle, Brain, Building2 } from 'lucide-react';
 import { database, supabase } from '../../utils/supabase';
 import AnalyteForm from './AnalyteForm';
 
@@ -24,6 +24,23 @@ interface TestGroup {
   createdDate: string;
   lab_id?: string;
   to_be_copied?: boolean;
+  is_outsourced?: boolean;
+  default_outsourced_lab_id?: string;
+  default_ai_processing_type?: string;
+  group_level_prompt?: string;
+  testType?: string;
+  gender?: string;
+  sampleColor?: string;
+  barcodeSuffix?: string;
+  lmpRequired?: boolean;
+  idRequired?: boolean;
+  consentForm?: boolean;
+  preCollectionGuidelines?: string;
+  flabsId?: string;
+  onlyFemale?: boolean;
+  onlyMale?: boolean;
+  onlyBilling?: boolean;
+  startFromNextPage?: boolean;
 }
 
 const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGroup }) => {
@@ -54,29 +71,42 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
     onlyMale: testGroup?.onlyMale ?? false,
     onlyBilling: testGroup?.onlyBilling ?? false,
     startFromNextPage: testGroup?.startFromNextPage ?? false,
+    is_outsourced: testGroup?.is_outsourced ?? false,
+    default_outsourced_lab_id: testGroup?.default_outsourced_lab_id || '',
   });
 
-  const [analytes, setAnalytes] = useState([]);
+  const [analytes, setAnalytes] = useState<any[]>([]);
+  const [outsourcedLabs, setOutsourcedLabs] = useState<any[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
   const [showAnalyteForm, setShowAnalyteForm] = useState(false);
   const [loading, setLoading] = useState(true);
 
-  // Load analytes from database
+  // Load analytes and outsourced labs
   useEffect(() => {
-    loadAnalytes();
+    loadData();
   }, []);
 
-  const loadAnalytes = async () => {
+  const loadData = async () => {
     try {
       setLoading(true);
-      const { data, error } = await database.analytes.getAll();
-      if (error) {
-        console.error('Error loading analytes:', error);
-        return;
+      const [analytesRes, labsRes] = await Promise.all([
+        database.analytes.getAll(),
+        supabase.from('outsourced_labs').select('*').eq('is_active', true).order('name')
+      ]);
+
+      if (analytesRes.error) {
+        console.error('Error loading analytes:', analytesRes.error);
+      } else {
+        setAnalytes(analytesRes.data || []);
       }
-      setAnalytes(data || []);
+
+      if (labsRes.error) {
+        console.error('Error loading outsourced labs:', labsRes.error);
+      } else {
+        setOutsourcedLabs(labsRes.data || []);
+      }
     } catch (error) {
-      console.error('Error loading analytes:', error);
+      console.error('Error loading data:', error);
     } finally {
       setLoading(false);
     }
@@ -121,14 +151,14 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
       }
 
       // Refresh analytes list
-      await loadAnalytes();
-      
+      await loadData();
+
       // Auto-select the newly created analyte
       setFormData(prev => ({
         ...prev,
         selectedAnalytes: [...prev.selectedAnalytes, data.id]
       }));
-      
+
       setShowAnalyteForm(false);
       alert('Analyte created successfully for your lab!');
     } catch (error) {
@@ -139,7 +169,7 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
 
   const categories = [
     'Hematology',
-    'Biochemistry', 
+    'Biochemistry',
     'Serology',
     'Microbiology',
     'Immunology',
@@ -163,19 +193,22 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    
+
     try {
       // Get current user's lab_id
       const labId = await database.getCurrentUserLabId();
-      
+
       onSubmit({
         ...formData,
         analytes: formData.selectedAnalytes,
         price: parseFloat(formData.price),
         default_ai_processing_type: formData.default_ai_processing_type,
         group_level_prompt: formData.group_level_prompt,
+        group_level_prompt: formData.group_level_prompt,
         lab_id: labId, // Add lab_id for lab-specific test group
         to_be_copied: false, // Default to not template (owner will promote manually)
+        is_outsourced: formData.is_outsourced,
+        default_outsourced_lab_id: formData.default_outsourced_lab_id || null,
       });
     } catch (error) {
       console.error('Error getting lab ID:', error);
@@ -207,7 +240,7 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
     { value: 'vision_color', label: 'Vision Color Analysis', description: 'Color-based analysis for strips and visual tests' },
   ];
 
-  const selectedAnalyteDetails = analytes.filter(analyte => 
+  const selectedAnalyteDetails = analytes.filter(analyte =>
     formData.selectedAnalytes.includes(analyte.id)
   );
 
@@ -234,7 +267,7 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
               <TestTube className="h-5 w-5 mr-2" />
               Basic Information
             </h3>
-            
+
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">
@@ -322,7 +355,7 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
               <Settings className="h-5 w-5 mr-2 text-purple-600" />
               Test Configuration Settings
             </h3>
-            
+
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
               {/* Test Type */}
               <div>
@@ -637,7 +670,7 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
                 Add New Analyte
               </button>
             </div>
-            
+
             {/* Search Box */}
             <div className="relative">
               <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400 h-4 w-4" />
@@ -739,13 +772,58 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
             )}
           </div>
 
+
+
+          {/* Outsourced Configuration */}
+          <div className="space-y-4 border-t border-gray-200 pt-6">
+            <h3 className="text-lg font-medium text-gray-900 flex items-center">
+              <Building2 className="h-5 w-5 mr-2 text-blue-600" />
+              Outsourced Configuration
+            </h3>
+
+            <div className="space-y-4">
+              <label className="flex items-center">
+                <input
+                  type="checkbox"
+                  name="is_outsourced"
+                  checked={formData.is_outsourced}
+                  onChange={handleChange}
+                  className="h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded"
+                />
+                <span className="ml-2 text-sm text-gray-700">This test is outsourced to an external lab</span>
+              </label>
+
+              {formData.is_outsourced && (
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                    Default Outsourced Lab
+                  </label>
+                  <select
+                    name="default_outsourced_lab_id"
+                    value={formData.default_outsourced_lab_id}
+                    onChange={handleChange}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                  >
+                    <option value="">Select Lab</option>
+                    {outsourcedLabs.map(lab => (
+                      <option key={lab.id} value={lab.id}>{lab.name}</option>
+                    ))}
+                  </select>
+                  <p className="text-xs text-gray-500 mt-1">
+                    Select the default lab where this test is sent. You can change this per order.
+                  </p>
+                </div>
+              )}
+            </div>
+          </div>
+
           {/* AI Configuration */}
           <div className="space-y-4">
             <h3 className="text-lg font-medium text-gray-900 flex items-center">
               <Brain className="h-5 w-5 mr-2 text-purple-600" />
               AI Processing Configuration (for this Test Group)
             </h3>
-            
+
             <div className="space-y-4">
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">
@@ -765,7 +843,7 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
                   {aiProcessingTypes.find(t => t.value === formData.default_ai_processing_type)?.description}
                 </div>
               </div>
-              
+
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">
                   Group-Level AI Prompt (Optional)
@@ -801,16 +879,18 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
             </button>
           </div>
         </form>
-      </div>
-      
+      </div >
+
       {/* Analyte Form Modal */}
-      {showAnalyteForm && (
-        <AnalyteForm
-          onClose={() => setShowAnalyteForm(false)}
-          onSubmit={handleAddNewAnalyte}
-        />
-      )}
-    </div>
+      {
+        showAnalyteForm && (
+          <AnalyteForm
+            onClose={() => setShowAnalyteForm(false)}
+            onSubmit={handleAddNewAnalyte}
+          />
+        )
+      }
+    </div >
   );
 };
 

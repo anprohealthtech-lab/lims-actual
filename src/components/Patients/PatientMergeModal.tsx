@@ -4,6 +4,7 @@ import { supabase } from '../../utils/supabase';
 
 interface Patient {
   id: string;
+  lab_id?: string;
   name: string;
   age: number;
   gender: string;
@@ -40,11 +41,25 @@ const PatientMergeModal: React.FC<PatientMergeModalProps> = ({
   const searchPotentialDuplicates = async () => {
     setLoading(true);
     try {
+      // Get lab_id from master patient or current user
+      let labId = masterPatient.lab_id;
+      
+      if (!labId) {
+        const { data: { user } } = await supabase.auth.getUser();
+        if (user?.user_metadata?.lab_id) {
+          labId = user.user_metadata.lab_id;
+        }
+      }
+
+      if (!labId) {
+        throw new Error('Lab context not found. Unable to search for duplicates.');
+      }
+
       // Search for patients with similar names or phone numbers
       const { data, error } = await supabase
         .from('patients')
         .select('*')
-        .eq('lab_id', masterPatient.lab_id)
+        .eq('lab_id', labId)
         .eq('is_active', true)
         .or(`is_duplicate.is.null,is_duplicate.eq.false`)
         .neq('id', masterPatient.id)
@@ -118,9 +133,9 @@ const PatientMergeModal: React.FC<PatientMergeModalProps> = ({
 
   return (
     <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
-      <div className="bg-white rounded-2xl shadow-2xl max-w-6xl w-full max-h-[90vh] overflow-hidden">
+      <div className="bg-white rounded-2xl shadow-2xl max-w-6xl w-full max-h-[90vh] flex flex-col overflow-hidden">
         {/* Header */}
-        <div className="bg-gradient-to-r from-blue-600 to-indigo-600 px-6 py-4 flex items-center justify-between">
+        <div className="bg-gradient-to-r from-blue-600 to-indigo-600 px-6 py-4 flex items-center justify-between shrink-0">
           <div className="flex items-center space-x-3">
             <Users className="h-6 w-6 text-white" />
             <h3 className="text-xl font-bold text-white">Merge Duplicate Patient</h3>
@@ -133,7 +148,7 @@ const PatientMergeModal: React.FC<PatientMergeModalProps> = ({
           </button>
         </div>
 
-        <div className="p-6 overflow-y-auto max-h-[calc(90vh-80px)]">
+        <div className="p-6 overflow-y-auto flex-1">{/* Content scrolls */}
           {/* Master Patient Card */}
           <div className="mb-6">
             <h4 className="text-sm font-semibold text-gray-700 mb-2 uppercase">Master Patient (Keep)</h4>
@@ -249,8 +264,8 @@ const PatientMergeModal: React.FC<PatientMergeModalProps> = ({
           )}
         </div>
 
-        {/* Footer Actions */}
-        <div className="px-6 py-4 bg-gray-50 border-t border-gray-200 flex items-center justify-end space-x-3">
+        {/* Footer Actions - Fixed at bottom */}
+        <div className="px-6 py-4 bg-gray-50 border-t border-gray-200 flex items-center justify-end space-x-3 shrink-0">
           <button
             onClick={onClose}
             className="px-6 py-2 border border-gray-300 rounded-lg hover:bg-gray-100 transition-colors font-medium"

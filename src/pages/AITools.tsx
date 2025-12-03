@@ -1,33 +1,34 @@
 import React, { useState } from 'react';
-import { Camera, Upload, Brain, Zap, Eye, FileText, CheckCircle, TestTube } from 'lucide-react';
+import { Camera, Brain, Zap, FileText, CheckCircle, TestTube, Bot } from 'lucide-react';
 import PhotoAnalysis from '../components/AITools/PhotoAnalysis';
 import PipetteValidation from '../components/AITools/PipetteValidation';
 import OCRExtraction from '../components/AITools/OCRExtraction';
 import { AITestConfigurator } from '../components/AITools/AITestConfigurator';
+import LIMSAgent from '../components/AITools/LIMSAgent';
 import { TestConfigurationResponse } from '../utils/geminiAI';
 import { supabase } from '../utils/supabase';
 
 const AITools: React.FC = () => {
   const [activeTab, setActiveTab] = useState('photo');
   const [existingTests] = useState<string[]>([
-    'Complete Blood Count', 'Basic Metabolic Panel', 'Lipid Panel', 
+    'Complete Blood Count', 'Basic Metabolic Panel', 'Lipid Panel',
     'Thyroid Function', 'Liver Function Tests'
   ]);
 
   const handleConfigurationGenerated = async (config: TestConfigurationResponse) => {
     console.log('Generated AI configuration:', config);
-    
+
     // If the Edge Function already handled the insert, just show success
     if (config.inserted) {
       alert(`✅ Successfully created "${config.test_group.name}" with ${config.analytes.length} analytes!`);
       return;
     }
-    
+
     // Otherwise, handle local insert using the new data structure
     try {
       // Check if test group already exists - use array query to avoid 406 errors
       const testCode = config.test_group.code;
-      
+
       const { data: existingGroups } = await supabase
         .from('test_groups')
         .select('id, name, code')
@@ -103,7 +104,7 @@ const AITools: React.FC = () => {
 
       // Create analytes one by one to handle duplicates gracefully
       const createdAnalytes = [];
-      
+
       for (const analyteData of analytesToCreate) {
         // Check if analyte already exists
         const { data: existingAnalyte } = await supabase
@@ -128,7 +129,7 @@ const AITools: React.FC = () => {
             // Continue with other analytes even if one fails
             continue;
           }
-          
+
           if (newAnalyte) {
             createdAnalytes.push(newAnalyte);
           }
@@ -155,7 +156,7 @@ const AITools: React.FC = () => {
       let relationshipsCreated = 0;
       for (const relationship of relationships) {
         console.log(`Attempting to create relationship:`, relationship);
-        
+
         const { data: insertedRelationship, error: relationshipError } = await supabase
           .from('test_group_analytes')
           .insert(relationship)
@@ -221,6 +222,14 @@ const AITools: React.FC = () => {
       color: 'indigo',
       features: ['Smart test suggestions', 'Analyte configuration', 'Reference ranges', 'Medical accuracy'],
     },
+    {
+      id: 'lims-agent',
+      name: 'LIMS Agent',
+      description: 'Your General LIMS Assistant',
+      icon: Bot,
+      color: 'indigo',
+      features: ['Quotations & Pricing', 'TAT Estimates', 'General Queries', 'Custom Knowledge'],
+    },
   ];
 
   const renderActiveComponent = () => {
@@ -239,6 +248,12 @@ const AITools: React.FC = () => {
               existingTests={existingTests}
               className="w-full"
             />
+          </div>
+        );
+      case 'lims-agent':
+        return (
+          <div className="p-6">
+            <LIMSAgent />
           </div>
         );
       default:
@@ -306,7 +321,7 @@ const AITools: React.FC = () => {
                 <p className="text-sm text-gray-600">{tool.description}</p>
               </div>
             </div>
-            
+
             <div className="space-y-2">
               {tool.features.map((feature, index) => (
                 <div key={index} className="flex items-center text-sm text-gray-600">

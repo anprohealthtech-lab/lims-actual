@@ -687,6 +687,14 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
             <div><strong>Sample Tube:</strong> <span class="color-indicator" style="background-color:${order.color_code}"></span>${order.color_name || ""}</div>
             <div><strong>Order Date:</strong> ${new Date(order.order_date).toLocaleDateString()}</div>
             <div><strong>Tests:</strong> ${order.tests.join(", ")}</div>
+            ${(() => {
+              const orderTests = (order as any).order_tests || [];
+              const outsourcedTests = orderTests.filter((ot: any) => ot.outsourced_lab_id);
+              if (outsourcedTests.length > 0) {
+                return `<div style="color: #ea580c; font-weight: bold; margin-top: 5px;">⚠️ ${outsourcedTests.length} test(s) outsourced</div>`;
+              }
+              return '';
+            })()}
           </div>
         </div>
         <script>window.onload=()=>{window.print();window.onafterprint=()=>window.close();}</script>
@@ -2796,11 +2804,29 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
                 )}
 
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  {order.tests.map((test, index) => (
-                    <div key={index} className="bg-gray-50 rounded-lg p-4">
-                      <div className="font-medium text-gray-900">{test}</div>
-                    </div>
-                  ))}
+                  {order.tests.map((test, index) => {
+                    // Find corresponding order_test to check outsourcing status
+                    const orderTest = (order as any).order_tests?.find((ot: any) => ot.test_name === test);
+                    const isOutsourced = orderTest?.outsourced_lab_id;
+                    const outsourcedLabName = orderTest?.outsourced_labs?.name;
+                    
+                    return (
+                      <div key={index} className="bg-gray-50 rounded-lg p-4">
+                        <div className="flex items-center justify-between">
+                          <div className="font-medium text-gray-900">{test}</div>
+                          {isOutsourced ? (
+                            <span className="inline-flex items-center gap-1 px-2 py-1 text-xs font-medium bg-orange-100 text-orange-700 rounded-full border border-orange-200">
+                              🏥 {outsourcedLabName || 'Outsourced'}
+                            </span>
+                          ) : (
+                            <span className="inline-flex items-center gap-1 px-2 py-1 text-xs font-medium bg-green-100 text-green-700 rounded-full border border-green-200">
+                              🏠 In-house
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
                 </div>
               </div>
 

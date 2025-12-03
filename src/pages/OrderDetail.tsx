@@ -557,11 +557,45 @@ export default function OrderDetail() {
             {/* Test Information */}
             <div>
               <h3 className="text-sm font-semibold text-gray-900 mb-2 uppercase tracking-wider">Test Information</h3>
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                <div className="bg-gray-50 p-2.5 rounded border border-gray-100">
-                  <h4 className="text-xs font-medium text-gray-500 mb-0.5">Test</h4>
-                  <p className="text-sm text-gray-900">{order.test_group_name || order.test_code || "Not specified"}</p>
-                </div>
+              <div className="space-y-2">
+                {/* Display all tests with outsourcing status */}
+                {order.test_groups && order.test_groups.length > 0 ? (
+                  order.test_groups.map((tg, idx) => {
+                    // Try to find outsourcing info from order_tests
+                    const orderTest = (order as any).order_tests?.find((ot: any) => 
+                      ot.test_group_id === tg.test_group_id
+                    );
+                    const isOutsourced = orderTest?.outsourced_lab_id;
+                    const outsourcedLabName = orderTest?.outsourced_labs?.name;
+                    
+                    return (
+                      <div key={idx} className="bg-gray-50 p-2.5 rounded border border-gray-100">
+                        <div className="flex items-center justify-between">
+                          <div>
+                            <h4 className="text-xs font-medium text-gray-500 mb-0.5">Test {idx + 1}</h4>
+                            <p className="text-sm text-gray-900 font-medium">{tg.test_group_name}</p>
+                          </div>
+                          {isOutsourced && (
+                            <span className="inline-flex items-center gap-1 px-2 py-1 text-xs font-medium bg-orange-100 text-orange-700 rounded-full border border-orange-200">
+                              🏥 Outsourced {outsourcedLabName && `to ${outsourcedLabName}`}
+                            </span>
+                          )}
+                          {!isOutsourced && (
+                            <span className="inline-flex items-center gap-1 px-2 py-1 text-xs font-medium bg-green-100 text-green-700 rounded-full border border-green-200">
+                              🏠 In-house
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })
+                ) : (
+                  <div className="bg-gray-50 p-2.5 rounded border border-gray-100">
+                    <h4 className="text-xs font-medium text-gray-500 mb-0.5">Test</h4>
+                    <p className="text-sm text-gray-900">{order.test_group_name || order.test_code || "Not specified"}</p>
+                  </div>
+                )}
+                
                 <div className="bg-gray-50 p-2.5 rounded border border-gray-100">
                   <h4 className="text-xs font-medium text-gray-500 mb-0.5">Priority</h4>
                   <p className="text-sm text-gray-900">{order.priority || "Normal"}</p>

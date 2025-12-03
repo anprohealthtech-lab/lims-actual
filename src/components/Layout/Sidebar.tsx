@@ -24,6 +24,8 @@ import {
   Bot,
   ChevronLeft,
   ChevronRight,
+  Building2,
+  FileStack,
 } from 'lucide-react';
 
 interface SidebarProps {
@@ -57,6 +59,10 @@ const navigation = [
   // Master Data Management
   { name: 'Doctor Master', href: '/masters/doctors', icon: UserCheck, category: 'masters' },
   { name: 'Location Master', href: '/masters/locations', icon: Building, category: 'masters' },
+  { name: 'Outsourced Labs', href: '/settings/outsourced-labs', icon: Building2, category: 'masters' },
+
+  // Outsourced Reports
+  { name: 'Outsourced Reports', href: '/outsourced-reports', icon: FileStack, category: 'outsourced' },
 
   // AI Workflow Management
   { name: 'Workflow Management', href: '/workflows', icon: Workflow, category: 'workflows' },
@@ -287,6 +293,34 @@ const Sidebar: React.FC<SidebarProps> = ({ isOpen, onToggle, isMobile = false, i
                   onClick={handleNavClick}
                 >
                   <item.icon className={`h-5 w-5 mr-3 ${isActive ? 'text-orange-700' : 'text-gray-400'}`} />
+                  {item.name}
+                </Link>
+              );
+            })}
+          </div>
+
+          {/* Outsourced Reports */}
+          <div className="mb-6">
+            <h3 className="px-4 text-xs font-semibold text-gray-500 uppercase tracking-wider mb-3">
+              🏥 Outsourced Labs
+            </h3>
+            {navigation.filter(item => item.category === 'outsourced').map((item) => {
+              const isActive = location.pathname === item.href;
+              return (
+                <Link
+                  key={item.name}
+                  to={item.href}
+                  className={`
+                    flex items-center px-4 py-3 rounded-lg text-sm font-medium transition-colors duration-200 mb-1
+                    border-l-4 border-l-teal-500
+                    ${isActive
+                      ? 'bg-teal-50 text-teal-700 border-l-teal-700'
+                      : 'text-gray-600 hover:bg-teal-50 hover:text-teal-700 border-l-transparent hover:border-l-teal-300'
+                    }
+                  `}
+                  onClick={handleNavClick}
+                >
+                  <item.icon className={`h-5 w-5 mr-3 ${isActive ? 'text-teal-700' : 'text-gray-400'}`} />
                   {item.name}
                 </Link>
               );

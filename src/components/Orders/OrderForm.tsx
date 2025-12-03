@@ -14,7 +14,8 @@ import {
   Sparkles,
   CheckCircle,
   AlertTriangle,
-  Loader
+  Loader,
+  Clock as ClockIcon
 } from 'lucide-react';
 import { database, supabase } from '../../utils/supabase';
 import {
@@ -77,6 +78,8 @@ interface TestGroup {
   turnaroundTime?: string | null;
   requiresFasting?: boolean | null;
   type?: 'test' | 'package';
+  is_outsourced?: boolean;
+  default_outsourced_lab_id?: string;
 }
 
 interface OrderFormProps {
@@ -92,6 +95,7 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [patients, setPatients] = useState<Patient[]>([]);
   const [testGroups, setTestGroups] = useState<TestGroup[]>([]);
+  const [outsourcedLabs, setOutsourcedLabs] = useState<any[]>([]);
 
   // Loading flags
   const [loadingPatients, setLoadingPatients] = useState<boolean>(false);
@@ -116,6 +120,9 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
   const [selectedTests, setSelectedTests] = useState<string[]>([]);
   const [testSearch, setTestSearch] = useState<string>('');
   const [showTestList, setShowTestList] = useState<boolean>(false);
+  
+  // Outsourcing config per test: { testId: outsourcedLabId | 'inhouse' | null }
+  const [testOutsourcingConfig, setTestOutsourcingConfig] = useState<Record<string, string>>({});
 
   // Searches / dropdown visibility
   const [patientSearch, setPatientSearch] = useState<string>('');
@@ -341,13 +348,15 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
           locationsRes,
           accountsRes,
           patientsRes,
-          testsRes
+          testsRes,
+          outsourcedLabsRes
         ] = await Promise.all([
           (database as any).doctors?.getAll?.() ?? Promise.resolve({ data: [] }),
           (database as any).locations?.getAll?.() ?? Promise.resolve({ data: [] }),
           (database as any).accounts?.getAll?.() ?? Promise.resolve({ data: [] }),
           (database as any).patients?.getAll?.() ?? Promise.resolve({ data: [] }),
-          (database as any).testGroups?.getAll?.() ?? Promise.resolve({ data: [] })
+          (database as any).testGroups?.getAll?.() ?? Promise.resolve({ data: [] }),
+          supabase.from('outsourced_labs').select('*').eq('is_active', true).order('name')
         ]);
 
         setDoctors(doctorsRes?.data ?? []);
@@ -355,6 +364,7 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
         setAccounts(accountsRes?.data ?? []);
         setPatients(patientsRes?.data ?? []);
         setTestGroups(testsRes?.data ?? []);
+        setOutsourcedLabs(outsourcedLabsRes?.data ?? []);
       } catch (err) {
         console.error('Error loading masters:', err);
       } finally {
@@ -637,9 +647,35 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
   };
 
   const handleToggleTest = (id: string) => {
-    setSelectedTests((prev) =>
-      prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]
-    );
+    setSelectedTests((prev) => {
+      const newTests = prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id];
+      
+      // When adding a test, check if it has default outsourced lab
+      if (!prev.includes(id)) {
+        const test = testGroups.find(t => t.id === id);
+        if (test?.is_outsourced && test.default_outsourced_lab_id) {
+          setTestOutsourcingConfig(config => ({
+            ...config,
+            [id]: test.default_outsourced_lab_id!
+          }));
+        } else {
+          // Default to in-house
+          setTestOutsourcingConfig(config => ({
+            ...config,
+            [id]: 'inhouse'
+          }));
+        }
+      } else {
+        // Remove outsourcing config when test is deselected
+        setTestOutsourcingConfig(config => {
+          const newConfig = { ...config };
+          delete newConfig[id];
+          return newConfig;
+        });
+      }
+      
+      return newTests;
+    });
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -674,7 +710,8 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
           id: t.id,
           name: t.name,
           type: t.type ?? 'test',
-          price: t.price ?? 0
+          price: t.price ?? 0,
+          outsourced_lab_id: testOutsourcingConfig[t.id] === 'inhouse' ? null : testOutsourcingConfig[t.id] || null
         }))
         : undefined;
 
@@ -992,19 +1029,60 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
                   <TestTube className="h-4 w-4" />
                   Selected Tests ({selectedTests.length})
                 </h4>
-                <div className="space-y-1 text-sm">
+                <div className="space-y-2 text-sm">
                   {testGroups
                     .filter((t) => selectedTests.includes(t.id))
-                    .map((t) => (
-                      <div key={t.id} className="flex justify-between">
-                        <span className="text-green-800">{t.name}</span>
-                        <span className="font-medium text-green-900">₹{t.price ?? 0}</span>
-                      </div>
-                    ))}
+                    .map((t) => {
+                      const outsourcingStatus = testOutsourcingConfig[t.id] || 'inhouse';
+                      const isOutsourced = outsourcingStatus !== 'inhouse';
+                      const outsourcedLab = isOutsourced ? outsourcedLabs.find(lab => lab.id === outsourcingStatus) : null;
+                      
+                      return (
+                        <div key={t.id} className="flex items-center justify-between gap-2 p-2 bg-white rounded border border-green-100">
+                          <div className="flex-1">
+                            <div className="flex items-center gap-2">
+                              <span className="text-green-800 font-medium">{t.name}</span>
+                              {isOutsourced && (
+                                <span className="text-xs bg-orange-100 text-orange-700 px-2 py-0.5 rounded-full font-medium">
+                                  Outsourced
+                                </span>
+                              )}
+                            </div>
+                            {/* Outsource Lab Selector */}
+                            <div className="mt-1 flex items-center gap-2">
+                              <select
+                                value={outsourcingStatus}
+                                onChange={(e) => setTestOutsourcingConfig(config => ({
+                                  ...config,
+                                  [t.id]: e.target.value
+                                }))}
+                                className="text-xs px-2 py-1 border border-gray-300 rounded focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                              >
+                                <option value="inhouse">🏠 In-house</option>
+                                {outsourcedLabs.map((lab) => (
+                                  <option key={lab.id} value={lab.id}>
+                                    🏥 {lab.name}
+                                  </option>
+                                ))}
+                              </select>
+                              {isOutsourced && outsourcedLab && (
+                                <span className="text-xs text-orange-600">
+                                  → {outsourcedLab.name}
+                                </span>
+                              )}
+                            </div>
+                          </div>
+                          <span className="font-medium text-green-900 whitespace-nowrap">₹{t.price ?? 0}</span>
+                        </div>
+                      );
+                    })}
                 </div>
                 <div className="border-t border-green-200 mt-2 pt-2 flex justify-between font-semibold text-green-900">
                   <span>Total Amount:</span>
                   <span>₹{totalAmount}</span>
+                </div>
+                <div className="mt-2 text-xs text-green-700 bg-green-100 p-2 rounded">
+                  💡 Tip: Select "In-house" for tests performed in your lab, or choose an outsourced lab if test is sent externally
                 </div>
               </div>
             )}
@@ -1035,7 +1113,7 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
               </div>
 
               {/* Expected Date */}
-              <div>
+              <div className="md:col-span-2">
                 <label className="block text-sm font-medium text-gray-700 mb-1">
                   Expected Date
                 </label>
@@ -1047,6 +1125,25 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
                   className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
                 />
               </div>
+
+              {/* Expected TAT Display */}
+              {selectedTests.length > 0 && (
+                <div className="md:col-span-3 bg-gray-50 p-3 rounded-md border border-gray-200 flex items-center gap-2">
+                  <ClockIcon className="w-4 h-4 text-gray-500" />
+                  <span className="text-sm text-gray-700">
+                    <span className="font-medium">Expected TAT:</span>{' '}
+                    {(() => {
+                      const selectedDetails = testGroups.filter(t => selectedTests.includes(t.id));
+                      const tats = selectedDetails.map(t => t.turnaroundTime).filter(Boolean);
+                      if (tats.length === 0) return 'Not specified';
+                      // Simple logic: return the longest string or just list them if few
+                      // For now, just join unique ones
+                      const uniqueTats = Array.from(new Set(tats));
+                      return uniqueTats.join(', ');
+                    })()}
+                  </span>
+                </div>
+              )}
 
               {/* Payment Type */}
               <div>
