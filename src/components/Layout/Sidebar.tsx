@@ -17,6 +17,7 @@ import {
   UserCheck,
   Building,
   MessageCircle,
+  MessageSquare,
   Palette,
   Image,
   Cog,
@@ -27,6 +28,7 @@ import {
   Building2,
   FileStack,
   ListOrdered,
+  Truck,
 } from 'lucide-react';
 
 interface SidebarProps {
@@ -56,6 +58,7 @@ const navigation = [
 
   // Communication
   { name: 'WhatsApp Integration', href: '/whatsapp', icon: MessageCircle, category: 'communication' },
+  { name: 'WhatsApp Templates', href: '/whatsapp/templates', icon: MessageSquare, category: 'communication' },
 
   // Master Data Management
   { name: 'Doctor Master', href: '/masters/doctors', icon: UserCheck, category: 'masters' },
@@ -65,6 +68,9 @@ const navigation = [
   // Outsourced Reports
   { name: 'Outsourced Reports', href: '/outsourced-reports', icon: FileStack, category: 'outsourced' },
   { name: 'Outsourced Queue', href: '/outsourced-queue', icon: ListOrdered, category: 'outsourced' },
+
+  // Sample Transit (Intra-Lab)
+  { name: 'Sample Transit', href: '/sample-transit', icon: Truck, category: 'transit' },
 
   // AI Workflow Management
   { name: 'Workflow Management', href: '/workflows', icon: Workflow, category: 'workflows' },
@@ -344,6 +350,37 @@ const Sidebar: React.FC<SidebarProps> = ({ isOpen, onToggle, isMobile = false, i
                     onClick={handleNavClick}
                   >
                     <item.icon className={`h-5 w-5 ${isCollapsed ? '' : 'mr-3'} ${isActive ? 'text-teal-700' : 'text-gray-400'}`} />
+                    {!isCollapsed && item.name}
+                  </Link>
+                );
+              })}
+            </div>
+
+            {/* Sample Transit (Intra-Lab) */}
+            <div className="mb-6">
+              {!isCollapsed && (
+                <h3 className="px-4 text-xs font-semibold text-gray-500 uppercase tracking-wider mb-3">
+                  🚚 Sample Transit
+                </h3>
+              )}
+              {navigation.filter(item => item.category === 'transit').map((item) => {
+                const isActive = location.pathname === item.href;
+                return (
+                  <Link
+                    key={item.name}
+                    to={item.href}
+                    className={`
+                    flex items-center rounded-lg text-sm font-medium transition-colors duration-200 mb-1
+                    border-l-4 border-l-amber-500
+                    ${isCollapsed ? 'justify-center px-2 py-3' : 'px-4 py-3'}
+                    ${isActive
+                        ? 'bg-amber-50 text-amber-700 border-l-amber-700'
+                        : 'text-gray-600 hover:bg-amber-50 hover:text-amber-700 border-l-transparent hover:border-l-amber-300'
+                      }
+                  `}
+                    onClick={handleNavClick}
+                  >
+                    <item.icon className={`h-5 w-5 ${isCollapsed ? '' : 'mr-3'} ${isActive ? 'text-amber-700' : 'text-gray-400'}`} />
                     {!isCollapsed && item.name}
                   </Link>
                 );

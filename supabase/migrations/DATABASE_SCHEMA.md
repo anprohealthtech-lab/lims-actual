@@ -519,6 +519,23 @@ CREATE TABLE public.lab_branding_assets (
   CONSTRAINT lab_branding_assets_created_by_fkey FOREIGN KEY (created_by) REFERENCES public.users(id),
   CONSTRAINT lab_branding_assets_updated_by_fkey FOREIGN KEY (updated_by) REFERENCES public.users(id)
 );
+CREATE TABLE public.lab_outsourcing_settings (
+  id uuid NOT NULL DEFAULT gen_random_uuid(),
+  lab_id uuid NOT NULL UNIQUE,
+  auto_match boolean DEFAULT false,
+  match_confidence_threshold numeric DEFAULT 0.8 CHECK (match_confidence_threshold >= 0::numeric AND match_confidence_threshold <= 1::numeric),
+  match_date_range_days integer DEFAULT 7,
+  logistics_providers jsonb DEFAULT '[]'::jsonb,
+  default_tat_days integer DEFAULT 3,
+  enable_logistics_tracking boolean DEFAULT true,
+  merge_mode text DEFAULT 'both'::text CHECK (merge_mode = ANY (ARRAY['print_only'::text, 'ecopy_only'::text, 'both'::text])),
+  auto_merge_on_match boolean DEFAULT false,
+  preserve_outsourced_branding boolean DEFAULT true,
+  created_at timestamp with time zone DEFAULT now(),
+  updated_at timestamp with time zone DEFAULT now(),
+  CONSTRAINT lab_outsourcing_settings_pkey PRIMARY KEY (id),
+  CONSTRAINT lab_outsourcing_settings_lab_id_fkey FOREIGN KEY (lab_id) REFERENCES public.labs(id)
+);
 CREATE TABLE public.lab_template_versions (
   id uuid NOT NULL DEFAULT gen_random_uuid(),
   template_id uuid NOT NULL,
@@ -623,7 +640,12 @@ CREATE TABLE public.labs (
   watermark_position character varying DEFAULT 'center'::character varying,
   watermark_size character varying DEFAULT 'medium'::character varying,
   watermark_rotation integer DEFAULT 0 CHECK (watermark_rotation IS NULL OR watermark_rotation >= '-45'::integer AND watermark_rotation <= 45),
-  CONSTRAINT labs_pkey PRIMARY KEY (id)
+  email_domain text,
+  pdf_layout_settings jsonb DEFAULT '{"scale": 1.0, "margins": {"top": 180, "left": 20, "right": 20, "bottom": 150}, "mediaType": "screen", "paperSize": "A4", "orientation": "portrait", "footerHeight": 80, "headerHeight": 90, "printBackground": true, "displayHeaderFooter": true}'::jsonb,
+  enforce_location_restrictions boolean NOT NULL DEFAULT false,
+  default_processing_location_id uuid,
+  CONSTRAINT labs_pkey PRIMARY KEY (id),
+  CONSTRAINT labs_default_processing_location_id_fkey FOREIGN KEY (default_processing_location_id) REFERENCES public.locations(id)
 );
 CREATE TABLE public.locations (
   id uuid NOT NULL DEFAULT gen_random_uuid(),
@@ -644,6 +666,9 @@ CREATE TABLE public.locations (
   is_active boolean NOT NULL DEFAULT true,
   created_at timestamp with time zone NOT NULL DEFAULT now(),
   updated_at timestamp with time zone NOT NULL DEFAULT now(),
+  is_collection_center boolean NOT NULL DEFAULT true,
+  is_processing_center boolean NOT NULL DEFAULT false,
+  can_receive_samples boolean NOT NULL DEFAULT true,
   CONSTRAINT locations_pkey PRIMARY KEY (id),
   CONSTRAINT locations_lab_id_fkey FOREIGN KEY (lab_id) REFERENCES public.labs(id)
 );
@@ -755,6 +780,10 @@ CREATE TABLE public.orders (
   ai_clinical_summary_generated_by uuid,
   include_clinical_summary_in_report boolean DEFAULT false,
   outsourced_lab_id uuid,
+  report_generation_status text CHECK (report_generation_status = ANY (ARRAY['not_started'::text, 'queued'::text, 'processing'::text, 'completed'::text, 'failed'::text])),
+  report_auto_generated_at timestamp with time zone,
+  collected_at_location_id uuid,
+  transit_status text CHECK (transit_status IS NULL OR (transit_status = ANY (ARRAY['at_collection_point'::text, 'pending_dispatch'::text, 'in_transit'::text, 'received_at_lab'::text, 'processing'::text]))),
   CONSTRAINT orders_pkey PRIMARY KEY (id),
   CONSTRAINT orders_sample_collector_id_fkey FOREIGN KEY (sample_collector_id) REFERENCES public.users(id),
   CONSTRAINT orders_patient_id_fkey FOREIGN KEY (patient_id) REFERENCES public.patients(id),
@@ -767,7 +796,8 @@ CREATE TABLE public.orders (
   CONSTRAINT orders_account_id_fkey FOREIGN KEY (account_id) REFERENCES public.accounts(id),
   CONSTRAINT orders_outsourced_lab_id_fkey FOREIGN KEY (outsourced_lab_id) REFERENCES public.outsourced_labs(id),
   CONSTRAINT orders_trend_graph_generated_by_fkey FOREIGN KEY (trend_graph_generated_by) REFERENCES public.users(id),
-  CONSTRAINT orders_approved_by_fkey FOREIGN KEY (approved_by) REFERENCES public.users(id)
+  CONSTRAINT orders_approved_by_fkey FOREIGN KEY (approved_by) REFERENCES public.users(id),
+  CONSTRAINT orders_collected_at_location_id_fkey FOREIGN KEY (collected_at_location_id) REFERENCES public.locations(id)
 );
 CREATE TABLE public.outsourced_labs (
   id uuid NOT NULL DEFAULT gen_random_uuid(),
@@ -798,10 +828,19 @@ CREATE TABLE public.outsourced_reports (
   processing_error text,
   created_at timestamp with time zone DEFAULT now(),
   updated_at timestamp with time zone DEFAULT now(),
+  recipient_email text,
+  matched_user_id uuid,
+  match_confidence numeric CHECK (match_confidence >= 0::numeric AND match_confidence <= 1::numeric),
+  match_suggestions jsonb,
+  matched_at timestamp with time zone,
+  matched_by uuid,
+  merge_status text DEFAULT 'pending'::text CHECK (merge_status = ANY (ARRAY['pending'::text, 'in_progress'::text, 'completed'::text, 'failed'::text])),
   CONSTRAINT outsourced_reports_pkey PRIMARY KEY (id),
+  CONSTRAINT outsourced_reports_matched_user_id_fkey FOREIGN KEY (matched_user_id) REFERENCES public.users(id),
   CONSTRAINT outsourced_reports_lab_id_fkey FOREIGN KEY (lab_id) REFERENCES public.labs(id),
   CONSTRAINT outsourced_reports_patient_id_fkey FOREIGN KEY (patient_id) REFERENCES public.patients(id),
-  CONSTRAINT outsourced_reports_order_id_fkey FOREIGN KEY (order_id) REFERENCES public.orders(id)
+  CONSTRAINT outsourced_reports_order_id_fkey FOREIGN KEY (order_id) REFERENCES public.orders(id),
+  CONSTRAINT outsourced_reports_matched_by_fkey FOREIGN KEY (matched_by) REFERENCES public.users(id)
 );
 CREATE TABLE public.package_test_groups (
   id uuid NOT NULL DEFAULT gen_random_uuid(),
@@ -901,6 +940,25 @@ CREATE TABLE public.payments (
   CONSTRAINT payments_received_by_fkey FOREIGN KEY (received_by) REFERENCES public.users(id),
   CONSTRAINT payments_location_id_fkey FOREIGN KEY (location_id) REFERENCES public.locations(id)
 );
+CREATE TABLE public.pdf_generation_queue (
+  id uuid NOT NULL DEFAULT gen_random_uuid(),
+  order_id uuid NOT NULL UNIQUE,
+  lab_id uuid NOT NULL,
+  status text NOT NULL CHECK (status = ANY (ARRAY['pending'::text, 'processing'::text, 'completed'::text, 'failed'::text])),
+  priority integer DEFAULT 0,
+  created_at timestamp with time zone NOT NULL DEFAULT now(),
+  started_at timestamp with time zone,
+  completed_at timestamp with time zone,
+  progress_stage text,
+  progress_percent integer CHECK (progress_percent >= 0 AND progress_percent <= 100),
+  error_message text,
+  retry_count integer DEFAULT 0,
+  max_retries integer DEFAULT 3,
+  processing_by text,
+  CONSTRAINT pdf_generation_queue_pkey PRIMARY KEY (id),
+  CONSTRAINT pdf_generation_queue_order_id_fkey FOREIGN KEY (order_id) REFERENCES public.orders(id),
+  CONSTRAINT pdf_generation_queue_lab_id_fkey FOREIGN KEY (lab_id) REFERENCES public.labs(id)
+);
 CREATE TABLE public.permissions (
   id uuid NOT NULL DEFAULT gen_random_uuid(),
   permission_name character varying NOT NULL UNIQUE,
@@ -990,10 +1048,29 @@ CREATE TABLE public.reports (
   ai_summary_reviewed_at timestamp with time zone,
   include_trend_graphs boolean DEFAULT false,
   trend_graphs_config jsonb,
+  merged_print_pdf_url text,
+  merged_ecopy_pdf_url text,
+  merged_at timestamp with time zone,
+  lab_id uuid,
+  whatsapp_sent_at timestamp with time zone,
+  whatsapp_sent_to text,
+  whatsapp_sent_by uuid,
+  whatsapp_caption text,
+  email_sent_at timestamp with time zone,
+  email_sent_to text,
+  email_sent_by uuid,
+  doctor_informed_at timestamp with time zone,
+  doctor_informed_via text CHECK (doctor_informed_via = ANY (ARRAY['whatsapp'::text, 'email'::text, 'both'::text])),
+  doctor_informed_by uuid,
+  clinical_summary_included boolean DEFAULT false,
   CONSTRAINT reports_pkey PRIMARY KEY (id),
+  CONSTRAINT reports_lab_id_fkey FOREIGN KEY (lab_id) REFERENCES public.labs(id),
   CONSTRAINT fk_reports_patient FOREIGN KEY (patient_id) REFERENCES public.patients(id),
   CONSTRAINT fk_reports_result FOREIGN KEY (result_id) REFERENCES public.results(id),
+  CONSTRAINT reports_whatsapp_sent_by_fkey FOREIGN KEY (whatsapp_sent_by) REFERENCES public.users(id),
+  CONSTRAINT reports_email_sent_by_fkey FOREIGN KEY (email_sent_by) REFERENCES public.users(id),
   CONSTRAINT reports_order_id_fkey FOREIGN KEY (order_id) REFERENCES public.orders(id),
+  CONSTRAINT reports_doctor_informed_by_fkey FOREIGN KEY (doctor_informed_by) REFERENCES public.users(id),
   CONSTRAINT reports_ai_summary_reviewed_by_fkey FOREIGN KEY (ai_summary_reviewed_by) REFERENCES public.users(id)
 );
 CREATE TABLE public.result_values (
@@ -1109,6 +1186,11 @@ CREATE TABLE public.results (
   outsourced_to_lab_id uuid,
   outsourced_status text DEFAULT 'not_outsourced'::text CHECK (outsourced_status = ANY (ARRAY['not_outsourced'::text, 'pending_send'::text, 'sent'::text, 'awaiting_report'::text, 'received'::text, 'merged'::text])),
   outsourced_tat_estimate timestamp with time zone,
+  outsourced_logistics_status text CHECK (outsourced_logistics_status = ANY (ARRAY['pending_dispatch'::text, 'awaiting_pickup'::text, 'in_transit'::text, 'delivered_to_lab'::text, 'report_awaited'::text])),
+  tracking_barcode text,
+  logistics_notes text,
+  dispatched_at timestamp with time zone,
+  dispatched_by uuid,
   CONSTRAINT results_pkey PRIMARY KEY (id),
   CONSTRAINT results_patient_id_fkey FOREIGN KEY (patient_id) REFERENCES public.patients(id),
   CONSTRAINT results_order_id_fkey FOREIGN KEY (order_id) REFERENCES public.orders(id),
@@ -1121,7 +1203,8 @@ CREATE TABLE public.results (
   CONSTRAINT results_test_group_id_fkey FOREIGN KEY (test_group_id) REFERENCES public.test_groups(id),
   CONSTRAINT results_lab_id_fkey FOREIGN KEY (lab_id) REFERENCES public.labs(id),
   CONSTRAINT results_order_test_id_fkey FOREIGN KEY (order_test_id) REFERENCES public.order_tests(id),
-  CONSTRAINT results_outsourced_to_lab_id_fkey FOREIGN KEY (outsourced_to_lab_id) REFERENCES public.outsourced_labs(id)
+  CONSTRAINT results_outsourced_to_lab_id_fkey FOREIGN KEY (outsourced_to_lab_id) REFERENCES public.outsourced_labs(id),
+  CONSTRAINT results_dispatched_by_fkey FOREIGN KEY (dispatched_by) REFERENCES public.users(id)
 );
 CREATE TABLE public.role_permissions (
   id uuid NOT NULL DEFAULT gen_random_uuid(),
@@ -1131,6 +1214,47 @@ CREATE TABLE public.role_permissions (
   CONSTRAINT role_permissions_pkey PRIMARY KEY (id),
   CONSTRAINT role_permissions_role_id_fkey FOREIGN KEY (role_id) REFERENCES public.user_roles(id),
   CONSTRAINT role_permissions_permission_id_fkey FOREIGN KEY (permission_id) REFERENCES public.permissions(id)
+);
+CREATE TABLE public.sample_transits (
+  id uuid NOT NULL DEFAULT gen_random_uuid(),
+  lab_id uuid NOT NULL,
+  sample_id text,
+  order_id uuid,
+  from_location_id uuid NOT NULL,
+  to_location_id uuid NOT NULL,
+  status text NOT NULL DEFAULT 'pending_dispatch'::text CHECK (status = ANY (ARRAY['pending_dispatch'::text, 'awaiting_pickup'::text, 'in_transit'::text, 'delivered'::text, 'received'::text, 'issue_reported'::text])),
+  tracking_barcode text,
+  dispatched_at timestamp with time zone,
+  dispatched_by uuid,
+  dispatch_notes text,
+  picked_up_at timestamp with time zone,
+  picked_up_by text,
+  delivered_at timestamp with time zone,
+  received_at timestamp with time zone,
+  received_by uuid,
+  receipt_notes text,
+  issue_reported_at timestamp with time zone,
+  issue_reported_by uuid,
+  issue_description text,
+  issue_resolved_at timestamp with time zone,
+  issue_resolution text,
+  temperature_at_dispatch numeric,
+  temperature_at_receipt numeric,
+  condition_at_receipt text CHECK (condition_at_receipt IS NULL OR (condition_at_receipt = ANY (ARRAY['good'::text, 'acceptable'::text, 'damaged'::text, 'rejected'::text]))),
+  batch_id uuid,
+  priority text DEFAULT 'normal'::text CHECK (priority = ANY (ARRAY['urgent'::text, 'high'::text, 'normal'::text, 'low'::text])),
+  estimated_arrival_at timestamp with time zone,
+  created_at timestamp with time zone NOT NULL DEFAULT now(),
+  updated_at timestamp with time zone DEFAULT now(),
+  CONSTRAINT sample_transits_pkey PRIMARY KEY (id),
+  CONSTRAINT sample_transits_lab_id_fkey FOREIGN KEY (lab_id) REFERENCES public.labs(id),
+  CONSTRAINT sample_transits_sample_id_fkey FOREIGN KEY (sample_id) REFERENCES public.samples(id),
+  CONSTRAINT sample_transits_order_id_fkey FOREIGN KEY (order_id) REFERENCES public.orders(id),
+  CONSTRAINT sample_transits_from_location_id_fkey FOREIGN KEY (from_location_id) REFERENCES public.locations(id),
+  CONSTRAINT sample_transits_to_location_id_fkey FOREIGN KEY (to_location_id) REFERENCES public.locations(id),
+  CONSTRAINT sample_transits_dispatched_by_fkey FOREIGN KEY (dispatched_by) REFERENCES public.users(id),
+  CONSTRAINT sample_transits_received_by_fkey FOREIGN KEY (received_by) REFERENCES public.users(id),
+  CONSTRAINT sample_transits_issue_reported_by_fkey FOREIGN KEY (issue_reported_by) REFERENCES public.users(id)
 );
 CREATE TABLE public.samples (
   id text NOT NULL,
@@ -1148,10 +1272,17 @@ CREATE TABLE public.samples (
   rejection_reason text,
   collected_by uuid,
   created_at timestamp with time zone DEFAULT now(),
+  collected_at_location_id uuid,
+  current_location_id uuid,
+  destination_location_id uuid,
+  transit_status text DEFAULT 'at_collection_point'::text CHECK (transit_status = ANY (ARRAY['at_collection_point'::text, 'pending_dispatch'::text, 'in_transit'::text, 'received_at_lab'::text, 'processing'::text])),
   CONSTRAINT samples_pkey PRIMARY KEY (id),
   CONSTRAINT samples_order_id_fkey FOREIGN KEY (order_id) REFERENCES public.orders(id),
   CONSTRAINT samples_lab_id_fkey FOREIGN KEY (lab_id) REFERENCES public.labs(id),
-  CONSTRAINT samples_collected_by_fkey FOREIGN KEY (collected_by) REFERENCES public.users(id)
+  CONSTRAINT samples_collected_by_fkey FOREIGN KEY (collected_by) REFERENCES public.users(id),
+  CONSTRAINT samples_collected_at_location_id_fkey FOREIGN KEY (collected_at_location_id) REFERENCES public.locations(id),
+  CONSTRAINT samples_current_location_id_fkey FOREIGN KEY (current_location_id) REFERENCES public.locations(id),
+  CONSTRAINT samples_destination_location_id_fkey FOREIGN KEY (destination_location_id) REFERENCES public.locations(id)
 );
 CREATE TABLE public.system_config (
   id bigint NOT NULL DEFAULT nextval('system_config_id_seq'::regclass),
@@ -1248,6 +1379,7 @@ CREATE TABLE public.user_centers (
   location_id uuid,
   is_primary boolean DEFAULT false,
   created_at timestamp with time zone DEFAULT now(),
+  can_view_all_locations boolean NOT NULL DEFAULT false,
   CONSTRAINT user_centers_pkey PRIMARY KEY (id),
   CONSTRAINT user_centers_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.users(id),
   CONSTRAINT user_centers_location_id_fkey FOREIGN KEY (location_id) REFERENCES public.locations(id)
@@ -1295,6 +1427,23 @@ CREATE TABLE public.users (
   CONSTRAINT users_lab_id_fkey FOREIGN KEY (lab_id) REFERENCES public.labs(id),
   CONSTRAINT users_department_id_fkey FOREIGN KEY (department_id) REFERENCES public.departments(id),
   CONSTRAINT users_role_id_fkey FOREIGN KEY (role_id) REFERENCES public.user_roles(id)
+);
+CREATE TABLE public.whatsapp_message_templates (
+  id uuid NOT NULL DEFAULT gen_random_uuid(),
+  lab_id uuid NOT NULL,
+  name character varying NOT NULL,
+  category USER-DEFINED NOT NULL,
+  message_content text NOT NULL,
+  requires_attachment boolean DEFAULT false,
+  placeholders ARRAY DEFAULT '{}'::text[],
+  is_active boolean DEFAULT true,
+  is_default boolean DEFAULT false,
+  created_by uuid,
+  created_at timestamp with time zone DEFAULT now(),
+  updated_at timestamp with time zone DEFAULT now(),
+  CONSTRAINT whatsapp_message_templates_pkey PRIMARY KEY (id),
+  CONSTRAINT whatsapp_message_templates_lab_id_fkey FOREIGN KEY (lab_id) REFERENCES public.labs(id),
+  CONSTRAINT whatsapp_message_templates_created_by_fkey FOREIGN KEY (created_by) REFERENCES auth.users(id)
 );
 CREATE TABLE public.workflow_ai_configs (
   id uuid NOT NULL DEFAULT gen_random_uuid(),

@@ -2,6 +2,11 @@
   command = "npm run build"
   publish = "dist"
 
+# PDF Generation Worker - Disabled for dev (use on-demand trigger instead)
+# [[functions]]
+#   schedule = "*/30 * * * *"
+#   name = "pdf-worker"
+
 # SPA fallback
 [[redirects]]
   from = "/app/*"

@@ -288,20 +288,21 @@ const TemplateAIConsole: React.FC<TemplateAIConsoleProps> = ({
   return (
     <aside
       className={clsx(
-        'absolute right-0 top-0 z-30 h-full w-full max-w-md transform bg-white shadow-xl transition-transform duration-300 ease-out',
+        'fixed right-0 top-0 z-[9999] h-full w-full max-w-md transform bg-white shadow-xl transition-transform duration-300 ease-out',
         open ? 'translate-x-0' : 'translate-x-full'
       )}
       style={{ pointerEvents: open ? 'auto' : 'none' }}
     >
       <div className="flex h-full max-h-screen flex-col border-l border-gray-200">
-        <header className="flex items-start justify-between border-b border-gray-200 bg-gray-50 px-4 py-3">
-          <div>
-            <h2 className="text-sm font-semibold text-gray-900">Template Assistant</h2>
-            <p className="text-xs text-gray-600">AI editing for {templateName}</p>
+        <header className="sticky top-0 z-10 flex items-center justify-between border-b border-gray-200 bg-gray-50 px-4 py-3 shrink-0">
+          <div className="flex-1 min-w-0">
+            <h2 className="text-sm font-semibold text-gray-900 truncate">Template Assistant</h2>
+            <p className="text-xs text-gray-600 truncate">AI editing for {templateName}</p>
           </div>
           <button
             onClick={onClose}
-            className="rounded-md border border-gray-300 px-2 py-1 text-xs text-gray-600 hover:bg-gray-100"
+            className="ml-3 shrink-0 rounded-md border border-gray-300 px-2 py-1 text-xs text-gray-600 hover:bg-gray-100 hover:border-gray-400 transition-colors"
+            aria-label="Close assistant"
           >
             Close
           </button>

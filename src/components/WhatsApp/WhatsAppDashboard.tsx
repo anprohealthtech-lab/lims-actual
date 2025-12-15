@@ -29,6 +29,7 @@ const WhatsAppDashboard: React.FC<WhatsAppDashboardProps> = ({ onConnectionChang
   const [isDisconnecting, setIsDisconnecting] = useState(false);
   const [qrCode, setQrCode] = useState<string | null>(null);
   const [lastUpdated, setLastUpdated] = useState<Date>(new Date());
+  const [connectAttempts, setConnectAttempts] = useState<number>(0);
   
   // Refs for managing component state and preventing race conditions
   const pollingIntervalRef = React.useRef<number | null>(null);
@@ -182,9 +183,26 @@ const WhatsAppDashboard: React.FC<WhatsAppDashboardProps> = ({ onConnectionChang
       const existing = await WhatsAppAPI.getConnectionStatus();
       if (existing?.isConnected) {
         setConnectionStatus(existing);
+        setConnectAttempts(0);
         setIsConnecting(false);
         return;
       }
+
+      // Track attempts and hard reset stale session after 3 tries
+      let nextAttemptCount = connectAttempts + 1;
+      if (nextAttemptCount > 3) {
+        const reset = await WhatsAppAPI.resetUserWhatsAppSession();
+        console.info('Resetting WhatsApp session before reconnect:', reset);
+        nextAttemptCount = 1; // restart counting after reset
+        if (!reset.success) {
+          setConnectionStatus({
+            success: false,
+            isConnected: false,
+            message: reset.message || 'Failed to reset WhatsApp session before reconnecting.'
+          });
+        }
+      }
+      setConnectAttempts(nextAttemptCount);
       
       // If existing QR found, use it and start polling
       if ((existing as any)?.qrCode || (existing as any)?.rawQR) {
@@ -224,6 +242,7 @@ const WhatsAppDashboard: React.FC<WhatsAppDashboardProps> = ({ onConnectionChang
       if (qr) setQrCode(qr);
       
       if (result.success && qr) {
+        setConnectAttempts(0);
         startPollingForStatus();
       } else {
         setIsConnecting(false);
@@ -236,6 +255,7 @@ const WhatsAppDashboard: React.FC<WhatsAppDashboardProps> = ({ onConnectionChang
         isConnected: false,
         message: 'Connection failed: ' + (error as Error).message
       });
+      setConnectAttempts((count) => count + 1);
       setIsConnecting(false);
       stopPollingForStatus();
       isOperationInProgressRef.current = false;

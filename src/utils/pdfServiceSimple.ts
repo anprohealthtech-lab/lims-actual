@@ -823,6 +823,7 @@ export const generateFinalReport = async (
       .upsert({
         order_id: orderId,
         patient_id: context.patientId,
+        lab_id: context.labId,
         report_type: 'final',
         status: 'completed',
         pdf_url: pdfUrl,

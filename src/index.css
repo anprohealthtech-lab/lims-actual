@@ -377,3 +377,30 @@ body > .ck.ck-reset_all {
 .m-8dp {
   margin: 8px;
 }
+
+/* Custom animations for PDF progress indicator */
+@keyframes shimmer {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(100%);
+  }
+}
+
+@keyframes shine {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(200%);
+  }
+}
+
+.animate-shimmer {
+  animation: shimmer 2s infinite;
+}
+
+.animate-shine {
+  animation: shine 1.5s infinite;
+}

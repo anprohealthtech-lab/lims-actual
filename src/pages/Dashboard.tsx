@@ -2,17 +2,22 @@ import React, { useEffect, useMemo, useState } from "react";
 import {
   Plus, Search, Filter, Clock as ClockIcon, CheckCircle, AlertTriangle,
   Eye, User, Calendar, TestTube, ChevronDown, ChevronUp, TrendingUp,
-  UserPlus, DollarSign, FileText, CreditCard, LayoutDashboard, Users
+  UserPlus, DollarSign, FileText, CreditCard, LayoutDashboard, Users,
+  MessageCircle, Mail, Send
 } from "lucide-react";
 import { useAuth } from "../contexts/AuthContext";
 import { supabase, database } from "../utils/supabase";
 import { useMobileOptimizations } from "../utils/platformHelper";
 import { MobileFAB } from "../components/ui/MobileFAB";
 import OrderForm from "../components/Orders/OrderForm";
-import OrderDetailsModal from "../components/Orders/OrderDetailsModal";
+import DashboardOrderModal from "../components/Dashboard/DashboardOrderModal";
 import CreateInvoiceModal from "../components/Billing/CreateInvoiceModal";
 import PaymentCapture from "../components/Billing/PaymentCapture";
 import { OrderStatusDisplay } from "../components/Orders/OrderStatusDisplay";
+import { WhatsAppAPI } from "../utils/whatsappAPI";
+import { openWhatsAppManually, buildMessageWithReportLink } from "../utils/whatsappUtils";
+import { usePDFGeneration } from "../hooks/usePDFGeneration";
+import SampleTransitWidget from "../components/Dashboard/SampleTransitWidget";
 
 /* ===========================
    Types
@@ -44,6 +49,7 @@ type OrderRow = {
   id: string;
   patient_id: string;
   patient_name: string;
+  patient_phone?: string | null;
   status: OrderStatus;
   priority: Priority;
   order_date: string;
@@ -64,7 +70,7 @@ type OrderRow = {
 
   // relations
   patients: { name?: string | null; age?: string | null; gender?: string | null } | null;
-  order_tests: { id: string; test_group_id: string | null; test_name: string }[] | null;
+  order_tests: { id: string; test_group_id: string | null; test_name: string; outsourced_lab_id?: string | null; outsourced_labs?: { name?: string | null } | null }[] | null;
 
   // daily sequence for sorting
   order_number?: number | null;
@@ -82,12 +88,15 @@ type CardOrder = {
   id: string;
   patient_name: string;
   patient_id: string;
+  patient_phone?: string | null;
   status: OrderStatus;
   priority: Priority;
   order_date: string;
   expected_date: string;
   total_amount: number;
   doctor: string | null;
+  doctor_phone?: string | null;
+  doctor_email?: string | null;
 
   order_number?: number | null;
 
@@ -105,8 +114,13 @@ type CardOrder = {
   due_amount?: number;
   payment_status?: 'unpaid' | 'partial' | 'paid' | null;
 
-  patient?: { name?: string | null; age?: string | null; gender?: string | null } | null;
-  tests: string[];
+  patient?: { name?: string | null; age?: string | null; gender?: string | null; mobile?: string | null; email?: string | null } | null;
+  tests: {
+    id: string;
+    test_name: string;
+    outsourced_lab_id?: string | null;
+    outsourced_labs?: { name?: string | null } | null;
+  }[];
 
   // derived
   panels: Panel[];
@@ -117,6 +131,22 @@ type CardOrder = {
   pendingAnalytes: number;       // not started OR partial/in-progress
   forApprovalAnalytes: number;   // complete but not verified
   approvedAnalytes: number;      // verified
+
+  // Report info
+  report_url?: string | null;
+  report_status?: string | null;
+  
+  // Delivery tracking
+  whatsapp_sent_at?: string | null;
+  email_sent_at?: string | null;
+  doctor_informed_at?: string | null;
+
+  // Location and transit fields
+  location_id?: string | null;
+  location?: string | null;
+  transit_status?: string | null;
+  collected_at_location_id?: string | null;
+  collected_by?: string | null;
 };
 
 /* ===========================
@@ -153,6 +183,10 @@ const Dashboard: React.FC = () => {
   const [showPaymentModal, setShowPaymentModal] = useState(false);
   const [paymentInvoiceId, setPaymentInvoiceId] = useState<string | null>(null);
 
+  // PDF Generation
+  const { generatePDF } = usePDFGeneration();
+  const [isSendingReport, setIsSendingReport] = useState<string | null>(null); // orderId being processed
+
   // dashboard counters
   const [summary, setSummary] = useState({ allDone: 0, mostlyDone: 0, pending: 0, awaitingApproval: 0 });
 
@@ -182,9 +216,12 @@ const Dashboard: React.FC = () => {
       .select(`
         id, patient_id, patient_name, status, priority, order_date, expected_date, total_amount, doctor,
         order_number, sample_id, color_code, color_name, sample_collected_at, sample_collected_by,
-        billing_status, is_billed,
-        patients(name, age, gender),
-        order_tests(id, test_group_id, test_name)
+        billing_status, is_billed, referring_doctor_id,
+        location_id, transit_status, collected_at_location_id,
+        patients(name, age, gender, phone, email),
+        order_tests(id, test_group_id, test_name, outsourced_lab_id, outsourced_labs(name)),
+        doctors ( phone, email ),
+        locations!orders_location_id_fkey(id, name, type)
       `)
       .eq('lab_id', lab_id)
       .gte("order_date", dateFrom)
@@ -232,10 +269,39 @@ const Dashboard: React.FC = () => {
     const invoiceData = await Promise.all(invoicePromises);
     const invoiceMap = new Map(invoiceData.map(d => [d.orderId, d]));
 
+    // 3.5) Fetch reports with delivery status for these orders
+    let reportMap = new Map<string, { 
+      pdf_url: string | null; 
+      status: string | null;
+      whatsapp_sent_at: string | null;
+      email_sent_at: string | null;
+      doctor_informed_at: string | null;
+    }>();
+    if (orderIds.length > 0) {
+      const { data: reportsData } = await supabase
+        .from('reports')
+        .select('order_id, pdf_url, status, report_type, whatsapp_sent_at, email_sent_at, doctor_informed_at')
+        .in('order_id', orderIds)
+        .eq('report_type', 'final'); // Only care about final reports for sending
+      
+      if (reportsData) {
+        reportsData.forEach((r: any) => {
+          reportMap.set(r.order_id, { 
+            pdf_url: r.pdf_url, 
+            status: r.status,
+            whatsapp_sent_at: r.whatsapp_sent_at,
+            email_sent_at: r.email_sent_at,
+            doctor_informed_at: r.doctor_informed_at,
+          });
+        });
+      }
+    }
+
     // 4) shape cards with new buckets
     const cards: CardOrder[] = orderRows.map((o) => {
       const rows = byOrder.get(o.id) || [];
       const invoiceInfo = invoiceMap.get(o.id);
+      const reportInfo = reportMap.get(o.id);
       const panels: Panel[] = rows.map((r) => ({
         name: r.test_group_name || "Test",
         expected: r.expected_analytes || 0,
@@ -261,6 +327,11 @@ const Dashboard: React.FC = () => {
       const pendingAnalytes = Math.max(expectedTotal - enteredTotal, 0); // Not entered yet
       const forApprovalAnalytes = Math.max(enteredTotal - approvedAnalytes, 0); // Entered but not verified
 
+      // Extract doctor info
+      const doctorData = (o as any).doctors;
+      const doctor_phone = doctorData?.phone || null;
+      const doctor_email = doctorData?.email || null;
+
       // Debug logging for verification (can be removed later)
       if (o.id && expectedTotal > 0) {
         console.debug(`Order ${o.id.slice(-6)}: Expected=${expectedTotal}, Entered=${enteredTotal}, Approved=${approvedAnalytes}, Pending=${pendingAnalytes}, ForApproval=${forApprovalAnalytes}`);
@@ -270,12 +341,15 @@ const Dashboard: React.FC = () => {
         id: o.id,
         patient_name: o.patient_name,
         patient_id: o.patient_id,
+        patient_phone: (o.patients as any)?.phone,
         status: o.status,
         priority: o.priority,
         order_date: o.order_date,
         expected_date: o.expected_date,
         total_amount: o.total_amount,
         doctor: o.doctor,
+        doctor_phone,
+        doctor_email,
 
         order_number: o.order_number ?? null,
         sample_id: o.sample_id,
@@ -299,8 +373,19 @@ const Dashboard: React.FC = () => {
             return paid > 0 && paid >= total ? 'paid' : (paid > 0 ? 'partial' : 'unpaid');
           })(),
 
-        patient: o.patients,
-        tests: (o.order_tests || []).map((t) => t.test_name),
+        patient: {
+          name: (o.patients as any)?.name,
+          age: (o.patients as any)?.age,
+          gender: (o.patients as any)?.gender,
+          mobile: (o.patients as any)?.phone,
+          email: (o.patients as any)?.email
+        },
+        tests: (o.order_tests || []).map((t: any) => ({
+          id: t.id,
+          test_name: t.test_name,
+          outsourced_lab_id: t.outsourced_lab_id,
+          outsourced_labs: t.outsourced_labs
+        })),
 
         panels,
         expectedTotal,
@@ -308,6 +393,19 @@ const Dashboard: React.FC = () => {
         pendingAnalytes,
         forApprovalAnalytes,
         approvedAnalytes,
+
+        report_url: reportInfo?.pdf_url,
+        report_status: reportInfo?.status,
+        whatsapp_sent_at: reportInfo?.whatsapp_sent_at,
+        email_sent_at: reportInfo?.email_sent_at,
+        doctor_informed_at: reportInfo?.doctor_informed_at,
+
+        // Location and transit fields
+        location_id: (o as any).location_id || null,
+        location: (o as any).locations?.name || null,
+        transit_status: (o as any).transit_status || null,
+        collected_at_location_id: (o as any).collected_at_location_id || null,
+        collected_by: o.sample_collected_by || null,
       };
     });
 
@@ -344,6 +442,17 @@ const Dashboard: React.FC = () => {
       console.log('Dashboard: Tests array:', orderData.tests, 'Length:', orderData.tests?.length);
       console.log('Dashboard: Test objects structure:', orderData.tests?.[0]);
       
+      // Validate required fields before API call
+      if (!orderData.patient_id) {
+        alert('❌ Error: Patient is required');
+        throw new Error('Patient is required');
+      }
+      
+      if (!orderData.referring_doctor_id && !orderData.doctor) {
+        alert('❌ Error: Referring doctor is required');
+        throw new Error('Referring doctor is required');
+      }
+      
       // Get current user's lab ID and add it to orderData
       const labId = await database.getCurrentUserLabId();
       const orderDataWithLab = { ...orderData, lab_id: labId };
@@ -352,16 +461,27 @@ const Dashboard: React.FC = () => {
       const { data: order, error: orderError } = await database.orders.create(orderDataWithLab);
       if (orderError) {
         console.error('Dashboard: Error creating order:', orderError);
-        alert('Failed to create order. Please try again.');
-        return;
+        const errorMessage = orderError.message || 'Failed to create order';
+        alert(`❌ Order Creation Failed: ${errorMessage}`);
+        throw orderError;
       }
       
       console.log('Dashboard: Order created successfully:', order);
       
-      // If the form attached a test request file, upload now (optional pattern)
-      if (orderData.testRequestFile) {
-        // TODO: Implement file upload once database.attachments.uploadForOrder is available
-        console.log('Dashboard: File upload requested but not implemented yet');
+      // Update any pending TRF attachments to link to this order
+      const PENDING_ORDER_UUID = '00000000-0000-0000-0000-000000000000';
+      const { error: updateError } = await supabase
+        .from('attachments')
+        .update({ related_id: order.id })
+        .eq('related_table', 'orders')
+        .eq('related_id', PENDING_ORDER_UUID)
+        .eq('description', 'Test Request Form for order creation');
+
+      if (updateError) {
+        console.warn('Failed to update TRF attachment:', updateError);
+        // Non-critical error, continue with order creation
+      } else {
+        console.log('Updated TRF attachment to link to order:', order.id);
       }
 
       // Refresh orders
@@ -371,10 +491,11 @@ const Dashboard: React.FC = () => {
       setShowOrderForm(false);
       
       // Show success message
-      alert('Order created successfully!');
-    } catch (error) {
+      alert('✅ Order created successfully!');
+    } catch (error: any) {
       console.error('Dashboard: Error creating order:', error);
-      alert('Failed to create order. Please try again.');
+      // Don't close form on error so user can fix issues
+      // Error message already shown above
     }
   };
 
@@ -399,6 +520,427 @@ const Dashboard: React.FC = () => {
     } catch (error) {
       console.error('Error fetching invoice for order:', error);
       alert('Failed to fetch invoice details. Please try again.');
+    }
+  };
+
+  const handleInformDoctor = async (order: CardOrder) => {
+    if (!order.doctor_phone) {
+      alert("Doctor's phone number not found. Please ensure the doctor profile has a valid phone number.");
+      return;
+    }
+
+    try {
+      // Check for final report
+      const { data: report } = await database.reports.getByOrderId(order.id);
+      
+      // Check if already informed
+      if (report && report.doctor_informed_at) {
+        const informedDate = new Date(report.doctor_informed_at).toLocaleString();
+        const confirmResend = window.confirm(
+          `Doctor was already informed on ${informedDate} via ${report.doctor_informed_via || 'WhatsApp'}.\n\nSend again?`
+        );
+        if (!confirmResend) return;
+      }
+
+      // If final report exists, send with PDF and clinical summary
+      if (report && report.report_type === 'final' && report.pdf_url) {
+        // Fetch order details for clinical summary
+        const { data: orderData } = await supabase
+          .from('orders')
+          .select('ai_clinical_summary, include_clinical_summary_in_report')
+          .eq('id', order.id)
+          .single();
+
+        const includeClinicalSummary = orderData?.include_clinical_summary_in_report || false;
+        const clinicalSummary = orderData?.ai_clinical_summary || '';
+
+        let message = `Hello Dr. ${order.doctor || 'Doctor'},\n\nThe final report for patient ${order.patient_name} (Order #${order.id.slice(-6)}) is ready.`;
+
+        // Add clinical summary if toggled
+        if (includeClinicalSummary && clinicalSummary) {
+          message += `\n\n📋 Clinical Summary:\n${clinicalSummary}`;
+        }
+
+        message += `\n\nPlease find the attached report.\n\nThank you.`;
+
+        const connection = await WhatsAppAPI.getConnectionStatus();
+        if (!connection?.success || !connection.isConnected) {
+          // Fallback: offer manual WhatsApp link (openWhatsAppManually handles confirmation)
+          const { success, method } = await openWhatsAppManually(
+            order.doctor_phone,
+            message,
+            report.pdf_url,
+            'doctor'
+          );
+          if (success && method === 'manual_link') {
+            // Record as manual link send
+            const { data: { user } } = await supabase.auth.getUser();
+            await database.reports.recordDoctorNotification(report.id, {
+              via: 'whatsapp',
+              sentBy: user?.id || '',
+              sentVia: 'manual_link'
+            });
+            alert('WhatsApp opened. Please send the message manually.');
+            fetchOrders();
+          }
+          return;
+        }
+
+        const formattedPhone = WhatsAppAPI.formatPhoneNumber(order.doctor_phone);
+        if (!WhatsAppAPI.validatePhoneNumber(order.doctor_phone)) {
+          alert('Invalid phone number format. Please update the doctor phone.');
+          return;
+        }
+
+        const confirmMsg = window.confirm(`Send final report to Dr. ${order.doctor} (${order.doctor_phone})?\n\nMessage:\n${message}`);
+        if (!confirmMsg) return;
+
+        const result = await WhatsAppAPI.sendReportFromUrl(
+          formattedPhone,
+          report.pdf_url,
+          message,
+          order.patient_name
+        );
+
+        if (result.success) {
+          // Record doctor notification
+          const { data: { user } } = await supabase.auth.getUser();
+          await database.reports.recordDoctorNotification(report.id, {
+            via: 'whatsapp',
+            sentBy: user?.id || '',
+          });
+          alert('Report sent to doctor successfully!');
+          // Refresh orders to update status badges
+          fetchOrders();
+        } else {
+          alert('Failed to send report: ' + result.message);
+        }
+
+        return;
+      }
+
+      // No final report - send text-only notification (current functionality)
+      let message = '';
+      
+      try {
+        const labId = await database.getCurrentUserLabId();
+        const { data: template } = await database.whatsappTemplates.getDefault('doctor_notification', labId);
+        
+        if (template) {
+          const { data: labData } = await supabase
+            .from('labs')
+            .select('name, address, phone, email')
+            .eq('id', labId!)
+            .single();
+          
+          // Get test names from order tests
+          const testNames = order.tests?.map(t => t.test_name).join(', ') || 'Tests';
+          
+          const { replacePlaceholders } = await import('../utils/whatsappTemplates');
+          message = replacePlaceholders(template.message_content, {
+            DoctorName: order.doctor || 'Doctor',
+            PatientName: order.patient_name,
+            OrderId: order.id.slice(-6),
+            OrderStatus: order.status,
+            TestName: testNames,
+            LabName: labData?.name || '',
+            LabAddress: labData?.address || '',
+            LabContact: labData?.phone || '',
+            LabEmail: labData?.email || '',
+          });
+        }
+      } catch (err) {
+        console.error('Error fetching template:', err);
+      }
+      
+      if (!message) {
+        message = `Hello Dr. ${order.doctor || 'Doctor'},\n\nOrder #${order.id.slice(-6)} for patient ${order.patient_name} is currently ${order.status}.`;
+      }
+
+      // Fetch results to include if available
+      try {
+        const { data: results } = await database.results.getByOrderId(order.id);
+        
+        if (results && results.length > 0) {
+          const availableResults: string[] = [];
+          
+          results.forEach((r: any) => {
+            if (r.result_values && r.result_values.length > 0) {
+              r.result_values.forEach((rv: any) => {
+                if (rv.value) {
+                  availableResults.push(`${rv.parameter}: ${rv.value} ${rv.unit || ''} ${rv.flag ? `(${rv.flag})` : ''}`);
+                }
+              });
+            }
+          });
+
+          if (availableResults.length > 0) {
+            message += `\n\nCurrent Results:\n${availableResults.join('\n')}`;
+          }
+        }
+      } catch (err) {
+        console.error('Error fetching results for message:', err);
+      }
+
+      if (!message.includes('Thank you')) {
+        message += `\n\nThank you.`;
+      }
+      
+      const connection = await WhatsAppAPI.getConnectionStatus();
+      if (!connection?.success || !connection.isConnected) {
+        // Fallback: offer manual WhatsApp link (no PDF - text only)
+        const { success, method } = await openWhatsAppManually(
+          order.doctor_phone,
+          message,
+          undefined, // no PDF for text-only notification
+          'doctor'
+        );
+        if (success && method === 'manual_link') {
+          // Record as manual link send if report exists
+          if (report) {
+            const { data: { user } } = await supabase.auth.getUser();
+            await database.reports.recordDoctorNotification(report.id, {
+              via: 'whatsapp',
+              sentBy: user?.id || '',
+              sentVia: 'manual_link'
+            });
+          }
+          alert('WhatsApp opened. Please send the message manually.');
+          fetchOrders();
+        }
+        return;
+      }
+
+      const formattedPhone = WhatsAppAPI.formatPhoneNumber(order.doctor_phone);
+      if (!WhatsAppAPI.validatePhoneNumber(order.doctor_phone)) {
+        alert('Invalid phone number format. Please update the doctor phone.');
+        return;
+      }
+
+      const confirmMsg = window.confirm(`Send WhatsApp to Dr. ${order.doctor} (${order.doctor_phone})?\n\nMessage:\n${message}`);
+      if (!confirmMsg) return;
+
+      const result = await WhatsAppAPI.sendTextMessage(formattedPhone, message);
+      if (result.success) {
+        // Record text-only notification if report exists
+        if (report) {
+          const { data: { user } } = await supabase.auth.getUser();
+          await database.reports.recordDoctorNotification(report.id, {
+            via: 'whatsapp',
+            sentBy: user?.id || '',
+          });
+        }
+        alert('Message sent successfully!');
+        // Refresh orders to update status badges
+        fetchOrders();
+      } else {
+        alert('Failed to send message: ' + result.message);
+      }
+    } catch (error) {
+      console.error('Error sending message:', error);
+      alert('Error sending message.');
+    }
+  };
+
+  const handleSendReport = async (order: CardOrder, type: 'whatsapp' | 'email') => {
+    if (isSendingReport) return;
+    
+    try {
+      // Fetch final report
+      const { data: report, error: reportError } = await database.reports.getByOrderId(order.id);
+      
+      if (reportError || !report) {
+        alert('Report not found. Please generate it from the Reports page first.');
+        return;
+      }
+
+      // Validate report is final
+      if (report.report_type !== 'final') {
+        alert('Cannot send draft report. Please ensure all results are verified and final report is generated.');
+        return;
+      }
+
+      // Validate PDF URL exists
+      if (!report.pdf_url) {
+        alert('Report PDF not generated yet. Please generate it from the Reports page first.');
+        return;
+      }
+
+      // Check if already sent
+      const alreadySent = await database.reports.wasAlreadySent(report.id, type);
+      if (alreadySent) {
+        const sentField = type === 'whatsapp' ? 'whatsapp_sent_at' : 'email_sent_at';
+        const { data: deliveryData } = await database.reports.getDeliveryStatus(report.id);
+        const sentDate = deliveryData ? new Date(deliveryData[sentField]).toLocaleString() : 'unknown date';
+        const sentTo = type === 'whatsapp' ? deliveryData?.whatsapp_sent_to : deliveryData?.email_sent_to;
+        
+        const confirmResend = window.confirm(
+          `Report already sent via ${type} on ${sentDate}${sentTo ? ` to ${sentTo}` : ''}.\n\nSend again?`
+        );
+        if (!confirmResend) return;
+      }
+
+      setIsSendingReport(order.id);
+      
+      if (type === 'whatsapp') {
+        // Get patient phone - prefer from order, then fetch from patients table
+        let phone = order.patient_phone || '';
+        
+        // If no phone in order, try to fetch from patients table
+        if (!phone && order.patient_id) {
+          const { data: patientData } = await supabase
+            .from('patients')
+            .select('phone')
+            .eq('id', order.patient_id)
+            .single();
+          phone = patientData?.phone || '';
+        }
+        
+        // Normalize phone number - extract last 10 digits
+        const normalizePhone = (p: string): string => {
+          const digitsOnly = p.replace(/\D/g, '');
+          if (digitsOnly.length <= 10) return digitsOnly;
+          return digitsOnly.slice(-10);
+        };
+        
+        phone = normalizePhone(phone);
+        
+        // Only prompt if phone is missing or invalid
+        if (!phone || phone.length < 10) {
+          const input = window.prompt("Patient phone not found. Enter phone number to send report:", phone);
+          if (!input) {
+            setIsSendingReport(null);
+            return;
+          }
+          phone = normalizePhone(input);
+        }
+        
+        // Validate phone
+        if (phone.length !== 10) {
+          alert('Invalid phone number. Please enter a valid 10-digit number.');
+          setIsSendingReport(null);
+          return;
+        }
+
+        // Build caption for patient - NO clinical summary (clinical summary is only for doctors)
+        let caption = `Lab Report for ${order.patient_name} (Order #${order.id.slice(-6)})`;
+
+        // Try to fetch template
+        try {
+          const labId = await database.getCurrentUserLabId();
+          const { data: template } = await database.whatsappTemplates.getDefault('report_ready', labId);
+          
+          if (template) {
+            const { data: labData } = await supabase
+              .from('labs')
+              .select('name, address, phone, email')
+              .eq('id', labId!)
+              .single();
+            
+            // Get test names from order tests
+            const testNames = order.tests?.map(t => t.test_name).join(', ') || 'Tests';
+            
+            const { replacePlaceholders } = await import('../utils/whatsappTemplates');
+            let baseCaption = replacePlaceholders(template.message_content, {
+              PatientName: order.patient_name,
+              OrderId: order.id.slice(-6),
+              TestName: testNames,
+              ReportUrl: report.pdf_url,
+              LabName: labData?.name || '',
+              LabAddress: labData?.address || '',
+              LabContact: labData?.phone || '',
+              LabEmail: labData?.email || '',
+            });
+            // Note: Clinical summary is NOT sent to patient - only to doctors via Inform Dr
+            caption = baseCaption;
+          }
+        } catch (err) {
+          console.error('Error fetching template:', err);
+        }
+
+        caption += `\n\nThank you.`;
+        
+        // Check connection first
+        const connection = await WhatsAppAPI.getConnectionStatus();
+        if (!connection?.success || !connection.isConnected) {
+          // Fallback: offer manual WhatsApp link (openWhatsAppManually handles confirmation)
+          const { success, method } = await openWhatsAppManually(
+            phone,
+            caption,
+            report.pdf_url,
+            'patient'
+          );
+          if (success && method === 'manual_link') {
+            // Record as manual link send
+            const { data: { user } } = await supabase.auth.getUser();
+            await database.reports.recordWhatsAppSend(report.id, {
+              to: phone,
+              caption: caption,
+              sentBy: user?.id || '',
+              includedClinicalSummary: false,
+              sentVia: 'manual_link'
+            });
+            alert('WhatsApp opened. Please send the message manually.');
+            fetchOrders();
+          }
+          setIsSendingReport(null);
+          return;
+        }
+        
+        const result = await WhatsAppAPI.sendReportFromUrl(phone, report.pdf_url, caption, order.patient_name);
+        
+        if (result.success) {
+          // Record WhatsApp send
+          const { data: { user } } = await supabase.auth.getUser();
+          await database.reports.recordWhatsAppSend(report.id, {
+            to: phone,
+            caption: caption,
+            sentBy: user?.id || '',
+            includedClinicalSummary: false, // Clinical summary is NOT sent to patients
+          });
+          alert('Report sent via WhatsApp!');
+          // Refresh orders to update status badges
+          fetchOrders();
+        } else {
+          alert('Failed to send report: ' + result.message);
+        }
+
+      } else if (type === 'email') {
+        let email = (order as any).patient?.email || '';
+        
+        const input = window.prompt("Enter email address to send report:", email);
+        if (!input) {
+          setIsSendingReport(null);
+          return;
+        }
+        email = input;
+
+        // Build email body for patient - NO clinical summary (clinical summary is only for doctors)
+        let emailBody = `Please find the lab report for ${order.patient_name} (Order #${order.id.slice(-6)}) below:\n\n`;
+        emailBody += `Report Link: ${report.pdf_url}\n\nThank you.`;
+
+        const subject = encodeURIComponent(`Lab Report: ${order.patient_name}`);
+        const body = encodeURIComponent(emailBody);
+        window.open(`mailto:${email}?subject=${subject}&body=${body}`, '_blank');
+
+        // Record email send
+        const { data: { user } } = await supabase.auth.getUser();
+        await database.reports.recordEmailSend(report.id, {
+          to: email,
+          sentBy: user?.id || '',
+          includedClinicalSummary: false, // Clinical summary is NOT sent to patients
+        });
+        
+        alert('Email client opened. Please send the email.');
+        // Refresh orders to update status badges
+        fetchOrders();
+      }
+
+    } catch (error) {
+      console.error('Error sending report:', error);
+      alert('Failed to send report. Please try again.');
+    } finally {
+      setIsSendingReport(null);
     }
   };
 
@@ -578,6 +1120,9 @@ const Dashboard: React.FC = () => {
           </div>
         </div>
       </div>
+
+      {/* Sample Transit Widget - for collection center users */}
+      <SampleTransitWidget />
 
       {/* Search / Filters */}
       <div className={`bg-white rounded-lg border border-gray-200 ${mobile.cardPadding}`}>
@@ -814,6 +1359,39 @@ const Dashboard: React.FC = () => {
                             </div>
                             <OrderStatusDisplay order={o} compact={true} />
                             
+                            {/* Delivery Status Indicators */}
+                            <div className="flex items-center space-x-1">
+                              {/* Report Ready */}
+                              {o.report_url && (
+                                <span 
+                                  className="px-1.5 py-0.5 text-xs font-medium rounded bg-blue-100 text-blue-700 border border-blue-200" 
+                                  title="Final Report Available"
+                                >
+                                  📄
+                                </span>
+                              )}
+                              
+                              {/* Doctor Informed */}
+                              {o.doctor_informed_at && (
+                                <span 
+                                  className="px-1.5 py-0.5 text-xs font-medium rounded bg-purple-100 text-purple-700 border border-purple-200" 
+                                  title={`Doctor Informed: ${new Date(o.doctor_informed_at).toLocaleString()}`}
+                                >
+                                  👨‍⚕️
+                                </span>
+                              )}
+                              
+                              {/* Sent to Patient */}
+                              {(o.whatsapp_sent_at || o.email_sent_at) && (
+                                <span 
+                                  className="px-1.5 py-0.5 text-xs font-medium rounded bg-green-100 text-green-700 border border-green-200" 
+                                  title={`Sent: ${new Date(o.whatsapp_sent_at || o.email_sent_at!).toLocaleString()}`}
+                                >
+                                  {o.whatsapp_sent_at ? '📱' : '📧'}
+                                </span>
+                              )}
+                            </div>
+                            
                             {/* Combined Billing & Payment Status Badge */}
                             {o.payment_status === 'paid' ? (
                               <span className="px-2 py-1 text-xs font-bold rounded-full bg-green-100 text-green-800 border border-green-300">
@@ -853,78 +1431,170 @@ const Dashboard: React.FC = () => {
                     })}
                   </div>
                 ) : (
-                  /* Expanded View - Full Cards */
+                  /* Expanded View - Full Cards with All Details */
                   <div className="space-y-4">
                     {g.orders.map((o) => {
                       const pct = o.expectedTotal > 0 ? Math.round((o.enteredTotal / o.expectedTotal) * 100) : 0;
                       return (
                         <div
                           key={o.id}
-                          role="button"
-                          onClick={() => openDetails(o)}
-                          className="w-full p-4 border-2 rounded-lg hover:shadow-md transition-all cursor-pointer border-gray-200 bg-white"
+                          className="w-full p-4 border-2 rounded-lg hover:shadow-lg transition-all border-gray-200 bg-white"
                         >
-                        {/* Top row */}
-                        <div className="flex items-start justify-between gap-3">
-                          <div className="flex items-center gap-3">
-                            <div className="flex items-center justify-center w-8 h-8 bg-blue-100 text-blue-700 rounded-full font-bold text-sm border-2 border-blue-200">
+                        {/* Top row - Patient Info + Order Status + Delivery Status */}
+                        <div className="flex items-start justify-between gap-3 pb-3 border-b border-gray-200">
+                          <div className="flex items-center gap-3 flex-1 min-w-0">
+                            <div className="flex items-center justify-center w-8 h-8 bg-blue-100 text-blue-700 rounded-full font-bold text-sm border-2 border-blue-300 shrink-0">
                               {String(getDailySeq(o)).padStart(3, "0")}
                             </div>
-                            <div className="flex items-center gap-3">
-                              <User className="h-6 w-6 text-blue-600 shrink-0" />
-                              <div>
-                                <div className="text-xl sm:text-2xl font-bold text-gray-900">
-                                  {o.patient?.name || o.patient_name}
-                                </div>
-                                <div className="text-sm sm:text-base text-gray-700">
-                                  {(o.patient?.age || "N/A") + "y"} • {o.patient?.gender || "N/A"} • ID: {o.patient_id}
-                                </div>
+                            <User className="h-6 w-6 text-blue-600 shrink-0" />
+                            <div className="min-w-0 flex-1">
+                              <div className="text-lg sm:text-xl font-bold text-gray-900 truncate">
+                                {o.patient?.name || o.patient_name}
+                              </div>
+                              <div className="text-sm text-gray-600 truncate">
+                                {(o.patient?.age || "N/A") + "y"} • {o.patient?.gender || "N/A"}
                               </div>
                             </div>
                           </div>
 
-                          <div className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
-                            <OrderStatusDisplay order={o} compact={false} />
-                            {/* Billing Badge */}
-                            {getBillingBadge(o)}
-                            <button
-                              className="p-2 text-gray-600 hover:bg-gray-100 rounded-lg"
-                              onClick={() => setExpanded((prev) => ({ ...prev, [o.id]: !prev[o.id] }))}
-                            >
-                              {expanded[o.id] ? <ChevronUp className="h-5 w-5" /> : <ChevronDown className="h-5 w-5" />}
-                            </button>
+                          <div className="flex flex-col items-end gap-2 shrink-0">
+                            <div className="flex items-center gap-2">
+                              <OrderStatusDisplay order={o} compact={false} />
+                            </div>
+                            
+                            {/* Delivery Status Badges - Prominent */}
+                            <div className="flex items-center gap-1.5">
+                              {o.report_url && (
+                                <span 
+                                  className="px-2 py-1 text-xs font-semibold rounded-lg bg-blue-100 text-blue-700 border border-blue-300" 
+                                  title="Final Report Available"
+                                >
+                                  📄 Report Ready
+                                </span>
+                              )}
+                              
+                              {o.doctor_informed_at && (
+                                <span 
+                                  className="px-2 py-1 text-xs font-semibold rounded-lg bg-purple-100 text-purple-700 border border-purple-300" 
+                                  title={`Doctor Informed: ${new Date(o.doctor_informed_at).toLocaleString()}`}
+                                >
+                                  👨‍⚕️ Dr Informed
+                                </span>
+                              )}
+                              
+                              {(o.whatsapp_sent_at || o.email_sent_at) && (
+                                <span 
+                                  className="px-2 py-1 text-xs font-semibold rounded-lg bg-green-100 text-green-700 border border-green-300" 
+                                  title={`Sent: ${new Date(o.whatsapp_sent_at || o.email_sent_at!).toLocaleString()}`}
+                                >
+                                  {o.whatsapp_sent_at ? '📱 Sent' : '📧 Emailed'}
+                                </span>
+                              )}
+                            </div>
                           </div>
                         </div>
 
-                        {/* Middle: sample + tests */}
-                        <div className="mt-3 flex flex-col lg:flex-row lg:items-center lg:justify-between gap-3 bg-gray-50 rounded-lg p-3">
-                          <div className="flex flex-col sm:flex-row sm:items-center gap-6">
-                            <div className="min-w-[110px]">
-                              <div className="text-xs text-gray-600">Order</div>
-                              <div className="font-bold text-gray-900">#{(o.id || "").slice(-6)}</div>
-                            </div>
-
+                        {/* Doctor Name & Sample Info - Prominent Row */}
+                        <div className="flex items-center justify-between gap-3 py-3 bg-gradient-to-r from-purple-50 to-blue-50 rounded-lg px-3 mt-3 border border-purple-100">
+                          <div className="flex items-center gap-4 flex-1">
+                            {o.doctor && (
+                              <div className="flex items-center gap-2">
+                                <span className="text-2xl">👨‍⚕️</span>
+                                <div>
+                                  <div className="text-xs text-gray-600 font-medium">Referring Doctor</div>
+                                  <div className="text-base font-bold text-gray-900">Dr. {o.doctor}</div>
+                                </div>
+                              </div>
+                            )}
+                            
                             {o.sample_id && (
                               <div className="flex items-center gap-2">
                                 <div
-                                  className="w-8 h-8 rounded-full border-2 border-white shadow-md flex items-center justify-center text-white font-bold text-xs"
+                                  className="w-7 h-7 rounded-full border-2 border-white shadow-md flex items-center justify-center text-white font-bold text-xs"
                                   style={{ backgroundColor: o.color_code || "#8B5CF6" }}
                                   title={`Sample Tube: ${o.color_name || "Tube"}`}
                                 >
-                                  {(o.color_name || "Tube").charAt(0)}
+                                  {(o.color_name || "T").charAt(0)}
                                 </div>
                                 <div>
-                                  <div className="text-xs text-gray-600">Sample</div>
+                                  <div className="text-xs text-gray-600 font-medium">Sample ID</div>
                                   <div className="font-mono font-bold text-gray-900 text-sm">
-                                    {String(o.sample_id).split("-").pop()}
+                                    #{String(o.sample_id).split("-").pop()}
                                   </div>
                                 </div>
                               </div>
                             )}
+                          </div>
+                          
+                          {/* Amount - Prominent */}
+                          <div className="text-right">
+                            <div className="flex items-center justify-end gap-2">
+                              <div className="text-2xl font-bold text-gray-900">
+                                ₹{Number(o.total_amount || 0).toLocaleString()}
+                              </div>
+                              {getBillingBadge(o)}
+                            </div>
+                            {o.payment_status !== 'paid' && o.due_amount > 0 && (
+                              <div className="text-sm font-semibold text-red-600 mt-1">
+                                Due: ₹{(o.due_amount || 0).toLocaleString()}
+                              </div>
+                            )}
+                          </div>
+                        </div>
+
+                        {/* Expanded Details - Always Show */}
+                        <div className="mt-3">
+
+                        {/* Patient Contact Info & Location */}
+                        <div className="flex flex-wrap items-center gap-x-4 gap-y-1 px-3 py-2 bg-blue-50 rounded-lg text-sm border border-blue-100">
+                          {o.patient?.mobile && (
+                            <div className="flex items-center gap-1.5 text-blue-800">
+                              <span className="text-base">📱</span>
+                              <span className="font-semibold">{o.patient.mobile}</span>
+                            </div>
+                          )}
+                          {o.patient?.email && (
+                            <div className="flex items-center gap-1.5 text-blue-700">
+                              <span className="text-base">✉️</span>
+                              <span>{o.patient.email}</span>
+                            </div>
+                          )}
+                          {o.location && (
+                            <div className="flex items-center gap-1.5 text-purple-700">
+                              <span className="text-base">🏥</span>
+                              <span className="font-medium">{o.location}</span>
+                            </div>
+                          )}
+                          {o.transit_status && o.transit_status !== 'received_at_lab' && (
+                            <div className={`flex items-center gap-1.5 px-2 py-0.5 rounded-full ${
+                              o.transit_status === 'in_transit' 
+                                ? 'bg-amber-100 text-amber-800' 
+                                : o.transit_status === 'pending_dispatch'
+                                  ? 'bg-yellow-100 text-yellow-800'
+                                  : 'bg-gray-100 text-gray-700'
+                            }`}>
+                              <span className="text-base">🚚</span>
+                              <span className="font-medium text-xs">
+                                {o.transit_status === 'in_transit' ? 'In Transit' : 
+                                 o.transit_status === 'pending_dispatch' ? 'Pending Dispatch' :
+                                 o.transit_status === 'at_collection_point' ? 'At Collection' :
+                                 o.transit_status}
+                              </span>
+                            </div>
+                          )}
+                        </div>
+
+                        {/* Order Info & Tests */}
+                        <div className="mt-3 flex flex-col lg:flex-row lg:items-center lg:justify-between gap-3 bg-gray-50 rounded-lg p-3 border border-gray-200">
+                          <div className="flex flex-col sm:flex-row sm:items-center gap-4">
+                            <div className="min-w-[120px]">
+                              <div className="text-xs text-gray-500 font-medium">Order ID</div>
+                              <div className="font-bold text-gray-900 text-base">#{(o.id || "").slice(-6)}</div>
+                            </div>
 
                             <div className="flex-1">
-                              <div className="text-sm text-gray-600 mb-1">Tests ({o.tests.length})</div>
-                              <div className="flex flex-wrap gap-3">
+                              <div className="text-xs text-gray-500 mb-1">Tests ({o.tests.length})</div>
+                              <div className="flex flex-wrap gap-2">
                                 {o.panels.length > 0
                                   ? o.panels.map((p, i) => {
                                       const progress = p.expected > 0 ? (p.entered / p.expected) * 100 : 0;
@@ -943,22 +1613,17 @@ const Dashboard: React.FC = () => {
                                       return (
                                         <div
                                           key={`${p.name}-${i}`}
-                                          className={`border rounded-lg px-3 py-2 transition-all duration-300 ${colorClass}`}
+                                          className={`border rounded px-2 py-1 transition-all duration-300 ${colorClass}`}
                                         >
-                                          <div className="font-medium text-sm mb-1">{p.name}</div>
-                                          <div className="flex items-center justify-between text-xs">
-                                            <span className="font-mono">
-                                              {p.entered}/{p.expected} analytes
-                                            </span>
-                                            <span className="text-xs opacity-75">
-                                              {progress === 0 ? "Pending" : progress < 100 ? "Partial" : "Complete"}
-                                            </span>
+                                          <div className="font-medium text-xs">{p.name}</div>
+                                          <div className="text-[10px] font-mono">
+                                            {p.entered}/{p.expected}{progress === 100 ? "Complete" : ""}
                                           </div>
                                         </div>
                                       );
                                     })
                                   : o.tests.map((t, i) => (
-                                      <span key={i} className="px-2 py-1 rounded text-sm bg-blue-100 text-blue-800">
+                                      <span key={i} className="px-2 py-0.5 rounded text-xs bg-blue-100 text-blue-800">
                                         {t}
                                       </span>
                                     ))}
@@ -966,111 +1631,145 @@ const Dashboard: React.FC = () => {
                             </div>
                           </div>
 
-                          <div className="text-right">
-                            <div className="text-2xl sm:text-3xl font-bold text-gray-900 mb-2">
-                              ₹{Number(o.total_amount || 0).toLocaleString()}
-                            </div>
-                            
-                            {/* Enhanced Payment Status Badge */}
-                            <div className="flex flex-col items-end gap-2 mb-3">
-                              {o.payment_status === 'paid' ? (
-                                <div className="inline-flex items-center px-4 py-2 rounded-lg bg-green-100 border-2 border-green-500">
-                                  <span className="text-lg font-bold text-green-700">✓ Fully Paid</span>
-                                </div>
-                              ) : o.payment_status === 'partial' ? (
-                                <>
-                                  <div className="inline-flex items-center px-4 py-2 rounded-lg bg-orange-100 border-2 border-orange-500">
-                                    <span className="text-base font-bold text-orange-700">Partially Paid</span>
-                                  </div>
-                                  <div className="text-sm">
-                                    <div className="text-green-600 font-semibold">Paid: ₹{(o.paid_amount || 0).toLocaleString()}</div>
-                                    <div className="text-red-600 font-bold text-base">Due: ₹{(o.due_amount || 0).toLocaleString()}</div>
-                                  </div>
-                                </>
-                              ) : o.billing_status === 'billed' ? (
-                                <>
-                                  <div className="inline-flex items-center px-4 py-2 rounded-lg bg-red-100 border-2 border-red-500">
-                                    <span className="text-lg font-bold text-red-700">Unpaid / Fully Billed</span>
-                                  </div>
-                                  <div className="text-red-600 font-bold text-xl">
-                                    Due: ₹{(o.due_amount || 0).toLocaleString()}
-                                  </div>
-                                </>
-                              ) : (
-                                <>
-                                  <div className="inline-flex items-center px-4 py-2 rounded-lg bg-yellow-100 border-2 border-yellow-500">
-                                    <span className="text-base font-bold text-yellow-700">Not Billed Yet</span>
-                                  </div>
-                                  <div className="text-gray-600 text-sm">Amount: ₹{(o.total_amount || 0).toLocaleString()}</div>
-                                </>
-                              )}
-                            </div>
-                            <div className="text-sm text-gray-600 mt-2">
-                              <div>Ordered: {new Date(o.order_date).toLocaleDateString()}</div>
-                              <div className={`${new Date(o.expected_date) < new Date() ? "text-red-600 font-bold" : ""}`}>
-                                Expected: {new Date(o.expected_date).toLocaleDateString()}
-                                {new Date(o.expected_date) < new Date() && " ⚠️ OVERDUE"}
-                              </div>
-                            </div>
+          <div className="text-right shrink-0">
+            <div className="flex items-center justify-end gap-2 text-sm text-gray-600">
+              <span>Ordered: {new Date(o.order_date).toLocaleDateString()}</span>
+              <span className={new Date(o.expected_date) < new Date() ? "text-red-600 font-semibold" : ""}>
+                Exp: {new Date(o.expected_date).toLocaleDateString()}
+                {new Date(o.expected_date) < new Date() && " ⚠️"}
+              </span>
+            </div>
+          </div>
+        </div>
 
-                            {/* View button opens modal only */}
-                            <button
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                openDetails(o);
-                              }}
-                              className="mt-3 inline-flex items-center px-3 py-1.5 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700"
-                            >
-                              <Eye className="h-4 w-4 mr-1" />
-                              View Full Details
-                            </button>
-                            
-                            {/* Invoice creation button */}
-                            {o.billing_status !== 'billed' && (
+        {/* Additional Info Row */}
+        <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1 px-3 text-sm text-gray-600">
+          {o.collected_by && (
+            <div className="flex items-center gap-1">
+              <span className="font-medium text-gray-700">Collected by:</span>
+              <span className="font-semibold">{o.collected_by}</span>
+            </div>
+          )}
+          {o.sample_collected_at && (
+            <div className="flex items-center gap-1">
+              <span className="font-medium text-gray-700">Collection Time:</span>
+              <span className="font-semibold">{new Date(o.sample_collected_at).toLocaleString()}</span>
+            </div>
+          )}
+        </div>
+
+        {/* Action Buttons - Prominent */}
+        <div className="mt-3 flex flex-wrap gap-2 justify-end px-3 py-2 bg-gray-50 rounded-lg border-t-2 border-blue-200">
                               <button
                                 onClick={(e) => {
                                   e.stopPropagation();
-                                  handleCreateInvoice(o.id);
+                                  openDetails(o);
                                 }}
-                                className="mt-2 inline-flex items-center px-3 py-1.5 text-sm bg-green-600 text-white rounded-lg hover:bg-green-700"
+                                className="inline-flex items-center px-3 py-1.5 text-sm font-medium bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
                               >
-                                <DollarSign className="h-4 w-4 mr-1" />
-                                Create Invoice
+                                <Eye className="h-4 w-4 mr-1.5" />
+                                View
                               </button>
-                            )}
-
-                            {/* Record Payment button - for billed orders */}
-                            {o.billing_status === 'billed' && (
+                              
+                              {/* Inform Doctor Button */}
                               <button
-                                onClick={async (e) => {
+                                onClick={(e) => {
                                   e.stopPropagation();
-                                  await handleRecordPayment(o.id);
+                                  handleInformDoctor(o);
                                 }}
-                                className="mt-2 inline-flex items-center px-3 py-1.5 text-sm bg-purple-600 text-white rounded-lg hover:bg-purple-700"
+                                disabled={!o.doctor_phone}
+                                className={`inline-flex items-center px-3 py-1.5 text-sm font-medium rounded-lg text-white transition-colors ${
+                                  o.doctor_phone 
+                                    ? 'bg-green-600 hover:bg-green-700' 
+                                    : 'bg-gray-300 cursor-not-allowed'
+                                }`}
+                                title={o.doctor_phone ? `Inform Dr. ${o.doctor}` : 'Doctor phone not available'}
                               >
-                                <CreditCard className="h-4 w-4 mr-1" />
-                                Record Payment
+                                <MessageCircle className="h-4 w-4 mr-1.5" />
+                                Inform Dr.
                               </button>
-                            )}
-                          </div>
-                        </div>
+
+                              {/* Send Report Buttons */}
+                              {/* Always visible, but enabled only if report URL exists */}
+                              <button
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleSendReport(o, 'whatsapp');
+                                }}
+                                disabled={!o.report_url || !!isSendingReport}
+                                className={`inline-flex items-center px-3 py-1.5 text-sm font-medium rounded-lg text-white transition-colors ${
+                                  o.report_url 
+                                    ? 'bg-green-600 hover:bg-green-700' 
+                                    : 'bg-gray-300 cursor-not-allowed'
+                                }`}
+                                title={o.report_url ? 'Send Report via WhatsApp' : 'Report not generated yet'}
+                              >
+                                <Send className="h-4 w-4 mr-1.5" />
+                                {isSendingReport === o.id ? '...' : 'WhatsApp'}
+                              </button>
+                              
+                              <button
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleSendReport(o, 'email');
+                                }}
+                                disabled={!o.report_url || !!isSendingReport}
+                                className={`inline-flex items-center px-3 py-1.5 text-sm font-medium rounded-lg text-white transition-colors ${
+                                  o.report_url 
+                                    ? 'bg-blue-500 hover:bg-blue-600' 
+                                    : 'bg-gray-300 cursor-not-allowed'
+                                }`}
+                                title={o.report_url ? 'Send Report via Email' : 'Report not generated yet'}
+                              >
+                                <Mail className="h-4 w-4 mr-1.5" />
+                                Email
+                              </button>
+
+                              {/* Invoice creation button */}
+                              {o.billing_status !== 'billed' && (
+                                <button
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    handleCreateInvoice(o.id);
+                                  }}
+                                  className="inline-flex items-center px-3 py-1.5 text-sm font-medium bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors"
+                                >
+                                  <DollarSign className="h-4 w-4 mr-1.5" />
+                                  Invoice
+                                </button>
+                              )}
+
+                              {/* Record Payment button - for billed orders */}
+                              {o.billing_status === 'billed' && (
+                                <button
+                                  onClick={async (e) => {
+                                    e.stopPropagation();
+                                    await handleRecordPayment(o.id);
+                                  }}
+                                  className="inline-flex items-center px-3 py-1.5 text-sm font-medium bg-purple-600 text-white rounded-lg hover:bg-purple-700 transition-colors"
+                                >
+                                  <CreditCard className="h-4 w-4 mr-1.5" />
+                                  Pay
+                                </button>
+                              )}
+                            </div>
 
                         {/* Enhanced Progress + legend */}
                         <div className="mt-3 bg-gradient-to-r from-blue-50 to-indigo-50 rounded-lg p-3 border border-blue-200">
-                          <div className="flex items-center justify-between text-sm mb-2">
-                            <span className="text-blue-800 font-semibold flex items-center">
+                          <div className="flex items-center justify-between text-xs mb-1">
+                            <span className="text-blue-800 font-medium flex items-center">
                               📊 Overall Progress
                             </span>
-                            <span className="text-blue-800 font-bold text-base">
+                            <span className="text-blue-800 font-bold">
                               {o.enteredTotal}/{o.expectedTotal} analytes
                             </span>
                           </div>
                           
                           {/* Enhanced progress bar with dynamic colors and segments */}
-                          <div className="relative w-full bg-gray-200 rounded-full h-4 mb-3 overflow-hidden border">
+                          <div className="relative w-full bg-gray-200 rounded-full h-2.5 overflow-hidden border">
                             {/* Background gradient based on overall progress */}
                             <div 
-                              className="absolute left-0 top-0 h-4 transition-all duration-700 rounded-full"
+                              className="absolute left-0 top-0 h-2.5 transition-all duration-700 rounded-full"
                               style={{ 
                                 width: `${pct}%`,
                                 background: pct === 0 ? '#ef4444' : // red
@@ -1105,26 +1804,27 @@ const Dashboard: React.FC = () => {
                             )}
                           </div>
                           
-                          {/* Enhanced legend with better spacing and icons */}
-                          <div className="grid grid-cols-2 lg:grid-cols-4 gap-2 text-sm">
-                            <div className="inline-flex items-center bg-white rounded-md px-2 py-1 border border-gray-200">
-                              <span className="inline-block w-3 h-3 bg-red-400 rounded-full mr-2 shadow-sm" /> 
-                              <span className="text-gray-700">Pending: <strong>{o.pendingAnalytes}</strong></span>
+                          {/* Enhanced legend with mobile-responsive grid */}
+                          <div className="grid grid-cols-2 sm:grid-cols-4 gap-1.5 text-xs mt-1">
+                            <div className="inline-flex items-center bg-white rounded px-1.5 py-0.5 border border-gray-200">
+                              <span className="inline-block w-2 h-2 bg-red-400 rounded-full mr-1" /> 
+                              <span className="text-gray-600">Pending: <strong>{o.pendingAnalytes}</strong></span>
                             </div>
-                            <div className="inline-flex items-center bg-white rounded-md px-2 py-1 border border-amber-200">
-                              <span className="inline-block w-3 h-3 bg-amber-500 rounded-full mr-2 shadow-sm" /> 
-                              <span className="text-amber-700">For approval: <strong>{o.forApprovalAnalytes}</strong></span>
+                            <div className="inline-flex items-center bg-white rounded px-1.5 py-0.5 border border-amber-200">
+                              <span className="inline-block w-2 h-2 bg-amber-500 rounded-full mr-1" /> 
+                              <span className="text-amber-700">Approval: <strong>{o.forApprovalAnalytes}</strong></span>
                             </div>
-                            <div className="inline-flex items-center bg-white rounded-md px-2 py-1 border border-green-200">
-                              <span className="inline-block w-3 h-3 bg-green-500 rounded-full mr-2 shadow-sm" /> 
+                            <div className="inline-flex items-center bg-white rounded px-1.5 py-0.5 border border-green-200">
+                              <span className="inline-block w-2 h-2 bg-green-500 rounded-full mr-1" /> 
                               <span className="text-green-700">Approved: <strong>{o.approvedAnalytes}</strong></span>
                             </div>
-                            <div className="inline-flex items-center bg-white rounded-md px-2 py-1 border border-blue-200 lg:justify-end">
-                              <span className={`font-bold ${pct < 25 ? 'text-red-600' : pct < 50 ? 'text-orange-600' : pct < 75 ? 'text-yellow-600' : pct < 100 ? 'text-lime-600' : 'text-green-600'}`}>
+                            <div className="inline-flex items-center bg-white rounded px-1.5 py-0.5 border border-blue-200 justify-end">
+                              <span className={`font-bold text-xs ${pct < 25 ? 'text-red-600' : pct < 50 ? 'text-orange-600' : pct < 75 ? 'text-yellow-600' : pct < 100 ? 'text-lime-600' : 'text-green-600'}`}>
                                 {pct < 25 ? '🔴' : pct < 50 ? '🟠' : pct < 75 ? '🟡' : pct < 100 ? '🟢' : '✅'} Total: {o.expectedTotal}
                               </span>
                             </div>
                           </div>
+                        </div>
                         </div>
                       </div>
                     );
@@ -1179,15 +1879,12 @@ const Dashboard: React.FC = () => {
       {showOrderForm && (
         <OrderForm
           onClose={() => setShowOrderForm(false)}
-          onSubmit={(orderData) => {
-            handleAddOrder(orderData);
-            setShowOrderForm(false);
-          }}
+          onSubmit={handleAddOrder}
         />
       )}
 
       {selectedOrder && (
-        <OrderDetailsModal
+        <DashboardOrderModal
           order={selectedOrder}
           onClose={() => setSelectedOrder(null)}
           onUpdateStatus={async (orderId: string, newStatus: string) => {
@@ -1211,13 +1908,6 @@ const Dashboard: React.FC = () => {
             } catch (error) {
               console.error('Error updating order status:', error);
             }
-          }}
-          onAfterSubmit={async () => {
-            await fetchOrders();
-            setSelectedOrder(null);
-          }}
-          onAfterSaveDraft={async () => {
-            await fetchOrders();
           }}
         />
       )}

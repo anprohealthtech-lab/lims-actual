@@ -796,6 +796,8 @@ const TemplateStudioCKE: React.FC = () => {
   );
   const [auditSuccessMessage, setAuditSuccessMessage] = useState<string | null>(null);
   const [auditRevertSnapshot, setAuditRevertSnapshot] = useState<{ html: string; css: string } | null>(null);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [toolbarCollapsed, setToolbarCollapsed] = useState(false);
 
   const PATIENT_PLACEHOLDER_OPTIONS: PlaceholderOption[] = useMemo(
     () => [
@@ -948,6 +950,63 @@ const TemplateStudioCKE: React.FC = () => {
       editorInstanceRef.current = null;
     };
   }, [ckeditorAiApiKey, ckeditorLicenseKey, isLoading, selectedTemplateId]);
+
+  // Toggle CKEditor toolbar visibility
+  useEffect(() => {
+    const toolbarElement = document.querySelector('.ck-editor__top');
+    if (toolbarElement) {
+      if (toolbarCollapsed) {
+        toolbarElement.classList.add('toolbar-collapsed');
+      } else {
+        toolbarElement.classList.remove('toolbar-collapsed');
+      }
+      
+      // Add close button to toolbar if not already present
+      if (!toolbarElement.querySelector('.toolbar-close-btn')) {
+        const closeBtn = document.createElement('button');
+        closeBtn.className = 'toolbar-close-btn';
+        closeBtn.innerHTML = toolbarCollapsed ? '⬆️ Show' : '⬇️ Hide';
+        closeBtn.title = toolbarCollapsed ? 'Show toolbar' : 'Hide toolbar';
+        closeBtn.style.cssText = `
+          position: absolute;
+          top: 8px;
+          right: 10px;
+          background: #fee;
+          border: 1px solid #fcc;
+          border-radius: 4px;
+          padding: 4px 10px;
+          font-size: 11px;
+          font-weight: 600;
+          color: #c00;
+          cursor: pointer;
+          z-index: 10000;
+          font-family: system-ui, -apple-system, sans-serif;
+          transition: all 0.2s;
+        `;
+        closeBtn.onmouseenter = () => {
+          closeBtn.style.background = '#fcc';
+          closeBtn.style.borderColor = '#faa';
+        };
+        closeBtn.onmouseleave = () => {
+          closeBtn.style.background = '#fee';
+          closeBtn.style.borderColor = '#fcc';
+        };
+        closeBtn.onclick = (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          setToolbarCollapsed(prev => !prev);
+        };
+        toolbarElement.appendChild(closeBtn);
+      } else {
+        // Update existing button text
+        const btn = toolbarElement.querySelector('.toolbar-close-btn') as HTMLButtonElement;
+        if (btn) {
+          btn.innerHTML = toolbarCollapsed ? '⬆️ Show' : '⬇️ Hide';
+          btn.title = toolbarCollapsed ? 'Show toolbar' : 'Hide toolbar';
+        }
+      }
+    }
+  }, [toolbarCollapsed, ckeditorInstance]);
 
   const fetchAvailablePlaceholderOptions = useCallback(async (): Promise<PlaceholderOption[]> => {
     const aggregated: PlaceholderOption[] = [...LAB_META_PLACEHOLDER_OPTIONS];
@@ -1314,9 +1373,6 @@ const TemplateStudioCKE: React.FC = () => {
       alert('Failed to apply watermark styling. Please try again.');
     }
   }, [ckeditorInstance]);
-
-  // Sidebar collapse/expand for more editor space
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
 
   const handleAddImageOverlay = useCallback(() => {
     const instance = ckeditorInstance || editorInstanceRef.current;
@@ -2236,6 +2292,13 @@ const TemplateStudioCKE: React.FC = () => {
           z-index: 1000 !important;
           background: white !important;
           border-bottom: 1px solid #e5e7eb !important;
+          transition: transform 0.3s ease, opacity 0.3s ease !important;
+        }
+        /* Hide toolbar when collapsed */
+        .ck-editor__top.toolbar-collapsed {
+          transform: translateY(-100%) !important;
+          opacity: 0 !important;
+          pointer-events: none !important;
         }
         /* Make toolbar wrap in multiple rows */
         .ck-toolbar {
@@ -2244,6 +2307,27 @@ const TemplateStudioCKE: React.FC = () => {
         }
         .ck-toolbar__items {
           flex-wrap: wrap !important;
+        }
+        /* Toolbar toggle button */
+        .toolbar-toggle-btn {
+          position: fixed;
+          top: 10px;
+          right: 10px;
+          z-index: 1002;
+          background: white;
+          border: 1px solid #d1d5db;
+          border-radius: 6px;
+          padding: 6px 12px;
+          font-size: 11px;
+          font-weight: 600;
+          color: #374151;
+          cursor: pointer;
+          box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+          transition: all 0.2s;
+        }
+        .toolbar-toggle-btn:hover {
+          background: #f3f4f6;
+          border-color: #9ca3af;
         }
         /* Sticky action buttons bar */
         .sticky-actions-bar {
@@ -2280,6 +2364,15 @@ const TemplateStudioCKE: React.FC = () => {
                 <ChevronLeft className="h-3.5 w-3.5" />
               )}
               {sidebarCollapsed ? 'Show Details' : 'Hide Details'}
+            </button>
+            <button
+              type="button"
+              onClick={() => setToolbarCollapsed((v) => !v)}
+              className="inline-flex items-center gap-1 rounded-md border border-blue-300 bg-blue-50 px-3 py-1.5 font-medium text-blue-700 transition hover:bg-blue-100"
+              title={toolbarCollapsed ? 'Show Editor Toolbar' : 'Hide Editor Toolbar'}
+            >
+              {toolbarCollapsed ? '⬆️' : '⬇️'}
+              {toolbarCollapsed ? 'Show Toolbar' : 'Hide Toolbar'}
             </button>
             <button
               type="button"

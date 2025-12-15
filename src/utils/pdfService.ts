@@ -2404,7 +2404,7 @@ export async function generateAndSavePDFReportWithProgress(
       // Get order details to populate report
       const { data: orderData, error: orderError } = await supabase
         .from('orders')
-        .select('patient_id, doctor')
+        .select('patient_id, doctor, lab_id')
         .eq('id', orderId)
         .single();
       
@@ -2422,6 +2422,7 @@ export async function generateAndSavePDFReportWithProgress(
           order_id: orderId,
           patient_id: orderData.patient_id,
           doctor: orderData.doctor || 'Unknown',
+          lab_id: orderData.lab_id,
           status: 'pending',
           generated_date: new Date().toISOString(),
           report_type: reportType,
@@ -2921,7 +2922,7 @@ export async function generateAndSavePDFReport(orderId: string, reportData: Repo
       // Remove test_names from the query as it doesn't exist in orders table
       const { data: orderData, error: orderError } = await supabase
         .from('orders')
-        .select('patient_id, doctor')  // Removed test_names
+        .select('patient_id, doctor, lab_id')
         .eq('id', orderId)
         .single();
       
@@ -2938,6 +2939,7 @@ export async function generateAndSavePDFReport(orderId: string, reportData: Repo
           order_id: orderId,
           patient_id: orderData.patient_id,
           doctor: orderData.doctor || 'Unknown',
+          lab_id: orderData.lab_id,
           status: 'pending',
           generated_date: new Date().toISOString(),
           report_type: reportType,

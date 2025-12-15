@@ -457,6 +457,120 @@ export const database = {
     return null;
   },
 
+  // Helper to get current user's assigned location IDs
+  getCurrentUserLocationIds: async (): Promise<string[]> => {
+    const { data: { user }, error } = await supabase.auth.getUser();
+    if (error || !user) return [];
+    
+    try {
+      // Get user's id from users table
+      const { data: userData } = await supabase
+        .from('users')
+        .select('id')
+        .eq('email', user.email)
+        .eq('status', 'Active')
+        .single();
+      
+      if (!userData?.id) return [];
+      
+      // Get assigned locations from user_centers
+      const { data: centers } = await supabase
+        .from('user_centers')
+        .select('location_id')
+        .eq('user_id', userData.id);
+      
+      return centers?.map(c => c.location_id).filter(Boolean) || [];
+    } catch (err) {
+      console.warn('Could not fetch user locations:', err);
+      return [];
+    }
+  },
+
+  // Helper to get current user's primary location
+  getCurrentUserPrimaryLocation: async (): Promise<string | null> => {
+    const { data: { user }, error } = await supabase.auth.getUser();
+    if (error || !user) return null;
+    
+    try {
+      const { data: userData } = await supabase
+        .from('users')
+        .select('id')
+        .eq('email', user.email)
+        .eq('status', 'Active')
+        .single();
+      
+      if (!userData?.id) return null;
+      
+      const { data: center } = await supabase
+        .from('user_centers')
+        .select('location_id')
+        .eq('user_id', userData.id)
+        .eq('is_primary', true)
+        .single();
+      
+      return center?.location_id || null;
+    } catch (err) {
+      console.warn('Could not fetch user primary location:', err);
+      return null;
+    }
+  },
+
+  // Helper to check if current user should have location filtering applied
+  shouldFilterByLocation: async (): Promise<{ shouldFilter: boolean; locationIds: string[]; canViewAll: boolean }> => {
+    const labId = await database.getCurrentUserLabId();
+    if (!labId) return { shouldFilter: false, locationIds: [], canViewAll: true };
+    
+    try {
+      // Check if lab enforces location restrictions
+      const { data: lab } = await supabase
+        .from('labs')
+        .select('enforce_location_restrictions')
+        .eq('id', labId)
+        .single();
+      
+      if (!lab?.enforce_location_restrictions) {
+        return { shouldFilter: false, locationIds: [], canViewAll: true };
+      }
+      
+      // Get user info
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) return { shouldFilter: false, locationIds: [], canViewAll: true };
+      
+      const { data: userData } = await supabase
+        .from('users')
+        .select('id')
+        .eq('email', user.email)
+        .eq('status', 'Active')
+        .single();
+      
+      if (!userData?.id) return { shouldFilter: false, locationIds: [], canViewAll: true };
+      
+      // Check user's location assignments and override flag
+      const { data: centers } = await supabase
+        .from('user_centers')
+        .select('location_id, can_view_all_locations')
+        .eq('user_id', userData.id);
+      
+      // If user has can_view_all_locations flag, no filtering
+      const canViewAll = centers?.some(c => c.can_view_all_locations) || false;
+      if (canViewAll) {
+        return { shouldFilter: false, locationIds: [], canViewAll: true };
+      }
+      
+      const locationIds = centers?.map(c => c.location_id).filter(Boolean) || [];
+      
+      // If user has no assigned locations, don't filter (fallback behavior)
+      if (locationIds.length === 0) {
+        return { shouldFilter: false, locationIds: [], canViewAll: true };
+      }
+      
+      return { shouldFilter: true, locationIds, canViewAll: false };
+    } catch (err) {
+      console.warn('Error checking location filter:', err);
+      return { shouldFilter: false, locationIds: [], canViewAll: true };
+    }
+  },
+
 
   labs: {
     getBrandingDefaults: async (): Promise<{ data: LabReportBrandingDefaults | null; error: Error | null }> => {
@@ -1132,48 +1246,184 @@ export const database = {
       return { data: normalized, error: null };
     },
 
-    getAll: async () => {
+    getAll: async (labIdOverride?: string) => {
+      const labId = labIdOverride || await database.getCurrentUserLabId();
+      if (!labId) {
+        return { data: [], error: new Error('No lab_id found for current user') };
+      }
       const { data, error } = await supabase
         .from('reports')
-        .select('id, patient_id, result_id, status, generated_date, doctor, notes, created_at, updated_at, patients(name), results(test_name)')
+        .select('id, patient_id, result_id, status, generated_date, doctor, notes, created_at, updated_at, lab_id, patients(name), results(test_name)')
+        .eq('lab_id', labId)
         .order('generated_date', { ascending: false });
       return { data, error };
     },
 
-    getById: async (id: string) => {
+    getById: async (id: string, labIdOverride?: string) => {
+      const labId = labIdOverride || await database.getCurrentUserLabId();
+      if (!labId) {
+        return { data: null, error: new Error('No lab_id found for current user') };
+      }
       const { data, error } = await supabase
         .from('reports')
         .select('*')
         .eq('id', id)
+        .eq('lab_id', labId)
         .single();
       return { data, error };
     },
 
-    create: async (reportData: any) => {
+    create: async (reportData: any, labIdOverride?: string) => {
+      const labId = labIdOverride || await database.getCurrentUserLabId();
+      if (!labId) {
+        return { data: null, error: new Error('No lab_id found for current user') };
+      }
       const { data, error } = await supabase
         .from('reports')
-        .insert([reportData])
+        .insert([{ ...reportData, lab_id: labId }])
         .select()
         .single();
       return { data, error };
     },
 
-    update: async (id: string, reportData: any) => {
+    update: async (id: string, reportData: any, labIdOverride?: string) => {
+      const labId = labIdOverride || await database.getCurrentUserLabId();
+      if (!labId) {
+        return { data: null, error: new Error('No lab_id found for current user') };
+      }
       const { data, error } = await supabase
         .from('reports')
         .update(reportData)
         .eq('id', id)
+        .eq('lab_id', labId)
         .select()
         .single();
       return { data, error };
     },
 
-    delete: async (id: string) => {
+    delete: async (id: string, labIdOverride?: string) => {
+      const labId = labIdOverride || await database.getCurrentUserLabId();
+      if (!labId) {
+        return { error: new Error('No lab_id found for current user') };
+      }
       const { error } = await supabase
         .from('reports')
         .delete()
-        .eq('id', id);
+        .eq('id', id)
+        .eq('lab_id', labId);
       return { error };
+    },
+
+    // Delivery tracking methods
+    recordWhatsAppSend: async (reportId: string, params: {
+      to: string;
+      caption: string;
+      sentBy: string;
+      includedClinicalSummary: boolean;
+      sentVia?: 'api' | 'manual_link';
+    }) => {
+      const { data, error } = await supabase
+        .from('reports')
+        .update({
+          whatsapp_sent_at: new Date().toISOString(),
+          whatsapp_sent_to: params.to,
+          whatsapp_sent_by: params.sentBy,
+          whatsapp_caption: params.caption,
+          clinical_summary_included: params.includedClinicalSummary,
+          whatsapp_sent_via: params.sentVia || 'api',
+        })
+        .eq('id', reportId)
+        .select()
+        .single();
+      return { data, error };
+    },
+
+    recordEmailSend: async (reportId: string, params: {
+      to: string;
+      sentBy: string;
+      includedClinicalSummary: boolean;
+    }) => {
+      const { data, error } = await supabase
+        .from('reports')
+        .update({
+          email_sent_at: new Date().toISOString(),
+          email_sent_to: params.to,
+          email_sent_by: params.sentBy,
+          clinical_summary_included: params.includedClinicalSummary,
+        })
+        .eq('id', reportId)
+        .select()
+        .single();
+      return { data, error };
+    },
+
+    recordDoctorNotification: async (reportId: string, params: {
+      via: 'whatsapp' | 'email' | 'both';
+      sentBy: string;
+      sentVia?: 'api' | 'manual_link';
+    }) => {
+      const { data, error } = await supabase
+        .from('reports')
+        .update({
+          doctor_informed_at: new Date().toISOString(),
+          doctor_informed_via: params.via,
+          doctor_informed_by: params.sentBy,
+          doctor_sent_via: params.sentVia || 'api',
+        })
+        .eq('id', reportId)
+        .select()
+        .single();
+      return { data, error };
+    },
+
+    getDeliveryStatus: async (reportId: string) => {
+      const { data, error } = await supabase
+        .from('reports')
+        .select(`
+          whatsapp_sent_at,
+          whatsapp_sent_to,
+          whatsapp_sent_by,
+          whatsapp_caption,
+          email_sent_at,
+          email_sent_to,
+          email_sent_by,
+          doctor_informed_at,
+          doctor_informed_via,
+          doctor_informed_by,
+          clinical_summary_included
+        `)
+        .eq('id', reportId)
+        .single();
+      return { data, error };
+    },
+
+    wasAlreadySent: async (reportId: string, type: 'whatsapp' | 'email' | 'doctor') => {
+      const { data, error } = await supabase
+        .from('reports')
+        .select(`
+          whatsapp_sent_at,
+          email_sent_at,
+          doctor_informed_at
+        `)
+        .eq('id', reportId)
+        .single();
+      
+      if (error || !data) return false;
+      
+      if (type === 'whatsapp') return !!data.whatsapp_sent_at;
+      if (type === 'email') return !!data.email_sent_at;
+      if (type === 'doctor') return !!data.doctor_informed_at;
+      return false;
+    },
+
+    getByOrderId: async (orderId: string) => {
+      const { data, error } = await supabase
+        .from('reports')
+        .select('*')
+        .eq('order_id', orderId)
+        .eq('report_type', 'final')
+        .maybeSingle();
+      return { data, error };
     }
   },
 
@@ -5434,6 +5684,101 @@ const masterDataAPI = {
         name: location.name,
         error: null
       };
+    },
+
+    // Get collection centers (locations that collect samples)
+    getCollectionCenters: async () => {
+      const lab_id = await database.getCurrentUserLabId();
+      if (!lab_id) {
+        return { data: null, error: new Error('No lab_id found for current user') };
+      }
+      
+      const { data, error } = await supabase
+        .from('locations')
+        .select('*')
+        .eq('lab_id', lab_id)
+        .eq('is_active', true)
+        .eq('is_collection_center', true)
+        .order('name');
+      return { data, error };
+    },
+
+    // Get processing centers (main labs that process samples)
+    getProcessingCenters: async () => {
+      const lab_id = await database.getCurrentUserLabId();
+      if (!lab_id) {
+        return { data: null, error: new Error('No lab_id found for current user') };
+      }
+      
+      const { data, error } = await supabase
+        .from('locations')
+        .select('*')
+        .eq('lab_id', lab_id)
+        .eq('is_active', true)
+        .eq('is_processing_center', true)
+        .order('name');
+      return { data, error };
+    },
+
+    // Get locations that can receive samples
+    getReceivingLocations: async () => {
+      const lab_id = await database.getCurrentUserLabId();
+      if (!lab_id) {
+        return { data: null, error: new Error('No lab_id found for current user') };
+      }
+      
+      const { data, error } = await supabase
+        .from('locations')
+        .select('*')
+        .eq('lab_id', lab_id)
+        .eq('is_active', true)
+        .eq('can_receive_samples', true)
+        .order('name');
+      return { data, error };
+    },
+
+    // Get default processing location for the lab
+    getDefaultProcessingCenter: async () => {
+      const lab_id = await database.getCurrentUserLabId();
+      if (!lab_id) {
+        return { data: null, error: new Error('No lab_id found for current user') };
+      }
+      
+      const { data: lab, error: labError } = await supabase
+        .from('labs')
+        .select('default_processing_location_id')
+        .eq('id', lab_id)
+        .single();
+      
+      if (labError || !lab?.default_processing_location_id) {
+        return { data: null, error: labError };
+      }
+      
+      const { data, error } = await supabase
+        .from('locations')
+        .select('*')
+        .eq('id', lab.default_processing_location_id)
+        .single();
+      
+      return { data, error };
+    },
+
+    // Set location as collection center or processing center
+    setLocationType: async (id: string, params: {
+      is_collection_center?: boolean;
+      is_processing_center?: boolean;
+      can_receive_samples?: boolean;
+    }) => {
+      const { data, error } = await supabase
+        .from('locations')
+        .update({
+          ...params,
+          updated_at: new Date().toISOString()
+        })
+        .eq('id', id)
+        .select()
+        .single();
+      return { data, error };
     }
   },
 
@@ -6966,6 +7311,379 @@ const brandingSignatureAPI = {
 
       return { data: { barcode, ...data }, error };
     }
+  },
+
+  // ============================================================
+  // INTRA-LAB SAMPLE TRANSIT MANAGEMENT
+  // ============================================================
+  sampleTransits: {
+    // Get all transits for current lab with optional filters
+    getAll: async (filters?: {
+      status?: string;
+      fromLocationId?: string;
+      toLocationId?: string;
+      fromDate?: string;
+      toDate?: string;
+    }) => {
+      const labId = await database.getCurrentUserLabId();
+      if (!labId) {
+        return { data: null, error: new Error('No lab_id found for current user') };
+      }
+
+      let query = supabase
+        .from('sample_transits')
+        .select(`
+          *,
+          from_location:locations!sample_transits_from_location_id_fkey(id, name, type),
+          to_location:locations!sample_transits_to_location_id_fkey(id, name, type),
+          orders(id, order_number, patient_name, order_date),
+          samples(id, sample_type, barcode),
+          dispatched_by_user:users!sample_transits_dispatched_by_fkey(id, name),
+          received_by_user:users!sample_transits_received_by_fkey(id, name)
+        `)
+        .eq('lab_id', labId);
+
+      if (filters?.status) {
+        query = query.eq('status', filters.status);
+      }
+      if (filters?.fromLocationId) {
+        query = query.eq('from_location_id', filters.fromLocationId);
+      }
+      if (filters?.toLocationId) {
+        query = query.eq('to_location_id', filters.toLocationId);
+      }
+      if (filters?.fromDate) {
+        query = query.gte('created_at', filters.fromDate);
+      }
+      if (filters?.toDate) {
+        const endDate = new Date(filters.toDate);
+        endDate.setDate(endDate.getDate() + 1);
+        query = query.lt('created_at', endDate.toISOString());
+      }
+
+      query = query.order('created_at', { ascending: false });
+
+      const { data, error } = await query;
+      return { data, error };
+    },
+
+    // Get pending dispatch items for a location
+    getPendingDispatch: async (fromLocationId?: string) => {
+      const labId = await database.getCurrentUserLabId();
+      if (!labId) {
+        return { data: null, error: new Error('No lab_id found for current user') };
+      }
+
+      // Get orders with samples collected at location but not yet dispatched
+      let query = supabase
+        .from('orders')
+        .select(`
+          id,
+          order_number,
+          patient_name,
+          order_date,
+          location_id,
+          collected_at_location_id,
+          transit_status,
+          sample_collected_at,
+          locations!orders_location_id_fkey(id, name, type)
+        `)
+        .eq('lab_id', labId)
+        .in('transit_status', ['at_collection_point', 'pending_dispatch'])
+        .not('sample_collected_at', 'is', null);
+
+      if (fromLocationId) {
+        query = query.or(`location_id.eq.${fromLocationId},collected_at_location_id.eq.${fromLocationId}`);
+      }
+
+      query = query.order('sample_collected_at', { ascending: true });
+
+      const { data, error } = await query;
+      return { data, error };
+    },
+
+    // Create a new transit record (dispatch samples)
+    create: async (transitData: {
+      order_id?: string;
+      sample_id?: string;
+      from_location_id: string;
+      to_location_id: string;
+      priority?: 'urgent' | 'high' | 'normal' | 'low';
+      dispatch_notes?: string;
+      estimated_arrival_at?: string;
+      batch_id?: string;
+    }) => {
+      const labId = await database.getCurrentUserLabId();
+      if (!labId) {
+        return { data: null, error: new Error('No lab_id found for current user') };
+      }
+
+      const { data: { user } } = await supabase.auth.getUser();
+      const { data: userData } = await supabase
+        .from('users')
+        .select('id')
+        .eq('email', user?.email)
+        .single();
+
+      // Generate tracking barcode
+      const barcode = `TRN-${Date.now()}-${Math.random().toString(36).slice(2, 8).toUpperCase()}`;
+
+      const { data, error } = await supabase
+        .from('sample_transits')
+        .insert([{
+          lab_id: labId,
+          ...transitData,
+          status: 'pending_dispatch',
+          tracking_barcode: barcode,
+          dispatched_at: new Date().toISOString(),
+          dispatched_by: userData?.id
+        }])
+        .select()
+        .single();
+
+      // Update order transit_status if order_id provided
+      if (!error && transitData.order_id) {
+        await supabase
+          .from('orders')
+          .update({ transit_status: 'pending_dispatch' })
+          .eq('id', transitData.order_id);
+      }
+
+      return { data, error };
+    },
+
+    // Bulk dispatch multiple orders
+    bulkDispatch: async (params: {
+      order_ids: string[];
+      from_location_id: string;
+      to_location_id: string;
+      priority?: 'urgent' | 'high' | 'normal' | 'low';
+      dispatch_notes?: string;
+    }) => {
+      const labId = await database.getCurrentUserLabId();
+      if (!labId) {
+        return { data: null, error: new Error('No lab_id found for current user') };
+      }
+
+      const { data: { user } } = await supabase.auth.getUser();
+      const { data: userData } = await supabase
+        .from('users')
+        .select('id')
+        .eq('email', user?.email)
+        .single();
+
+      // Generate batch ID
+      const batchId = crypto.randomUUID();
+      const now = new Date().toISOString();
+
+      // Create transit records for each order
+      const transitRecords = params.order_ids.map((orderId, idx) => ({
+        lab_id: labId,
+        order_id: orderId,
+        from_location_id: params.from_location_id,
+        to_location_id: params.to_location_id,
+        status: 'in_transit',
+        tracking_barcode: `TRN-${Date.now()}-${idx}-${Math.random().toString(36).slice(2, 6).toUpperCase()}`,
+        dispatched_at: now,
+        dispatched_by: userData?.id,
+        priority: params.priority || 'normal',
+        dispatch_notes: params.dispatch_notes,
+        batch_id: batchId
+      }));
+
+      const { data, error } = await supabase
+        .from('sample_transits')
+        .insert(transitRecords)
+        .select();
+
+      // Update all orders to in_transit
+      if (!error) {
+        await supabase
+          .from('orders')
+          .update({ transit_status: 'in_transit' })
+          .in('id', params.order_ids);
+      }
+
+      return { data, error, batchId };
+    },
+
+    // Update transit status
+    updateStatus: async (transitId: string, status: string, notes?: string) => {
+      const { data: { user } } = await supabase.auth.getUser();
+      const { data: userData } = await supabase
+        .from('users')
+        .select('id')
+        .eq('email', user?.email)
+        .single();
+
+      const updateData: any = { status };
+      
+      if (status === 'in_transit') {
+        updateData.dispatched_at = new Date().toISOString();
+        updateData.dispatched_by = userData?.id;
+      } else if (status === 'delivered' || status === 'received') {
+        updateData.received_at = new Date().toISOString();
+        updateData.received_by = userData?.id;
+        if (notes) updateData.receipt_notes = notes;
+      } else if (status === 'issue_reported') {
+        updateData.issue_reported_at = new Date().toISOString();
+        updateData.issue_reported_by = userData?.id;
+        if (notes) updateData.issue_description = notes;
+      }
+
+      const { data, error } = await supabase
+        .from('sample_transits')
+        .update(updateData)
+        .eq('id', transitId)
+        .select()
+        .single();
+
+      return { data, error };
+    },
+
+    // Receive samples at destination
+    receive: async (transitId: string, params?: {
+      receipt_notes?: string;
+      temperature_at_receipt?: number;
+      condition_at_receipt?: 'good' | 'acceptable' | 'damaged' | 'rejected';
+    }) => {
+      const { data: { user } } = await supabase.auth.getUser();
+      const { data: userData } = await supabase
+        .from('users')
+        .select('id')
+        .eq('email', user?.email)
+        .single();
+
+      const { data, error } = await supabase
+        .from('sample_transits')
+        .update({
+          status: 'received',
+          received_at: new Date().toISOString(),
+          received_by: userData?.id,
+          receipt_notes: params?.receipt_notes,
+          temperature_at_receipt: params?.temperature_at_receipt,
+          condition_at_receipt: params?.condition_at_receipt
+        })
+        .eq('id', transitId)
+        .select(`
+          *,
+          orders(id)
+        `)
+        .single();
+
+      // Update order transit_status to received_at_lab
+      if (!error && data?.order_id) {
+        await supabase
+          .from('orders')
+          .update({ transit_status: 'received_at_lab' })
+          .eq('id', data.order_id);
+      }
+
+      return { data, error };
+    },
+
+    // Bulk receive multiple transits
+    bulkReceive: async (transitIds: string[], params?: {
+      receipt_notes?: string;
+      condition_at_receipt?: 'good' | 'acceptable' | 'damaged' | 'rejected';
+    }) => {
+      const { data: { user } } = await supabase.auth.getUser();
+      const { data: userData } = await supabase
+        .from('users')
+        .select('id')
+        .eq('email', user?.email)
+        .single();
+
+      const now = new Date().toISOString();
+
+      const { data, error } = await supabase
+        .from('sample_transits')
+        .update({
+          status: 'received',
+          received_at: now,
+          received_by: userData?.id,
+          receipt_notes: params?.receipt_notes,
+          condition_at_receipt: params?.condition_at_receipt
+        })
+        .in('id', transitIds)
+        .select('order_id');
+
+      // Update all related orders
+      if (!error && data) {
+        const orderIds = data.map(t => t.order_id).filter(Boolean);
+        if (orderIds.length > 0) {
+          await supabase
+            .from('orders')
+            .update({ transit_status: 'received_at_lab' })
+            .in('id', orderIds);
+        }
+      }
+
+      return { data, error };
+    },
+
+    // Get transit statistics for a location
+    getStats: async (locationId?: string) => {
+      const labId = await database.getCurrentUserLabId();
+      if (!labId) {
+        return { data: null, error: new Error('No lab_id found for current user') };
+      }
+
+      // Get counts by status
+      let pendingQuery = supabase
+        .from('sample_transits')
+        .select('id', { count: 'exact', head: true })
+        .eq('lab_id', labId)
+        .eq('status', 'pending_dispatch');
+
+      let inTransitQuery = supabase
+        .from('sample_transits')
+        .select('id', { count: 'exact', head: true })
+        .eq('lab_id', labId)
+        .eq('status', 'in_transit');
+
+      let receivedTodayQuery = supabase
+        .from('sample_transits')
+        .select('id', { count: 'exact', head: true })
+        .eq('lab_id', labId)
+        .eq('status', 'received')
+        .gte('received_at', new Date().toISOString().split('T')[0]);
+
+      if (locationId) {
+        pendingQuery = pendingQuery.eq('from_location_id', locationId);
+        inTransitQuery = inTransitQuery.or(`from_location_id.eq.${locationId},to_location_id.eq.${locationId}`);
+        receivedTodayQuery = receivedTodayQuery.eq('to_location_id', locationId);
+      }
+
+      const [pending, inTransit, receivedToday] = await Promise.all([
+        pendingQuery,
+        inTransitQuery,
+        receivedTodayQuery
+      ]);
+
+      return {
+        data: {
+          pendingDispatch: pending.count || 0,
+          inTransit: inTransit.count || 0,
+          receivedToday: receivedToday.count || 0
+        },
+        error: null
+      };
+    },
+
+    // Generate tracking barcode for a transit
+    generateTrackingBarcode: async (transitId: string) => {
+      const barcode = `TRN-${Date.now()}-${transitId.slice(0, 8)}`;
+      
+      const { data, error } = await supabase
+        .from('sample_transits')
+        .update({ tracking_barcode: barcode })
+        .eq('id', transitId)
+        .select()
+        .single();
+
+      return { data: { barcode, ...data }, error };
+    }
   }
 };
 
@@ -7596,6 +8314,392 @@ export const aiAnalysis = {
   }
 };
 
+// WhatsApp Templates API
+const whatsappTemplates = {
+  list: async (labIdOverride?: string, category?: string) => {
+    const labId = labIdOverride || await database.getCurrentUserLabId();
+    if (!labId) {
+      return { data: [], error: new Error('No lab_id found for current user') };
+    }
+
+    let query = supabase
+      .from('whatsapp_message_templates')
+      .select('*')
+      .eq('lab_id', labId)
+      .order('category', { ascending: true })
+      .order('name', { ascending: true });
+
+    if (category) {
+      query = query.eq('category', category);
+    }
+
+    const { data, error } = await query;
+    return { data: data || [], error };
+  },
+
+  get: async (id: string) => {
+    const { data, error } = await supabase
+      .from('whatsapp_message_templates')
+      .select('*')
+      .eq('id', id)
+      .maybeSingle();
+
+    return { data, error };
+  },
+
+  getDefault: async (category: string, labIdOverride?: string) => {
+    const labId = labIdOverride || await database.getCurrentUserLabId();
+    if (!labId) {
+      return { data: null, error: new Error('No lab_id found for current user') };
+    }
+
+    const { data, error } = await supabase
+      .from('whatsapp_message_templates')
+      .select('*')
+      .eq('lab_id', labId)
+      .eq('category', category)
+      .eq('is_default', true)
+      .eq('is_active', true)
+      .maybeSingle();
+
+    return { data, error };
+  },
+
+  create: async (templateData: {
+    name: string;
+    category: string;
+    message_content: string;
+    requires_attachment?: boolean;
+    placeholders?: string[];
+    is_active?: boolean;
+    is_default?: boolean;
+  }) => {
+    const labId = await database.getCurrentUserLabId();
+    if (!labId) {
+      return { data: null, error: new Error('No lab_id found for current user') };
+    }
+
+    const { data: { user } } = await supabase.auth.getUser();
+    const userId = user?.id;
+
+    const { data, error } = await supabase
+      .from('whatsapp_message_templates')
+      .insert({
+        ...templateData,
+        lab_id: labId,
+        created_by: userId,
+      })
+      .select()
+      .single();
+
+    return { data, error };
+  },
+
+  update: async (id: string, templateData: Partial<{
+    name: string;
+    category: string;
+    message_content: string;
+    requires_attachment: boolean;
+    placeholders: string[];
+    is_active: boolean;
+    is_default: boolean;
+  }>) => {
+    const { data, error } = await supabase
+      .from('whatsapp_message_templates')
+      .update(templateData)
+      .eq('id', id)
+      .select()
+      .single();
+
+    return { data, error };
+  },
+
+  delete: async (id: string) => {
+    const { error } = await supabase
+      .from('whatsapp_message_templates')
+      .delete()
+      .eq('id', id);
+
+    return { error };
+  },
+
+  // Seed default templates for a lab
+  seedDefaults: async (labIdOverride?: string) => {
+    const labId = labIdOverride || await database.getCurrentUserLabId();
+    if (!labId) {
+      return { error: new Error('No lab_id found for current user') };
+    }
+
+    const { data: { user } } = await supabase.auth.getUser();
+    const userId = user?.id;
+
+    // Check if templates already exist
+    const { data: existing } = await supabase
+      .from('whatsapp_message_templates')
+      .select('id')
+      .eq('lab_id', labId)
+      .limit(1);
+
+    if (existing && existing.length > 0) {
+      return { error: null }; // Already seeded
+    }
+
+    // Import default templates
+    const { DEFAULT_TEMPLATES, extractPlaceholders } = await import('./whatsappTemplates');
+
+    const templates = [
+      {
+        name: DEFAULT_TEMPLATES.report_ready.name,
+        category: 'report_ready',
+        message_content: DEFAULT_TEMPLATES.report_ready.message,
+        requires_attachment: DEFAULT_TEMPLATES.report_ready.requires_attachment,
+        placeholders: extractPlaceholders(DEFAULT_TEMPLATES.report_ready.message),
+        is_default: true,
+        is_active: true,
+      },
+      {
+        name: DEFAULT_TEMPLATES.appointment_reminder.name,
+        category: 'appointment_reminder',
+        message_content: DEFAULT_TEMPLATES.appointment_reminder.message,
+        requires_attachment: DEFAULT_TEMPLATES.appointment_reminder.requires_attachment,
+        placeholders: extractPlaceholders(DEFAULT_TEMPLATES.appointment_reminder.message),
+        is_default: true,
+        is_active: true,
+      },
+      {
+        name: DEFAULT_TEMPLATES.test_results.name,
+        category: 'test_results',
+        message_content: DEFAULT_TEMPLATES.test_results.message,
+        requires_attachment: DEFAULT_TEMPLATES.test_results.requires_attachment,
+        placeholders: extractPlaceholders(DEFAULT_TEMPLATES.test_results.message),
+        is_default: true,
+        is_active: true,
+      },
+      {
+        name: DEFAULT_TEMPLATES.doctor_notification.name,
+        category: 'doctor_notification',
+        message_content: DEFAULT_TEMPLATES.doctor_notification.message,
+        requires_attachment: DEFAULT_TEMPLATES.doctor_notification.requires_attachment,
+        placeholders: extractPlaceholders(DEFAULT_TEMPLATES.doctor_notification.message),
+        is_default: true,
+        is_active: true,
+      },
+      {
+        name: DEFAULT_TEMPLATES.payment_reminder.name,
+        category: 'payment_reminder',
+        message_content: DEFAULT_TEMPLATES.payment_reminder.message,
+        requires_attachment: DEFAULT_TEMPLATES.payment_reminder.requires_attachment,
+        placeholders: extractPlaceholders(DEFAULT_TEMPLATES.payment_reminder.message),
+        is_default: true,
+        is_active: true,
+      },
+    ];
+
+    const { error } = await supabase
+      .from('whatsapp_message_templates')
+      .insert(templates.map(t => ({
+        ...t,
+        lab_id: labId,
+        created_by: userId,
+      })));
+
+    return { error };
+  },
+};
+
+// PDF Generation Queue namespace
+const pdfQueue = {
+  getNextJob: async (workerId: string) => {
+    const { data, error } = await supabase.rpc('get_next_pdf_job', {
+      worker_id: workerId
+    });
+
+    return { data: data?.[0] || null, error };
+  },
+
+  markComplete: async (jobId: string, pdfUrl: string) => {
+    const { error } = await supabase.rpc('complete_pdf_job', {
+      job_id: jobId,
+      pdf_url: pdfUrl
+    });
+
+    return { error };
+  },
+
+  markFailed: async (jobId: string, errorMessage: string) => {
+    const { error } = await supabase.rpc('fail_pdf_job', {
+      job_id: jobId,
+      error_msg: errorMessage
+    });
+
+    return { error };
+  },
+
+  updateProgress: async (jobId: string, stage: string, percent: number) => {
+    const { error } = await supabase.rpc('update_pdf_job_progress', {
+      job_id: jobId,
+      stage,
+      percent
+    });
+
+    return { error };
+  },
+
+  retryJob: async (jobId: string) => {
+    const { error } = await supabase.rpc('retry_pdf_job', {
+      job_id: jobId
+    });
+
+    return { error };
+  },
+
+  getQueueStatus: async (labIdOverride?: string) => {
+    const labId = labIdOverride || await database.getCurrentUserLabId();
+    if (!labId) {
+      return { data: null, error: new Error('No lab_id found for current user') };
+    }
+
+    const { data, error } = await supabase
+      .from('pdf_generation_queue')
+      .select(`
+        id,
+        order_id,
+        status,
+        priority,
+        created_at,
+        started_at,
+        completed_at,
+        progress_stage,
+        progress_percent,
+        error_message,
+        retry_count,
+        max_retries,
+        processing_by
+      `)
+      .eq('lab_id', labId)
+      .order('created_at', { ascending: false })
+      .limit(100);
+
+    return { data, error };
+  },
+
+  getJobForOrder: async (orderId: string) => {
+    const { data, error } = await supabase
+      .from('pdf_generation_queue')
+      .select('*')
+      .eq('order_id', orderId)
+      .maybeSingle();
+
+    return { data, error };
+  },
+
+  getStatistics: async (labIdOverride?: string) => {
+    const labId = labIdOverride || await database.getCurrentUserLabId();
+    if (!labId) {
+      return { data: null, error: new Error('No lab_id found for current user') };
+    }
+
+    const { data, error } = await supabase
+      .from('pdf_generation_queue')
+      .select('status')
+      .eq('lab_id', labId);
+
+    if (error) return { data: null, error };
+
+    const stats = {
+      pending: 0,
+      processing: 0,
+      completed: 0,
+      failed: 0,
+      total: data?.length || 0
+    };
+
+    data?.forEach(job => {
+      if (job.status in stats) {
+        stats[job.status as keyof typeof stats]++;
+      }
+    });
+
+    return { data: stats, error: null };
+  },
+
+  // Trigger on-demand PDF generation via edge function (fully server-side)
+  triggerGeneration: async (orderId: string, onProgress?: (stage: string, percent: number) => void) => {
+    try {
+      console.log('🚀 Triggering server-side PDF generation for order:', orderId);
+      onProgress?.('Starting server-side PDF generation...', 5);
+      
+      // Call edge function - it handles everything server-side:
+      // Context fetch → Template rendering → PDF.co generation → Storage upload
+      const { data, error } = await supabase.functions.invoke('generate-pdf-auto', {
+        body: { orderId }
+      });
+
+      if (error) {
+        console.error('❌ Edge function failed:', error);
+        return { data: null, error };
+      }
+
+      // Check for error response from edge function
+      if (data?.error) {
+        console.error('❌ PDF generation failed:', data.error, data.details);
+        return { data: null, error: new Error(data.error + (data.details ? `: ${data.details}` : '')) };
+      }
+
+      // Handle already completed case
+      if (data?.status === 'completed' && data?.pdfUrl) {
+        console.log('✅ PDF already exists:', data.pdfUrl);
+        onProgress?.('PDF already generated', 100);
+        return { data: { success: true, pdfUrl: data.pdfUrl }, error: null };
+      }
+
+      // Check for successful completion
+      if (!data?.success || !data?.pdfUrl) {
+        console.error('❌ Edge function returned unexpected response:', data);
+        return { data: null, error: new Error(data?.message || 'PDF generation failed - no URL returned') };
+      }
+
+      // Update order status
+      await supabase
+        .from('orders')
+        .update({ 
+          report_generation_status: 'completed',
+          report_auto_generated_at: new Date().toISOString()
+        })
+        .eq('id', orderId);
+
+      onProgress?.('Complete!', 100);
+      console.log('✅ PDF generation complete:', data.pdfUrl);
+      
+      return { 
+        data: { 
+          success: true, 
+          pdfUrl: data.pdfUrl,
+          storagePath: data.storagePath,
+          jobId: data.jobId 
+        }, 
+        error: null 
+      };
+    } catch (error) {
+      console.error('❌ PDF generation error:', error);
+      
+      // Mark job as failed
+      await supabase
+        .from('pdf_generation_queue')
+        .update({ 
+          status: 'failed',
+          error_message: error instanceof Error ? error.message : String(error)
+        })
+        .eq('order_id', orderId);
+      
+      return { 
+        data: null, 
+        error: error instanceof Error ? error : new Error('Failed to generate PDF')
+      };
+    }
+  }
+};
+
 // Add workflow helpers to database object
 Object.assign(database, {
   workflowVersions,
@@ -7604,7 +8708,9 @@ Object.assign(database, {
   testWorkflowMap,
   attachmentBatch,
   workflowAI,
-  aiAnalysis
+  aiAnalysis,
+  whatsappTemplates,
+  pdfQueue,
 });
 
 async function syncLabBrandingDefaultsForLab(

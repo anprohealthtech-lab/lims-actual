@@ -125,6 +125,39 @@ export class WhatsAppAPI {
     };
   }
 
+  // Force-reset a user's WhatsApp session (DELETE /api/users/:userId/whatsapp/session)
+  static async resetUserWhatsAppSession(): Promise<{ success: boolean; message?: string; error?: string; status?: number }> {
+    try {
+      const { userId } = await this.getCurrentUserSession();
+      if (!userId) {
+        return { success: false, message: 'User not authenticated' };
+      }
+
+      const url = new URL(`/api/users/${encodeURIComponent(userId)}/whatsapp/session`, WHATSAPP_API_BASE_URL);
+      const response = await fetch(url.toString(), {
+        method: 'DELETE',
+        headers: await buildHeaders({ 'Content-Type': 'application/json' }),
+      });
+
+      let data: any = null;
+      try {
+        data = await response.json();
+      } catch (e) {
+        // Non-JSON response; proceed with status only
+      }
+
+      return {
+        success: response.ok && (data?.success ?? true),
+        message: data?.message || (response.ok ? 'Session reset' : 'Failed to reset session'),
+        error: data?.error,
+        status: response.status,
+      };
+    } catch (error) {
+      console.error('Reset session error:', error);
+      return { success: false, error: String(error), message: 'Failed to reset session' };
+    }
+  }
+
   // Get WhatsApp session ID for current user
   static async getWhatsAppSessionId(): Promise<string | null> {
     try {
@@ -361,10 +394,20 @@ export class WhatsAppAPI {
         };
       }
 
+      const formattedPhone = this.formatPhoneNumber(phoneNumber);
+      if (!this.validatePhoneNumber(phoneNumber)) {
+        return {
+          success: false,
+          message: 'Invalid phone number format'
+        };
+      }
+      // For message sends, backend expects plain digits (no leading +)
+      const plainPhone = formattedPhone.startsWith('+') ? formattedPhone.substring(1) : formattedPhone;
+
       if (WHATSAPP_API_MODE === 'supabase-functions') {
         const { data, error } = await this.invokeFunction<MessageResult>('whatsapp-send-message', {
           labId,
-          phone: phoneNumber,
+          phone: plainPhone,
           message,
           templateData,
         });
@@ -376,7 +419,8 @@ export class WhatsAppAPI {
         const response = await fetch('/.netlify/functions/whatsapp-send-message', {
           method: 'POST',
           headers: await buildHeaders({ 'Content-Type': 'application/json' }),
-          body: JSON.stringify({ labId, userId, phone: phoneNumber, message, templateData })
+          // Netlify function expects `phoneNumber`, not `phone`
+          body: JSON.stringify({ labId, userId, phoneNumber: plainPhone, message, templateData })
         });
         const result = await response.json();
         return result;
@@ -386,7 +430,7 @@ export class WhatsAppAPI {
           headers: await buildHeaders({ 'Content-Type': 'application/json' }),
           body: JSON.stringify({
             labId,
-            to: phoneNumber,
+            to: plainPhone,
             message,
             templateData
           }),

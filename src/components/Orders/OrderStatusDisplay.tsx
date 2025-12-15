@@ -91,25 +91,11 @@ export const OrderStatusDisplay: React.FC<OrderStatusDisplayProps> = ({
   }
 
   return (
-    <div className="space-y-2">
-      <div className={`inline-flex items-center gap-2 px-3 py-2 text-sm font-semibold rounded-lg ${config.color}`}>
+    <div className="inline-flex items-center gap-1.5">
+      <div className={`inline-flex items-center gap-1.5 px-2 py-1 text-xs font-semibold rounded-lg ${config.color}`}>
         {config.icon}
         <span>{status}</span>
       </div>
-      
-      {showDetails && (
-        <div className="text-sm text-gray-600 space-y-1">
-          <p>{config.message}</p>
-          
-          {order.sample_collected_by && (
-            <p>Collected by: <span className="font-medium">{order.sample_collected_by}</span></p>
-          )}
-          
-          {order.sample_id && (
-            <p>Sample ID: <span className="font-mono text-xs">{order.sample_id}</span></p>
-          )}
-        </div>
-      )}
     </div>
   );
 };

@@ -114,11 +114,43 @@ const WhatsAppSendButton: React.FC<WhatsAppSendButtonProps> = ({
 
     try {
       const formattedPhone = formatPhoneNumber(phoneNumber);
+      
+      // Try to fetch default report_ready template for caption
+      let content = `Report for ${patientName || 'Patient'}`;
+      try {
+        const { database } = await import('../../utils/supabase');
+        const labId = await database.getCurrentUserLabId();
+        const { data: template } = await database.whatsappTemplates.getDefault('report_ready', labId);
+        
+        if (template) {
+          // Fetch lab details for placeholder
+          const { supabase: supabaseClient } = await import('../../utils/supabase');
+          const { data: labData } = await supabaseClient
+            .from('labs')
+            .select('name, address, phone, email')
+            .eq('id', labId!)
+            .single();
+          
+          const { replacePlaceholders } = await import('../../utils/whatsappTemplates');
+          content = replacePlaceholders(template.message_content, {
+            PatientName: patientName || 'Patient',
+            TestName: testName || 'Test',
+            ReportUrl: fileUrl,
+            LabName: labData?.name || '',
+            LabAddress: labData?.address || '',
+            LabContact: labData?.phone || '',
+            LabEmail: labData?.email || '',
+          });
+        }
+      } catch (err) {
+        console.error('Error fetching template:', err);
+      }
+      
       const result = await sendWhatsAppDocument(connectionStatus.sessionId, formattedPhone, fileUrl, {
         fileName: fileName || 'report.pdf',
         patientName,
         testName,
-        content: `Report for ${patientName || 'Patient'}`,
+        content,
       });
 
       if (result.success) {

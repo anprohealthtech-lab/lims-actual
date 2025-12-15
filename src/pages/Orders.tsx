@@ -76,6 +76,8 @@ type Panel = {
   entered: number;     // from view (clamped later)
   verified: boolean;
   status: ProgressRow["panel_status"];
+  isOutsourced?: boolean;
+  outsourcedLab?: string;
 };
 
 type CardOrder = {
@@ -379,13 +381,22 @@ const Orders: React.FC = () => {
     // 3) shape cards with new buckets
     const cards: CardOrder[] = orderRows.map((o) => {
       const rows = byOrder.get(o.id) || [];
-      const panels: Panel[] = rows.map((r) => ({
-        name: r.test_group_name || "Test",
-        expected: r.expected_analytes || 0,
-        entered: r.entered_analytes || 0,
-        verified: !!r.is_verified,
-        status: r.panel_status,
-      }));
+      const panels: Panel[] = rows.map((r) => {
+        // Check if this test group is outsourced
+        const outsourcedTest = o.order_tests?.find(ot => 
+          ot.test_group_id === r.test_group_id && ot.outsourced_lab_id
+        );
+
+        return {
+          name: r.test_group_name || "Test",
+          expected: r.expected_analytes || 0,
+          entered: r.entered_analytes || 0,
+          verified: !!r.is_verified,
+          status: r.panel_status,
+          isOutsourced: !!outsourcedTest,
+          outsourcedLab: outsourcedTest?.outsourced_labs?.name
+        };
+      });
 
       // Calculate totals correctly
       const expectedTotal = panels.reduce((sum, p) => sum + p.expected, 0);
@@ -925,7 +936,8 @@ const Orders: React.FC = () => {
                                     const progress = p.expected > 0 ? (p.entered / p.expected) * 100 : 0;
 
                                     // Modern minimalistic colors based on progress
-                                    const getMinimalColor = (percent: number) => {
+                                    const getMinimalColor = (percent: number, isOutsourced?: boolean) => {
+                                      if (isOutsourced) return "bg-purple-50 border-purple-200 text-purple-800";
                                       if (percent === 0) return "bg-gray-100 border-gray-300 text-gray-700";
                                       if (percent < 40) return "bg-red-50 border-red-200 text-red-800";
                                       if (percent < 70) return "bg-orange-50 border-orange-200 text-orange-800";
@@ -933,21 +945,35 @@ const Orders: React.FC = () => {
                                       return "bg-green-50 border-green-200 text-green-800";
                                     };
 
-                                    const colorClass = getMinimalColor(progress);
+                                    const colorClass = getMinimalColor(progress, p.isOutsourced);
 
                                     return (
                                       <div
                                         key={`${p.name}-${i}`}
                                         className={`border rounded-lg px-3 py-2 transition-all duration-300 ${colorClass}`}
                                       >
-                                        <div className="font-medium text-sm mb-1">{p.name}</div>
+                                        <div className="font-medium text-sm mb-1 flex items-center gap-1">
+                                          {p.isOutsourced && <span>🏥</span>}
+                                          {p.name}
+                                        </div>
                                         <div className="flex items-center justify-between text-xs">
-                                          <span className="font-mono">
-                                            {p.entered}/{p.expected} analytes
-                                          </span>
-                                          <span className="text-xs opacity-75">
-                                            {progress === 0 ? "Pending" : progress < 100 ? "Partial" : "Complete"}
-                                          </span>
+                                          {p.isOutsourced ? (
+                                            <>
+                                              <span className="font-medium">Outsourced</span>
+                                              <span className="text-xs opacity-75 truncate max-w-[80px]" title={p.outsourcedLab}>
+                                                {p.outsourcedLab || 'External Lab'}
+                                              </span>
+                                            </>
+                                          ) : (
+                                            <>
+                                              <span className="font-mono">
+                                                {p.entered}/{p.expected} analytes
+                                              </span>
+                                              <span className="text-xs opacity-75">
+                                                {progress === 0 ? "Pending" : progress < 100 ? "Partial" : "Complete"}
+                                              </span>
+                                            </>
+                                          )}
                                         </div>
                                       </div>
                                     );

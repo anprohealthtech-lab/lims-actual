@@ -24,6 +24,7 @@ import WorkflowDemo from './pages/WorkflowDemo';
 import OrderDetail from './pages/OrderDetail';
 import WhatsApp from './pages/WhatsApp';
 import WhatsAppUserSyncManager from './components/WhatsApp/WhatsAppUserSyncManager';
+import WhatsAppTemplates from './pages/WhatsAppTemplates';
 import { useWhatsAppAutoSync } from './hooks/useWhatsAppAutoSync';
 import { warmupPuppeteer } from './utils/pdfService';
 import { initializeNativePlatform, cleanupNativePlatform } from './utils/nativeInit';
@@ -52,6 +53,7 @@ import OutsourcedReportsConsole from './pages/OutsourcedReportsConsole';
 import OutsourcedReportsConsoleEnhanced from './pages/OutsourcedReportsConsoleEnhanced';
 import OutsourcedTestsQueue from './pages/OutsourcedTestsQueue';
 import OutsourcedLabsSettings from './pages/OutsourcedLabsSettings';
+import IntraLabTransitQueue from './pages/IntraLabTransitQueue';
 
 const AppRoutes: React.FC = () => {
   const { user, loading } = useAuth();
@@ -144,10 +146,12 @@ const AppRoutes: React.FC = () => {
                 {/* WhatsApp Integration */}
                 <Route path="/whatsapp" element={<WhatsApp />} />
                 <Route path="/whatsapp/sync" element={<WhatsAppUserSyncManager />} />
+                <Route path="/whatsapp/templates" element={<WhatsAppTemplates />} />
                 {/* Master Data Routes */}
                 <Route path="/outsourced-reports" element={<OutsourcedReportsConsoleEnhanced />} />
                 <Route path="/outsourced-reports-legacy" element={<OutsourcedReportsConsole />} />
                 <Route path="/outsourced-queue" element={<OutsourcedTestsQueue />} />
+                <Route path="/sample-transit" element={<IntraLabTransitQueue />} />
                 <Route path="/settings/outsourced-labs" element={<OutsourcedLabsSettings />} />
                 <Route path="/masters/doctors" element={<DoctorMaster />} />
                 <Route path="/masters/locations" element={<LocationMaster />} />

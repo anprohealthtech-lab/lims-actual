@@ -37,20 +37,113 @@ const QuickSendReport: React.FC<QuickSendReportProps> = ({
 }) => {
   const [isOpen, setIsOpen] = useState(false);
   const [phoneNumber, setPhoneNumber] = useState(() => normalizePhoneForInput(patientPhone));
-  const [message, setMessage] = useState(`Hello ${patientName || 'Patient'}, your ${testName || 'test'} report is ready. Please find it attached.`);
+  const [message, setMessage] = useState('');
   const [isSending, setIsSending] = useState(false);
   const [sendResult, setSendResult] = useState<MessageResult | null>(null);
   const [isCheckingConnection, setIsCheckingConnection] = useState(false);
   const [isConnected, setIsConnected] = useState(false);
+  const [templates, setTemplates] = useState<any[]>([]);
+  const [selectedTemplateId, setSelectedTemplateId] = useState<string>('default');
+  const [templatesLoaded, setTemplatesLoaded] = useState(false);
+
+  // Load templates when modal opens
+  React.useEffect(() => {
+    if (isOpen) {
+      const loadTemplates = async () => {
+        try {
+          console.log('Loading WhatsApp templates...');
+          const { database } = await import('../../utils/supabase');
+          const { data } = await database.whatsappTemplates.list(undefined, 'report_ready');
+          console.log('Templates loaded:', data);
+          
+          if (data && data.length > 0) {
+            setTemplates(data);
+            // Try to get default template
+            const defaultTemplate = data.find((t: any) => t.is_default);
+            console.log('Default template:', defaultTemplate);
+            
+            if (defaultTemplate) {
+              setSelectedTemplateId(defaultTemplate.id);
+              
+              // Fetch lab details for placeholder
+              const labId = await database.getCurrentUserLabId();
+              console.log('Lab ID:', labId);
+              
+              const { supabase } = await import('../../utils/supabase');
+              const { data: labData } = await supabase
+                .from('labs')
+                .select('name, address, phone, email')
+                .eq('id', labId!)
+                .single();
+              
+              console.log('Lab data:', labData);
+              
+              const { replacePlaceholders } = await import('../../utils/whatsappTemplates');
+              const templateData = {
+                PatientName: patientName || 'Patient',
+                TestName: testName || 'test',
+                ReportUrl: reportUrl || '',
+                LabName: labData?.name || '',
+                LabAddress: labData?.address || '',
+                LabContact: labData?.phone || '',
+                LabEmail: labData?.email || '',
+              };
+              console.log('Template data for replacement:', templateData);
+              console.log('Original template content:', defaultTemplate.message_content);
+              
+              const templatedMessage = replacePlaceholders(defaultTemplate.message_content, templateData);
+              console.log('Message after placeholder replacement:', templatedMessage);
+              
+              setMessage(templatedMessage);
+            } else {
+              // No default, use first template
+              setSelectedTemplateId(data[0].id);
+              const labId = await database.getCurrentUserLabId();
+              const { supabase } = await import('../../utils/supabase');
+              const { data: labData } = await supabase
+                .from('labs')
+                .select('name, address, phone, email')
+                .eq('id', labId!)
+                .single();
+              const { replacePlaceholders } = await import('../../utils/whatsappTemplates');
+              const templatedMessage = replacePlaceholders(data[0].message_content, {
+                PatientName: patientName || 'Patient',
+                TestName: testName || 'test',
+                ReportUrl: reportUrl || '',
+                LabName: labData?.name || '',
+                LabAddress: labData?.address || '',
+                LabContact: labData?.phone || '',
+                LabEmail: labData?.email || '',
+              });
+              setMessage(templatedMessage);
+            }
+            setTemplatesLoaded(true);
+          } else {
+            // No templates found, use fallback
+            setMessage(`Hello ${patientName || 'Patient'}, your ${testName || 'test'} report is ready. Please find it attached.`);
+            setTemplatesLoaded(true);
+          }
+        } catch (err) {
+          console.error('Error loading templates:', err);
+          // Fallback on error
+          setMessage(`Hello ${patientName || 'Patient'}, your ${testName || 'test'} report is ready. Please find it attached.`);
+          setTemplatesLoaded(true);
+        }
+      };
+      loadTemplates();
+    } else {
+      // Reset when modal closes
+      setTemplatesLoaded(false);
+    }
+  }, [isOpen, patientName, testName, reportUrl]);
 
   // Update form fields when props change
   React.useEffect(() => {
-    if (isOpen) {
+    if (isOpen && !templatesLoaded) {
       setPhoneNumber(normalizePhoneForInput(patientPhone));
-      setMessage(`Hello ${patientName || 'Patient'}, your ${testName || 'test'} report is ready. Please find it attached.`);
       setSendResult(null);
     }
-  }, [isOpen, patientPhone, patientName, testName]);
+  }, [isOpen, patientPhone, templatesLoaded]);
 
   // Prevent modal from closing due to viewport changes (e.g., dev console opening)
   React.useEffect(() => {
@@ -263,6 +356,56 @@ const QuickSendReport: React.FC<QuickSendReportProps> = ({
               {testName && <div>Test: {testName}</div>}
             </div>
           </div>
+
+          {/* Template Selector */}
+          {templates.length > 0 && (
+            <div className="mb-4">
+              <label className="block text-sm font-medium text-gray-700 mb-2">
+                Message Template
+              </label>
+              <select
+                value={selectedTemplateId}
+                onChange={async (e) => {
+                  setSelectedTemplateId(e.target.value);
+                  if (e.target.value === 'custom') {
+                    setMessage(`Hello ${patientName || 'Patient'}, your ${testName || 'test'} report is ready. Please find it attached.`);
+                  } else {
+                    const template = templates.find((t: any) => t.id === e.target.value);
+                    if (template) {
+                      const { database, supabase } = await import('../../utils/supabase');
+                      const labId = await database.getCurrentUserLabId();
+                      const { data: labData } = await supabase
+                        .from('labs')
+                        .select('name, address, phone, email')
+                        .eq('id', labId!)
+                        .single();
+                      
+                      const { replacePlaceholders } = await import('../../utils/whatsappTemplates');
+                      const templatedMessage = replacePlaceholders(template.message_content, {
+                        PatientName: patientName || 'Patient',
+                        TestName: testName || 'test',
+                        ReportUrl: reportUrl || '',
+                        LabName: labData?.name || '',
+                        LabAddress: labData?.address || '',
+                        LabContact: labData?.phone || '',
+                        LabEmail: labData?.email || '',
+                      });
+                      setMessage(templatedMessage);
+                    }
+                  }
+                }}
+                disabled={!isConnected}
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-500 disabled:opacity-50"
+              >
+                {templates.map((template: any) => (
+                  <option key={template.id} value={template.id}>
+                    {template.name} {template.is_default ? '(Default)' : ''}
+                  </option>
+                ))}
+                <option value="custom">Custom Message</option>
+              </select>
+            </div>
+          )}
 
           {/* Phone Number */}
           <div className="mb-4">

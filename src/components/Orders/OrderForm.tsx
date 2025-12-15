@@ -371,6 +371,14 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
         setPatients(patientsRes?.data ?? []);
         setTestGroups(testsRes?.data ?? []);
         setOutsourcedLabs(outsourcedLabsRes?.data ?? []);
+
+        // Auto-select user's primary location if no patient is pre-selected
+        if (!preSelectedPatientId) {
+          const primaryLocation = await database.getCurrentUserPrimaryLocation();
+          if (primaryLocation) {
+            setSelectedLocation(primaryLocation);
+          }
+        }
       } catch (err) {
         console.error('Error loading masters:', err);
       } finally {
@@ -756,6 +764,7 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
         patient_name: selectedPatient.name,
         referring_doctor_id: selectedDoctor || null,
         location_id: selectedLocation || null, // collection/origin
+        collected_at_location_id: selectedLocation || null, // for intra-lab transit tracking
         account_id: selectedAccount || null, // B2B bill-to
         payment_type: paymentType,
         priority,

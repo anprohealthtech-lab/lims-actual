@@ -16,51 +16,50 @@ exports.handler = async (event) => {
   try {
   const base = process.env.WHATSAPP_API_BASE_URL || process.env.VITE_WHATSAPP_API_BASE_URL || 'https://lionfish-app-nmodi.ondigitalocean.app';
     const body = event.body ? JSON.parse(event.body) : {};
-    const { sessionId, phoneNumber, message, userId, labId, to, ...rest } = body;
-    
-    // Support both new API format (sessionId/phoneNumber) and legacy format (userId/to)
-    const finalSessionId = sessionId || userId;
+    const { phoneNumber, message, userId, to, templateData, ...rest } = body;
+
+    // New endpoint expects userId + phoneNumber + message
+    const finalUserId = userId;
     const finalPhoneNumber = phoneNumber || to;
     const finalMessage = message || rest.content;
-    
-    if (!finalSessionId) {
-      return { statusCode: 400, headers: corsHeaders, body: JSON.stringify({ success: false, error: 'sessionId is required' }) };
+
+    if (!finalUserId) {
+      return { statusCode: 400, headers: corsHeaders, body: JSON.stringify({ success: false, error: 'userId is required' }) };
     }
-    
+
     if (!finalPhoneNumber) {
       return { statusCode: 400, headers: corsHeaders, body: JSON.stringify({ success: false, error: 'phoneNumber is required' }) };
     }
-    
+
     if (!finalMessage) {
       return { statusCode: 400, headers: corsHeaders, body: JSON.stringify({ success: false, error: 'message content is required' }) };
     }
 
-    // Use correct external API endpoint for messages
-    const apiUrl = `${base}/api/external/messages/send`;
+    const apiUrl = `${base}/api/external/messages/send-user`;
 
-    // Prepare headers with proper authentication (hardcoded like the sample)
     const API_KEY = 'whatsapp-lims-secure-api-key-2024';
     const headers = {
       'Content-Type': 'application/json',
-      'X-API-Key': API_KEY,  // Use capitalized header name as shown in curl examples
+      'X-API-Key': API_KEY,
     };
-    
+
     console.log('Using hardcoded API key for authentication');
-    
-    // Legacy authorization header support
+
     if (event.headers.authorization) {
       headers['Authorization'] = event.headers.authorization;
     }
 
-    // Send message using External API format
+    const payload = {
+      userId: finalUserId,
+      phoneNumber: finalPhoneNumber,
+      message: finalMessage,
+    };
+    if (templateData) payload.templateData = templateData;
+
     const upstream = await fetch(apiUrl, {
       method: 'POST',
       headers,
-      body: JSON.stringify({ 
-        sessionId: finalSessionId,
-        phoneNumber: finalPhoneNumber,
-        content: finalMessage  // Backend expects 'content', not 'message'
-      }),
+      body: JSON.stringify(payload),
     });
 
     const data = await upstream.json();

@@ -146,6 +146,50 @@ const Reports: React.FC = () => {
   // PDF generation hook
   const { isGenerating, stage, progress, generatePDF, regenerateWithSettings, resetState } = usePDFGeneration();
 
+  // PDF Queue Status tracking
+  const [pdfQueueStatus, setPdfQueueStatus] = useState<Map<string, any>>(new Map());
+  const [isPolling, setIsPolling] = useState(false);
+  const previousQueueStatusRef = React.useRef<Map<string, any>>(new Map());
+
+  // Poll PDF queue status for orders
+  const pollPDFQueueStatus = useCallback(async (orderIds: string[], shouldReloadOnComplete = true) => {
+    if (orderIds.length === 0) return;
+
+    try {
+      const statusMap = new Map<string, any>();
+      let hasNewlyCompleted = false;
+      
+      for (const orderId of orderIds) {
+        const { data: job } = await database.pdfQueue.getJobForOrder(orderId);
+        if (job) {
+          statusMap.set(orderId, job);
+          
+          // Check if this job just completed (was processing/pending, now completed)
+          const prevJob = previousQueueStatusRef.current.get(orderId);
+          if (job.status === 'completed' && prevJob && prevJob.status !== 'completed') {
+            console.log('🎉 Job just completed for order:', orderId);
+            hasNewlyCompleted = true;
+          }
+        }
+      }
+
+      // Update the ref for next comparison
+      previousQueueStatusRef.current = statusMap;
+      setPdfQueueStatus(statusMap);
+      
+      // If any job just completed, reload approved results to get updated report data
+      if (hasNewlyCompleted && shouldReloadOnComplete) {
+        console.log('🔄 Reloading approved results after job completion...');
+        // Small delay to ensure database has committed the report record
+        setTimeout(() => {
+          loadApprovedResults();
+        }, 500);
+      }
+    } catch (error) {
+      console.error('Error polling PDF queue status:', error);
+    }
+  }, []);
+
   // Load approved results
   const loadApprovedResults = useCallback(async () => {
     try {
@@ -271,17 +315,79 @@ const Reports: React.FC = () => {
         );
 
         setApprovedResults(enhancedData);
+        
+        // Poll PDF queue status for orders
+        const uniqueOrderIds = Array.from(new Set(enhancedData.map(r => r.order_id)));
+        await pollPDFQueueStatus(uniqueOrderIds);
       }
     } catch (err) {
       console.error('Error loading approved results:', err);
     } finally {
       setLoading(false);
     }
-  }, [dateFilter]);
+  }, [dateFilter, pollPDFQueueStatus]);
 
   useEffect(() => {
     loadApprovedResults();
   }, [loadApprovedResults]);
+
+  // Auto-trigger PDF generation for pending jobs
+  useEffect(() => {
+    if (approvedResults.length === 0) return;
+
+    // Find pending jobs that need auto-generation
+    const pendingJobs = Array.from(pdfQueueStatus.entries()).filter(
+      ([, job]) => job.status === 'pending'
+    );
+
+    // Auto-trigger generation for first pending job (one at a time)
+    if (pendingJobs.length > 0) {
+      const [orderId] = pendingJobs[0];
+      console.log('🤖 Auto-triggering PDF generation for:', orderId);
+      
+      // Trigger and poll when complete
+      database.pdfQueue.triggerGeneration(orderId).then(({ data, error }) => {
+        if (error) {
+          console.error('❌ Auto-generation failed:', error);
+        } else {
+          console.log('✅ PDF generation complete, refreshing status...', data);
+        }
+        // Always poll after generation attempt (success or fail)
+        const orderIds = Array.from(new Set(approvedResults.map(r => r.order_id)));
+        pollPDFQueueStatus(orderIds);
+        // Also reload results to get updated report info
+        loadApprovedResults();
+      });
+    }
+  }, [pdfQueueStatus, approvedResults, pollPDFQueueStatus, loadApprovedResults]);
+
+  // Poll PDF queue status every 2 seconds for active jobs
+  useEffect(() => {
+    if (approvedResults.length === 0) return;
+
+    // Check if there are active jobs that need polling
+    const hasActiveJobs = Array.from(pdfQueueStatus.values()).some(
+      job => job.status === 'pending' || job.status === 'processing'
+    );
+
+    // Only set up interval if there are active jobs
+    if (!hasActiveJobs) return;
+
+    const orderIds = Array.from(new Set(approvedResults.map(r => r.order_id)));
+
+    const interval = setInterval(() => {
+      // Double-check active jobs before each poll
+      const stillHasActiveJobs = Array.from(pdfQueueStatus.values()).some(
+        job => job.status === 'pending' || job.status === 'processing'
+      );
+      
+      if (stillHasActiveJobs) {
+        pollPDFQueueStatus(orderIds);
+      }
+    }, 2000); // Poll every 2 seconds for faster UI updates
+
+    return () => clearInterval(interval);
+  }, [approvedResults, pollPDFQueueStatus]); // Removed pdfQueueStatus from dependencies to prevent infinite loop
 
   // Transform and filter data
   const orderGroups: OrderGroup[] = useMemo(() => {
@@ -853,6 +959,145 @@ const Reports: React.FC = () => {
     );
   };
 
+  // Get PDF auto-generation status badge
+  const getPDFAutoGenBadge = (orderId: string) => {
+    const job = pdfQueueStatus.get(orderId);
+    
+    if (!job) return null;
+
+    switch (job.status) {
+      case 'pending':
+        return (
+          <div className="flex items-center space-x-2 px-3 py-1.5 bg-yellow-50 border border-yellow-200 rounded-md">
+            <Clock className="w-4 h-4 text-yellow-600 animate-pulse" />
+            <div className="flex flex-col">
+              <span className="text-xs font-medium text-yellow-800">Queued for Auto-Generation</span>
+              <button
+                onClick={async () => {
+                  try {
+                    const { data, error } = await database.pdfQueue.triggerGeneration(orderId);
+                    if (error) {
+                      console.error('Failed to trigger generation:', error);
+                    } else {
+                      console.log('✅ Generation complete:', data);
+                    }
+                    // Poll immediately after completion
+                    await pollPDFQueueStatus([orderId]);
+                    // Reload to get updated report info
+                    await loadApprovedResults();
+                  } catch (error) {
+                    console.error('Failed to trigger generation:', error);
+                    await pollPDFQueueStatus([orderId]);
+                  }
+                }}
+                className="text-xs text-yellow-700 hover:text-yellow-900 font-medium mt-1 text-left underline"
+              >
+                Generate Now
+              </button>
+            </div>
+          </div>
+        );
+      
+      case 'processing':
+        // Animated progress stages for better UX
+        const progressPercent = job.progress_percent || 0;
+        const progressStage = job.progress_stage || 'Initializing...';
+        
+        // Determine stage icon and color based on progress
+        const getStageInfo = (percent: number) => {
+          if (percent < 20) return { stage: 'Fetching data', icon: '📊' };
+          if (percent < 40) return { stage: 'Loading template', icon: '🎨' };
+          if (percent < 60) return { stage: 'Rendering HTML', icon: '🔧' };
+          if (percent < 80) return { stage: 'Generating PDF', icon: '📄' };
+          if (percent < 95) return { stage: 'Uploading', icon: '☁️' };
+          return { stage: 'Finalizing', icon: '✨' };
+        };
+        
+        const stageInfo = getStageInfo(progressPercent);
+        
+        return (
+          <div className="flex flex-col space-y-2 px-3 py-2 bg-gradient-to-r from-blue-50 to-indigo-50 border border-blue-200 rounded-lg shadow-sm">
+            {/* Header with animated spinner */}
+            <div className="flex items-center space-x-2">
+              <div className="relative">
+                <Loader2 className="w-5 h-5 text-blue-600 animate-spin" />
+                <div className="absolute inset-0 w-5 h-5 border-2 border-blue-200 rounded-full animate-ping opacity-20"></div>
+              </div>
+              <div className="flex flex-col flex-1">
+                <span className="text-xs font-semibold text-blue-800">Generating PDF...</span>
+                <span className="text-xs text-blue-600 flex items-center">
+                  <span className="mr-1">{stageInfo.icon}</span>
+                  {progressStage || stageInfo.stage}
+                </span>
+              </div>
+              <span className="text-sm font-bold text-blue-700">{progressPercent}%</span>
+            </div>
+            
+            {/* Animated progress bar */}
+            <div className="relative w-full h-2 bg-blue-100 rounded-full overflow-hidden">
+              {/* Background shimmer effect */}
+              <div className="absolute inset-0 bg-gradient-to-r from-transparent via-white/30 to-transparent animate-shimmer"></div>
+              {/* Actual progress */}
+              <div 
+                className="h-full bg-gradient-to-r from-blue-500 via-blue-600 to-indigo-500 rounded-full transition-all duration-500 ease-out relative overflow-hidden"
+                style={{ width: `${Math.max(progressPercent, 5)}%` }}
+              >
+                {/* Moving shine effect on progress bar */}
+                <div className="absolute inset-0 bg-gradient-to-r from-transparent via-white/40 to-transparent animate-shine"></div>
+              </div>
+            </div>
+            
+            {/* Helpful message */}
+            <p className="text-[10px] text-blue-500 italic animate-pulse">
+              {progressPercent < 50 
+                ? '⏳ Please wait, preparing your report...'
+                : progressPercent < 90 
+                  ? '🚀 Almost there, generating PDF...'
+                  : '✅ Finishing up, just a moment...'}
+            </p>
+          </div>
+        );
+      
+      case 'completed':
+        return (
+          <div className="flex items-center space-x-2 px-3 py-1.5 bg-green-50 border border-green-200 rounded-md">
+            <CheckCircle className="w-4 h-4 text-green-600" />
+            <div className="flex flex-col">
+              <span className="text-xs font-medium text-green-800">Auto-Generated</span>
+              <span className="text-xs text-green-600">PDF ready for download</span>
+            </div>
+          </div>
+        );
+      
+      case 'failed':
+        return (
+          <div className="flex items-center space-x-2 px-3 py-1.5 bg-red-50 border border-red-200 rounded-md">
+            <XCircle className="w-4 h-4 text-red-600" />
+            <div className="flex flex-col">
+              <span className="text-xs font-medium text-red-800">Generation Failed</span>
+              {job.error_message && (
+                <span className="text-xs text-red-600 truncate max-w-xs" title={job.error_message}>
+                  {job.error_message}
+                </span>
+              )}
+              <button
+                onClick={async () => {
+                  await database.pdfQueue.retryJob(job.id);
+                  await pollPDFQueueStatus([orderId]);
+                }}
+                className="text-xs text-red-700 hover:text-red-800 font-medium mt-1 text-left"
+              >
+                Retry Generation
+              </button>
+            </div>
+          </div>
+        );
+      
+      default:
+        return null;
+    }
+  };
+
   const LoadingSkeleton = () => (
     <div className="space-y-4">
       {[...Array(5)].map((_, i) => (
@@ -1313,14 +1558,19 @@ const Reports: React.FC = () => {
                       </div>
 
                       <div className="col-span-2">
-                        <div className="flex items-center space-x-2">
-                          <button
-                            className="flex items-center space-x-1 px-3 py-1.5 text-sm bg-blue-600 text-white rounded-md hover:bg-blue-700 transition-colors"
-                            onClick={() => handleView(group.order_id)}
-                          >
-                            <Eye className="w-4 h-4" />
-                            <span>View</span>
-                          </button>
+                        <div className="flex flex-col space-y-2">
+                          {/* PDF Auto-Generation Status */}
+                          {getPDFAutoGenBadge(group.order_id)}
+                          
+                          {/* Action Buttons */}
+                          <div className="flex items-center space-x-2">
+                            <button
+                              className="flex items-center space-x-1 px-3 py-1.5 text-sm bg-blue-600 text-white rounded-md hover:bg-blue-700 transition-colors"
+                              onClick={() => handleView(group.order_id)}
+                            >
+                              <Eye className="w-4 h-4" />
+                              <span>View</span>
+                            </button>
                           
                           {group.is_report_ready ? (
                             <>
@@ -1459,6 +1709,7 @@ const Reports: React.FC = () => {
                               <span>Draft</span>
                             </button>
                           )}
+                          </div>
                         </div>
                       </div>
                     </div>
@@ -1508,6 +1759,13 @@ const Reports: React.FC = () => {
                             </span>
                           </div>
                         </div>
+
+                        {/* PDF Auto-Generation Status Badge for Mobile */}
+                        {getPDFAutoGenBadge(group.order_id) && (
+                          <div className="mt-3">
+                            {getPDFAutoGenBadge(group.order_id)}
+                          </div>
+                        )}
 
                         <div className="flex space-x-2 mt-4 pt-4 border-t border-gray-200">
                           <button

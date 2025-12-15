@@ -236,7 +236,8 @@ BEGIN
       action,
       new_values,
       user_id,
-      user_email
+      user_email,
+      lab_id
     ) VALUES (
       'results',
       NEW.order_id,
@@ -246,10 +247,12 @@ BEGIN
         'pdf_url', NEW.pdf_url,
         'locked_at', NOW(),
         'locked_by', auth.uid(),
-        'reason', 'Report generated and PDF created'
+        'reason', 'Report generated and PDF created',
+        'lab_id', NEW.lab_id
       ),
       auth.uid(),
-      (SELECT email FROM auth.users WHERE id = auth.uid())
+      (SELECT email FROM auth.users WHERE id = auth.uid()),
+      NEW.lab_id
     );
   END IF;
   
