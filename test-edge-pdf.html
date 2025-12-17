@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Test Edge Function PDF Generation</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      max-width: 800px;
+      margin: 50px auto;
+      padding: 20px;
+    }
+    button {
+      background: #0b4aa2;
+      color: white;
+      border: none;
+      padding: 12px 24px;
+      font-size: 16px;
+      border-radius: 6px;
+      cursor: pointer;
+      margin: 10px 5px;
+    }
+    button:hover {
+      background: #083a7f;
+    }
+    button:disabled {
+      background: #ccc;
+      cursor: not-allowed;
+    }
+    #status {
+      margin-top: 20px;
+      padding: 15px;
+      border-radius: 6px;
+      background: #f0f0f0;
+    }
+    .success {
+      background: #d4edda !important;
+      color: #155724;
+    }
+    .error {
+      background: #f8d7da !important;
+      color: #721c24;
+    }
+    .loading {
+      background: #fff3cd !important;
+      color: #856404;
+    }
+    pre {
+      background: #f5f5f5;
+      padding: 10px;
+      border-radius: 4px;
+      overflow-x: auto;
+      font-size: 12px;
+    }
+    a {
+      color: #0b4aa2;
+      text-decoration: none;
+      font-weight: bold;
+    }
+    a:hover {
+      text-decoration: underline;
+    }
+  </style>
+</head>
+<body>
+  <h1>🧪 Test Edge Function PDF Generation</h1>
+  <p><strong>Order ID:</strong> b847e554-6b77-4ba2-aa51-7a0606002ab1</p>
+  
+  <div>
+    <button id="testBtn" onclick="testEdgeFunction()">🚀 Generate PDF via Edge Function</button>
+    <button onclick="clearStatus()">Clear</button>
+  </div>
+
+  <div id="status"></div>
+
+  <script>
+    const SUPABASE_URL = 'https://scqhzbkkradflywariem.supabase.co';
+    const ORDER_ID = 'b847e554-6b77-4ba2-aa51-7a0606002ab1';
+    
+    async function testEdgeFunction() {
+      const btn = document.getElementById('testBtn');
+      const status = document.getElementById('status');
+      
+      btn.disabled = true;
+      status.className = 'loading';
+      status.innerHTML = '<p>⏳ Calling Edge Function...</p>';
+      
+      try {
+        const startTime = Date.now();
+        
+        // Get anon key from your .env or hardcode it temporarily
+        const ANON_KEY = prompt('Enter your Supabase Anon Key:', 'your-anon-key-here');
+        
+        if (!ANON_KEY || ANON_KEY === 'your-anon-key-here') {
+          throw new Error('Please provide a valid Supabase Anon Key');
+        }
+        
+        status.innerHTML += '<p>📡 Sending request to Edge Function...</p>';
+        
+        const response = await fetch(`${SUPABASE_URL}/functions/v1/generate-pdf-auto`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${ANON_KEY}`,
+          },
+          body: JSON.stringify({
+            orderId: ORDER_ID,
+            isDraft: false
+          })
+        });
+        
+        const elapsed = Date.now() - startTime;
+        
+        if (!response.ok) {
+          const errorText = await response.text();
+          throw new Error(`HTTP ${response.status}: ${errorText}`);
+        }
+        
+        const result = await response.json();
+        
+        status.className = 'success';
+        status.innerHTML = `
+          <h3>✅ Success! (${elapsed}ms)</h3>
+          <p><strong>E-Copy PDF:</strong> <a href="${result.ecopyUrl}" target="_blank">Open PDF</a></p>
+          ${result.printUrl ? `<p><strong>Print PDF:</strong> <a href="${result.printUrl}" target="_blank">Open PDF</a></p>` : ''}
+          <p><strong>Status:</strong> ${result.status}</p>
+          <details>
+            <summary>View Full Response</summary>
+            <pre>${JSON.stringify(result, null, 2)}</pre>
+          </details>
+        `;
+        
+        console.log('Edge Function Response:', result);
+        
+      } catch (error) {
+        const elapsed = Date.now() - startTime;
+        status.className = 'error';
+        status.innerHTML = `
+          <h3>❌ Error (${elapsed}ms)</h3>
+          <p>${error.message}</p>
+          <pre>${error.stack || ''}</pre>
+        `;
+        console.error('Edge Function Error:', error);
+      } finally {
+        btn.disabled = false;
+      }
+    }
+    
+    function clearStatus() {
+      document.getElementById('status').innerHTML = '';
+      document.getElementById('status').className = '';
+    }
+    
+    // Auto-fill anon key if available in localStorage
+    window.addEventListener('load', () => {
+      const savedKey = localStorage.getItem('supabase_anon_key');
+      if (savedKey) {
+        console.log('💡 Anon key found in localStorage');
+      }
+    });
+  </script>
+</body>
+</html>
