@@ -42,6 +42,7 @@ import {
   createReportDataFromContext,
   selectTemplateForContext,
 } from '../utils/pdfService';
+import { convertToCustomDomain } from '../utils/storageUrlBuilder';
 import { quickViewPDF } from '../utils/pdfViewerService';
 import type { LabTemplateRecord, ReportData, LabBrandingHtmlDefaults } from '../utils/pdfService';
 import PDFProgressModal from '../components/PDFProgressModal';
@@ -1060,12 +1061,9 @@ const Reports: React.FC = () => {
       
       case 'completed':
         return (
-          <div className="flex items-center space-x-2 px-3 py-1.5 bg-green-50 border border-green-200 rounded-md">
-            <CheckCircle className="w-4 h-4 text-green-600" />
-            <div className="flex flex-col">
-              <span className="text-xs font-medium text-green-800">Auto-Generated</span>
-              <span className="text-xs text-green-600">PDF ready for download</span>
-            </div>
+          <div className="flex items-center space-x-2 px-2 py-1 bg-green-50 border border-green-200 rounded-md">
+            <CheckCircle className="w-3.5 h-3.5 text-green-600" />
+            <span className="text-xs font-medium text-green-800">Auto-Generated</span>
           </div>
         );
       
@@ -1670,11 +1668,14 @@ const Reports: React.FC = () => {
                                 const hasFinalReport = result?.has_final_report;
                                 const reportUrl = finalReport?.pdf_url;
                                 
+                                // Convert old Supabase URLs to custom domain format
+                                const customDomainReportUrl = reportUrl ? convertToCustomDomain(reportUrl) : reportUrl;
+                                
                                 // Show WhatsApp button if there's a final report (even without URL for now)
                                 if (hasFinalReport || finalReport) {
                                   return (
                                     <QuickSendReport
-                                      reportUrl={reportUrl || `#demo-report-${group.order_id}`}
+                                      reportUrl={customDomainReportUrl || `#demo-report-${group.order_id}`}
                                       reportName={`${group.patient_full_name} - ${group.test_names.join(', ')}`}
                                       patientName={group.patient_full_name}
                                       patientPhone={result?.phone}

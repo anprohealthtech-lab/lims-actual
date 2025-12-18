@@ -9,6 +9,23 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 }
 
+// Custom domain for reports storage (configured via Deno environment variable)
+const CUSTOM_REPORTS_DOMAIN = Deno.env.get('CUSTOM_STORAGE_DOMAIN') || '';
+
+/**
+ * Get public URL for storage file with custom domain support
+ */
+function getPublicStorageUrl(bucket: string, path: string): string {
+  if (bucket === 'reports' && CUSTOM_REPORTS_DOMAIN) {
+    const cleanPath = path.startsWith('/') ? path.slice(1) : path;
+    return `${CUSTOM_REPORTS_DOMAIN}/${cleanPath}`;
+  }
+  
+  // Fallback to Supabase default URL
+  const supabaseUrl = Deno.env.get('SUPABASE_URL') ?? '';
+  return `${supabaseUrl}/storage/v1/object/public/${bucket}/${path}`;
+}
+
 // ============================================================
 // SECTION: Configuration & Constants
 // ============================================================
@@ -239,7 +256,269 @@ const BASELINE_CSS = `
   break-before: page;
   page-break-before: always;
 }
+
+/* Section content (doctor-filled sections) */
+.section-content {
+  font-family: var(--report-font-family);
+  color: var(--report-text-color);
+  font-size: 14px;
+  line-height: 1.6;
+  margin: 0.75rem 0;
+  white-space: pre-wrap;
+  word-wrap: break-word;
+  position: relative;
+  z-index: 2;
+}
+
+.section-content p {
+  margin: 0.5rem 0;
+  color: var(--report-text-color);
+  line-height: 1.6;
+}
+
+.section-content p:first-child {
+  margin-top: 0;
+}
+
+.section-content p:last-child {
+  margin-bottom: 0;
+}
+
+.section-content strong,
+.section-content b {
+  font-weight: 600;
+  color: var(--report-heading-color);
+}
+
+.section-content em,
+.section-content i {
+  font-style: italic;
+}
 `
+
+// ============================================================
+// SECTION: Flag Determination System
+// ============================================================
+
+type FlagValue = 'normal' | 'high' | 'low' | 'critical_high' | 'critical_low' | 'abnormal' | null
+
+interface ParsedRange {
+  low: number | null
+  high: number | null
+  type: 'range' | 'less_than' | 'greater_than' | 'single' | 'none'
+}
+
+// Known normal text patterns
+const NORMAL_TEXT_PATTERNS = [
+  /^negative$/i,
+  /^non[\s-]?reactive$/i,
+  /^normal$/i,
+  /^nil$/i,
+  /^absent$/i,
+  /^not[\s-]?detected$/i,
+  /^nd$/i,
+  /^none[\s-]?seen$/i,
+  /^within[\s-]?normal[\s-]?limits$/i,
+  /^wnl$/i,
+  /^unremarkable$/i,
+  /^clear$/i,
+  /^no[\s-]?growth$/i,
+  /^sterile$/i
+]
+
+// Known abnormal text patterns
+const ABNORMAL_TEXT_PATTERNS = [
+  /^positive$/i,
+  /^reactive$/i,
+  /^detected$/i,
+  /^present$/i,
+  /^abnormal$/i,
+  /^growth$/i
+]
+
+// Semi-quantitative normal values
+const SEMI_QUANT_NORMAL = ['nil', 'negative', 'trace', '±', '+-', 'neg']
+const SEMI_QUANT_ABNORMAL_ORDER = ['1+', '+', '2+', '++', '3+', '+++', '4+', '++++']
+
+/**
+ * Parse reference range string into numeric bounds
+ */
+function parseReferenceRange(refRange: string | null | undefined): ParsedRange {
+  if (!refRange || typeof refRange !== 'string') {
+    return { low: null, high: null, type: 'none' }
+  }
+
+  const cleaned = refRange
+    .replace(/\([^)]*\)/g, '') // Remove parenthetical notes
+    .replace(/[a-zA-Z%\/]+/g, ' ') // Remove units
+    .replace(/,/g, '') // Remove commas
+    .trim()
+
+  // Pattern: "< X" or "≤ X"
+  const lessThanMatch = cleaned.match(/[<≤]\s*([\d.]+)/)
+  if (lessThanMatch) {
+    return { low: null, high: parseFloat(lessThanMatch[1]), type: 'less_than' }
+  }
+
+  // Pattern: "> X" or "≥ X"
+  const greaterThanMatch = cleaned.match(/[>≥]\s*([\d.]+)/)
+  if (greaterThanMatch) {
+    return { low: parseFloat(greaterThanMatch[1]), high: null, type: 'greater_than' }
+  }
+
+  // Pattern: "X - Y" or "X – Y" or "X to Y"
+  const rangeMatch = cleaned.match(/([\d.]+)\s*[-–—~to]+\s*([\d.]+)/i)
+  if (rangeMatch) {
+    const low = parseFloat(rangeMatch[1])
+    const high = parseFloat(rangeMatch[2])
+    return { low: Math.min(low, high), high: Math.max(low, high), type: 'range' }
+  }
+
+  // Single number
+  const singleMatch = cleaned.match(/^([\d.]+)$/)
+  if (singleMatch) {
+    return { low: null, high: parseFloat(singleMatch[1]), type: 'single' }
+  }
+
+  return { low: null, high: null, type: 'none' }
+}
+
+/**
+ * Extract numeric value from string
+ */
+function extractNumericValue(value: string | number | null | undefined): number | null {
+  if (value === null || value === undefined || value === '') return null
+  if (typeof value === 'number') return value
+  
+  const cleaned = String(value).replace(/[,<>≤≥]/g, '').trim()
+  const match = cleaned.match(/^-?([\d.]+)/)
+  if (match) {
+    const num = parseFloat(match[0])
+    return isNaN(num) ? null : num
+  }
+  return null
+}
+
+/**
+ * Detect value type
+ */
+function detectValueType(value: string): 'numeric' | 'qualitative' | 'semi_quantitative' | 'descriptive' {
+  const num = extractNumericValue(value)
+  if (num !== null) return 'numeric'
+  
+  const lower = value.toLowerCase().trim()
+  
+  if (/^[+-]+$/.test(value) || /^[1-4]\+$/.test(value) || lower === 'trace') {
+    return 'semi_quantitative'
+  }
+  
+  if (NORMAL_TEXT_PATTERNS.some(p => p.test(lower)) || 
+      ABNORMAL_TEXT_PATTERNS.some(p => p.test(lower))) {
+    return 'qualitative'
+  }
+  
+  if (value.split(/\s+/).length > 3) {
+    return 'descriptive'
+  }
+  
+  return 'qualitative'
+}
+
+/**
+ * Determine flag for a result value
+ */
+function determineFlag(
+  value: string | number | null | undefined,
+  referenceRange: string | null | undefined,
+  lowCritical?: string | number | null,
+  highCritical?: string | number | null,
+  patientGender?: string,
+  referenceRangeMale?: string | null,
+  referenceRangeFemale?: string | null,
+  expectedNormalValues?: string[]
+): { flag: FlagValue; displayFlag: string } {
+  if (value === null || value === undefined || value === '') {
+    return { flag: null, displayFlag: '' }
+  }
+
+  const strValue = String(value).trim()
+  const valueType = detectValueType(strValue)
+
+  // Get appropriate reference range based on gender
+  let effectiveRefRange = referenceRange
+  if (patientGender === 'Male' && referenceRangeMale) {
+    effectiveRefRange = referenceRangeMale
+  } else if (patientGender === 'Female' && referenceRangeFemale) {
+    effectiveRefRange = referenceRangeFemale
+  }
+
+  let flag: FlagValue = null
+
+  if (valueType === 'numeric') {
+    const numValue = extractNumericValue(strValue)
+    if (numValue !== null) {
+      const lowCrit = extractNumericValue(lowCritical)
+      const highCrit = extractNumericValue(highCritical)
+      const { low, high, type } = parseReferenceRange(effectiveRefRange)
+
+      // Critical checks first
+      if (highCrit !== null && numValue >= highCrit) {
+        flag = 'critical_high'
+      } else if (lowCrit !== null && numValue <= lowCrit) {
+        flag = 'critical_low'
+      } else if (type === 'range' && low !== null && high !== null) {
+        if (numValue < low) flag = 'low'
+        else if (numValue > high) flag = 'high'
+        else flag = 'normal'
+      } else if (type === 'less_than' && high !== null) {
+        flag = numValue > high ? 'high' : 'normal'
+      } else if (type === 'greater_than' && low !== null) {
+        flag = numValue < low ? 'low' : 'normal'
+      }
+    }
+  } else if (valueType === 'qualitative') {
+    const lower = strValue.toLowerCase()
+    
+    // Check expected normal values first
+    if (expectedNormalValues && expectedNormalValues.length > 0) {
+      const normalVals = expectedNormalValues.map(v => v.toLowerCase())
+      flag = normalVals.some(nv => lower === nv || lower.includes(nv)) ? 'normal' : 'abnormal'
+    } else {
+      // Pattern matching
+      if (NORMAL_TEXT_PATTERNS.some(p => p.test(lower))) {
+        flag = 'normal'
+      } else if (ABNORMAL_TEXT_PATTERNS.some(p => p.test(lower))) {
+        flag = 'abnormal'
+      }
+    }
+  } else if (valueType === 'semi_quantitative') {
+    const normalized = strValue.toLowerCase()
+    if (SEMI_QUANT_NORMAL.includes(normalized)) {
+      flag = 'normal'
+    } else {
+      const upperValue = strValue.toUpperCase()
+      if (SEMI_QUANT_ABNORMAL_ORDER.some(v => v === upperValue || v === strValue)) {
+        const index = SEMI_QUANT_ABNORMAL_ORDER.findIndex(v => v === upperValue || v === strValue)
+        flag = index >= 4 ? 'high' : 'abnormal'
+      }
+    }
+  }
+
+  // Convert to display string
+  const displayMap: Record<string, string> = {
+    'normal': '',
+    'high': 'H',
+    'low': 'L',
+    'critical_high': 'H*',
+    'critical_low': 'L*',
+    'abnormal': 'A'
+  }
+
+  return { 
+    flag, 
+    displayFlag: flag ? (displayMap[flag] || '') : '' 
+  }
+}
 
 // ============================================================
 // SECTION: Template Rendering (Simple Nunjucks-like)
@@ -299,13 +578,51 @@ function getNestedValue(obj: Record<string, any>, path: string): any {
  * Build PDF body HTML document (main content)
  */
 function buildPdfBodyDocument(bodyHtml: string, customCss: string): string {
+  // 🎨 PDF.co compatibility: Expand CSS custom properties (variables) to literal values
+  let normalizedCss = customCss
+  if (customCss) {
+    const cssVarMap = new Map<string, string>()
+    
+    // Extract :root variables
+    const rootMatch = customCss.match(/:root\s*\{([^}]+)\}/)
+    if (rootMatch) {
+      const rootBlock = rootMatch[1]
+      const varMatches = rootBlock.matchAll(/--([a-z-]+)\s*:\s*([^;]+);/g)
+      for (const match of varMatches) {
+        cssVarMap.set(`--${match[1]}`, match[2].trim())
+      }
+    }
+
+    // Replace var() references with actual values
+    if (cssVarMap.size > 0) {
+      normalizedCss = customCss.replace(/var\(--([a-z-]+)\)/g, (_, varName) => {
+        const value = cssVarMap.get(`--${varName}`)
+        return value || `var(--${varName})` // fallback to original if not found
+      })
+      
+      console.log('🎨 CSS Variables expanded for PDF.co:', {
+        variableCount: cssVarMap.size,
+        variables: Array.from(cssVarMap.keys()),
+      })
+    }
+  }
+  
+  // 🐛 Debug CSS inclusion
+  console.log('🎨 buildPdfBodyDocument CSS Debug:', {
+    hasBaselineCss: !!BASELINE_CSS,
+    baselineCssLength: BASELINE_CSS?.length || 0,
+    hasCustomCss: !!normalizedCss,
+    customCssLength: normalizedCss?.length || 0,
+    customCssPreview: normalizedCss?.substring(0, 100) || 'NONE',
+  })
+  
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <style id="lims-report-baseline">${BASELINE_CSS}</style>
-${customCss ? `<style id="lims-report-custom">${customCss}</style>` : ''}
+${normalizedCss ? `<style id="lims-report-custom">${normalizedCss}</style>` : ''}
 </head>
 <body>
 <div class="limsv2-report">
@@ -512,6 +829,90 @@ async function sendHtmlToPdfCo(
   }
   
   throw new Error('PDF.co API did not return a result URL or jobId')
+}
+
+// ============================================================
+// SECTION: Section Content Injection (PBS/Radiology findings, impressions)
+// ============================================================
+
+/**
+ * Fetch section content for a result and return as a map of placeholder_key -> final_content
+ */
+async function fetchSectionContent(
+  supabaseClient: any,
+  resultIds: string[]
+): Promise<Record<string, string>> {
+  if (!resultIds || resultIds.length === 0) return {}
+  
+  try {
+    const { data, error } = await supabaseClient
+      .from('result_section_content')
+      .select(`
+        final_content,
+        lab_template_sections!inner(
+          placeholder_key
+        )
+      `)
+      .in('result_id', resultIds)
+      .not('lab_template_sections.placeholder_key', 'is', null)
+    
+    if (error || !data) {
+      console.warn('Failed to fetch section content:', error?.message)
+      return {}
+    }
+    
+    // Build map of placeholder_key -> final_content
+    const sectionMap: Record<string, string> = {}
+    for (const item of data) {
+      const key = item.lab_template_sections?.placeholder_key
+      if (key && item.final_content) {
+        sectionMap[key] = item.final_content
+      }
+    }
+    
+    return sectionMap
+  } catch (err) {
+    console.warn('Error fetching section content:', err)
+    return {}
+  }
+}
+
+/**
+ * Inject section content into HTML by replacing {{section:key}} placeholders
+ */
+function injectSectionContent(html: string, sectionContent: Record<string, string>): string {
+  if (!html || Object.keys(sectionContent).length === 0) return html
+  
+  let resultHtml = html
+  for (const [key, content] of Object.entries(sectionContent)) {
+    if (!content) continue
+    
+    const placeholder = `{{section:${key}}}`
+    
+    // Preserve basic formatting: convert newlines to proper HTML paragraphs/breaks
+    // Content comes from doctor input (CKEditor), preserve formatting
+    const formattedContent = content
+      .trim()
+      .split(/\n\n+/)  // Split on double newlines (paragraph breaks)
+      .map(para => {
+        const cleanPara = para.trim()
+        if (!cleanPara) return ''
+        // Convert single newlines to <br/> within paragraphs
+        const withBreaks = cleanPara.replace(/\n/g, '<br/>')
+        return `<p>${withBreaks}</p>`
+      })
+      .filter(Boolean)
+      .join('')
+    
+    const wrappedContent = `<div class="section-content">${formattedContent}</div>`
+    
+    // Replace all occurrences (case-insensitive)
+    const regex = new RegExp(placeholder.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi')
+    resultHtml = resultHtml.replace(regex, wrappedContent)
+  }
+  
+  console.log(`📝 Injected ${Object.keys(sectionContent).length} section(s):`, Object.keys(sectionContent))
+  return resultHtml
 }
 
 // ============================================================
@@ -817,16 +1218,15 @@ async function uploadPdfToStorage(
     throw new Error(`Storage upload failed: ${uploadError.message}`)
   }
   
-  // Get public URL
-  const { data: urlData } = supabase.storage
-    .from('reports')
-    .getPublicUrl(storageFileName)
+  // Get public URL (using custom domain if configured)
+  const publicUrl = getPublicStorageUrl('reports', storageFileName);
   
-  console.log('✅ PDF uploaded to storage:', urlData.publicUrl)
+  console.log('✅ PDF uploaded to storage:', publicUrl)
+  console.log('📡 Using custom domain:', !!CUSTOM_REPORTS_DOMAIN)
   
   return {
     path: storageFileName,
-    publicUrl: urlData.publicUrl
+    publicUrl
   }
 }
 
@@ -873,29 +1273,112 @@ serve(async (req) => {
     }
 
     // ========================================
-    // Step 1: Get Job from Queue
+    // Step 1: Get or Create Job from Queue
     // ========================================
-    console.log('\n📋 Step 1: Fetching job from queue...')
-    const { data: job, error: jobError } = await supabaseClient
+    console.log('\n📋 Step 1: Fetching/creating job in queue...')
+    
+    // First, try to get existing job
+    let { data: job, error: jobError } = await supabaseClient
       .from('pdf_generation_queue')
       .select('*')
       .eq('order_id', orderId)
-      .single()
+      .maybeSingle()
 
-    if (jobError || !job) {
-      console.error('❌ Job not found:', jobError?.message)
-      return new Response(
-        JSON.stringify({ error: 'Job not found', details: jobError?.message }),
-        { status: 404, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-      )
+    // If no job exists, create one (for manual/direct Edge function calls)
+    if (!job) {
+      console.log('ℹ️ No queue entry found, fetching lab_id and creating entry...')
+      
+      // Get lab_id from the order
+      const { data: orderData, error: orderError } = await supabaseClient
+        .from('orders')
+        .select('lab_id')
+        .eq('id', orderId)
+        .single()
+      
+      if (orderError || !orderData?.lab_id) {
+        console.error('❌ Failed to fetch lab_id for order:', orderError?.message)
+        return new Response(
+          JSON.stringify({ error: 'Order not found or missing lab_id', details: orderError?.message }),
+          { status: 404, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+        )
+      }
+      
+      // Use upsert to handle race conditions (if trigger created entry simultaneously)
+      const { data: upsertData, error: upsertError } = await supabaseClient
+        .from('pdf_generation_queue')
+        .upsert({
+          order_id: orderId,
+          lab_id: orderData.lab_id,
+          status: 'pending',
+          priority: 5,
+          created_at: new Date().toISOString()
+        }, {
+          onConflict: 'order_id',
+          ignoreDuplicates: false
+        })
+        .select()
+        .single()
+      
+      if (upsertError) {
+        console.error('❌ Failed to upsert queue entry:', upsertError?.message)
+        return new Response(
+          JSON.stringify({ error: 'Failed to create/update queue entry', details: upsertError?.message }),
+          { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+        )
+      }
+      
+      job = upsertData
+      console.log('✅ Created/updated queue entry:', job.id, 'for lab:', orderData.lab_id)
     }
 
+    // If job exists but is completed, reset it to pending for regeneration
     if (job.status === 'completed') {
-      console.log('✅ Job already completed')
-      return new Response(
-        JSON.stringify({ message: 'Already completed', status: 'completed', pdfUrl: job.result_url }),
-        { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-      )
+      console.log('♻️ Job already completed, checking if PDF still exists...')
+      
+      // Check if the PDF still exists in reports table
+      const { data: existingReport, error: reportError } = await supabaseClient
+        .from('reports')
+        .select('id, ecopy_url, print_url, is_draft')
+        .eq('order_id', orderId)
+        .eq('is_draft', false)
+        .maybeSingle()
+      
+      if (existingReport && existingReport.ecopy_url) {
+        console.log('✅ Final PDF already exists in reports table, returning existing URL')
+        return new Response(
+          JSON.stringify({
+            success: true,
+            status: 'completed',
+            pdfUrl: existingReport.ecopy_url,
+            printPdfUrl: existingReport.print_url,
+            message: 'PDF already exists',
+            cached: true
+          }),
+          { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+        )
+      }
+      
+      // PDF doesn't exist, reset queue to regenerate
+      console.log('⚠️ PDF missing from reports table, regenerating...')
+      const { data: resetJob, error: resetError } = await supabaseClient
+        .from('pdf_generation_queue')
+        .update({
+          status: 'pending',
+          error_message: null,
+          retry_count: 0,
+          progress_stage: null,
+          progress_percent: 0
+        })
+        .eq('id', job.id)
+        .select()
+        .single()
+      
+      if (resetError) {
+        console.error('❌ Failed to reset job status:', resetError?.message)
+      } else {
+        job = resetJob
+        console.log('✅ Job reset to pending')
+      }
     }
     
     // Prevent duplicate processing - if already processing, return early
@@ -964,6 +1447,41 @@ serve(async (req) => {
       testGroupIds: context.testGroupIds || [],
       analyteNames: (context.analytes || []).slice(0, 3).map((a: any) => a.parameter || a.test_name || a.name || 'unknown')
     })
+    
+    // ========================================
+    // Step 3b: Enhance Analytes with Flag Determination
+    // ========================================
+    console.log('\n🏷️ Step 3b: Enhancing analytes with flag determination...')
+    const patientGender = context.patient?.gender || context.placeholderValues?.gender
+    
+    if (context.analytes && context.analytes.length > 0) {
+      context.analytes = context.analytes.map((analyte: any) => {
+        // If flag already exists and is valid, keep it
+        if (analyte.flag && analyte.flag.trim()) {
+          return analyte
+        }
+        
+        // Determine flag using comprehensive system
+        const { displayFlag } = determineFlag(
+          analyte.value,
+          analyte.reference_range,
+          analyte.low_critical,
+          analyte.high_critical,
+          patientGender,
+          analyte.reference_range_male,
+          analyte.reference_range_female,
+          analyte.expected_normal_values
+        )
+        
+        return {
+          ...analyte,
+          flag: displayFlag
+        }
+      })
+      
+      const flaggedCount = context.analytes.filter((a: any) => a.flag && a.flag.trim()).length
+      console.log(`✅ Flag determination complete: ${flaggedCount}/${context.analytes.length} analytes have flags`)
+    }
     
     await updateProgress(supabaseClient, job.id, 'Fetching lab template...', 15)
 
@@ -1098,6 +1616,24 @@ serve(async (req) => {
       .eq('include_in_report', true)
     
     console.log('✅ Attachments found:', attachments?.length || 0)
+    
+    // ========================================
+    // Step 7b: Get Section Content for Pre-defined Report Sections
+    // ========================================
+    console.log('\n📄 Step 7b: Fetching section content for placeholders...')
+    
+    // Get ALL result IDs for this order (not just ones with extras)
+    const { data: allResults } = await supabaseClient
+      .from('results')
+      .select('id')
+      .eq('order_id', orderId)
+    
+    const resultIds = (allResults || []).map((r: any) => r.id)
+    console.log(`📋 Found ${resultIds.length} result(s) for order`)
+    
+    // Fetch section content for all results
+    const sectionContent = await fetchSectionContent(supabaseClient, resultIds)
+    console.log('✅ Section content loaded:', Object.keys(sectionContent))
     
     await updateProgress(supabaseClient, job.id, 'Rendering HTML template...', 50)
 
@@ -1293,6 +1829,13 @@ serve(async (req) => {
       rawHtmlForPrint = bodyHtml // Save for print version
     }
 
+    // Inject section content ({{section:key}} placeholders)
+    if (Object.keys(sectionContent).length > 0) {
+      bodyHtml = injectSectionContent(bodyHtml, sectionContent)
+      rawHtmlForPrint = injectSectionContent(rawHtmlForPrint, sectionContent)
+      console.log('✅ Section content injected into bodyHtml and rawHtmlForPrint')
+    }
+
     // Inject watermark if enabled
     if (watermarkSettings.enabled && watermarkSettings.imageUrl) {
       const watermarkHtml = generateWatermarkHtml(watermarkSettings)
@@ -1366,8 +1909,19 @@ serve(async (req) => {
           showWatermark: false
         }
         const printRenderedHtml = renderTemplate(template.gjs_html, printTemplateContext)
-        printHtml = buildPdfBodyDocument(printRenderedHtml, template.gjs_css || '')
+        // Build print HTML WITHOUT gjs_css - pass empty string for clean print output
+        printHtml = buildPdfBodyDocument(printRenderedHtml, '')
+        console.log('✅ Built print HTML without gjs_css (clean print mode)')
+        
+        // Also inject section content for this fallback path
+        if (Object.keys(sectionContent).length > 0) {
+          printHtml = injectSectionContent(printHtml, sectionContent)
+          console.log('✅ Section content injected into print fallback HTML')
+        }
       }
+      
+      // Strip custom gjs_css from rawHtmlForPrint path (if it was included)
+      printHtml = printHtml.replace(/<style id="lims-report-custom">[\s\S]*?<\/style>/gi, '')
       
       // Inject report extras
       const printExtrasHtml = generateReportExtrasHtml(reportExtras)
@@ -1386,19 +1940,32 @@ serve(async (req) => {
       // Convert images to base64
       printHtml = await convertHtmlImagesToBase64(printHtml)
       
-      // Inject grayscale CSS
-      const grayscaleCss = `
-        <style>
+      // Inject print-optimized CSS (grayscale, simplified colors)
+      const printCss = `
+        <style id="lims-print-css">
+          /* Grayscale filter for clean B&W printing */
           html, body { -webkit-filter: grayscale(100%) !important; filter: grayscale(100%) !important; }
           * { -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; }
+          
+          /* Force black text */
           body, p, span, td, th, div, h1, h2, h3, h4, h5, h6 { color: #000 !important; }
+          
+          /* Neutralize colored backgrounds */
           .bg-blue-50, .bg-green-50, .bg-yellow-50, .bg-red-50,
           [class*="bg-blue"], [class*="bg-green"], [class*="bg-yellow"], [class*="bg-red"] { background-color: #f5f5f5 !important; }
+          
+          /* Neutralize colored text */
           .text-blue-600, .text-green-600, .text-red-600, .text-yellow-600,
           [class*="text-blue"], [class*="text-green"], [class*="text-red"], [class*="text-yellow"] { color: #333 !important; }
+          
+          /* Clean table styling for print */
+          table { border-collapse: collapse !important; }
+          td, th { border: 1px solid #ccc !important; padding: 4px 8px !important; }
         </style>
       `
-      printHtml = printHtml.replace('</head>', `${grayscaleCss}</head>`)
+      printHtml = printHtml.replace('</head>', `${printCss}</head>`)
+      console.log('✅ Print CSS injected (grayscale + clean styling)')
+      
       printHtmlPrepared = printHtml
     }
     

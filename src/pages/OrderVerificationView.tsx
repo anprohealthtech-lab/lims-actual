@@ -38,6 +38,7 @@ import {
   type VerifierSummaryResponse
 } from "../hooks/useAIResultIntelligence";
 import { supabase, database, aiAnalysis } from "../utils/supabase";
+import { runAIFlagAnalysis, analyzeAndSaveFlag } from "../utils/aiFlagAnalysis";
 import { generateAndSaveTrendCharts, saveClinicalSummary, toggleOrderSummaryInReport } from "../utils/reportExtrasService";
 import TrendGraphPanel from "../components/Results/TrendGraphPanel";
 
@@ -63,6 +64,10 @@ interface Analyte {
   unit: string;
   reference_range: string;
   flag: string | null;
+  flag_source?: 'rule' | 'ai' | 'manual' | null;
+  flag_confidence?: number | null;
+  ai_interpretation?: string | null;
+  ai_audit_status?: 'pending' | 'approved' | 'rejected' | null;
   verify_status: "pending" | "approved" | "rejected" | null;
   verify_note: string | null;
   verified_by: string | null;
@@ -252,7 +257,7 @@ const OrderVerificationView: React.FC<OrderVerificationViewProps> = ({ onBackToP
     const { data, error } = await supabase
       .from("result_values")
       .select(
-        "id,result_id,parameter,value,unit,reference_range,flag,verify_status,verify_note,verified_by,verified_at"
+        "id,result_id,parameter,value,unit,reference_range,flag,flag_source,flag_confidence,ai_interpretation,ai_audit_status,verify_status,verify_note,verified_by,verified_at"
       )
       .eq("result_id", resultId)
       .order("parameter", { ascending: true });
@@ -266,7 +271,7 @@ const OrderVerificationView: React.FC<OrderVerificationViewProps> = ({ onBackToP
     if (error && `${error.message}`.includes("verify_status")) {
       const fallback = await supabase
         .from("result_values")
-        .select("id,result_id,parameter,value,unit,reference_range,flag")
+        .select("id,result_id,parameter,value,unit,reference_range,flag,flag_source,flag_confidence,ai_interpretation")
         .eq("result_id", resultId)
         .order("parameter", { ascending: true });
 
@@ -279,6 +284,10 @@ const OrderVerificationView: React.FC<OrderVerificationViewProps> = ({ onBackToP
           unit: row.unit,
           reference_range: row.reference_range,
           flag: row.flag,
+          flag_source: row.flag_source,
+          flag_confidence: row.flag_confidence,
+          ai_interpretation: row.ai_interpretation,
+          ai_audit_status: null,
           verify_status: "pending",
           verify_note: null,
           verified_by: null,
@@ -461,7 +470,6 @@ const OrderVerificationView: React.FC<OrderVerificationViewProps> = ({ onBackToP
         });
       }
 
-      await supabase.rpc("finalize_panel", { p_result_id: panel.result_id });
       await loadPanels();
     } catch (err) {
       console.error("Failed to approve panel", err);
@@ -479,6 +487,44 @@ const OrderVerificationView: React.FC<OrderVerificationViewProps> = ({ onBackToP
       await approvePanel(panel, analytes);
     }
     setBulkProcessing(false);
+  };
+
+  // Run AI Flag Analysis for an entire order
+  const runOrderAIFlagAnalysis = async (orderId: string) => {
+    setBusyFor(`ai-flag-${orderId}`, true);
+    try {
+      const result = await runAIFlagAnalysis(orderId, {
+        applyToDatabase: true,
+        createAudit: true
+      });
+
+      // Refresh the analytes data after AI analysis
+      const order = groupByOrder.find(o => o.orderId === orderId);
+      if (order) {
+        for (const panel of order.panels) {
+          // Clear cache to force refresh
+          setRowsByResult(prev => {
+            const next = { ...prev };
+            delete next[panel.result_id];
+            return next;
+          });
+          // Reload analytes
+          await ensureAnalytesLoaded(panel.result_id);
+        }
+      }
+
+      // Show summary
+      const { flagsChanged, totalProcessed, errors } = result;
+      if (errors.length > 0) {
+        console.warn('Some flag analyses failed:', errors);
+      }
+      alert(`AI Flag Analysis Complete:\n- ${totalProcessed} results analyzed\n- ${flagsChanged} flags updated\n- ${errors.length} errors`);
+    } catch (err) {
+      console.error('Failed to run AI flag analysis:', err);
+      alert('Failed to run AI flag analysis. Check console for details.');
+    } finally {
+      setBusyFor(`ai-flag-${orderId}`, false);
+    }
   };
 
   const toggleOrderSelection = (orderId: string) => {
@@ -1110,6 +1156,19 @@ ${summary.urgent_findings.map(f => `• ${f}`).join('\n')}` : ''}
                             {generatingClinicalSummary[order.orderId] ? 'Generating...' : 'Clinical Summary'}
                           </button>
                           <button
+                            onClick={() => runOrderAIFlagAnalysis(order.orderId)}
+                            disabled={busy[`ai-flag-${order.orderId}`]}
+                            className={`inline-flex items-center px-4 py-2 rounded-xl bg-gradient-to-r from-violet-600 to-purple-600 text-white transition-all duration-200 ${busy[`ai-flag-${order.orderId}`] ? 'opacity-75 cursor-wait' : 'hover:from-violet-700 hover:to-purple-700 active:scale-95'}`}
+                            title="Run AI to analyze and determine flags for all results"
+                          >
+                            {busy[`ai-flag-${order.orderId}`] ? (
+                              <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                            ) : (
+                              <Zap className="h-4 w-4 mr-2" />
+                            )}
+                            {busy[`ai-flag-${order.orderId}`] ? 'Analyzing...' : 'AI Flags'}
+                          </button>
+                          <button
                             onClick={() => approveEntireOrder(order)}
                             disabled={bulkProcessing}
                             className="inline-flex items-center px-4 py-2 rounded-xl bg-gradient-to-r from-green-600 to-emerald-600 text-white disabled:opacity-50"
@@ -1216,9 +1275,34 @@ ${summary.urgent_findings.map(f => `• ${f}`).join('\n')}` : ''}
                                           <td className="px-4 py-4 text-sm text-gray-600">{analyte.reference_range}</td>
                                           <td className="px-4 py-4">
                                             {analyte.flag && (
-                                              <span className="inline-flex items-center px-2 py-1 text-xs rounded-full bg-red-100 text-red-800">
-                                                {analyte.flag}
-                                              </span>
+                                              <div className="flex flex-col gap-1">
+                                                <span className={`inline-flex items-center px-2 py-1 text-xs rounded-full ${
+                                                  analyte.flag === 'H' || analyte.flag === 'high' || analyte.flag === 'critical_high' 
+                                                    ? 'bg-red-100 text-red-800' 
+                                                    : analyte.flag === 'L' || analyte.flag === 'low' || analyte.flag === 'critical_low'
+                                                    ? 'bg-blue-100 text-blue-800'
+                                                    : analyte.flag === 'abnormal' || analyte.flag === 'Positive'
+                                                    ? 'bg-amber-100 text-amber-800'
+                                                    : 'bg-gray-100 text-gray-800'
+                                                }`}>
+                                                  {analyte.flag}
+                                                  {analyte.flag_source && (
+                                                    <span className="ml-1 opacity-60 text-[10px]">
+                                                      ({analyte.flag_source === 'ai' ? '🤖' : analyte.flag_source === 'rule' ? '📏' : '✋'})
+                                                    </span>
+                                                  )}
+                                                </span>
+                                                {analyte.flag_confidence && analyte.flag_confidence < 0.8 && (
+                                                  <span className="text-[10px] text-amber-600">
+                                                    ⚠️ Low confidence ({Math.round(analyte.flag_confidence * 100)}%)
+                                                  </span>
+                                                )}
+                                              </div>
+                                            )}
+                                            {analyte.ai_interpretation && (
+                                              <div className="mt-1 text-xs text-gray-500 italic max-w-[200px] truncate" title={analyte.ai_interpretation}>
+                                                {analyte.ai_interpretation}
+                                              </div>
                                             )}
                                           </td>
                                           <td className="px-4 py-4">

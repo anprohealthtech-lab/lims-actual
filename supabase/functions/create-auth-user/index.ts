@@ -96,15 +96,20 @@ Deno.serve(async (req: Request) => {
     const body = (await req.json()) as CreateAuthUserPayload;
     const { email, password, lab_id, name, role_id } = body;
 
+    console.log('[CREATE-AUTH-USER] Request:', { email, lab_id, name, role_id: role_id || 'auto' });
+
     if (!email) return bad("email is required");
     if (!lab_id) return bad("lab_id is required");
     if (!name) return bad("name is required");
 
     // Verify caller is admin of target lab
+    console.log('[CREATE-AUTH-USER] Verifying caller is admin of lab:', lab_id);
     await assertCallerIsAdminOfLab(supabaseUserClient, lab_id);
+    console.log('[CREATE-AUTH-USER] Admin verification passed');
 
     // Generate strong random password if not provided
     const finalPassword = password || (crypto.randomUUID() + "!Aa1");
+    console.log('[CREATE-AUTH-USER] Password:', password ? 'provided' : 'auto-generated');
 
     // Build user_metadata with lab context
     const user_metadata = {
@@ -115,16 +120,24 @@ Deno.serve(async (req: Request) => {
       created_at: new Date().toISOString(),
     };
 
-    // Create verified auth user via Admin API
+    console.log('[CREATE-AUTH-USER] Creating auth.users record with metadata:', user_metadata);
+
+    // Try creating auth user with minimal data first (to bypass potential trigger issues)
     const { data, error } = await supabaseAdmin.auth.admin.createUser({
       email,
       password: finalPassword,
       email_confirm: true, // Skip email verification - admin created
-      user_metadata,
+      user_metadata: {}, // Start with empty metadata to avoid trigger issues
       app_metadata: { providers: ["email"], provider: "email" },
     });
 
     if (error) {
+      console.error('[CREATE-AUTH-USER] ERROR: Auth user creation failed:', {
+        message: error.message,
+        status: error.status,
+        name: error.name,
+        details: JSON.stringify(error)
+      });
       // Check if user already exists
       if (error.message?.includes("already")) {
         return bad("User with this email already exists", 409);
@@ -134,43 +147,73 @@ Deno.serve(async (req: Request) => {
 
     const newUserId = data.user?.id;
     if (!newUserId) throw new Error("User creation returned no id");
+    
+    console.log('[CREATE-AUTH-USER] Auth user created with ID:', newUserId);
+
+    // Now update user metadata
+    try {
+      await supabaseAdmin.auth.admin.updateUserById(newUserId, {
+        user_metadata
+      });
+      console.log('[CREATE-AUTH-USER] User metadata updated successfully');
+    } catch (metaError) {
+      console.warn('[CREATE-AUTH-USER] WARNING: Failed to update metadata:', metaError);
+      // Don't fail the operation
+    }
 
     // Get default technician role ID
     let technicianRoleId: string | null = null;
     if (!role_id) {
-      const { data: roles } = await supabaseAdmin
+      console.log('[CREATE-AUTH-USER] Fetching default technician role...');
+      const { data: roles, error: roleError } = await supabaseAdmin
         .from("user_roles")
         .select("id")
         .eq("role_code", "technician")
         .single();
+      
+      if (roleError) {
+        console.warn('[CREATE-AUTH-USER] WARNING: Failed to fetch technician role:', roleError.message);
+      }
+      
       technicianRoleId = roles?.id || null;
+      console.log('[CREATE-AUTH-USER] Default role ID:', technicianRoleId || 'not found');
     }
 
-    // Create public.users record (fallback - webhook may not fire reliably)
+    const publicUserData = {
+      id: newUserId,
+      name,
+      email,
+      role: "Technician", // Use enum value directly
+      role_id: role_id || technicianRoleId,
+      status: "Active",
+      lab_id,
+      join_date: new Date().toISOString().split("T")[0],
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    };
+
+    console.log('[CREATE-AUTH-USER] Creating public.users record manually:', publicUserData);
+
+    // Create public.users record manually (trigger is unreliable)
     const { error: userError } = await supabaseAdmin
       .from("users")
-      .upsert({
-        id: newUserId,
-        name,
-        email,
-        role: "Technician", // Use enum value directly
-        role_id: role_id || technicianRoleId,
-        status: "Active",
-        lab_id,
-        join_date: new Date().toISOString().split("T")[0],
-        created_at: new Date().toISOString(),
-        updated_at: new Date().toISOString(),
-      }, { 
-        onConflict: "id"
-      });
+      .insert(publicUserData);
 
     if (userError) {
-      console.warn("Warning: Failed to create public.users record:", userError);
-      // Don't fail the entire operation, just warn
+      console.error('[CREATE-AUTH-USER] ERROR: Database error creating public.users:', {
+        message: userError.message,
+        details: userError.details,
+        hint: userError.hint,
+        code: userError.code
+      });
+      throw new Error(`Database error creating new user: ${userError.message}`);
     }
+    
+    console.log('[CREATE-AUTH-USER] SUCCESS: Public user record created');
 
-    // Note: public.users record should also be created by webhook trigger
-    // on_auth_user_created in public.handle_new_user()
+    // Note: Trigger may also create a record, but our manual insert handles it
+
+    console.log('[CREATE-AUTH-USER] SUCCESS: User creation completed successfully');
 
     return json({
       user_id: newUserId,
@@ -182,7 +225,8 @@ Deno.serve(async (req: Request) => {
     });
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
-    console.error("Error in create-auth-user:", msg);
+    console.error("[CREATE-AUTH-USER] ERROR:", msg);
+    console.error("[CREATE-AUTH-USER] Stack trace:", e instanceof Error ? e.stack : 'No stack trace');
     return bad(msg, 400);
   }
 });

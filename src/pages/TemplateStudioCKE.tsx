@@ -22,7 +22,7 @@ import { database, LabBrandingAsset, LabUserSignature } from '../utils/supabase'
 import { ensureReportRegions } from '../utils/reportTemplateRegions';
 import '../styles/report-baseline.css';
 
-type PlaceholderGroup = 'lab' | 'test' | 'patient' | 'branding' | 'signature';
+type PlaceholderGroup = 'lab' | 'test' | 'patient' | 'branding' | 'signature' | 'section';
 
 interface LabTemplateRecord {
   id: string;
@@ -75,6 +75,7 @@ type RawTestGroupAnalyte = {
 };
 
 const REQUIRED_PLACEHOLDERS: Record<string, string> = {
+  // Patient & Order (Critical)
   patientName: '{{patientName}}',
   patientAge: '{{patientAge}}',
   patientGender: '{{patientGender}}',
@@ -86,7 +87,10 @@ const REQUIRED_PLACEHOLDERS: Record<string, string> = {
   referringDoctorName: '{{referringDoctorName}}',
   reportDate: '{{reportDate}}',
   orderId: '{{orderId}}',
-  labName: '{{labName}}',
+  
+  // Approval/Signature (At least one required)
+  approverName: '{{approverName}}',
+  approverRole: '{{approverRole}}',
 };
 
 const PLACEHOLDER_REGEX = /{{\s*([^{}]+)\s*}}/g;
@@ -833,9 +837,39 @@ const TemplateStudioCKE: React.FC = () => {
     []
   );
 
+  // Section content placeholders (doctor-filled content)
+  const SECTION_PLACEHOLDER_OPTIONS: PlaceholderOption[] = useMemo(
+    () => [
+      { id: 'impression', label: 'Impression / Interpretation Summary', placeholder: '{{impression}}', group: 'section' },
+      { id: 'findings', label: 'Findings / Observations', placeholder: '{{findings}}', group: 'section' },
+      { id: 'conclusion', label: 'Conclusion', placeholder: '{{conclusion}}', group: 'section' },
+      { id: 'recommendation', label: 'Recommendation / Suggestions', placeholder: '{{recommendation}}', group: 'section' },
+      { id: 'clinical_history', label: 'Clinical History', placeholder: '{{clinical_history}}', group: 'section' },
+      { id: 'technique', label: 'Technique / Methodology', placeholder: '{{technique}}', group: 'section' },
+      { id: 'comments', label: 'Comments / Notes', placeholder: '{{comments}}', group: 'section' },
+    ],
+    []
+  );
+
+  // Signatory placeholders
+  const SIGNATORY_PLACEHOLDER_OPTIONS: PlaceholderOption[] = useMemo(
+    () => [
+      { id: 'approverSignature', label: 'Approver Signature Image', placeholder: '{{approverSignature}}', group: 'signature' },
+      { id: 'approverName', label: 'Approver Name (Signatory)', placeholder: '{{approverName}}', group: 'signature' },
+      { id: 'approvedByName', label: 'Approved By Name', placeholder: '{{approvedByName}}', group: 'signature' },
+      { id: 'approverRole', label: 'Approver Role/Title', placeholder: '{{approverRole}}', group: 'signature' },
+    ],
+    []
+  );
+
   const DEFAULT_PLACEHOLDER_OPTIONS: PlaceholderOption[] = useMemo(
-    () => [...LAB_META_PLACEHOLDER_OPTIONS, ...PATIENT_PLACEHOLDER_OPTIONS],
-    [LAB_META_PLACEHOLDER_OPTIONS, PATIENT_PLACEHOLDER_OPTIONS]
+    () => [
+      ...LAB_META_PLACEHOLDER_OPTIONS,
+      ...PATIENT_PLACEHOLDER_OPTIONS,
+      ...SECTION_PLACEHOLDER_OPTIONS,
+      ...SIGNATORY_PLACEHOLDER_OPTIONS,
+    ],
+    [LAB_META_PLACEHOLDER_OPTIONS, PATIENT_PLACEHOLDER_OPTIONS, SECTION_PLACEHOLDER_OPTIONS, SIGNATORY_PLACEHOLDER_OPTIONS]
   );
 
   const editorContainerRef = useRef<HTMLDivElement | null>(null);
@@ -1899,16 +1933,23 @@ const TemplateStudioCKE: React.FC = () => {
 
     const auditPlaceholderCatalog = Array.from(
       new Map(
-        availablePlaceholderCatalog.map((option) => [
-          option.placeholder,
-          {
-            placeholder: option.placeholder,
-            label: option.label,
-            group: option.group ?? 'lab',
-            unit: option.unit ?? null,
-            referenceRange: option.referenceRange ?? null,
-          },
-        ])
+        availablePlaceholderCatalog
+          .filter((option) => {
+            const group = option.group ?? 'lab';
+            // Only include patient, test, and signature groups
+            // Explicitly exclude branding (header/footer) and lab details
+            return ['patient', 'test', 'signature'].includes(group);
+          })
+          .map((option) => [
+            option.placeholder,
+            {
+              placeholder: option.placeholder,
+              label: option.label,
+              group: option.group ?? 'lab',
+              unit: option.unit ?? null,
+              referenceRange: option.referenceRange ?? null,
+            },
+          ])
       ).values()
     );
 
@@ -2329,15 +2370,7 @@ const TemplateStudioCKE: React.FC = () => {
           background: #f3f4f6;
           border-color: #9ca3af;
         }
-        /* Sticky action buttons bar */
-        .sticky-actions-bar {
-          position: sticky;
-          top: 0;
-          z-index: 1001;
-          background: white;
-          border-bottom: 1px solid #e5e7eb;
-          padding: 12px 24px;
-        }
+
       `}</style>
       <div className="shrink-0 border-b border-gray-200 bg-white px-6 py-4 w-full">
         <div className="flex flex-col gap-4">
@@ -2596,32 +2629,7 @@ const TemplateStudioCKE: React.FC = () => {
         )}
 
         <main className="flex-1 w-full overflow-x-auto overflow-y-auto px-6 py-6">
-          <div className="sticky-actions-bar">
-            <div className="flex flex-wrap items-center gap-2">
-              <button
-                type="button"
-                onClick={handleConvertToWatermark}
-                title="Select an image and click to send it to background as watermark"
-                className="inline-flex items-center gap-1 rounded-md border border-indigo-200 bg-indigo-50 px-3 py-1.5 text-xs font-medium text-indigo-700 transition hover:bg-indigo-100"
-              >
-                <svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 16V4m0 0L3 8m4-4l4 4m6 0v12m0 0l4-4m-4 4l-4-4" />
-                </svg>
-                Send to Background
-              </button>
-              <button
-                type="button"
-                onClick={handleAddImageOverlay}
-                title="Select an image and add text overlay on top of it"
-                className="inline-flex items-center gap-1 rounded-md border border-teal-200 bg-teal-50 px-3 py-1.5 text-xs font-medium text-teal-700 transition hover:bg-teal-100"
-              >
-                <svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 8h10M7 12h4m1 8l-4-4H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-3l-4 4z" />
-                </svg>
-                Add Text Overlay
-              </button>
-            </div>
-          </div>
+
 
           {saveError ? (
             <div className="mb-4 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">

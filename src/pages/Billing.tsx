@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { Plus, Search, DollarSign, FileText, Download, Eye, CreditCard, Calendar, TrendingUp, Clock as ClockIcon, Calculator, Building, RotateCcw } from 'lucide-react';
+import { Plus, Search, DollarSign, FileText, Download, Eye, CreditCard, Calendar, TrendingUp, Clock as ClockIcon, Calculator, Building, RotateCcw, File } from 'lucide-react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { generateAndDownloadReport, getLabTemplate, ReportData } from '../utils/pdfGenerator';
 import { database } from '../utils/supabase';
@@ -9,6 +9,8 @@ import CashReconciliation from '../components/Billing/CashReconciliation';
 import MonthlyAccountBilling from '../components/Billing/MonthlyAccountBilling';
 import RefundRequestModal from '../components/Billing/RefundRequestModal';
 import RefundApprovalConsole from '../components/Billing/RefundApprovalConsole';
+import InvoiceGenerationModal from '../components/Billing/InvoiceGenerationModal';
+import InvoiceGenerationModal from '../components/Billing/InvoiceGenerationModal';
 
 type DateRangePreset = 'custom' | 'today' | '7d' | '30d' | '90d' | 'all';
 type PendingScope = 'pending' | 'all';
@@ -76,6 +78,10 @@ const Billing: React.FC = () => {
   // State for refund modal
   const [showRefundModal, setShowRefundModal] = useState(false);
   const [invoiceForRefund, setInvoiceForRefund] = useState<Invoice | null>(null);
+
+  // State for PDF generation modal
+  const [showPdfModal, setShowPdfModal] = useState(false);
+  const [pdfInvoiceId, setPdfInvoiceId] = useState<string | null>(null);
 
   // Fetch invoices from Supabase on component mount
   useEffect(() => {
@@ -613,6 +619,16 @@ const Billing: React.FC = () => {
                             >
                               <Download className="h-4 w-4" />
                             </button>
+                            <button
+                              onClick={() => {
+                                setPdfInvoiceId(invoice.id);
+                                setShowPdfModal(true);
+                              }}
+                              className="text-purple-600 hover:text-purple-900 p-1 rounded"
+                              title="Generate PDF"
+                            >
+                              <File className="h-4 w-4" />
+                            </button>
                             {(invoice.payment_status !== 'Paid' && invoice.status !== 'Paid') && (
                               <button 
                                 onClick={() => handleOpenPaymentModal(invoice)}
@@ -964,6 +980,21 @@ const Billing: React.FC = () => {
           patientName={invoiceForRefund.patient_name || invoiceForRefund.patientName}
           invoiceItems={invoiceForRefund.invoice_items || []}
           onSuccess={() => fetchInvoices()}
+        />
+      )}
+
+      {/* PDF Generation Modal */}
+      {showPdfModal && pdfInvoiceId && (
+        <InvoiceGenerationModal
+          invoiceId={pdfInvoiceId}
+          onClose={() => {
+            setShowPdfModal(false);
+            setPdfInvoiceId(null);
+          }}
+          onSuccess={(pdfUrl) => {
+            console.log('PDF generated:', pdfUrl);
+            fetchInvoices(); // Refresh to show updated invoice with PDF
+          }}
         />
       )}
     </div>

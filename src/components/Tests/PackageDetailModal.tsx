@@ -33,7 +33,8 @@ interface PackageDetailModalProps {
 }
 
 const PackageDetailModal: React.FC<PackageDetailModalProps> = ({ package: pkg, testGroups, onClose, onEdit }) => {
-  const includedGroups = testGroups.filter(group => pkg.testGroupIds.includes(group.id));
+  const testGroupIds = pkg.testGroupIds || [];
+  const includedGroups = testGroups.filter(group => testGroupIds.includes(group.id));
   const originalPrice = includedGroups.reduce((sum, group) => sum + group.price, 0);
   const savings = originalPrice - pkg.price;
   const actualDiscount = originalPrice > 0 ? ((savings / originalPrice) * 100) : 0;

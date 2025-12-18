@@ -48,105 +48,72 @@ export const usePDFGeneration = () => {
     });
 
     try {
-      setState(prev => ({ ...prev, stage: 'Loading report context...', progress: 10 }));
+      setState(prev => ({ ...prev, stage: 'Calling Edge Function...', progress: 10 }));
 
-      const { data: context, error: contextError } = await database.reports.getTemplateContext(orderId);
-      if (contextError || !context) {
-        const message = contextError?.message || 'Failed to load report context';
-        throw new Error(message);
+      // Call the Edge Function directly (same as auto PDF generation)
+      const { data: authData } = await supabase.auth.getSession();
+      if (!authData?.session) {
+        throw new Error('Not authenticated');
       }
 
-      if (!Array.isArray(context.analytes) || context.analytes.length === 0) {
-        throw new Error('No test results found for this order');
-      }
+      setState(prev => ({ ...prev, stage: 'Generating PDF via Edge Function...', progress: 30 }));
 
-      const isDraft = forceDraft || context.meta?.allAnalytesApproved !== true;
-
-      setState(prev => ({
-        ...prev,
-        stage: isDraft ? 'Draft report – pending approvals...' : 'All panels approved.',
-        progress: 30,
-      }));
-
-      let selectedTemplate: LabTemplateRecord | null = null;
-      let allTemplates: LabTemplateRecord[] = [];
-      try {
-        const { data: templates, error: templateError } = await database.labTemplates.list();
-        if (templateError) {
-          console.warn('Unable to load lab templates for PDF generation:', templateError);
-        } else if (Array.isArray(templates) && templates.length > 0) {
-          allTemplates = templates as LabTemplateRecord[];
-          selectedTemplate = selectTemplateForContext(allTemplates, context);
+      const response = await supabase.functions.invoke('generate-pdf-auto', {
+        body: {
+          orderId,
+          isDraft: forceDraft
         }
-      } catch (templateFetchError) {
-        console.warn('Unexpected template fetch failure:', templateFetchError);
-      }
-
-      setState(prev => ({ ...prev, stage: 'Preparing report data...', progress: 55 }));
-
-      const reportData: ReportData = createReportDataFromContext(context, {
-        template: selectedTemplate,
-        isDraft,
       });
 
-      setState(prev => ({ ...prev, stage: 'Generating PDF...', progress: 75 }));
+      if (response.error) {
+        throw new Error(response.error.message || 'Edge Function failed');
+      }
 
-      // Use old service with direct PDF.co API for all reports (includes attachment support)
-      const pdfUrl = await generateAndSavePDFReportWithProgress(
-        orderId,
-        reportData,
-        (stage: string, progress?: number) => {
-          setState(prev => ({
-            ...prev,
-            stage,
-            progress: progress ?? prev.progress,
-          }));
-        },
-        isDraft,
-        allTemplates
-      );
+      const result = response.data;
+      
+      if (!result || !result.pdfUrl) {
+        throw new Error('No PDF URL returned from Edge Function');
+      }
 
-      if (pdfUrl) {
-        setState(prev => ({ ...prev, stage: 'Starting download...', progress: 95 }));
+      setState(prev => ({ ...prev, stage: 'PDF generated, downloading...', progress: 80 }));
+
+      // Download the E-Copy PDF (Edge function returns 'pdfUrl' for e-copy)
+      const pdfUrl = result.pdfUrl;
+      const fetchResponse = await fetch(pdfUrl);
+      
+      if (fetchResponse.ok) {
+        const blob = await fetchResponse.blob();
+        const downloadUrl = window.URL.createObjectURL(blob);
         
-        // Download the PDF
-        const safePatientName = reportData.patient.name || 'Patient';
-        const filename = `${safePatientName.replace(/\s+/g, '_')}_${orderId}${isDraft ? '_DRAFT' : ''}.pdf`;
-        const response = await fetch(pdfUrl);
-        if (response.ok) {
-          const blob = await response.blob();
-          const downloadUrl = window.URL.createObjectURL(blob);
-          
-          const link = document.createElement('a');
-          link.href = downloadUrl;
-          link.download = filename;
-          document.body.appendChild(link);
-          link.click();
-          document.body.removeChild(link);
-          window.URL.revokeObjectURL(downloadUrl);
-          
-          setState(prev => ({
-            ...prev,
-            stage: 'PDF downloaded successfully!',
-            progress: 100
-          }));
-          
-          // Auto-hide after 2 seconds on success
-          setTimeout(() => {
-            setState(prev => ({ ...prev, isGenerating: false }));
-          }, 2000);
-        } else {
-          throw new Error('Failed to download PDF');
-        }
-      } else {
+        // Get patient name from context for filename
+        const { data: context } = await database.reports.getTemplateContext(orderId);
+        const safePatientName = context?.patient?.name?.replace(/\s+/g, '_') || 'Patient';
+        const isDraft = result.status === 'draft';
+        const filename = `${safePatientName}_${orderId}${isDraft ? '_DRAFT' : ''}.pdf`;
+        
+        const link = document.createElement('a');
+        link.href = downloadUrl;
+        link.download = filename;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        window.URL.revokeObjectURL(downloadUrl);
+        
         setState(prev => ({
           ...prev,
-          stage: 'PDF generation failed',
-          progress: 0,
-          error: 'Failed to generate PDF'
+          stage: 'PDF downloaded successfully!',
+          progress: 100
         }));
+        
+        // Auto-hide after 2 seconds on success
+        setTimeout(() => {
+          setState(prev => ({ ...prev, isGenerating: false }));
+        }, 2000);
+      } else {
+        throw new Error('Failed to download PDF from URL');
       }
     } catch (error) {
+      console.error('Edge Function PDF generation failed:', error);
       setState(prev => ({
         ...prev,
         stage: 'PDF generation failed',

@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { X, Info, Briefcase } from 'lucide-react';
+import { X, Info, Briefcase, ChevronDown, ChevronRight } from 'lucide-react';
 import { database, supabase } from '../../utils/supabase';
 
 interface CreateInvoiceModalProps {
@@ -15,6 +15,9 @@ interface OrderTest {
   price: number;
   is_billed: boolean;
   invoice_id?: string;
+  package_id?: string; // If this test is part of a package
+  isPackageEntry?: boolean; // True if this is a package line item (📦)
+  isTestInPackage?: boolean; // True if this is an individual test inside a package
 }
 
 type DiscountSource = 'manual' | 'doctor' | 'location' | 'account';
@@ -38,6 +41,9 @@ const CreateInvoiceModal: React.FC<CreateInvoiceModalProps> = ({ orderId, onClos
   // NEW: Dual invoice system state
   const [invoiceType, setInvoiceType] = useState<'patient' | 'account'>('patient');
   const [billingPeriod, setBillingPeriod] = useState('');
+  
+  // Package display state - track which packages are expanded
+  const [expandedPackages, setExpandedPackages] = useState<Set<string>>(new Set());
 
   // Helpers: numeric coercion and currency formatting (null-safe)
   const toNum = (v: any, fallback = 0): number => {
@@ -75,19 +81,35 @@ const CreateInvoiceModal: React.FC<CreateInvoiceModalProps> = ({ orderId, onClos
         // Fallback to direct query if method doesn't exist
         supabase
           .from('order_tests')
-          .select('id, test_group_id, test_name, price, is_billed, invoice_id')
+          .select('id, test_group_id, test_name, price, is_billed, invoice_id, package_id')
           .eq('order_id', orderId)
           .eq('is_billed', false);
       
       if (testsError) throw testsError;
 
-      const normalizedTests: OrderTest[] = (orderTests || []).map((t: any) => ({
-        ...t,
-        // Ensure price is a finite number (DB numeric/decimal can come as string or null)
-        price: toNum(t.price),
-      }));
-      setTests(normalizedTests);
-      setSelectedTests(normalizedTests.map(t => t.id));
+      // Normalize tests and handle package pricing
+      // Tests that belong to a package (have package_id) but are NOT the package entry
+      // (have test_group_id) should have price = 0 since they're included in package price
+      const normalizedTests: OrderTest[] = (orderTests || []).map((t: any) => {
+        const isPackageEntry = t.test_name?.startsWith('📦') || (t.package_id && !t.test_group_id);
+        const isTestInPackage = t.package_id && t.test_group_id;
+        
+        return {
+          ...t,
+          // For tests inside a package, force price to 0 (included in package)
+          // Package entry keeps its price
+          price: isTestInPackage ? 0 : toNum(t.price),
+          isPackageEntry,
+          isTestInPackage,
+        };
+      });
+      
+      // Only show billable items (packages and standalone tests, NOT tests inside packages)
+      // Tests inside packages are shown under their parent package
+      const billableTests = normalizedTests.filter(t => !t.isTestInPackage);
+      
+      setTests(normalizedTests); // Keep all for reference
+      setSelectedTests(billableTests.map(t => t.id)); // Only select billable items
 
       // Default discounts (Account > Location > Doctor) — manual always wins when user applies
       await applyDefaultDiscounts(orderData, orderTests || []);
@@ -387,7 +409,11 @@ const CreateInvoiceModal: React.FC<CreateInvoiceModalProps> = ({ orderId, onClos
               <h3 className="font-medium">Unbilled Tests</h3>
               <div className="flex items-center gap-2">
                 <button
-                  onClick={() => setSelectedTests(tests.map(t => t.id))}
+                  onClick={() => {
+                    // Select all billable items (not tests inside packages)
+                    const billableIds = tests.filter(t => !t.isTestInPackage).map(t => t.id);
+                    setSelectedTests(billableIds);
+                  }}
                   className="text-sm text-blue-600 hover:text-blue-800"
                 >
                   Select All
@@ -404,80 +430,130 @@ const CreateInvoiceModal: React.FC<CreateInvoiceModalProps> = ({ orderId, onClos
           </div>
           
           <div className="max-h-64 overflow-y-auto">
-            {tests.map((test) => {
+            {/* Only show billable items (packages and standalone tests) */}
+            {tests.filter(t => !t.isTestInPackage).map((test) => {
               const isSelected = selectedTests.includes(test.id);
+              const isPackage = test.isPackageEntry;
+              
+              // Get tests included in this package
+              const includedTests = isPackage 
+                ? tests.filter(t => t.package_id === test.package_id && t.isTestInPackage)
+                : [];
+              const isExpanded = expandedPackages.has(test.id);
               const discount = discounts[test.id];
               const lineTotal = calcLineTotal(test);
               
               return (
-                <div
-                  key={test.id}
-                  className={`border-b p-4 ${isSelected ? 'bg-blue-50' : 'bg-white'} hover:bg-gray-50`}
-                >
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-3">
-                      <input
-                        type="checkbox"
-                        checked={isSelected}
-                        onChange={(e) => {
-                          if (e.target.checked) {
-                            setSelectedTests(prev => [...prev, test.id]);
-                          } else {
-                            setSelectedTests(prev => prev.filter(id => id !== test.id));
-                          }
-                        }}
-                        className="rounded"
-                      />
-                      <div>
-                        <div className="font-medium">{test.test_name}</div>
-                        <div className="text-sm text-gray-500">Test ID: {test.id.slice(0, 8)}</div>
+                <div key={test.id} className="border-b">
+                  <div className={`p-4 ${isSelected ? 'bg-blue-50' : 'bg-white'} hover:bg-gray-50`}>
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-3">
+                        <input
+                          type="checkbox"
+                          checked={isSelected}
+                          onChange={(e) => {
+                            if (e.target.checked) {
+                              setSelectedTests(prev => [...prev, test.id]);
+                            } else {
+                              setSelectedTests(prev => prev.filter(id => id !== test.id));
+                            }
+                          }}
+                          className="rounded"
+                        />
+                        <div>
+                          <div className="font-medium flex items-center gap-2">
+                            {isPackage && (
+                              <span className="px-1.5 py-0.5 bg-purple-100 text-purple-800 text-xs rounded">Package</span>
+                            )}
+                            {test.test_name.replace('📦 ', '')}
+                          </div>
+                          <div className="text-sm text-gray-500">Test ID: {test.id.slice(0, 8)}</div>
+                        </div>
+                      </div>
+                      
+                      <div className="flex items-center gap-4">
+                        {/* Show included tests toggle for packages */}
+                        {isPackage && includedTests.length > 0 && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setExpandedPackages(prev => {
+                                const next = new Set(prev);
+                                if (next.has(test.id)) {
+                                  next.delete(test.id);
+                                } else {
+                                  next.add(test.id);
+                                }
+                                return next;
+                              });
+                            }}
+                            className="flex items-center gap-1 text-sm text-purple-600 hover:text-purple-800"
+                          >
+                            {isExpanded ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
+                            {includedTests.length} tests included
+                          </button>
+                        )}
+                        
+                        <div className="text-right">
+                          <div className="font-bold text-lg">₹{money(lineTotal)}</div>
+                          {discount && (
+                            <div className="text-sm text-green-600">
+                              -{discount.type === 'percent' ? `${discount.value}%` : `₹${discount.value}`} ({discount.source})
+                            </div>
+                          )}
+                          {discount && <div className="text-sm text-gray-500">Original: ₹{money(test.price)}</div>}
+                        </div>
                       </div>
                     </div>
                     
-                    <div className="text-right">
-                      <div className="font-bold">₹{money(lineTotal)}</div>
-                      {discount && (
-                        <div className="text-sm text-green-600">
-                          -{discount.type === 'percent' ? `${discount.value}%` : `₹${discount.value}`} ({discount.source})
+                    {/* Expanded: Show included tests */}
+                    {isPackage && isExpanded && includedTests.length > 0 && (
+                      <div className="mt-3 ml-8 p-3 bg-purple-50 rounded-lg border border-purple-100">
+                        <div className="text-xs font-medium text-purple-700 mb-2">Included in this package:</div>
+                        <div className="space-y-1">
+                          {includedTests.map((incTest) => (
+                            <div key={incTest.id} className="flex items-center justify-between text-sm">
+                              <span className="text-gray-700">• {incTest.test_name}</span>
+                              <span className="text-purple-600 font-medium">Included</span>
+                            </div>
+                          ))}
                         </div>
-                      )}
-                      <div className="text-sm text-gray-500">Original: ₹{money(test.price)}</div>
-                    </div>
-                  </div>
-                  
-                  {/* Discount Controls */}
-                  {isSelected && (
-                    <div className="mt-3 pt-3 border-t bg-gray-50 rounded p-3">
-                      <div className="grid grid-cols-4 gap-3 items-end">
-                        <div>
-                          <label className="block text-xs text-gray-600 mb-1">Discount Type</label>
-                          <select
-                            value={discount?.type || 'percent'}
-                            onChange={(e) => {
-                              const type = e.target.value as 'percent' | 'flat';
-                              handleDiscountChange(test.id, type, discount?.value || 0, discount?.reason || 'Manual discount');
-                            }}
-                            className="w-full px-2 py-1 text-sm border rounded"
-                          >
-                            <option value="percent">Percentage</option>
-                            <option value="flat">Fixed Amount</option>
-                          </select>
-                        </div>
-                        <div>
-                          <label className="block text-xs text-gray-600 mb-1">Value</label>
-                          <input
-                            type="number"
-                            min="0"
-                            max={discount?.type === 'percent' ? 100 : test.price}
-                            step={discount?.type === 'percent' ? 1 : 0.01}
-                            value={discount?.value || 0}
-                            onChange={(e) => {
-                              const value = parseFloat(e.target.value) || 0;
-                              handleDiscountChange(test.id, discount?.type || 'percent', value, discount?.reason || 'Manual discount');
-                            }}
-                            className="w-full px-2 py-1 text-sm border rounded"
-                          />
-                        </div>
+                      </div>
+                    )}
+                    
+                    {/* Discount Controls */}
+                    {isSelected && (
+                      <div className="mt-3 pt-3 border-t bg-gray-50 rounded p-3">
+                        <div className="grid grid-cols-4 gap-3 items-end">
+                          <div>
+                            <label className="block text-xs text-gray-600 mb-1">Discount Type</label>
+                            <select
+                              value={discount?.type || 'percent'}
+                              onChange={(e) => {
+                                const type = e.target.value as 'percent' | 'flat';
+                                handleDiscountChange(test.id, type, discount?.value || 0, discount?.reason || 'Manual discount');
+                              }}
+                              className="w-full px-2 py-1 text-sm border rounded"
+                            >
+                              <option value="percent">Percentage</option>
+                              <option value="flat">Fixed Amount</option>
+                            </select>
+                          </div>
+                          <div>
+                            <label className="block text-xs text-gray-600 mb-1">Value</label>
+                            <input
+                              type="number"
+                              min="0"
+                              max={discount?.type === 'percent' ? 100 : test.price}
+                              step={discount?.type === 'percent' ? 1 : 0.01}
+                              value={discount?.value || 0}
+                              onChange={(e) => {
+                                const value = parseFloat(e.target.value) || 0;
+                                handleDiscountChange(test.id, discount?.type || 'percent', value, discount?.reason || 'Manual discount');
+                              }}
+                              className="w-full px-2 py-1 text-sm border rounded"
+                            />
+                          </div>
                         <div className="col-span-2">
                           <label className="block text-xs text-gray-600 mb-1">Reason</label>
                           <input
@@ -494,6 +570,7 @@ const CreateInvoiceModal: React.FC<CreateInvoiceModalProps> = ({ orderId, onClos
                     </div>
                   )}
                 </div>
+              </div>
               );
             })}
           </div>

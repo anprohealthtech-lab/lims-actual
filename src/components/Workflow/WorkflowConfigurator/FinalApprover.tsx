@@ -32,6 +32,7 @@ const FinalApprover: React.FC<FinalApproverProps> = ({
   const [publishResults, setPublishResults] = useState(true);
   const [processing, setProcessing] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [successMessage, setSuccessMessage] = useState<string | null>(null);
 
   const summary = useMemo(() => {
     const technicianSummary = contextualizedData?.technician_flow_final?.pages?.length ?? 0;
@@ -98,9 +99,17 @@ const FinalApprover: React.FC<FinalApproverProps> = ({
         publishedWorkflowId: publishPayload?.workflow_id ?? null,
         finalMetadata: publishPayload,
       });
+      
+      // Show success message
+      setSuccessMessage('Workflow published successfully! Redirecting...');
+      
+      // Auto-scroll to top to show success message
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+      
     } catch (error: any) {
       console.error('Workflow approval failed:', error);
       setErrorMessage(error?.message || 'Workflow approval failed.');
+      window.scrollTo({ top: 0, behavior: 'smooth' });
     } finally {
       setProcessing(false);
     }
@@ -116,6 +125,12 @@ const FinalApprover: React.FC<FinalApproverProps> = ({
       {errorMessage && (
         <div className="bg-red-50 text-red-700 border border-red-200 rounded-md px-4 py-3 mb-6 text-sm">
           {errorMessage}
+        </div>
+      )}
+
+      {successMessage && (
+        <div className="bg-emerald-50 text-emerald-700 border border-emerald-200 rounded-md px-4 py-3 mb-6 text-sm font-medium">
+          ✓ {successMessage}
         </div>
       )}
 
@@ -185,18 +200,23 @@ const FinalApprover: React.FC<FinalApproverProps> = ({
           type="button"
           className="px-4 py-2 border border-gray-300 rounded-md hover:bg-gray-50"
           onClick={onBack}
+          disabled={processing || !!successMessage}
         >
           Back
         </button>
         <button
           type="button"
           onClick={handleApprove}
-          disabled={processing}
+          disabled={processing || !!successMessage}
           className={`px-4 py-2 rounded-md font-medium ${
-            processing ? 'bg-gray-200 text-gray-500 cursor-not-allowed' : 'bg-emerald-600 text-white hover:bg-emerald-700'
+            successMessage
+              ? 'bg-emerald-500 text-white cursor-default'
+              : processing
+              ? 'bg-gray-200 text-gray-500 cursor-not-allowed'
+              : 'bg-emerald-600 text-white hover:bg-emerald-700'
           }`}
         >
-          {processing ? 'Publishing…' : 'Approve & Publish'}
+          {successMessage ? '✓ Published' : processing ? 'Publishing…' : 'Approve & Publish'}
         </button>
       </div>
     </div>

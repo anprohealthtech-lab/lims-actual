@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState, useCallback } from "react";
 import ReactDOM from "react-dom";
 import {
   Search,
@@ -32,7 +32,8 @@ import {
   Sparkles,
   ClipboardList,
   Stethoscope,
-  Mail
+  Mail,
+  Calculator
 } from "lucide-react";
 import { supabase, database } from "../utils/supabase";
 import AttachmentSelector from "../components/Reports/AttachmentSelector";
@@ -41,6 +42,8 @@ import { useAIResultIntelligence, type VerifierSummaryResponse, type ClinicalSum
 import { generateAndSaveTrendCharts, saveClinicalSummary } from "../utils/reportExtrasService";
 import TrendGraphPanel from "../components/Results/TrendGraphPanel";
 import AIResultSuggestionCard from "../components/Results/AIResultSuggestionCard";
+import SectionEditor from "../components/Results/SectionEditor";
+import { useCalculatedParameters } from "../hooks/useCalculatedParameters";
 
 /* =========================================
    Types
@@ -73,6 +76,10 @@ type Analyte = {
   verify_note: string | null;
   verified_by: string | null;
   verified_at: string | null;
+  // Calculated parameter fields
+  is_auto_calculated?: boolean;
+  calculation_inputs?: Record<string, number>;
+  calculated_at?: string;
 };
 
 type TrendData = {
@@ -531,6 +538,9 @@ const ResultVerificationConsole: React.FC = () => {
           "verify_note",
           "verified_by",
           "verified_at",
+          "is_auto_calculated",
+          "calculation_inputs",
+          "calculated_at",
         ].join(",")
       )
       .eq("result_id", result_id)
@@ -543,7 +553,7 @@ const ResultVerificationConsole: React.FC = () => {
       if (String(error.message || "").includes("column") && String(error.message).includes("verify_status")) {
         const { data: data2, error: e2 } = await supabase
           .from("result_values")
-          .select("id,result_id,analyte_id,parameter,value,unit,reference_range,flag")
+          .select("id,result_id,analyte_id,parameter,value,unit,reference_range,flag,is_auto_calculated,calculation_inputs,calculated_at")
           .eq("result_id", result_id)
           .order("parameter", { ascending: true });
 
@@ -561,6 +571,9 @@ const ResultVerificationConsole: React.FC = () => {
             verify_note: null,
             verified_by: null,
             verified_at: null,
+            is_auto_calculated: r.is_auto_calculated,
+            calculation_inputs: r.calculation_inputs,
+            calculated_at: r.calculated_at,
           })) as Analyte[];
           setRowsByResult((s) => ({ ...s, [result_id]: mapped }));
         }
@@ -854,8 +867,6 @@ const ResultVerificationConsole: React.FC = () => {
           // Don't block the approval - extras are optional
         }
 
-        // Finalize the panel
-        await supabase.rpc('finalize_panel', { p_result_id: row.result_id });
         await loadPanels();
       }
     } finally {
@@ -1016,10 +1027,19 @@ const ResultVerificationConsole: React.FC = () => {
 
     return (
       <>
-        <tr className="hover:bg-blue-50 transition-colors">
+        <tr className={`hover:bg-blue-50 transition-colors ${a.is_auto_calculated ? 'bg-amber-50/50' : ''}`}>
           <td className="px-4 py-4">
             <div className="flex items-center space-x-2">
               <div className="font-semibold text-gray-900">{a.parameter}</div>
+              {a.is_auto_calculated && (
+                <span 
+                  className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-amber-100 text-amber-800 border border-amber-200"
+                  title={a.calculation_inputs ? `Calculated from: ${Object.entries(a.calculation_inputs).map(([k, v]) => `${k}=${v}`).join(', ')}` : 'Auto-calculated value'}
+                >
+                  <Calculator className="h-3 w-3 mr-1" />
+                  Calc
+                </span>
+              )}
               <button
                 onClick={() => loadTrendData(patientId, a.parameter)}
                 disabled={loadingTrend}
@@ -1610,6 +1630,19 @@ const ResultVerificationConsole: React.FC = () => {
                 }}
               />
             </div>
+
+            {/* Report Sections Editor (PBS/Radiology findings, impressions, etc.) */}
+            {row.test_group_id && (
+              <div className="mt-6">
+                <SectionEditor
+                  resultId={row.result_id}
+                  testGroupId={row.test_group_id}
+                  onSave={() => {
+                    console.log('Section content saved for result:', row.result_id);
+                  }}
+                />
+              </div>
+            )}
           </div>
         )}
       </div>

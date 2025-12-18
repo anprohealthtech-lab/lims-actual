@@ -10,6 +10,7 @@ import {
   AlertTriangle
 } from 'lucide-react';
 import { WhatsAppAPI, MessageResult } from '../../utils/whatsappAPI';
+import { convertToCustomDomain } from '../../utils/storageUrlBuilder';
 
 const normalizePhoneForInput = (value?: string): string => {
   if (!value) return '';
@@ -35,6 +36,9 @@ const QuickSendReport: React.FC<QuickSendReportProps> = ({
   testName = '',
   onSent
 }) => {
+  // Convert old Supabase URLs to custom domain format
+  const customDomainReportUrl = reportUrl ? convertToCustomDomain(reportUrl) : reportUrl;
+  
   const [isOpen, setIsOpen] = useState(false);
   const [phoneNumber, setPhoneNumber] = useState(() => normalizePhoneForInput(patientPhone));
   const [message, setMessage] = useState('');
@@ -82,7 +86,7 @@ const QuickSendReport: React.FC<QuickSendReportProps> = ({
               const templateData = {
                 PatientName: patientName || 'Patient',
                 TestName: testName || 'test',
-                ReportUrl: reportUrl || '',
+                ReportUrl: customDomainReportUrl || '',
                 LabName: labData?.name || '',
                 LabAddress: labData?.address || '',
                 LabContact: labData?.phone || '',
@@ -109,7 +113,7 @@ const QuickSendReport: React.FC<QuickSendReportProps> = ({
               const templatedMessage = replacePlaceholders(data[0].message_content, {
                 PatientName: patientName || 'Patient',
                 TestName: testName || 'test',
-                ReportUrl: reportUrl || '',
+                ReportUrl: customDomainReportUrl || '',
                 LabName: labData?.name || '',
                 LabAddress: labData?.address || '',
                 LabContact: labData?.phone || '',
@@ -231,9 +235,62 @@ const QuickSendReport: React.FC<QuickSendReportProps> = ({
     try {
       const formattedPhone = WhatsAppAPI.formatPhoneNumber(phoneNumber);
       
+      // Check connection status before sending
+      const connection = await WhatsAppAPI.getConnectionStatus();
+      
+      if (!connection?.success || !connection.isConnected) {
+        console.log('⚠️ WhatsApp not connected, using manual fallback...');
+        
+        // Import the fallback utility
+        const { openWhatsAppManually, buildMessageWithReportLink } = await import('../../utils/whatsappUtils');
+        
+        // Build message with report link embedded
+        const messageWithLink = customDomainReportUrl 
+          ? buildMessageWithReportLink(message, customDomainReportUrl, 'patient')
+          : message;
+        
+        // Open WhatsApp manually
+        const { success, method } = await openWhatsAppManually(
+          phoneNumber,
+          messageWithLink,
+          customDomainReportUrl,
+          'patient'
+        );
+        
+        if (success && method === 'manual_link') {
+          setSendResult({
+            success: true,
+            message: 'WhatsApp opened. Please send the message manually.',
+            method: 'manual_link'
+          });
+          
+          // Close modal after showing success
+          setTimeout(() => {
+            setIsOpen(false);
+          }, 2000);
+          
+          if (onSent) {
+            onSent({
+              success: true,
+              message: 'Manual link opened',
+              method: 'manual_link'
+            });
+          }
+        } else {
+          setSendResult({
+            success: false,
+            message: 'User cancelled manual send'
+          });
+        }
+        
+        setIsSending(false);
+        return;
+      }
+      
+      // Connected - use normal backend send
       const result = await WhatsAppAPI.sendReportFromUrl(
         formattedPhone,
-        reportUrl!,
+        customDomainReportUrl!,
         message,
         patientName,
         testName
@@ -423,8 +480,7 @@ const QuickSendReport: React.FC<QuickSendReportProps> = ({
                 onChange={(e) => handlePhoneNumberChange(e.target.value)}
                 placeholder="9876543210"
                 maxLength={10}
-                disabled={!isConnected}
-                className="w-full pl-12 pr-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-500 disabled:opacity-50"
+                className="w-full pl-12 pr-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-500"
               />
             </div>
             {phoneNumber && !WhatsAppAPI.validatePhoneNumber(phoneNumber) && (
@@ -444,8 +500,7 @@ const QuickSendReport: React.FC<QuickSendReportProps> = ({
               onChange={(e) => setMessage(e.target.value)}
               placeholder="Enter your message..."
               rows={3}
-              disabled={!isConnected}
-              className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-500 disabled:opacity-50"
+              className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-500"
             />
           </div>
 
@@ -488,7 +543,7 @@ const QuickSendReport: React.FC<QuickSendReportProps> = ({
             </button>
             <button
               onClick={handleSend}
-              disabled={isSending || !isConnected || !phoneNumber || !message.trim()}
+              disabled={isSending || !phoneNumber || !message.trim()}
               className="inline-flex items-center px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed"
             >
               {isSending ? (

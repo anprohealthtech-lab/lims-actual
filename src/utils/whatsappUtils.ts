@@ -1,6 +1,8 @@
 // WhatsApp Manual Link Utilities
 // Generates platform-specific WhatsApp links for manual sending when backend is not connected
 
+import { convertToCustomDomain } from './storageUrlBuilder';
+
 export interface WhatsAppLinkOptions {
   phoneNumber: string;
   message: string;
@@ -102,6 +104,9 @@ export function buildMessageWithReportLink(
   reportUrl: string,
   recipientType: 'patient' | 'doctor'
 ): string {
+  // Convert old Supabase URLs to custom domain format
+  const customDomainUrl = convertToCustomDomain(reportUrl);
+  
   // Remove any trailing "Thank you." to append link before it
   let message = baseMessage.trim();
   const thankYouMatch = message.match(/\n*Thank you\.?\s*$/i);
@@ -112,9 +117,9 @@ export function buildMessageWithReportLink(
   
   // Add report link
   if (recipientType === 'patient') {
-    message += `\n\n📎 Download Report:\n${reportUrl}`;
+    message += `\n\n📎 Download Report:\n${customDomainUrl}`;
   } else {
-    message += `\n\n📎 Report Link:\n${reportUrl}`;
+    message += `\n\n📎 Report Link:\n${customDomainUrl}`;
   }
   
   // Add back thank you

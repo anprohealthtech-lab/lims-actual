@@ -641,8 +641,97 @@ const Orders: React.FC = () => {
         console.log('Updated TRF attachment to link to order:', order.id);
       }
 
-      // Refresh the orders list
-      await fetchOrders();
+      // ✅ OPTIMIZED: Instead of re-fetching all orders, fetch only the new order with required data
+      const lab_id = await database.getCurrentUserLabId();
+      if (lab_id) {
+        const { data: newOrderData, error: fetchError } = await supabase
+          .from("orders")
+          .select(`
+            id, patient_id, patient_name, status, priority, order_date, expected_date, total_amount, doctor,
+            order_number, sample_id, color_code, color_name, sample_collected_at, sample_collected_by,
+            patients(name, age, gender),
+            order_tests(id, test_group_id, test_name, outsourced_lab_id, outsourced_labs(name))
+          `)
+          .eq('id', order.id)
+          .eq('lab_id', lab_id)
+          .single();
+
+        if (!fetchError && newOrderData) {
+          // Transform the new order into CardOrder format
+          const orderRow = newOrderData as OrderRow;
+          
+          // Fetch progress for this order only
+          const { data: prog } = await supabase
+            .from("v_order_test_progress")
+            .select("*")
+            .eq("order_id", order.id);
+
+          const rows = (prog || []) as ProgressRow[];
+          const panels: Panel[] = rows.map((r) => {
+            const outsourcedTest = orderRow.order_tests?.find(ot => 
+              ot.test_group_id === r.test_group_id && ot.outsourced_lab_id
+            );
+
+            return {
+              name: r.test_group_name || "Test",
+              expected: r.expected_analytes || 0,
+              entered: r.entered_analytes || 0,
+              verified: !!r.is_verified,
+              status: r.panel_status,
+              isOutsourced: !!outsourcedTest,
+              outsourcedLab: outsourcedTest?.outsourced_labs?.name
+            };
+          });
+
+          const expectedTotal = panels.reduce((sum, p) => sum + p.expected, 0);
+          const enteredTotal = panels.reduce((sum, p) => sum + Math.min(p.entered, p.expected), 0);
+          const approvedAnalytes = panels.reduce((sum, p) => {
+            if (p.verified || p.status === "Verified") {
+              return sum + Math.min(p.entered, p.expected);
+            }
+            return sum;
+          }, 0);
+          const pendingAnalytes = Math.max(expectedTotal - enteredTotal, 0);
+          const forApprovalAnalytes = Math.max(enteredTotal - approvedAnalytes, 0);
+
+          const newCardOrder: CardOrder = {
+            id: orderRow.id,
+            patient_name: orderRow.patient_name,
+            patient_id: orderRow.patient_id,
+            status: orderRow.status,
+            priority: orderRow.priority,
+            order_date: orderRow.order_date,
+            expected_date: orderRow.expected_date,
+            total_amount: orderRow.total_amount,
+            doctor: orderRow.doctor,
+            order_number: orderRow.order_number ?? null,
+            sample_id: orderRow.sample_id,
+            color_code: orderRow.color_code,
+            color_name: orderRow.color_name,
+            sample_collected_at: orderRow.sample_collected_at,
+            sample_collected_by: orderRow.sample_collected_by,
+            patient: orderRow.patients,
+            tests: (orderRow.order_tests || []).map((t) => t.test_name),
+            order_tests: orderRow.order_tests || [],
+            panels,
+            expectedTotal,
+            enteredTotal,
+            pendingAnalytes,
+            forApprovalAnalytes,
+            approvedAnalytes,
+          };
+
+          // Add new order to the beginning of the orders array
+          setOrders(prev => [newCardOrder, ...prev]);
+          console.log('✅ Added new order to list without full re-fetch');
+        } else {
+          console.warn('Failed to fetch new order data, falling back to full refresh');
+          await fetchOrders();
+        }
+      } else {
+        // Fallback to full refresh if no lab_id
+        await fetchOrders();
+      }
 
       // Close the form
       setShowOrderForm(false);

@@ -74,11 +74,11 @@ ALTER TABLE lab_template_sections ENABLE ROW LEVEL SECURITY;
 
 CREATE POLICY "Users can view sections for their lab" ON lab_template_sections
   FOR SELECT TO authenticated
-  USING (lab_id IN (SELECT lab_id FROM users WHERE auth_id = auth.uid()));
+  USING (lab_id IN (SELECT lab_id FROM users WHERE id = auth.uid()));
 
 CREATE POLICY "Users can manage sections for their lab" ON lab_template_sections
   FOR ALL TO authenticated
-  USING (lab_id IN (SELECT lab_id FROM users WHERE auth_id = auth.uid()));
+  USING (lab_id IN (SELECT lab_id FROM users WHERE id = auth.uid()));
 
 -- RLS Policies for result_section_content
 ALTER TABLE result_section_content ENABLE ROW LEVEL SECURITY;
@@ -87,14 +87,14 @@ CREATE POLICY "Users can view section content for their lab" ON result_section_c
   FOR SELECT TO authenticated
   USING (result_id IN (
     SELECT r.id FROM results r 
-    WHERE r.lab_id IN (SELECT lab_id FROM users WHERE auth_id = auth.uid())
+    WHERE r.lab_id IN (SELECT lab_id FROM users WHERE id = auth.uid())
   ));
 
 CREATE POLICY "Users can manage section content for their lab" ON result_section_content
   FOR ALL TO authenticated
   USING (result_id IN (
     SELECT r.id FROM results r 
-    WHERE r.lab_id IN (SELECT lab_id FROM users WHERE auth_id = auth.uid())
+    WHERE r.lab_id IN (SELECT lab_id FROM users WHERE id = auth.uid())
   ));
 
 -- Prevent editing finalized section content

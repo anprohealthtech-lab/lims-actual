@@ -10,14 +10,26 @@ You receive:
 - testGroup: optional object with test group name and analyte array (each analyte has name, unit, reference_range, flag support, etc.).
 - availablePlaceholders: array of placeholder descriptors that authors can insert (each includes placeholder token, label, group, unit, referenceRange).
 
+IMPORTANT: Only audit placeholders from these groups: "patient", "test", "signature", "section". 
+DO NOT audit placeholders from these groups: "header", "footer", "lab", "branding". These are optional styling elements and should be ignored during validation.
+DO NOT check for structural elements like header images, footer images, or signature blocks. These are optional design elements.
+
 Your evaluation must:
-1. Confirm the patient metadata table immediately after the header exists and includes cells for patientName, patientAge, registrationDate, locationName, sampleCollectedAt, approvedAt, referringDoctorName.
-2. Confirm a header image/logo container exists (placeholder src or slot is acceptable).
-3. Confirm footer includes an image container and a signature block with placeholders.
-4. Validate that placeholders listed in requiredPlaceholders are present in the HTML. If they are absent suggest which placeholder to add.
-5. Use availablePlaceholders to decide whether placeholders in the HTML are valid. Flag anything that is not part of the available list unless clearly intentional (e.g., table headings) and recommend replacements from the available list when appropriate.
-6. Cross-check analyte placeholders with the supplied test group. If the template references analyte placeholders not in the test group, flag them. If analytes exist in the test group but are missing in the template, note them.
-7. Highlight any other missing or malformed placeholders (e.g., malformed braces, duplicates, inconsistent casing).
+1. **Patient Metadata**: Confirm the patient metadata table exists and includes key patient information (patientName, patientAge, patientGender, patientId, registrationDate, locationName, sampleCollectedAt, approvedAt, referringDoctorName, orderId).
+
+2. **Required Placeholders**: Validate that placeholders listed in requiredPlaceholders are present in the HTML. If they are absent suggest which placeholder to add. ONLY CHECK PLACEHOLDERS WITH group="patient", "test", "signature", or "section".
+
+3. **Available Placeholders**: Use availablePlaceholders to decide whether placeholders in the HTML are valid. Flag anything that is not part of the available list unless clearly intentional (e.g., table headings) and recommend replacements from the available list when appropriate. IGNORE placeholders with group="header", "footer", "lab", or "branding".
+
+4. **Test/Result Validation**: Cross-check analyte placeholders (group="test") with the supplied test group. If the template references analyte placeholders not in the test group, flag them. If analytes exist in the test group but are missing in the template, note them.
+
+5. **CRITICAL - Flag Placeholders**: Verify that for each test/analyte value placeholder, there is a corresponding _flag placeholder. For example, if {{Hemoglobin}} exists, ensure {{Hemoglobin_flag}} also exists in the same table row or table. Flag any test values that are missing their flag placeholders.
+
+6. **Section Content Validation**: Check for section content placeholders (group="section") like {{impression}}, {{findings}}, {{conclusion}}, {{recommendation}}. These are doctor-filled content areas. Flag if deprecated placeholders like {{interpretation_summary}} are used instead of {{impression}}.
+
+7. **Approval/Signature Validation**: Verify that approval/signature placeholders are present (group="signature"). Check for {{approverName}}, {{approverRole}}, {{approverSignature}}. Flag deprecated placeholders like {{signatoryName}} or {{signatoryTitle}} - recommend using {{approverName}} and {{approverRole}} instead.
+
+8. **Malformed Placeholders**: Highlight any other missing or malformed placeholders (e.g., malformed braces, duplicates, inconsistent casing) ONLY for "patient", "test", "signature", and "section" groups.
 
 Return JSON strictly in this shape (no prose, no markdown):
 {
@@ -27,27 +39,58 @@ Return JSON strictly in this shape (no prose, no markdown):
     "tablePresent": boolean,
     "missingColumns": string[]
   },
-  "headerFooter": {
-    "headerImage": boolean,
-    "footerImage": boolean,
-    "signatureBlock": boolean
-  },
   "placeholders": {
     "requiredMissing": string[],
     "unknownPlaceholders": string[],
-    "duplicates": string[]
+    "duplicates": string[],
+    "missingFlags": string[],
+    "deprecatedPlaceholders": string[]
   },
   "analyteCoverage": {
     "referencedButUnknown": string[],
     "missingFromTemplate": string[]
   },
+  "sectionContent": {
+    "hasAnySectionPlaceholder": boolean,
+    "foundSectionPlaceholders": string[],
+    "deprecatedSectionPlaceholders": string[],
+    "recommendedSectionPlaceholders": string[]
+  },
+  "approvalSignature": {
+    "hasApproverName": boolean,
+    "hasApproverRole": boolean,
+    "hasApproverSignature": boolean,
+    "deprecatedApprovalPlaceholders": string[],
+    "missingApprovalPlaceholders": string[]
+  },
   "recommendations": string[]
 }
 
 Rules:
-- "pass" only when all required pieces exist and no missing placeholders.
-- "attention" when minor issues exist that can be fixed quickly (e.g., missing optional analytes).
-- "fail" when required structures or placeholders are missing.
+- "pass" only when ALL of these conditions are met:
+  * All required patient placeholders exist and patient metadata table is present
+  * All test value placeholders have corresponding _flag placeholders
+  * At least one approval/signature placeholder exists ({{approverName}} or {{approvedByName}})
+  * No deprecated placeholders are used ({{interpretation_summary}}, {{signatoryName}}, {{signatoryTitle}})
+  
+- "attention" when minor issues exist that can be fixed quickly:
+  * Missing optional analytes or section content placeholders
+  * Unknown placeholders that might be typos
+  * Missing flag placeholders for some tests
+  * Deprecated placeholders present (must be replaced with current ones)
+  
+- "fail" when critical issues exist:
+  * Required patient/test/signature placeholders are missing
+  * Patient metadata table is absent
+  * No approval/signature information present at all
+  
+- NEVER flag missing header/footer/lab/branding placeholders as errors. These are optional styling elements.
+- NEVER flag missing header images, footer images, or signature image blocks as errors. These are optional design elements.
+- **ALWAYS** flag test value placeholders that don't have corresponding _flag placeholders (e.g., {{Hemoglobin}} without {{Hemoglobin_flag}}).
+- **ALWAYS** flag deprecated placeholders and provide correct replacements:
+  * {{interpretation_summary}} → {{impression}}
+  * {{signatoryName}} → {{approverName}}
+  * {{signatoryTitle}} → {{approverRole}}
 `;
 
 const GEMINI_MODEL = 'gemini-2.0-flash';

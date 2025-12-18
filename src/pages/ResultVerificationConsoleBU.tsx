@@ -719,8 +719,6 @@ const ResultVerificationConsole: React.FC = () => {
           // Don't block the approval - extras are optional
         }
 
-        // Finalize the panel
-        await supabase.rpc('finalize_panel', { p_result_id: row.result_id });
         await loadPanels();
       }
     } finally {

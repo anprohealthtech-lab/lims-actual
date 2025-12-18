@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { X, Beaker, AlertTriangle, Settings, Brain } from 'lucide-react';
+import { X, Beaker, AlertTriangle, Settings, Brain, Calculator } from 'lucide-react';
 
 interface AnalyteFormProps {
   onClose: () => void;
@@ -25,6 +25,11 @@ interface Analyte {
   aiProcessingType?: string;
   groupAiMode?: 'group_only' | 'individual' | 'both';
   aiPromptOverride?: string;
+  // Calculated parameter fields
+  isCalculated?: boolean;
+  formula?: string;
+  formulaVariables?: string[];
+  formulaDescription?: string;
 }
 
 const AnalyteForm: React.FC<AnalyteFormProps> = ({ onClose, onSubmit, analyte }) => {
@@ -42,6 +47,11 @@ const AnalyteForm: React.FC<AnalyteFormProps> = ({ onClose, onSubmit, analyte })
     groupAiMode: analyte?.groupAiMode || 'individual',
     aiProcessingType: analyte?.aiProcessingType || 'ocr_report',
     aiPromptOverride: analyte?.aiPromptOverride || '',
+    // Calculated parameter fields
+    isCalculated: analyte?.isCalculated || false,
+    formula: analyte?.formula || '',
+    formulaVariables: analyte?.formulaVariables?.join(', ') || '',
+    formulaDescription: analyte?.formulaDescription || '',
   });
 
   const categories = [
@@ -76,7 +86,11 @@ const AnalyteForm: React.FC<AnalyteFormProps> = ({ onClose, onSubmit, analyte })
         low: formData.interpretationLow,
         normal: formData.interpretationNormal,
         high: formData.interpretationHigh,
-      }
+      },
+      // Parse formula variables from comma-separated string
+      formulaVariables: formData.formulaVariables
+        ? formData.formulaVariables.split(',').map(v => v.trim()).filter(Boolean)
+        : [],
     });
   };
 
@@ -277,8 +291,93 @@ const AnalyteForm: React.FC<AnalyteFormProps> = ({ onClose, onSubmit, analyte })
                 />
                 <span className="ml-2 text-sm text-gray-700">Analyte is active and available for use</span>
               </label>
+              <label className="flex items-center">
+                <input
+                  type="checkbox"
+                  name="isCalculated"
+                  checked={formData.isCalculated}
+                  onChange={handleChange}
+                  className="h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded"
+                />
+                <span className="ml-2 text-sm text-gray-700">This is a calculated parameter (value derived from formula)</span>
+              </label>
             </div>
           </div>
+
+          {/* Calculated Parameter Configuration */}
+          {formData.isCalculated && (
+            <div className="space-y-4 bg-amber-50 border border-amber-200 rounded-lg p-4">
+              <h3 className="text-lg font-medium text-gray-900 flex items-center">
+                <Calculator className="h-5 w-5 mr-2 text-amber-600" />
+                Formula Configuration
+              </h3>
+              
+              <div className="space-y-4">
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                    Formula *
+                  </label>
+                  <input
+                    type="text"
+                    name="formula"
+                    value={formData.formula}
+                    onChange={handleChange}
+                    placeholder="e.g., TC - HDL - (TG / 5)"
+                    required={formData.isCalculated}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-amber-500 focus:border-transparent font-mono"
+                  />
+                  <p className="text-xs text-gray-500 mt-1">
+                    Use variable names that match source analytes. Supports: +, -, *, /, parentheses, sqrt(), pow(), abs(), round()
+                  </p>
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                    Variable Names (comma-separated) *
+                  </label>
+                  <input
+                    type="text"
+                    name="formulaVariables"
+                    value={formData.formulaVariables}
+                    onChange={handleChange}
+                    placeholder="e.g., TC, HDL, TG"
+                    required={formData.isCalculated}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-amber-500 focus:border-transparent"
+                  />
+                  <p className="text-xs text-gray-500 mt-1">
+                    These variables must be linked to source analytes in the Dependencies section (after saving)
+                  </p>
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                    Formula Description
+                  </label>
+                  <textarea
+                    name="formulaDescription"
+                    rows={2}
+                    value={formData.formulaDescription}
+                    onChange={handleChange}
+                    placeholder="e.g., LDL Cholesterol calculated using Friedewald equation"
+                    className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-amber-500 focus:border-transparent"
+                  />
+                </div>
+
+                {/* Formula Preview */}
+                <div className="bg-white border border-amber-300 rounded-lg p-3">
+                  <h4 className="text-sm font-medium text-amber-900 mb-2">Formula Preview</h4>
+                  <div className="text-sm text-amber-800 font-mono bg-amber-100 p-2 rounded">
+                    {formData.formula || '(No formula entered)'}
+                  </div>
+                  {formData.formulaVariables && (
+                    <div className="mt-2 text-xs text-amber-700">
+                      <strong>Variables:</strong> {formData.formulaVariables.split(',').map(v => v.trim()).filter(Boolean).join(', ') || 'None'}
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
 
           {/* AI Configuration */}
           <div className="space-y-4">

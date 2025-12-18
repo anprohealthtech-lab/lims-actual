@@ -34,7 +34,8 @@ export interface PDFProviderConfig {
 const defaultConfig: PDFProviderConfig = {
   // Provider selection: 'puppeteer' | 'pdfco' | 'auto'
   // 'auto' = try Puppeteer first, fallback to PDF.co on failure
-  provider: (import.meta.env.VITE_PDF_PROVIDER as PDFProvider) || 'auto',
+  // Changed to 'pdfco' for faster generation (now that CSS variables are fixed)
+  provider: (import.meta.env.VITE_PDF_PROVIDER as PDFProvider) || 'pdfco',
   
   // Enable automatic fallback
   enableFallback: import.meta.env.VITE_PDF_FALLBACK !== 'false',

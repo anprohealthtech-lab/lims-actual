@@ -379,6 +379,15 @@ const AIUploadPanel: React.FC<AIUploadPanelProps> = ({ order, testGroup, onUploa
       }));
       const { error: valuesErr } = await supabase.from('result_values').insert(values);
       if (valuesErr) throw valuesErr;
+
+      // Run AI flag analysis automatically after inserting result values
+      try {
+        const { runAIFlagAnalysis } = await import('../../../utils/aiFlagAnalysis');
+        await runAIFlagAnalysis(order.id, { applyToDatabase: true, createAudit: true });
+      } catch (flagErr) {
+        console.warn('AI flag analysis failed (non-blocking):', flagErr);
+      }
+
       alert('AI-extracted results saved.');
     } catch (e) {
       console.error('Save failed:', e);

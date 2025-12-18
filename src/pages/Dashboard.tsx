@@ -3,7 +3,7 @@ import {
   Plus, Search, Filter, Clock as ClockIcon, CheckCircle, AlertTriangle,
   Eye, User, Calendar, TestTube, ChevronDown, ChevronUp, TrendingUp,
   UserPlus, DollarSign, FileText, CreditCard, LayoutDashboard, Users,
-  MessageCircle, Mail, Send
+  MessageCircle, Mail, Send, Receipt
 } from "lucide-react";
 import { useAuth } from "../contexts/AuthContext";
 import { supabase, database } from "../utils/supabase";
@@ -18,6 +18,7 @@ import { WhatsAppAPI } from "../utils/whatsappAPI";
 import { openWhatsAppManually, buildMessageWithReportLink } from "../utils/whatsappUtils";
 import { usePDFGeneration } from "../hooks/usePDFGeneration";
 import SampleTransitWidget from "../components/Dashboard/SampleTransitWidget";
+import { generateInvoicePDF } from "../utils/invoicePdfService";
 
 /* ===========================
    Types
@@ -70,7 +71,7 @@ type OrderRow = {
 
   // relations
   patients: { name?: string | null; age?: string | null; gender?: string | null } | null;
-  order_tests: { id: string; test_group_id: string | null; test_name: string; outsourced_lab_id?: string | null; outsourced_labs?: { name?: string | null } | null }[] | null;
+  order_tests: { id: string; test_group_id: string | null; test_name: string; outsourced_lab_id?: string | null; package_id?: string | null; outsourced_labs?: { name?: string | null } | null }[] | null;
 
   // daily sequence for sorting
   order_number?: number | null;
@@ -186,6 +187,7 @@ const Dashboard: React.FC = () => {
   // PDF Generation
   const { generatePDF } = usePDFGeneration();
   const [isSendingReport, setIsSendingReport] = useState<string | null>(null); // orderId being processed
+  const [isSendingInvoice, setIsSendingInvoice] = useState<string | null>(null); // orderId for invoice being sent
 
   // dashboard counters
   const [summary, setSummary] = useState({ allDone: 0, mostlyDone: 0, pending: 0, awaitingApproval: 0 });
@@ -219,7 +221,7 @@ const Dashboard: React.FC = () => {
         billing_status, is_billed, referring_doctor_id,
         location_id, transit_status, collected_at_location_id,
         patients(name, age, gender, phone, email),
-        order_tests(id, test_group_id, test_name, outsourced_lab_id, outsourced_labs(name)),
+        order_tests(id, test_group_id, test_name, outsourced_lab_id, package_id, outsourced_labs(name)),
         doctors ( phone, email ),
         locations!orders_location_id_fkey(id, name, type)
       `)
@@ -944,6 +946,128 @@ const Dashboard: React.FC = () => {
     }
   };
 
+  /**
+   * Generate and send invoice via WhatsApp
+   */
+  const handleSendInvoice = async (order: CardOrder) => {
+    if (isSendingInvoice) return;
+    
+    try {
+      setIsSendingInvoice(order.id);
+      
+      // 1. Check if invoice exists for this order
+      const { data: invoice, error: invoiceError } = await database.invoices.getByOrderId(order.id);
+      
+      if (invoiceError || !invoice) {
+        alert('Invoice not found. Please create an invoice first.');
+        setIsSendingInvoice(null);
+        return;
+      }
+
+      // 2. Generate PDF if not already generated
+      let pdfUrl = invoice.pdf_url;
+      
+      if (!pdfUrl) {
+        alert('Generating invoice PDF...');
+        
+        // Get default template
+        const { data: templates } = await database.invoiceTemplates.getAll();
+        const defaultTemplate = templates?.find((t: any) => t.is_default) || templates?.[0];
+        
+        if (!defaultTemplate) {
+          alert('No invoice template found. Please configure templates in Settings.');
+          setIsSendingInvoice(null);
+          return;
+        }
+        
+        // Generate PDF
+        pdfUrl = await generateInvoicePDF(invoice.id, defaultTemplate.id);
+        
+        if (!pdfUrl) {
+          alert('Failed to generate invoice PDF.');
+          setIsSendingInvoice(null);
+          return;
+        }
+      }
+
+      // 3. Get patient phone
+      let phone = order.patient_phone || '';
+      
+      if (!phone && order.patient_id) {
+        const { data: patientData } = await supabase
+          .from('patients')
+          .select('phone')
+          .eq('id', order.patient_id)
+          .single();
+        phone = patientData?.phone || '';
+      }
+      
+      // Normalize phone
+      const normalizePhone = (p: string): string => {
+        const digitsOnly = p.replace(/\D/g, '');
+        if (digitsOnly.length <= 10) return digitsOnly;
+        return digitsOnly.slice(-10);
+      };
+      
+      phone = normalizePhone(phone);
+      
+      if (!phone || phone.length < 10) {
+        const input = window.prompt("Patient phone not found. Enter phone number to send invoice:", phone);
+        if (!input) {
+          setIsSendingInvoice(null);
+          return;
+        }
+        phone = normalizePhone(input);
+      }
+      
+      if (phone.length !== 10) {
+        alert('Invalid phone number. Please enter a valid 10-digit number.');
+        setIsSendingInvoice(null);
+        return;
+      }
+
+      // 4. Build message with invoice link
+      const message = `Dear ${order.patient_name},\n\nYour invoice is ready. Please find the invoice PDF here:\n\n${pdfUrl}\n\n` +
+        `Total Amount: ₹${invoice.total.toLocaleString()}\n` +
+        (invoice.paid_amount > 0 ? `Paid: ₹${invoice.paid_amount.toLocaleString()}\nBalance Due: ₹${(invoice.total - invoice.paid_amount).toLocaleString()}\n\n` : '\n') +
+        `Thank you for choosing our services!`;
+
+      // 5. Try backend API first
+      try {
+        const connection = await WhatsAppAPI.getConnectionStatus();
+        
+        if (!connection.connected) {
+          throw new Error('WhatsApp not connected');
+        }
+
+        const result = await WhatsAppAPI.sendMessage(phone, message);
+        
+        if (result.success) {
+          alert('Invoice sent via WhatsApp successfully!');
+          fetchOrders();
+          setIsSendingInvoice(null);
+          return;
+        }
+      } catch (apiError) {
+        console.log('Backend API failed, falling back to manual WhatsApp:', apiError);
+      }
+
+      // 6. Fallback to manual WhatsApp link
+      const { success: manualSuccess } = await openWhatsAppManually(phone, message);
+
+      if (manualSuccess) {
+        alert('WhatsApp opened. Please send the message manually.');
+        fetchOrders();
+      }
+
+    } catch (error) {
+      console.error('Error sending invoice:', error);
+      alert('Failed to send invoice. Please try again.');
+    } finally {
+      setIsSendingInvoice(null);
+    }
+  };
+
   // Billing badge helper
   const getBillingBadge = (order: any) => {
     if (order.billing_status === 'billed') {
@@ -1593,41 +1717,60 @@ const Dashboard: React.FC = () => {
                             </div>
 
                             <div className="flex-1">
-                              <div className="text-xs text-gray-500 mb-1">Tests ({o.tests.length})</div>
-                              <div className="flex flex-wrap gap-2">
-                                {o.panels.length > 0
-                                  ? o.panels.map((p, i) => {
-                                      const progress = p.expected > 0 ? (p.entered / p.expected) * 100 : 0;
-                                      
-                                      // Modern minimalistic colors based on progress
-                                      const getMinimalColor = (percent: number) => {
-                                        if (percent === 0) return "bg-gray-100 border-gray-300 text-gray-700";
-                                        if (percent < 40) return "bg-red-50 border-red-200 text-red-800";
-                                        if (percent < 70) return "bg-orange-50 border-orange-200 text-orange-800";
-                                        if (percent < 90) return "bg-yellow-50 border-yellow-200 text-yellow-800";
-                                        return "bg-green-50 border-green-200 text-green-800";
-                                      };
+                              {(() => {
+                                // Find package name once
+                                const packageTest = o.tests.find(t => t.test_name?.startsWith('📦'));
+                                const packageName = packageTest?.test_name?.replace('📦', '').trim();
+                                
+                                return (
+                                  <>
+                                    <div className="text-xs text-gray-500 mb-1">
+                                      Tests ({o.tests.length})
+                                      {packageName && (
+                                        <span className="ml-2 px-2 py-0.5 bg-purple-100 text-purple-700 rounded border border-purple-200 font-semibold">
+                                          📦 {packageName}
+                                        </span>
+                                      )}
+                                    </div>
+                                    <div className="flex flex-wrap gap-2">
+                                      {o.panels.length > 0
+                                        ? o.panels.map((p, i) => {
+                                            const progress = p.expected > 0 ? (p.entered / p.expected) * 100 : 0;
+                                            
+                                            // Modern minimalistic colors based on progress
+                                            const getMinimalColor = (percent: number) => {
+                                              if (percent === 0) return "bg-gray-100 border-gray-300 text-gray-700";
+                                              if (percent < 40) return "bg-red-50 border-red-200 text-red-800";
+                                              if (percent < 70) return "bg-orange-50 border-orange-200 text-orange-800";
+                                              if (percent < 90) return "bg-yellow-50 border-yellow-200 text-yellow-800";
+                                              return "bg-green-50 border-green-200 text-green-800";
+                                            };
 
-                                      const colorClass = getMinimalColor(progress);
+                                            const colorClass = getMinimalColor(progress);
 
-                                      return (
-                                        <div
-                                          key={`${p.name}-${i}`}
-                                          className={`border rounded px-2 py-1 transition-all duration-300 ${colorClass}`}
-                                        >
-                                          <div className="font-medium text-xs">{p.name}</div>
-                                          <div className="text-[10px] font-mono">
-                                            {p.entered}/{p.expected}{progress === 100 ? "Complete" : ""}
-                                          </div>
-                                        </div>
-                                      );
-                                    })
-                                  : o.tests.map((t, i) => (
-                                      <span key={i} className="px-2 py-0.5 rounded text-xs bg-blue-100 text-blue-800">
-                                        {t}
-                                      </span>
-                                    ))}
-                              </div>
+                                            return (
+                                              <div
+                                                key={`${p.name}-${i}`}
+                                                className={`border rounded px-2 py-1 transition-all duration-300 ${colorClass}`}
+                                              >
+                                                <div className="font-medium text-xs">{p.name}</div>
+                                                <div className="text-[10px] font-mono">
+                                                  {p.entered}/{p.expected}{progress === 100 ? "Complete" : ""}
+                                                </div>
+                                              </div>
+                                            );
+                                          })
+                                        : o.tests
+                                            .filter(t => !t.test_name?.startsWith('📦'))
+                                            .map((t, i) => (
+                                              <span key={i} className="px-2 py-0.5 rounded text-xs bg-blue-100 text-blue-800">
+                                                {t.test_name}
+                                              </span>
+                                            ))}
+                                    </div>
+                                  </>
+                                );
+                              })()}
                             </div>
                           </div>
 
@@ -1724,6 +1867,22 @@ const Dashboard: React.FC = () => {
                                 <Mail className="h-4 w-4 mr-1.5" />
                                 Email
                               </button>
+
+                              {/* Send Invoice Button - only for billed orders */}
+                              {o.billing_status === 'billed' && (
+                                <button
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    handleSendInvoice(o);
+                                  }}
+                                  disabled={!!isSendingInvoice}
+                                  className="inline-flex items-center px-3 py-1.5 text-sm font-medium rounded-lg text-white bg-purple-600 hover:bg-purple-700 transition-colors"
+                                  title="Generate & Send Invoice via WhatsApp"
+                                >
+                                  <Receipt className="h-4 w-4 mr-1.5" />
+                                  {isSendingInvoice === o.id ? '...' : 'Invoice'}
+                                </button>
+                              )}
 
                               {/* Invoice creation button */}
                               {o.billing_status !== 'billed' && (

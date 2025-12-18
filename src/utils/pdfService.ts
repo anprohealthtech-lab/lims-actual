@@ -12,12 +12,17 @@
  */
 
 // === Section: Imports ===
-import { supabase } from './supabase';
+import { supabase, database } from './supabase';
+import { getPublicStorageUrl } from './storageUrlBuilder';
 import type { ReportTemplateContext, ReportTemplateAnalyteRow } from './supabase';
 import nunjucks from 'nunjucks';
 import { reportBaselineCss } from '../styles/reportBaselineString';
 import { ensureReportRegions, extractReportRegions } from './reportTemplateRegions';
 import { generateReportExtrasHtml, getReportExtrasForOrder } from './reportExtrasService';
+import { 
+  determineFlag, 
+  flagToDisplayString
+} from './flagDetermination';
 
 // PDF Provider Configuration
 import {
@@ -325,7 +330,36 @@ const normalizeCustomCss = (css?: string | null): string => {
     return '';
   }
 
-  return css.replace(/\u00a0/g, ' ').replace(/undefined\s*:\s*undefined;?/gi, '').trim();
+  let normalized = css.replace(/\u00a0/g, ' ').replace(/undefined\s*:\s*undefined;?/gi, '').trim();
+
+  // 🎨 PDF.co compatibility: Expand CSS custom properties (variables) to literal values
+  // PDF.co's rendering engine has poor support for CSS variables
+  const cssVarMap = new Map<string, string>();
+  
+  // Extract :root variables
+  const rootMatch = normalized.match(/:root\s*\{([^}]+)\}/);
+  if (rootMatch) {
+    const rootBlock = rootMatch[1];
+    const varMatches = rootBlock.matchAll(/--([a-z-]+)\s*:\s*([^;]+);/g);
+    for (const match of varMatches) {
+      cssVarMap.set(`--${match[1]}`, match[2].trim());
+    }
+  }
+
+  // Replace var() references with actual values
+  if (cssVarMap.size > 0) {
+    normalized = normalized.replace(/var\(--([a-z-]+)\)/g, (_, varName) => {
+      const value = cssVarMap.get(`--${varName}`);
+      return value || `var(--${varName})`; // fallback to original if not found
+    });
+    
+    console.log('🎨 CSS Variables expanded for PDF.co:', {
+      variableCount: cssVarMap.size,
+      variables: Array.from(cssVarMap.keys()),
+    });
+  }
+
+  return normalized;
 };
 
 const CUSTOM_STYLE_TAG_ID = 'lims-report-custom';
@@ -404,7 +438,16 @@ const buildPdfBodyDocument = (bodyHtml: string, customCss: string): string => {
     .filter(Boolean)
     .join('\n');
 
-  return [
+  // 🐛 Debug CSS inclusion
+  console.log('🎨 buildPdfBodyDocument CSS Debug:', {
+    hasBaselineCss: !!reportBaselineCss,
+    baselineCssLength: reportBaselineCss?.length || 0,
+    hasCustomCss: !!customCss,
+    customCssLength: customCss?.length || 0,
+    customCssPreview: customCss?.substring(0, 100) || 'NONE',
+  });
+
+  const htmlDocument = [
     '<!DOCTYPE html>',
     '<html lang="en">',
     '<head>',
@@ -419,6 +462,20 @@ const buildPdfBodyDocument = (bodyHtml: string, customCss: string): string => {
     '</body>',
     '</html>',
   ].join('');
+
+  // 🐛 Verify CSS tags are in final HTML
+  const styleTagsInHtml = htmlDocument.match(/<style[^>]*>[\s\S]*?<\/style>/gi) || [];
+  console.log('🎨 Final HTML structure:', {
+    styleTagCount: styleTagsInHtml.length,
+    styleTagIds: styleTagsInHtml.map(tag => {
+      const idMatch = tag.match(/id="([^"]+)"/);
+      return idMatch ? idMatch[1] : 'no-id';
+    }),
+    totalHtmlLength: htmlDocument.length,
+    htmlHeadPreview: htmlDocument.substring(0, 600),
+  });
+
+  return htmlDocument;
 };
 
 /**
@@ -818,6 +875,15 @@ export const renderLabTemplateHtmlBundle = (
   }
 
   const rendered = renderTemplateWithContext(template.gjs_html, renderContext);
+  
+  // 🐛 Debug template CSS
+  console.log('🎨 renderLabTemplateHtmlBundle CSS Debug:', {
+    hasTemplateHtml: !!template.gjs_html,
+    hasTemplateCss: !!template.gjs_css,
+    templateCssLength: template.gjs_css?.length || 0,
+    templateCssPreview: template.gjs_css?.substring(0, 100) || 'NONE',
+  });
+  
   return buildReportHtmlBundle({
     html: rendered,
     css: template.gjs_css,
@@ -1211,9 +1277,46 @@ const createTestResultLabel = (row: ReportTemplateAnalyteRow): string => {
   return parameter || testName || 'Analyte';
 };
 
+/**
+ * Determine flag for a result value using the comprehensive flag determination system
+ * Falls back to stored flag if determination fails
+ */
+const determineResultFlag = (
+  value: string | null | undefined,
+  referenceRange: string | null | undefined,
+  storedFlag: string | null | undefined,
+  lowCritical?: string | null,
+  highCritical?: string | null,
+  patientGender?: string
+): string => {
+  // If we already have a stored flag, use it
+  if (storedFlag && storedFlag.trim()) {
+    return storedFlag;
+  }
+  
+  // If no value, no flag needed
+  if (!value || value === '—' || value.trim() === '') {
+    return '';
+  }
+  
+  // Use the comprehensive flag determination
+  const flagResult = determineFlag(
+    value,
+    {
+      reference_range: referenceRange || undefined,
+      low_critical: lowCritical,
+      high_critical: highCritical
+    },
+    patientGender ? { gender: patientGender } : undefined
+  );
+  
+  return flagToDisplayString(flagResult.flag);
+};
+
 const buildTestResultsFromAnalytes = (
   analytes: ReportTemplateAnalyteRow[],
-  includeUnapproved = true
+  includeUnapproved = true,
+  patientGender?: string
 ): TestResult[] => {
   const filtered = includeUnapproved
     ? analytes
@@ -1234,12 +1337,39 @@ const buildTestResultsFromAnalytes = (
 
     seenKeys.add(dedupeKey);
 
+    // Use pre-computed flag from database if available (from AI analysis)
+    // Otherwise, determine flag using comprehensive system
+    let flag = row.flag;
+    
+    // If no pre-computed flag or it's empty, calculate it
+    if (!flag) {
+      // Use gender-specific reference range if available
+      const referenceRange = patientGender?.toLowerCase() === 'male' && row.reference_range_male
+        ? row.reference_range_male
+        : patientGender?.toLowerCase() === 'female' && row.reference_range_female
+        ? row.reference_range_female
+        : row.reference_range;
+
+      flag = determineResultFlag(
+        row.value,
+        referenceRange,
+        row.flag,
+        row.low_critical,
+        row.high_critical,
+        patientGender
+      );
+    }
+
     results.push({
       parameter: label,
       result: row.value ?? '—',
       unit: row.unit ?? '',
       referenceRange: row.reference_range ?? '',
-      flag: row.flag ?? '',
+      flag,
+      // Include additional flag metadata if available
+      ...(row.flag_source && { flagSource: row.flag_source }),
+      ...(row.flag_confidence && { flagConfidence: row.flag_confidence }),
+      ...(row.ai_interpretation && { interpretation: row.ai_interpretation }),
     });
 
     return results;
@@ -1357,7 +1487,12 @@ export const createReportDataFromContext = (
   const order = context.order ?? ({} as ReportTemplateContext['order']);
   const isDraft = options.isDraft ?? false;
 
-  const testResults = buildTestResultsFromAnalytes(context.analytes || [], isDraft);
+  // Pass patient gender for gender-specific reference ranges
+  const testResults = buildTestResultsFromAnalytes(
+    context.analytes || [], 
+    isDraft,
+    patient?.gender
+  );
 
   const reportData: ReportData = {
     patient: {
@@ -2029,6 +2164,63 @@ const injectWatermarkIfEnabled = async (html: string, labId: string): Promise<st
 };
 
 // === Section: Report HTML preparation ===
+
+/**
+ * Inject section content into HTML template
+ * Replaces {{section:placeholder_key}} with the actual content from result_section_content
+ * Now uses sectionContent from context instead of separate DB fetch
+ */
+const injectSectionContent = async (html: string, context?: ReportTemplateContext): Promise<string> => {
+  if (!context?.sectionContent) return html;
+  
+  try {
+    const sectionContent = context.sectionContent as Record<string, string>;
+    
+    if (Object.keys(sectionContent).length === 0) {
+      console.log('📝 No section content found to inject');
+      return html;
+    }
+    
+    console.log(`📝 Injecting section content:`, Object.keys(sectionContent));
+    
+    // Replace all {{section:key}} and {{key}} placeholders
+    let resultHtml = html;
+    for (const [key, content] of Object.entries(sectionContent)) {
+      if (!content) continue;
+      
+      // Preserve basic formatting: convert newlines to proper HTML paragraphs/breaks
+      // Content comes from doctor input (CKEditor), preserve formatting
+      const formattedContent = content
+        .trim()
+        .split(/\n\n+/)  // Split on double newlines (paragraph breaks)
+        .map(para => {
+          const cleanPara = para.trim();
+          if (!cleanPara) return '';
+          // Convert single newlines to <br/> within paragraphs
+          const withBreaks = cleanPara.replace(/\n/g, '<br/>');
+          return `<p>${withBreaks}</p>`;
+        })
+        .filter(Boolean)
+        .join('');
+      
+      // Replace {{section:key}} pattern
+      const sectionPlaceholder = `{{section:${key}}}`;
+      const sectionRegex = new RegExp(sectionPlaceholder.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi');
+      resultHtml = resultHtml.replace(sectionRegex, `<div class="section-content">${formattedContent}</div>`);
+      
+      // Also replace direct {{key}} pattern (for Nunjucks templates)
+      const directPlaceholder = `{{${key}}}`;
+      const directRegex = new RegExp(directPlaceholder.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi');
+      resultHtml = resultHtml.replace(directRegex, `<div class="section-content">${formattedContent}</div>`);
+    }
+    
+    return resultHtml;
+  } catch (error) {
+    console.error('Failed to inject section content:', error);
+    return html; // Return original on error
+  }
+};
+
 const prepareReportHtml = async (
   reportData: ReportData,
   isDraft: boolean,
@@ -2111,6 +2303,17 @@ const prepareReportHtml = async (
     } catch (error) {
       console.warn('Failed to inject report extras:', error);
       // Don't fail PDF generation if extras injection fails
+    }
+  }
+
+  // Inject section content (findings, impressions, recommendations from PBS/Radiology)
+  // This replaces {{section:placeholder_key}} placeholders with actual content
+  if (context) {
+    try {
+      finalHtml = await injectSectionContent(finalHtml, context);
+    } catch (error) {
+      console.warn('Failed to inject section content:', error);
+      // Don't fail PDF generation if section injection fails
     }
   }
 
@@ -2285,10 +2488,8 @@ export const savePDFToStorage = async (
       throw new Error('Upload succeeded but no file path returned');
     }
 
-    // Get the public URL for the uploaded file
-    const { data: { publicUrl } } = supabase.storage
-      .from('reports')
-      .getPublicUrl(fileName);
+    // Get the public URL for the uploaded file (using custom domain if configured)
+    const publicUrl = getPublicStorageUrl('reports', fileName);
 
     console.log('PDF saved to storage successfully:', publicUrl);
     
@@ -2501,28 +2702,31 @@ export async function generateAndSavePDFReportWithProgress(
 
     // Analyze PDF complexity to determine generation method
     const complexity = analyzePDFComplexity(preparedHtml.html);
-    const usePuppeteer = shouldUsePuppeteer() && complexity.recommendation === 'puppeteer';
+    
+    // 🚀 ALWAYS use PDF.co (Puppeteer step removed for speed)
+    // CSS variables are now expanded for PDF.co compatibility
+    const usePuppeteer = false;
     
     console.log('PDF Generation Strategy:', {
-      usePuppeteer,
+      usePuppeteer: false,
       complexity: complexity.complexity,
       pageCount: complexity.pageCount,
-      recommendation: complexity.recommendation,
+      recommendation: 'pdfco',
       htmlSize: complexity.htmlSize,
-      provider: usePuppeteer ? 'puppeteer' : 'pdfco',
-      fallbackEnabled: shouldFallbackToPDFCO()
+      provider: 'pdfco',
+      note: 'Direct PDF.co generation (Puppeteer disabled)'
     });
 
-    // Try Puppeteer first if enabled and recommended
-    if (usePuppeteer) {
+    // Skip Puppeteer entirely - go straight to PDF.co
+    if (false && usePuppeteer) {
       logPDFEvent('start', 'puppeteer', { orderId, complexity: complexity.complexity });
       const startTime = Date.now();
       
       try {
         onProgress?.(`Generating ${reportType} PDF with Puppeteer...`, 25);
-        console.log('🎭 Using Puppeteer for PDF generation (5s timeout)');
+        console.log('🎭 Using Puppeteer for PDF generation (2s timeout)');
         
-        // ⏱️ 5-second timeout wrapper for Puppeteer
+        // ⏱️ 2-second timeout wrapper for Puppeteer (reduced from 5s)
         // Pass header/footer HTML and display settings (like PDF.co)
         const puppeteerUrl = await Promise.race([
           generatePDFWithPuppeteer({
@@ -2543,7 +2747,7 @@ export async function generateAndSavePDFReportWithProgress(
             printBackground: true,
           }),
           new Promise<string>((_, reject) => 
-            setTimeout(() => reject(new Error('Puppeteer timeout: 5s exceeded')), 5000)
+            setTimeout(() => reject(new Error('Puppeteer timeout: 2s exceeded')), 2000)
           )
         ]);
         
@@ -2570,7 +2774,7 @@ export async function generateAndSavePDFReportWithProgress(
               // Generate print-specific HTML with table-based trends (no background colors)
               const printPreparedHtml = await prepareReportHtml(reportData, isDraft, allTemplates, true);
               
-              // ⏱️ 5-second timeout for print PDF too
+              // ⏱️ 2-second timeout for print PDF too (reduced from 5s)
               // Print version: No header/footer overlay (uses physical letterhead)
               const printUrl = await Promise.race([
                 generatePDFWithPuppeteer({
@@ -2586,7 +2790,7 @@ export async function generateAndSavePDFReportWithProgress(
                   printBackground: false,
                 }),
                 new Promise<string>((_, reject) => 
-                  setTimeout(() => reject(new Error('Print PDF timeout: 5s exceeded')), 5000)
+                  setTimeout(() => reject(new Error('Print PDF timeout: 2s exceeded')), 2000)
                 )
               ]);
               
@@ -3299,9 +3503,7 @@ export const testStorageUpload = async (): Promise<void> => {
       console.log('Upload successful:', data);
       
       // Get public URL
-      const { data: { publicUrl } } = supabase.storage
-        .from('reports')
-        .getPublicUrl(fileName);
+const publicUrl = getPublicStorageUrl('reports', fileName);
       
       console.log('Public URL:', publicUrl);
       
@@ -3540,11 +3742,9 @@ export const debugPDFPipeline = async (): Promise<void> => {
     console.log('✅ Supabase upload successful:', data);
     
     // Step 7: Get public URL and test
-    const { data: { publicUrl } } = supabase.storage
-      .from('reports')
-      .getPublicUrl(fileName);
-    
-    console.log('🔗 Supabase public URL:', publicUrl);
+const publicUrl = getPublicStorageUrl('reports', fileName);
+
+    console.log('🔗 Custom domain public URL:', publicUrl);
     
     // Step 8: Download from Supabase and compare
     console.log('🔄 Step 8: Downloading from Supabase to compare...');

@@ -168,9 +168,87 @@ const TemplateAIAuditModal: React.FC<TemplateAIAuditModalProps> = ({
                 </div>
               </section>
 
+              {/* Section Content Validation */}
+              {result.sectionContent && (
+                <section>
+                  <h3 className="text-xs font-semibold uppercase tracking-wide text-gray-500">Section Content (Doctor Notes)</h3>
+                  <div className="mt-1 space-y-2 text-sm">
+                    {result.sectionContent.hasAnySectionPlaceholder ? (
+                      <div className="rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-emerald-700">
+                        <strong>✓ Section placeholders found:</strong>{' '}
+                        {result.sectionContent.foundSectionPlaceholders?.join(', ') || 'Yes'}
+                      </div>
+                    ) : (
+                      <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-amber-700">
+                        <strong>⚠ No section placeholders found.</strong> Consider adding {{impression}}, {{findings}}, or {{conclusion}} for doctor's notes.
+                      </div>
+                    )}
+                    {result.sectionContent.deprecatedSectionPlaceholders && result.sectionContent.deprecatedSectionPlaceholders.length > 0 && (
+                      <AuditList
+                        title="Deprecated section placeholders (replace immediately)"
+                        items={result.sectionContent.deprecatedSectionPlaceholders.map((p) => 
+                          `${p} → Use ${result.sectionContent?.recommendedSectionPlaceholders?.join(' or ') || '{{impression}}'} instead`
+                        )}
+                        tone="danger"
+                      />
+                    )}
+                  </div>
+                </section>
+              )}
+
+              {/* Approval/Signature Validation */}
+              {result.approvalSignature && (
+                <section>
+                  <h3 className="text-xs font-semibold uppercase tracking-wide text-gray-500">Approval & Signature</h3>
+                  <div className="mt-1 space-y-2 text-sm">
+                    <div className={clsx(
+                      'rounded-md border px-3 py-2',
+                      result.approvalSignature.hasApproverName 
+                        ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
+                        : 'border-red-200 bg-red-50 text-red-700'
+                    )}>
+                      <strong>Approver Name:</strong> {result.approvalSignature.hasApproverName ? '✓ Present' : '✗ Missing (add {{approverName}} or {{approvedByName}})'}
+                    </div>
+                    <div className={clsx(
+                      'rounded-md border px-3 py-2',
+                      result.approvalSignature.hasApproverRole 
+                        ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
+                        : 'border-amber-200 bg-amber-50 text-amber-700'
+                    )}>
+                      <strong>Approver Role/Title:</strong> {result.approvalSignature.hasApproverRole ? '✓ Present' : '⚠ Optional (add {{approverRole}} for designation)'}
+                    </div>
+                    <div className={clsx(
+                      'rounded-md border px-3 py-2',
+                      result.approvalSignature.hasApproverSignature 
+                        ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
+                        : 'border-amber-200 bg-amber-50 text-amber-700'
+                    )}>
+                      <strong>Signature Image:</strong> {result.approvalSignature.hasApproverSignature ? '✓ Present' : '⚠ Optional (add {{approverSignature}} for signature image)'}
+                    </div>
+                    {result.approvalSignature.deprecatedApprovalPlaceholders && result.approvalSignature.deprecatedApprovalPlaceholders.length > 0 && (
+                      <AuditList
+                        title="Deprecated approval placeholders (replace immediately)"
+                        items={result.approvalSignature.deprecatedApprovalPlaceholders.map((p) => {
+                          if (p.includes('signatoryName')) return `${p} → Use {{approverName}} instead`;
+                          if (p.includes('signatoryTitle')) return `${p} → Use {{approverRole}} instead`;
+                          return `${p} → Replace with current placeholder`;
+                        })}
+                        tone="danger"
+                      />
+                    )}
+                  </div>
+                </section>
+              )}
+
               <section>
                 <h3 className="text-xs font-semibold uppercase tracking-wide text-gray-500">Placeholders</h3>
                 <div className="mt-1 space-y-2 text-sm">
+                  {result.placeholders?.missingFlags?.length ? (
+                    <AuditList title="Missing flag placeholders (CRITICAL)" items={result.placeholders.missingFlags} tone="danger" />
+                  ) : null}
+                  {result.placeholders?.deprecatedPlaceholders?.length ? (
+                    <AuditList title="Deprecated placeholders" items={result.placeholders.deprecatedPlaceholders} tone="danger" />
+                  ) : null}
                   {result.placeholders?.requiredMissing?.length ? (
                     <AuditList title="Missing required" items={result.placeholders.requiredMissing} tone="warning" />
                   ) : null}

@@ -8,7 +8,7 @@ import Signup from './components/Auth/Signup';
 import Layout from './components/Layout/Layout';
 import Dashboard from './pages/Dashboard';
 import Patients from './pages/Patients';
-import Tests from './pages/Tests_Working';
+import Tests from './pages/Tests';
 import Orders from './pages/Orders';
 import Results from './pages/Results';
 import Reports from './pages/Reports';
@@ -54,6 +54,7 @@ import OutsourcedReportsConsoleEnhanced from './pages/OutsourcedReportsConsoleEn
 import OutsourcedTestsQueue from './pages/OutsourcedTestsQueue';
 import OutsourcedLabsSettings from './pages/OutsourcedLabsSettings';
 import IntraLabTransitQueue from './pages/IntraLabTransitQueue';
+import ManageReportSections from './pages/settings/ManageReportSections';
 
 const AppRoutes: React.FC = () => {
   const { user, loading } = useAuth();
@@ -153,6 +154,7 @@ const AppRoutes: React.FC = () => {
                 <Route path="/outsourced-queue" element={<OutsourcedTestsQueue />} />
                 <Route path="/sample-transit" element={<IntraLabTransitQueue />} />
                 <Route path="/settings/outsourced-labs" element={<OutsourcedLabsSettings />} />
+                <Route path="/settings/report-sections" element={<ManageReportSections />} />
                 <Route path="/masters/doctors" element={<DoctorMaster />} />
                 <Route path="/masters/locations" element={<LocationMaster />} />
               </Routes>

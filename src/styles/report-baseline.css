@@ -550,4 +550,43 @@
   letter-spacing: 0.04em;
   text-transform: uppercase;
 }
+
+/* ---------- Section Content (Doctor-filled sections) ---------- */
+
+.section-content {
+  font-family: var(--report-font-family);
+  color: var(--report-text-color);
+  font-size: 14px;
+  line-height: 1.6;
+  margin: 0.75rem 0;
+  white-space: pre-wrap;
+  word-wrap: break-word;
+  position: relative;
+  z-index: 2;
+}
+
+.section-content p {
+  margin: 0.5rem 0;
+  color: var(--report-text-color);
+  line-height: 1.6;
+}
+
+.section-content p:first-child {
+  margin-top: 0;
+}
+
+.section-content p:last-child {
+  margin-bottom: 0;
+}
+
+.section-content strong,
+.section-content b {
+  font-weight: 600;
+  color: var(--report-heading-color);
+}
+
+.section-content em,
+.section-content i {
+  font-style: italic;
+}
   

@@ -590,7 +590,97 @@ async function upsertResultValuesFromParsed(
   if (rows.length) {
     const { error } = await supabase.from("result_values").insert(rows);
     if (error) throw error;
+
+    // Auto-calculate flags for inserted result values
+    // Fetch the inserted rows with their analyte data to calculate flags
+    const { data: insertedValues } = await supabase
+      .from("result_values")
+      .select(`
+        id,
+        value,
+        reference_range,
+        analyte_id,
+        analytes:analyte_id(
+          reference_range,
+          low_critical,
+          high_critical,
+          value_type,
+          expected_normal_values
+        )
+      `)
+      .eq("result_id", resultId);
+
+    if (insertedValues && insertedValues.length > 0) {
+      for (const rv of insertedValues) {
+        const flag = calculateFlagFromValue(rv);
+        if (flag) {
+          await supabase
+            .from("result_values")
+            .update({ 
+              flag, 
+              flag_source: 'rule',
+              flag_confidence: 0.9
+            })
+            .eq("id", rv.id);
+        }
+      }
+    }
   }
+}
+
+/* ------------- Flag Calculation Helper ------------- */
+
+function calculateFlagFromValue(rv: any): string | null {
+  if (!rv.value) return null;
+  
+  const analyteData = rv.analytes;
+  const refRange = analyteData?.reference_range || rv.reference_range;
+  
+  if (!refRange) return null;
+  
+  const value = parseFloat(rv.value);
+  if (isNaN(value)) {
+    // Text-based flag detection
+    const valLower = rv.value.toLowerCase().trim();
+    if (['positive', 'reactive', 'detected', 'present', 'abnormal'].includes(valLower)) {
+      return 'abnormal';
+    }
+    if (['negative', 'non-reactive', 'not detected', 'absent', 'normal'].includes(valLower)) {
+      return 'normal';
+    }
+    return null;
+  }
+  
+  // Numeric flag calculation
+  const rangeMatch = refRange.match(/([\d.]+)\s*[-–]\s*([\d.]+)/);
+  if (rangeMatch) {
+    const low = parseFloat(rangeMatch[1]);
+    const high = parseFloat(rangeMatch[2]);
+    
+    // Check critical values first
+    const lowCrit = analyteData?.low_critical ? parseFloat(analyteData.low_critical) : null;
+    const highCrit = analyteData?.high_critical ? parseFloat(analyteData.high_critical) : null;
+    
+    if (lowCrit !== null && value <= lowCrit) return 'critical_low';
+    if (highCrit !== null && value >= highCrit) return 'critical_high';
+    if (value < low) return 'low';
+    if (value > high) return 'high';
+    return 'normal';
+  }
+  
+  // Less than pattern
+  const lessThan = refRange.match(/[<≤]\s*([\d.]+)/);
+  if (lessThan) {
+    return value <= parseFloat(lessThan[1]) ? 'normal' : 'high';
+  }
+  
+  // Greater than pattern
+  const greaterThan = refRange.match(/[>≥]\s*([\d.]+)/);
+  if (greaterThan) {
+    return value >= parseFloat(greaterThan[1]) ? 'normal' : 'low';
+  }
+  
+  return null;
 }
 
 /* ------------- Progress ------------- */

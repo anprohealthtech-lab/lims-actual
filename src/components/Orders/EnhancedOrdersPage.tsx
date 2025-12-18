@@ -434,11 +434,64 @@ const EnhancedOrdersPage: React.FC<EnhancedOrdersPageProps> = ({
         return;
       }
 
-      // Create new test records for the order_tests table
-      const newOrderTests = selectedTests.map(test => ({
-        order_id: selectedOrderId,
-        test_name: test.name
-      }));
+      // Separate packages from individual tests
+      const packages = selectedTests.filter(test => test.type === 'package');
+      const individualTests = selectedTests.filter(test => test.type !== 'package');
+      
+      // Build order_tests records
+      const newOrderTests: any[] = [];
+      
+      // Add individual tests
+      individualTests.forEach(test => {
+        newOrderTests.push({
+          order_id: selectedOrderId,
+          test_name: test.name,
+          test_group_id: test.id || null,
+          package_id: null
+        });
+      });
+      
+      // Add packages and their test groups
+      if (packages.length > 0) {
+        // Fetch package details
+        const packageIds = packages.map(p => p.id);
+        const { data: packageDetails } = await supabase
+          .from('packages')
+          .select(`
+            id,
+            name,
+            package_test_groups(
+              test_group_id,
+              test_groups(id, name)
+            )
+          `)
+          .in('id', packageIds);
+        
+        packages.forEach(pkg => {
+          // Add package entry
+          newOrderTests.push({
+            order_id: selectedOrderId,
+            test_name: `📦 ${pkg.name}`,
+            test_group_id: null,
+            package_id: pkg.id
+          });
+          
+          // Expand package test groups
+          const pkgDetails = packageDetails?.find(pd => pd.id === pkg.id);
+          if (pkgDetails?.package_test_groups) {
+            pkgDetails.package_test_groups.forEach((ptg: any) => {
+              if (ptg.test_groups) {
+                newOrderTests.push({
+                  order_id: selectedOrderId,
+                  test_name: ptg.test_groups.name,
+                  test_group_id: ptg.test_groups.id,
+                  package_id: pkg.id
+                });
+              }
+            });
+          }
+        });
+      }
       
       // Insert new tests into order_tests table
       const { error: testsError } = await supabase

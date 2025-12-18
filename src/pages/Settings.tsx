@@ -3,6 +3,7 @@ import { useAuth } from '../contexts/AuthContext';
 import { database, supabase } from '../utils/supabase';
 import EditUserModal from '../components/Users/EditUserModal';
 import { NotificationSettings } from '../components/Settings/NotificationSettings';
+import InvoiceTemplateManager from '../components/Billing/InvoiceTemplateManager';
 import {
   Users,
   Shield,
@@ -35,7 +36,13 @@ interface User {
   name: string;
   email: string;
   role: 'Admin' | 'Lab Manager' | 'Technician' | 'Receptionist' | 'Doctor';
+  role_id?: string;
   department: string;
+  department_id?: string;
+  contact_number?: string;
+  gender?: string;
+  is_phlebotomist?: boolean;
+  clinic_keywords?: string;
   status: 'Active' | 'Inactive' | 'Suspended';
   lastLogin: string;
   permissions: string[];
@@ -105,6 +112,35 @@ const UserFormComponent: React.FC<{
   });
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [locations, setLocations] = useState<any[]>([]);
+  const [selectedPrimaryLocation, setSelectedPrimaryLocation] = useState<string>('');
+  const [selectedLocations, setSelectedLocations] = useState<string[]>([]);
+
+  // Fetch locations and user's location assignments on mount
+  useEffect(() => {
+    const fetchData = async () => {
+      if (!labId) return;
+      
+      // Fetch all locations
+      const { data: locationsData } = await database.locations.getAll();
+      setLocations(locationsData || []);
+
+      // Fetch user's location assignments if editing existing user
+      if (user?.id) {
+        const { data: userCenters, error } = await supabase
+          .from('user_centers')
+          .select('location_id, is_primary')
+          .eq('user_id', user.id);
+
+        if (!error && userCenters) {
+          const primaryCenter = userCenters.find(c => c.is_primary);
+          setSelectedPrimaryLocation(primaryCenter?.location_id || '');
+          setSelectedLocations(userCenters.map(c => c.location_id));
+        }
+      }
+    };
+    fetchData();
+  }, [labId, user?.id]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -127,6 +163,8 @@ const UserFormComponent: React.FC<{
         return;
       }
 
+      let userId: string;
+
       if (user) {
         // Update existing user
         const { error: updateError } = await supabase
@@ -142,10 +180,11 @@ const UserFormComponent: React.FC<{
           .eq('id', user.id);
 
         if (updateError) throw updateError;
+        userId = user.id;
       } else {
         // Create new user (note: this should ideally be done through Auth system)
         console.log('Creating user with lab_id:', labId);
-        const { error: insertError } = await supabase
+        const { data: newUser, error: insertError } = await supabase
           .from('users')
           .insert({
             name: formData.name,
@@ -157,9 +196,37 @@ const UserFormComponent: React.FC<{
             status: 'Active',
             join_date: new Date().toISOString(),
             created_at: new Date().toISOString(),
-          });
+          })
+          .select('id')
+          .single();
 
-        if (insertError) throw insertError;
+        if (insertError || !newUser) throw insertError || new Error('Failed to create user');
+        userId = newUser.id;
+      }
+
+      // Update user_centers (location assignments)
+      // First, delete existing assignments if updating
+      if (user) {
+        await supabase
+          .from('user_centers')
+          .delete()
+          .eq('user_id', userId);
+      }
+
+      // Insert new location assignments
+      if (selectedLocations.length > 0) {
+        const userCenters = selectedLocations.map(locationId => ({
+          user_id: userId,
+          location_id: locationId,
+          is_primary: locationId === selectedPrimaryLocation,
+          created_at: new Date().toISOString(),
+        }));
+
+        const { error: centersError } = await supabase
+          .from('user_centers')
+          .insert(userCenters);
+
+        if (centersError) throw centersError;
       }
 
       onSave?.();
@@ -179,6 +246,19 @@ const UserFormComponent: React.FC<{
         ? prev.permissions.filter(id => id !== permissionId)
         : [...prev.permissions, permissionId]
     }));
+  };
+
+  const handleLocationToggle = (locationId: string) => {
+    setSelectedLocations(prev => 
+      prev.includes(locationId)
+        ? prev.filter(id => id !== locationId)
+        : [...prev, locationId]
+    );
+    
+    // If unchecking the primary location, clear it
+    if (selectedPrimaryLocation === locationId && selectedLocations.includes(locationId)) {
+      setSelectedPrimaryLocation('');
+    }
   };
 
   return (
@@ -252,6 +332,29 @@ const UserFormComponent: React.FC<{
                 className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
               />
             </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">
+                Primary Location
+              </label>
+              <select
+                value={selectedPrimaryLocation}
+                onChange={(e) => {
+                  const newPrimary = e.target.value;
+                  setSelectedPrimaryLocation(newPrimary);
+                  // If a location is set as primary, ensure it's also in the selected locations
+                  if (newPrimary && !selectedLocations.includes(newPrimary)) {
+                    setSelectedLocations(prev => [...prev, newPrimary]);
+                  }
+                }}
+                className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+              >
+                <option value="">No primary location</option>
+                {locations.map(location => (
+                  <option key={location.id} value={location.id}>{location.name}</option>
+                ))}
+              </select>
+              <p className="text-xs text-gray-500 mt-1">Main work location for this user</p>
+            </div>
             <div className="md:col-span-2">
               <label className="block text-sm font-medium text-gray-700 mb-1">
                 Phone Number
@@ -264,6 +367,48 @@ const UserFormComponent: React.FC<{
               />
             </div>
           </div>
+
+          {/* Location Access Section */}
+          {locations.length > 0 && (
+            <div>
+              <h3 className="text-lg font-medium text-gray-900 mb-2">Location Access</h3>
+              <p className="text-sm text-gray-600 mb-4">
+                Select which locations this user can access. Leave empty to grant access to all locations.
+              </p>
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                {locations.map(location => (
+                  <label 
+                    key={location.id} 
+                    className={`flex items-center p-3 border rounded-lg hover:bg-gray-50 cursor-pointer ${
+                      selectedPrimaryLocation === location.id 
+                        ? 'border-blue-500 bg-blue-50' 
+                        : 'border-gray-200'
+                    }`}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={selectedLocations.includes(location.id)}
+                      onChange={() => handleLocationToggle(location.id)}
+                      className="h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded"
+                    />
+                    <div className="ml-3 flex-1">
+                      <div className="flex items-center justify-between">
+                        <div className="text-sm font-medium text-gray-900">{location.name}</div>
+                        {selectedPrimaryLocation === location.id && (
+                          <span className="ml-2 px-2 py-0.5 text-xs font-medium bg-blue-100 text-blue-700 rounded">
+                            Primary
+                          </span>
+                        )}
+                      </div>
+                      {location.address && (
+                        <div className="text-xs text-gray-500">{location.address}</div>
+                      )}
+                    </div>
+                  </label>
+                ))}
+              </div>
+            </div>
+          )}
 
           <div>
             <h3 className="text-lg font-medium text-gray-900 mb-4">Permissions</h3>
@@ -310,7 +455,7 @@ const UserFormComponent: React.FC<{
 
 const Settings: React.FC = () => {
   const { user: authUser } = useAuth();
-  const [activeTab, setActiveTab] = useState<'team' | 'permissions' | 'usage' | 'lab' | 'notifications'>('team');
+  const [activeTab, setActiveTab] = useState<'team' | 'permissions' | 'usage' | 'lab' | 'notifications' | 'invoices'>('team');
   const [showUserForm, setShowUserForm] = useState(false);
   const [showEditUserModal, setShowEditUserModal] = useState(false);
   const [selectedUser, setSelectedUser] = useState<User | null>(null);
@@ -397,7 +542,14 @@ const Settings: React.FC = () => {
             name,
             email,
             phone,
+            contact_number,
+            gender,
             department,
+            department_id,
+            departments!department_id(id, name),
+            role_id,
+            is_phlebotomist,
+            clinic_keywords,
             status,
             last_login,
             join_date,
@@ -414,7 +566,13 @@ const Settings: React.FC = () => {
           name: u.name,
           email: u.email,
           role: u.user_roles?.role_name || 'Technician',
-          department: u.department || '',
+          role_id: u.role_id,
+          department: u.departments?.name || u.department || '',
+          department_id: u.department_id,
+          contact_number: u.contact_number,
+          gender: u.gender,
+          is_phlebotomist: u.is_phlebotomist,
+          clinic_keywords: u.clinic_keywords,
           status: u.status === 'Active' ? 'Active' : u.status === 'Inactive' ? 'Inactive' : 'Suspended',
           lastLogin: u.last_login || 'Never',
           permissions: [], // Will be loaded separately
@@ -499,6 +657,7 @@ const Settings: React.FC = () => {
     { id: 'usage', name: 'Usage & Analytics', icon: BarChart3 },
     { id: 'lab', name: 'Lab Settings', icon: Building },
     { id: 'notifications', name: 'Notifications', icon: Bell },
+    { id: 'invoices', name: 'Invoice Templates', icon: FileText },
   ];
 
   const roles = availableRoles.length > 0
@@ -578,7 +737,14 @@ const Settings: React.FC = () => {
         name,
         email,
         phone,
+        contact_number,
+        gender,
         department,
+        department_id,
+        departments!department_id(id, name),
+        role_id,
+        is_phlebotomist,
+        clinic_keywords,
         status,
         last_login,
         join_date,
@@ -592,7 +758,13 @@ const Settings: React.FC = () => {
       name: u.name,
       email: u.email,
       role: u.user_roles?.role_name || 'Technician',
-      department: u.department || '',
+      role_id: u.role_id,
+      department: u.departments?.name || u.department || '',
+      department_id: u.department_id,
+      contact_number: u.contact_number,
+      gender: u.gender,
+      is_phlebotomist: u.is_phlebotomist,
+      clinic_keywords: u.clinic_keywords,
       status: u.status === 'Active' ? 'Active' : u.status === 'Inactive' ? 'Inactive' : 'Suspended',
       lastLogin: u.last_login || 'Never',
       permissions: [],
@@ -622,7 +794,8 @@ const Settings: React.FC = () => {
   };
 
   return (
-    <div className="flex flex-col h-full w-full min-w-0 overflow-hidden bg-gray-50">
+    <div className="flex flex-col h-screen w-full bg-gray-50">
+      {/* Header and Tabs - Fixed at top */}
       <div className="flex-none p-6 pb-0 space-y-6">
         <div className="flex items-center justify-between">
           <div>
@@ -633,7 +806,7 @@ const Settings: React.FC = () => {
 
         {/* Tab Navigation */}
         <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-1">
-          <div className="flex space-x-1 overflow-x-auto">
+          <div className="flex space-x-1 overflow-x-auto scrollbar-hide">
             {tabs.map((tab) => (
               <button
                 key={tab.id}
@@ -651,7 +824,8 @@ const Settings: React.FC = () => {
         </div>
       </div>
 
-      <div className="flex-1 overflow-auto p-6">
+      {/* Content Area - Scrollable */}
+      <div className="flex-1 overflow-y-auto p-6 pt-4">
 
         {/* Team Management Tab */}
         {activeTab === 'team' && (
@@ -810,14 +984,16 @@ const Settings: React.FC = () => {
                         </td>
                         <td className="px-6 py-4 whitespace-nowrap text-sm font-medium space-x-2">
                           <button
-                            onClick={() => setSelectedUser(user)}
+                            onClick={() => { setSelectedUser(user); setShowEditUserModal(true); }}
                             className="text-blue-600 hover:text-blue-900 p-1 rounded"
+                            title="View User"
                           >
                             <Eye className="h-4 w-4" />
                           </button>
                           <button
                             onClick={() => { setSelectedUser(user); setShowEditUserModal(true); }}
                             className="text-gray-600 hover:text-gray-900 p-1 rounded"
+                            title="Edit User"
                           >
                             <Edit className="h-4 w-4" />
                           </button>
@@ -1253,6 +1429,11 @@ const Settings: React.FC = () => {
         {/* Notifications Tab */}
         {activeTab === 'notifications' && (
           <NotificationSettings />
+        )}
+
+        {/* Invoice Templates Tab */}
+        {activeTab === 'invoices' && (
+          <InvoiceTemplateManager />
         )}
 
       </div>

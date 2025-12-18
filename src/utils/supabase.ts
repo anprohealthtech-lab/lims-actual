@@ -47,10 +47,20 @@ export interface ReportTemplateAnalyteRow {
   value?: string;
   unit?: string;
   reference_range?: string;
+  reference_range_male?: string;
+  reference_range_female?: string;
+  low_critical?: string;
+  high_critical?: string;
   flag?: string;
+  flag_source?: string;
+  flag_confidence?: number;
+  ai_interpretation?: string;
+  ai_audit_status?: string;
   verify_status?: string;
   test_name?: string;
   test_group_id?: string;
+  value_type?: string;
+  expected_normal_values?: string[];
 }
 
 export interface ReportTemplateContext {
@@ -64,6 +74,7 @@ export interface ReportTemplateContext {
   analyteParameters: string[];
   testGroupIds: string[];
   placeholderValues: Record<string, string | number | boolean | null>;
+  sectionContent?: Record<string, string>; // Doctor-filled section content (findings, interpretations, etc.)
   labBranding?: ReportTemplateLabBranding;
 }
 
@@ -501,12 +512,13 @@ export const database = {
       
       if (!userData?.id) return null;
       
+      // Use .maybeSingle() instead of .single() to handle case where no primary location exists
       const { data: center } = await supabase
         .from('user_centers')
         .select('location_id')
         .eq('user_id', userData.id)
         .eq('is_primary', true)
-        .single();
+        .maybeSingle();
       
       return center?.location_id || null;
     } catch (err) {
@@ -526,7 +538,7 @@ export const database = {
         .from('labs')
         .select('enforce_location_restrictions')
         .eq('id', labId)
-        .single();
+        .maybeSingle();
       
       if (!lab?.enforce_location_restrictions) {
         return { shouldFilter: false, locationIds: [], canViewAll: true };
@@ -2049,7 +2061,7 @@ export const database = {
             }));
           }
         } else {
-          // New format - tests are objects with id and name
+          // New format - tests are objects with id, name, and type
           const validTestObjects = tests.filter(test => 
             test && 
             typeof test === 'object' && 
@@ -2057,14 +2069,74 @@ export const database = {
             test.name.trim() !== ''
           );
           
-          orderTestsData = validTestObjects.map(test => ({
+          // Separate packages from individual tests
+          const packages = validTestObjects.filter(test => test.type === 'package');
+          const individualTests = validTestObjects.filter(test => test.type !== 'package');
+          
+          // Add individual tests with their prices
+          orderTestsData = individualTests.map(test => ({
             order_id: updatedOrder.id,
             test_name: test.name,
-            test_group_id: test.type === 'test' ? test.id : null, // Only include test_group_id for individual tests, not packages
+            test_group_id: test.id || null,
+            package_id: null,
+            price: test.price ?? 0, // Store price for billing
             sample_id: updatedOrder.sample_id,
             lab_id,
-            outsourced_lab_id: test.outsourced_lab_id || null // Track which lab this test is outsourced to
+            outsourced_lab_id: test.outsourced_lab_id || null
           }));
+          
+          // For packages, add both the package record AND expand to individual test groups
+          if (packages.length > 0) {
+            // Fetch package details with test groups
+            const packageIds = packages.map(p => p.id).filter(Boolean);
+            
+            if (packageIds.length > 0) {
+              const { data: packageDetails } = await supabase
+                .from('packages')
+                .select(`
+                  id,
+                  name,
+                  package_test_groups(
+                    test_group_id,
+                    test_groups(id, name)
+                  )
+                `)
+                .in('id', packageIds);
+              
+              // Add package entry (with package_id set and PACKAGE PRICE)
+              packages.forEach(pkg => {
+                orderTestsData.push({
+                  order_id: updatedOrder.id,
+                  test_name: `📦 ${pkg.name}`, // Prefix with package emoji for visibility
+                  test_group_id: null,
+                  package_id: pkg.id,
+                  price: pkg.price ?? 0, // Store PACKAGE price for billing
+                  sample_id: updatedOrder.sample_id,
+                  lab_id,
+                  outsourced_lab_id: null
+                });
+                
+                // Expand package test groups - these have ₹0 price (included in package)
+                const pkgDetails = packageDetails?.find(pd => pd.id === pkg.id);
+                if (pkgDetails?.package_test_groups) {
+                  pkgDetails.package_test_groups.forEach((ptg: any) => {
+                    if (ptg.test_groups) {
+                      orderTestsData.push({
+                        order_id: updatedOrder.id,
+                        test_name: ptg.test_groups.name,
+                        test_group_id: ptg.test_groups.id,
+                        package_id: pkg.id, // Link to parent package
+                        price: 0, // ₹0 - included in package price
+                        sample_id: updatedOrder.sample_id,
+                        lab_id,
+                        outsourced_lab_id: null
+                      });
+                    }
+                  });
+                }
+              });
+            }
+          }
         }
         
         if (orderTestsData.length > 0) {
@@ -2080,6 +2152,40 @@ export const database = {
           }
           
           console.log(`✅ Created ${orderTestsData.length} order test records with proper test_group_ids`);
+
+          // ✅ Fix package pricing - update prices after insert to override any trigger
+          // Tests inside a package (have package_id AND test_group_id) should be ₹0
+          const packageTestsToUpdate = orderTestsData.filter(t => t.package_id && t.test_group_id);
+          if (packageTestsToUpdate.length > 0) {
+            const testNames = packageTestsToUpdate.map(t => t.test_name);
+            const { error: priceUpdateError } = await supabase
+              .from('order_tests')
+              .update({ price: 0 })
+              .eq('order_id', updatedOrder.id)
+              .in('test_name', testNames)
+              .not('test_group_id', 'is', null); // Only update those with test_group_id (not package entry)
+            
+            if (priceUpdateError) {
+              console.warn('Could not update package test prices:', priceUpdateError);
+            } else {
+              console.log(`✅ Updated ${packageTestsToUpdate.length} package tests to ₹0 price`);
+              
+              // Recalculate order total_amount from order_tests to ensure consistency
+              const { data: updatedOrderTests } = await supabase
+                .from('order_tests')
+                .select('price')
+                .eq('order_id', updatedOrder.id);
+              
+              if (updatedOrderTests) {
+                const correctTotal = updatedOrderTests.reduce((sum, t) => sum + (Number(t.price) || 0), 0);
+                await supabase
+                  .from('orders')
+                  .update({ total_amount: correctTotal })
+                  .eq('id', updatedOrder.id);
+                console.log(`✅ Updated order total_amount to ₹${correctTotal}`);
+              }
+            }
+          }
 
           // ✅ Auto-create placeholder results for outsourced tests
           const outsourcedTests = orderTestsData.filter(test => test.outsourced_lab_id);
@@ -2862,6 +2968,11 @@ export const database = {
             order_id,
             result_id,
             lab_id,
+            flag,
+            flag_source,
+            flag_confidence,
+            ai_interpretation,
+            ai_audit_status,
             orders(id, order_number, patient_id, patients(name)),
             users:verified_by(email, raw_user_meta_data)
           `)
@@ -2872,6 +2983,166 @@ export const database = {
         return { data: data || [], error };
       } catch (error) {
         console.error('Error fetching pending results:', error);
+        return { data: [], error };
+      }
+    },
+
+    // Update result value with AI flag analysis results
+    updateWithAIFlag: async (resultValueId: string, updates: {
+      flag?: string;
+      flag_source?: 'rule' | 'ai' | 'manual';
+      flag_confidence?: number;
+      ai_interpretation?: string;
+      ai_audit_status?: 'pending' | 'approved' | 'rejected';
+      ai_audit_notes?: string;
+    }): Promise<{ data: any; error: any }> => {
+      try {
+        const { data, error } = await supabase
+          .from('result_values')
+          .update({
+            ...updates,
+            updated_at: new Date().toISOString()
+          })
+          .eq('id', resultValueId)
+          .select()
+          .single();
+        return { data, error };
+      } catch (error) {
+        console.error('Error updating result value with AI flag:', error);
+        return { data: null, error };
+      }
+    },
+
+    // Bulk update result values with AI flags
+    bulkUpdateWithAIFlags: async (updates: Array<{
+      id: string;
+      flag?: string;
+      flag_source?: 'rule' | 'ai' | 'manual';
+      flag_confidence?: number;
+      ai_interpretation?: string;
+      ai_audit_status?: 'pending' | 'approved' | 'rejected';
+    }>): Promise<{ success: number; failed: number }> => {
+      let successCount = 0;
+      let failedCount = 0;
+
+      for (const update of updates) {
+        const { error } = await supabase
+          .from('result_values')
+          .update({
+            flag: update.flag,
+            flag_source: update.flag_source,
+            flag_confidence: update.flag_confidence,
+            ai_interpretation: update.ai_interpretation,
+            ai_audit_status: update.ai_audit_status,
+            updated_at: new Date().toISOString()
+          })
+          .eq('id', update.id);
+
+        if (error) {
+          console.error(`Failed to update result ${update.id}:`, error);
+          failedCount++;
+        } else {
+          successCount++;
+        }
+      }
+
+      return { success: successCount, failed: failedCount };
+    },
+
+    // Get result value with full flag context for verification
+    getWithFlagContext: async (resultValueId: string): Promise<{ data: any; error: any }> => {
+      try {
+        const { data, error } = await supabase
+          .from('result_values')
+          .select(`
+            *,
+            results:result_id(
+              id,
+              order_id,
+              test_group_id,
+              orders:order_id(
+                id,
+                order_number,
+                patient_id,
+                patients:patient_id(name, gender, dob)
+              )
+            ),
+            analytes:analyte_id(
+              id,
+              name,
+              unit,
+              reference_range,
+              reference_range_male,
+              reference_range_female,
+              low_critical,
+              high_critical,
+              value_type,
+              expected_normal_values,
+              flag_rules,
+              interpretation_low,
+              interpretation_normal,
+              interpretation_high
+            )
+          `)
+          .eq('id', resultValueId)
+          .single();
+
+        return { data, error };
+      } catch (error) {
+        console.error('Error fetching result value with flag context:', error);
+        return { data: null, error };
+      }
+    },
+
+    // Get all result values for an order with flag details (used by PDF and verification)
+    getForOrderWithFlags: async (orderId: string): Promise<{ data: any[]; error: any }> => {
+      try {
+        const { data, error } = await supabase
+          .from('result_values')
+          .select(`
+            id,
+            parameter,
+            value,
+            unit,
+            reference_range,
+            flag,
+            flag_source,
+            flag_confidence,
+            ai_interpretation,
+            ai_audit_status,
+            ai_audit_notes,
+            verify_status,
+            verified_by,
+            verified_at,
+            analyte_id,
+            result_id,
+            results:result_id(
+              id,
+              test_group_id,
+              test_groups:test_group_id(id, name, code, category)
+            ),
+            analytes:analyte_id(
+              id,
+              name,
+              unit,
+              reference_range,
+              reference_range_male,
+              reference_range_female,
+              low_critical,
+              high_critical,
+              value_type,
+              expected_normal_values,
+              interpretation_low,
+              interpretation_normal,
+              interpretation_high
+            )
+          `)
+          .eq('order_id', orderId)
+          .order('parameter');
+
+        return { data: data || [], error };
+      } catch (error) {
+        console.error('Error fetching result values with flags:', error);
         return { data: [], error };
       }
     }
@@ -3712,6 +3983,8 @@ export const database = {
       name: string;
       unit: string;
       reference_range: string;
+      reference_range_male?: string;
+      reference_range_female?: string;
       low_critical?: string;
       high_critical?: string;
       interpretation_low?: string;
@@ -3722,13 +3995,25 @@ export const database = {
       is_active?: boolean;
       ai_processing_type?: string;
       ai_prompt_override?: string;
+      // Calculated parameter fields
+      is_calculated?: boolean;
+      formula?: string | null;
+      formula_variables?: string[];
+      formula_description?: string | null;
+      // Flag determination fields
+      value_type?: 'numeric' | 'qualitative' | 'semi_quantitative' | 'descriptive';
+      expected_normal_values?: string[];
+      flag_rules?: any;
     }) => {
+      // First create the analyte in the analytes table
       const { data, error } = await supabase
         .from('analytes')
         .insert([{
           name: analyteData.name,
           unit: analyteData.unit,
           reference_range: analyteData.reference_range,
+          reference_range_male: analyteData.reference_range_male,
+          reference_range_female: analyteData.reference_range_female,
           low_critical: analyteData.low_critical,
           high_critical: analyteData.high_critical,
           interpretation_low: analyteData.interpretation_low,
@@ -3738,10 +4023,37 @@ export const database = {
           is_global: analyteData.is_global || false,
           is_active: analyteData.is_active !== false, // Default to true
           ai_processing_type: analyteData.ai_processing_type,
-          ai_prompt_override: analyteData.ai_prompt_override
+          ai_prompt_override: analyteData.ai_prompt_override,
+          // Calculated parameter fields
+          is_calculated: analyteData.is_calculated || false,
+          formula: analyteData.formula || null,
+          formula_variables: analyteData.formula_variables || [],
+          formula_description: analyteData.formula_description || null,
+          // Flag determination fields
+          value_type: analyteData.value_type || 'numeric',
+          expected_normal_values: analyteData.expected_normal_values || [],
+          flag_rules: analyteData.flag_rules || null
         }])
         .select()
         .single();
+      
+      if (error || !data) {
+        return { data, error };
+      }
+
+      // Also create a lab_analytes entry for the current user's lab
+      const labId = await database.getCurrentUserLabId();
+      if (labId) {
+        await supabase
+          .from('lab_analytes')
+          .insert([{
+            lab_id: labId,
+            analyte_id: data.id,
+            is_active: true,
+            visible: true
+          }]);
+      }
+
       return { data, error };
     },
 
@@ -3761,6 +4073,8 @@ export const database = {
       name?: string;
       unit?: string;
       reference_range?: string;
+      reference_range_male?: string;
+      reference_range_female?: string;
       low_critical?: string;
       high_critical?: string;
       interpretation_low?: string;
@@ -3770,6 +4084,15 @@ export const database = {
       is_active?: boolean;
       ai_processing_type?: string;
       ai_prompt_override?: string;
+      // Calculated parameter fields
+      is_calculated?: boolean;
+      formula?: string | null;
+      formula_variables?: string[];
+      formula_description?: string | null;
+      // Flag determination fields
+      value_type?: 'numeric' | 'qualitative' | 'semi_quantitative' | 'descriptive';
+      expected_normal_values?: string[];
+      flag_rules?: any;
     }) => {
       const { data, error } = await supabase
         .from('analytes')
@@ -3777,6 +4100,8 @@ export const database = {
           name: updates.name,
           unit: updates.unit,
           reference_range: updates.reference_range,
+          reference_range_male: updates.reference_range_male,
+          reference_range_female: updates.reference_range_female,
           low_critical: updates.low_critical,
           high_critical: updates.high_critical,
           interpretation_low: updates.interpretation_low,
@@ -3786,6 +4111,15 @@ export const database = {
           is_active: updates.is_active,
           ai_processing_type: updates.ai_processing_type,
           ai_prompt_override: updates.ai_prompt_override,
+          // Calculated parameter fields
+          is_calculated: updates.is_calculated,
+          formula: updates.formula,
+          formula_variables: updates.formula_variables,
+          formula_description: updates.formula_description,
+          // Flag determination fields
+          value_type: updates.value_type,
+          expected_normal_values: updates.expected_normal_values,
+          flag_rules: updates.flag_rules,
           updated_at: new Date().toISOString()
         })
         .eq('id', analyteId)
@@ -4146,8 +4480,10 @@ export const database = {
       name?: string;
       unit?: string;
       reference_range?: string;
-      low_critical?: number | null;
-      high_critical?: number | null;
+      reference_range_male?: string;
+      reference_range_female?: string;
+      low_critical?: number | string | null;
+      high_critical?: number | string | null;
       interpretation_low?: string;
       interpretation_normal?: string;
       interpretation_high?: string;
@@ -4155,9 +4491,17 @@ export const database = {
       lab_specific_name?: string;
       lab_specific_unit?: string;
       lab_specific_reference_range?: string;
+      lab_specific_reference_range_male?: string;
+      lab_specific_reference_range_female?: string;
+      lab_specific_low_critical?: string;
+      lab_specific_high_critical?: string;
       lab_specific_interpretation_low?: string;
       lab_specific_interpretation_normal?: string;
       lab_specific_interpretation_high?: string;
+      // Flag determination fields
+      value_type?: 'numeric' | 'qualitative' | 'semi_quantitative' | 'descriptive';
+      expected_normal_values?: string[];
+      flag_rules?: any;
     }) => {
       const { data, error } = await supabase
         .from('lab_analytes')
@@ -4592,6 +4936,10 @@ export const database = {
 
   packages: {
     getAll: async () => {
+      const lab_id = await database.getCurrentUserLabId();
+      if (!lab_id) {
+        return { data: null, error: { message: 'No lab context found' } };
+      }
       const { data, error } = await supabase
         .from('packages')
         .select(`
@@ -4599,6 +4947,9 @@ export const database = {
           name,
           description,
           price,
+          discount_percentage,
+          category,
+          validity_days,
           is_active,
           created_at,
           updated_at,
@@ -4614,6 +4965,7 @@ export const database = {
             )
           )
         `)
+        .eq('lab_id', lab_id)
         .eq('is_active', true)
         .order('name');
       return { data, error };
@@ -4627,6 +4979,9 @@ export const database = {
           name,
           description,
           price,
+          discount_percentage,
+          category,
+          validity_days,
           is_active,
           created_at,
           updated_at,
@@ -4652,9 +5007,13 @@ export const database = {
     },
 
     create: async (packageData: any) => {
+      const lab_id = await database.getCurrentUserLabId();
+      if (!lab_id) {
+        return { data: null, error: { message: 'No lab context found' } };
+      }
       const { data, error } = await supabase
         .from('packages')
-        .insert([packageData])
+        .insert([{ ...packageData, lab_id }])
         .select()
         .single();
       return { data, error };
@@ -4683,6 +5042,693 @@ export const database = {
         .delete()
         .eq('id', id);
       
+      return { error };
+    },
+
+    // Expand package into individual test groups for order creation
+    expandForOrder: async (packageId: string) => {
+      const { data: pkg, error } = await database.packages.getById(packageId);
+      if (error || !pkg) return { data: null, error };
+
+      const testGroups = (pkg.package_test_groups || []).map((ptg: any) => ({
+        ...ptg.test_groups,
+        source_package_id: packageId,
+        package_name: pkg.name,
+        // Price is overridden by package - tests inherit package discount
+        original_price: ptg.test_groups?.price || 0,
+        discounted_price: pkg.discount_percentage 
+          ? (ptg.test_groups?.price || 0) * (1 - (pkg.discount_percentage / 100))
+          : ptg.test_groups?.price || 0
+      }));
+
+      return {
+        data: {
+          package: pkg,
+          testGroups,
+          totalPackagePrice: pkg.price // Use package price instead of sum
+        },
+        error: null
+      };
+    }
+  },
+
+  // ============================================
+  // TEMPLATE SECTIONS (Pre-defined report sections)
+  // ============================================
+  templateSections: {
+    /**
+     * Get all sections for a template
+     */
+    getByTemplate: async (templateId: string) => {
+      const { data, error } = await supabase
+        .from('lab_template_sections')
+        .select('*')
+        .eq('template_id', templateId)
+        .order('display_order');
+      return { data, error };
+    },
+
+    /**
+     * Get all sections for a test group
+     */
+    getByTestGroup: async (testGroupId: string) => {
+      const { data, error } = await supabase
+        .from('lab_template_sections')
+        .select('*')
+        .eq('test_group_id', testGroupId)
+        .order('display_order');
+      return { data, error };
+    },
+
+    /**
+     * Get all sections for current lab
+     */
+    getAll: async () => {
+      const lab_id = await database.getCurrentUserLabId();
+      if (!lab_id) return { data: null, error: { message: 'No lab context' } };
+
+      const { data, error } = await supabase
+        .from('lab_template_sections')
+        .select(`
+          *,
+          lab_templates(id, template_name),
+          test_groups(id, name)
+        `)
+        .eq('lab_id', lab_id)
+        .order('display_order');
+      return { data, error };
+    },
+
+    /**
+     * Create a new section
+     */
+    create: async (sectionData: {
+      template_id?: string;
+      test_group_id?: string;
+      section_type: string;
+      section_name: string;
+      display_order?: number;
+      default_content?: string;
+      predefined_options?: string[];
+      is_required?: boolean;
+      is_editable?: boolean;
+      placeholder_key?: string;
+    }) => {
+      const lab_id = await database.getCurrentUserLabId();
+      if (!lab_id) return { data: null, error: { message: 'No lab context' } };
+
+      const { data, error } = await supabase
+        .from('lab_template_sections')
+        .insert([{ ...sectionData, lab_id }])
+        .select()
+        .single();
+      return { data, error };
+    },
+
+    /**
+     * Update a section
+     */
+    update: async (id: string, sectionData: Partial<{
+      section_type: string;
+      section_name: string;
+      display_order: number;
+      default_content: string;
+      predefined_options: string[];
+      is_required: boolean;
+      is_editable: boolean;
+      placeholder_key: string;
+    }>) => {
+      const { data, error } = await supabase
+        .from('lab_template_sections')
+        .update({ ...sectionData, updated_at: new Date().toISOString() })
+        .eq('id', id)
+        .select()
+        .single();
+      return { data, error };
+    },
+
+    /**
+     * Delete a section
+     */
+    delete: async (id: string) => {
+      const { error } = await supabase
+        .from('lab_template_sections')
+        .delete()
+        .eq('id', id);
+      return { error };
+    }
+  },
+
+  // ============================================
+  // RESULT SECTION CONTENT (Doctor-filled content)
+  // ============================================
+  resultSectionContent: {
+    /**
+     * Get all section content for a result
+     */
+    getByResult: async (resultId: string) => {
+      const { data, error } = await supabase
+        .from('result_section_content')
+        .select(`
+          *,
+          lab_template_sections(
+            id,
+            section_type,
+            section_name,
+            default_content,
+            predefined_options,
+            placeholder_key,
+            display_order
+          )
+        `)
+        .eq('result_id', resultId)
+        .order('section_id');
+      return { data, error };
+    },
+
+    /**
+     * Create new section content
+     */
+    create: async (contentData: {
+      result_id: string;
+      section_id: string;
+      selected_options?: number[];
+      custom_text?: string;
+      final_content: string;
+    }) => {
+      const { data, error } = await supabase
+        .from('result_section_content')
+        .insert([{
+          ...contentData,
+          edited_at: new Date().toISOString()
+        }])
+        .select()
+        .single();
+      return { data, error };
+    },
+
+    /**
+     * Update existing section content
+     */
+    update: async (id: string, contentData: {
+      selected_options?: number[];
+      custom_text?: string;
+      final_content?: string;
+    }) => {
+      const { data, error } = await supabase
+        .from('result_section_content')
+        .update({
+          ...contentData,
+          edited_at: new Date().toISOString()
+        })
+        .eq('id', id)
+        .select()
+        .single();
+      return { data, error };
+    },
+
+    /**
+     * Create or update section content
+     * final_content becomes immutable after finalization
+     */
+    upsert: async (contentData: {
+      result_id: string;
+      section_id: string;
+      selected_options?: any[];
+      custom_text?: string;
+      final_content: string;
+    }, userId: string) => {
+      const { data, error } = await supabase
+        .from('result_section_content')
+        .upsert({
+          ...contentData,
+          edited_by: userId,
+          edited_at: new Date().toISOString()
+        }, {
+          onConflict: 'result_id,section_id'
+        })
+        .select()
+        .single();
+      return { data, error };
+    },
+
+    /**
+     * Get section content for PDF rendering (returns map of placeholder_key -> final_content)
+     */
+    getForPdfRendering: async (resultId: string): Promise<{ data: Record<string, string> | null; error: any }> => {
+      const { data, error } = await supabase
+        .from('result_section_content')
+        .select(`
+          final_content,
+          lab_template_sections!inner(
+            placeholder_key
+          )
+        `)
+        .eq('result_id', resultId)
+        .not('lab_template_sections.placeholder_key', 'is', null);
+      
+      if (error || !data) return { data: null, error };
+
+      // Build map of placeholder_key -> final_content
+      const sectionMap: Record<string, string> = {};
+      for (const item of data) {
+        const key = (item.lab_template_sections as any)?.placeholder_key;
+        if (key && item.final_content) {
+          sectionMap[key] = item.final_content;
+        }
+      }
+      return { data: sectionMap, error: null };
+    },
+
+    /**
+     * Finalize section content (makes it immutable)
+     */
+    finalize: async (id: string, userId: string) => {
+      const { data, error } = await supabase
+        .from('result_section_content')
+        .update({
+          is_finalized: true,
+          finalized_at: new Date().toISOString(),
+          finalized_by: userId
+        })
+        .eq('id', id)
+        .select()
+        .single();
+      return { data, error };
+    },
+
+    /**
+     * Finalize all sections for a result
+     */
+    finalizeAllForResult: async (resultId: string, userId: string) => {
+      const { data, error } = await supabase
+        .from('result_section_content')
+        .update({
+          is_finalized: true,
+          finalized_at: new Date().toISOString(),
+          finalized_by: userId
+        })
+        .eq('result_id', resultId)
+        .eq('is_finalized', false)
+        .select();
+      return { data, error };
+    },
+
+    /**
+     * Initialize sections for a result from template defaults
+     */
+    initializeFromTemplate: async (resultId: string, testGroupId: string, userId: string) => {
+      // Get sections for the test group
+      const { data: sections, error: fetchError } = await database.templateSections.getByTestGroup(testGroupId);
+      if (fetchError || !sections || sections.length === 0) {
+        return { data: [], error: fetchError };
+      }
+
+      // Create content entries with default values
+      const contentEntries = sections.map(section => ({
+        result_id: resultId,
+        section_id: section.id,
+        selected_options: [],
+        custom_text: '',
+        final_content: section.default_content || '',
+        edited_by: userId,
+        edited_at: new Date().toISOString()
+      }));
+
+      const { data, error } = await supabase
+        .from('result_section_content')
+        .insert(contentEntries)
+        .select();
+      return { data, error };
+    }
+  },
+
+  // ============================================
+  // ANALYTE DEPENDENCIES (Calculated parameters)
+  // ============================================
+  analyteDependencies: {
+    /**
+     * Get all dependencies for a calculated analyte
+     */
+    getByAnalyte: async (calculatedAnalyteId: string) => {
+      const { data, error } = await supabase
+        .from('analyte_dependencies')
+        .select(`
+          *,
+          source_analyte:analytes!analyte_dependencies_source_analyte_id_fkey(id, name, unit)
+        `)
+        .eq('calculated_analyte_id', calculatedAnalyteId);
+      return { data, error };
+    },
+
+    /**
+     * Get all analytes that depend on a source analyte
+     */
+    getDependents: async (sourceAnalyteId: string) => {
+      const { data, error } = await supabase
+        .from('analyte_dependencies')
+        .select(`
+          *,
+          calculated_analyte:analytes!analyte_dependencies_calculated_analyte_id_fkey(id, name, formula)
+        `)
+        .eq('source_analyte_id', sourceAnalyteId);
+      return { data, error };
+    },
+
+    /**
+     * Create a dependency (circular check is done at DB level)
+     */
+    create: async (dependencyData: {
+      calculated_analyte_id: string;
+      source_analyte_id: string;
+      variable_name: string;
+    }) => {
+      // Client-side circular check before DB call
+      const hasCycle = await database.analyteDependencies.checkCircular(
+        dependencyData.calculated_analyte_id,
+        dependencyData.source_analyte_id
+      );
+      if (hasCycle) {
+        return { 
+          data: null, 
+          error: { message: 'Circular dependency detected. This would create an infinite calculation loop.' } 
+        };
+      }
+
+      const { data, error } = await supabase
+        .from('analyte_dependencies')
+        .insert([dependencyData])
+        .select()
+        .single();
+      return { data, error };
+    },
+
+    /**
+     * Delete a dependency
+     */
+    delete: async (id: string) => {
+      const { error } = await supabase
+        .from('analyte_dependencies')
+        .delete()
+        .eq('id', id);
+      return { error };
+    },
+
+    /**
+     * Check for circular dependencies (client-side BFS)
+     * Returns true if adding this dependency would create a cycle
+     */
+    checkCircular: async (calculatedAnalyteId: string, sourceAnalyteId: string): Promise<boolean> => {
+      const visited = new Set<string>([calculatedAnalyteId]);
+      const queue = [sourceAnalyteId];
+
+      while (queue.length > 0) {
+        const current = queue.shift()!;
+        
+        // Found cycle
+        if (current === calculatedAnalyteId) {
+          return true;
+        }
+
+        if (visited.has(current)) continue;
+        visited.add(current);
+
+        // Get what this analyte depends on (if it's calculated)
+        const { data } = await supabase
+          .from('analyte_dependencies')
+          .select('source_analyte_id')
+          .eq('calculated_analyte_id', current);
+
+        if (data) {
+          for (const dep of data) {
+            if (!visited.has(dep.source_analyte_id)) {
+              queue.push(dep.source_analyte_id);
+            }
+          }
+        }
+      }
+
+      return false;
+    },
+
+    /**
+     * Set up all dependencies for a calculated analyte at once
+     */
+    setDependencies: async (calculatedAnalyteId: string, dependencies: Array<{
+      source_analyte_id: string;
+      variable_name: string;
+    }>) => {
+      // Delete existing dependencies
+      await supabase
+        .from('analyte_dependencies')
+        .delete()
+        .eq('calculated_analyte_id', calculatedAnalyteId);
+
+      if (dependencies.length === 0) {
+        return { data: [], error: null };
+      }
+
+      // Check for cycles before inserting
+      for (const dep of dependencies) {
+        const hasCycle = await database.analyteDependencies.checkCircular(
+          calculatedAnalyteId,
+          dep.source_analyte_id
+        );
+        if (hasCycle) {
+          return { 
+            data: null, 
+            error: { message: `Circular dependency detected with analyte ID: ${dep.source_analyte_id}` } 
+          };
+        }
+      }
+
+      // Insert new dependencies
+      const insertData = dependencies.map(dep => ({
+        calculated_analyte_id: calculatedAnalyteId,
+        source_analyte_id: dep.source_analyte_id,
+        variable_name: dep.variable_name
+      }));
+
+      const { data, error } = await supabase
+        .from('analyte_dependencies')
+        .insert(insertData)
+        .select();
+      return { data, error };
+    }
+  },
+
+  // ============================================
+  // FLAG AUDITS (AI Flag Analysis Audit Trail)
+  // ============================================
+  flagAudits: {
+    /**
+     * Create a flag audit record
+     */
+    create: async (auditData: {
+      result_value_id: string;
+      original_value: string;
+      auto_determined_flag?: string | null;
+      auto_flag_source?: string | null;
+      ai_suggested_flag?: string | null;
+      final_flag?: string | null;
+      auto_confidence?: number;
+      ai_confidence?: number;
+      resolution_notes?: string;
+      ai_reasoning?: string;
+      result_id?: string;
+      order_id?: string;
+      analyte_id?: string;
+      lab_id?: string;
+    }) => {
+      const { data: { user } } = await supabase.auth.getUser();
+      const lab_id = auditData.lab_id || await database.getCurrentUserLabId();
+      const { data, error } = await supabase
+        .from('ai_flag_audits')
+        .insert([{
+          ...auditData,
+          lab_id,
+          resolved_by: user?.id
+        }])
+        .select()
+        .single();
+      return { data, error };
+    },
+
+    /**
+     * Get pending audits for review
+     */
+    getPending: async (labId?: string) => {
+      let query = supabase
+        .from('ai_flag_audits')
+        .select(`
+          *,
+          result_values:result_value_id(
+            id,
+            parameter,
+            value,
+            unit,
+            reference_range,
+            order_id,
+            orders:order_id(
+              order_number,
+              patient_id,
+              patients:patient_id(name)
+            )
+          )
+        `)
+        .eq('audit_status', 'pending')
+        .order('created_at', { ascending: false });
+
+      if (labId) {
+        query = query.eq('result_values.lab_id', labId);
+      }
+
+      const { data, error } = await query;
+      return { data, error };
+    },
+
+    /**
+     * Resolve an audit (approve or reject the flag change)
+     */
+    resolve: async (auditId: string, resolution: {
+      status: 'approved' | 'rejected';
+      notes?: string;
+    }) => {
+      const { data: { user } } = await supabase.auth.getUser();
+      const { data, error } = await supabase
+        .from('ai_flag_audits')
+        .update({
+          audit_status: resolution.status,
+          audit_notes: resolution.notes,
+          reviewed_by: user?.id,
+          reviewed_at: new Date().toISOString()
+        })
+        .eq('id', auditId)
+        .select()
+        .single();
+      return { data, error };
+    },
+
+    /**
+     * Get audit history for a result value
+     */
+    getForResultValue: async (resultValueId: string) => {
+      const { data, error } = await supabase
+        .from('ai_flag_audits')
+        .select('*')
+        .eq('result_value_id', resultValueId)
+        .order('created_at', { ascending: false });
+      return { data, error };
+    },
+
+    /**
+     * Get flag audit statistics
+     */
+    getStats: async (labId?: string, dateRange?: { start: Date; end: Date }) => {
+      let query = supabase
+        .from('ai_flag_audits')
+        .select('flag_source, audit_status, confidence_score');
+
+      if (dateRange) {
+        query = query
+          .gte('created_at', dateRange.start.toISOString())
+          .lte('created_at', dateRange.end.toISOString());
+      }
+
+      const { data, error } = await query;
+      
+      if (error || !data) {
+        return { data: null, error };
+      }
+
+      // Calculate stats
+      const stats = {
+        total: data.length,
+        bySource: {
+          rule: data.filter(d => d.flag_source === 'rule').length,
+          ai: data.filter(d => d.flag_source === 'ai').length,
+          manual: data.filter(d => d.flag_source === 'manual').length
+        },
+        byStatus: {
+          pending: data.filter(d => d.audit_status === 'pending').length,
+          approved: data.filter(d => d.audit_status === 'approved').length,
+          rejected: data.filter(d => d.audit_status === 'rejected').length
+        },
+        averageConfidence: data.length > 0 
+          ? data.reduce((sum, d) => sum + (d.confidence_score || 0), 0) / data.length 
+          : 0
+      };
+
+      return { data: stats, error: null };
+    }
+  },
+
+  // ============================================
+  // ANALYTE FLAG RULES
+  // ============================================
+  analyteFlagRules: {
+    /**
+     * Get flag rules for an analyte
+     */
+    getForAnalyte: async (analyteId: string) => {
+      const { data, error } = await supabase
+        .from('analyte_flag_rules')
+        .select('*')
+        .eq('analyte_id', analyteId)
+        .order('priority', { ascending: true });
+      return { data, error };
+    },
+
+    /**
+     * Create a flag rule
+     */
+    create: async (ruleData: {
+      analyte_id: string;
+      rule_name: string;
+      rule_type: 'range' | 'pattern' | 'formula';
+      condition: any;
+      result_flag: string;
+      priority?: number;
+      is_active?: boolean;
+    }) => {
+      const { data, error } = await supabase
+        .from('analyte_flag_rules')
+        .insert([ruleData])
+        .select()
+        .single();
+      return { data, error };
+    },
+
+    /**
+     * Update a flag rule
+     */
+    update: async (ruleId: string, updates: {
+      rule_name?: string;
+      condition?: any;
+      result_flag?: string;
+      priority?: number;
+      is_active?: boolean;
+    }) => {
+      const { data, error } = await supabase
+        .from('analyte_flag_rules')
+        .update({
+          ...updates,
+          updated_at: new Date().toISOString()
+        })
+        .eq('id', ruleId)
+        .select()
+        .single();
+      return { data, error };
+    },
+
+    /**
+     * Delete a flag rule
+     */
+    delete: async (ruleId: string) => {
+      const { error } = await supabase
+        .from('analyte_flag_rules')
+        .delete()
+        .eq('id', ruleId);
       return { error };
     }
   },
@@ -8711,6 +9757,353 @@ Object.assign(database, {
   aiAnalysis,
   whatsappTemplates,
   pdfQueue,
+});
+
+// ============================================
+// FLAG AUDIT & RULES NAMESPACE
+// ============================================
+
+const flagAudits = {
+  async create(audit: {
+    result_value_id?: string;
+    result_id?: string;
+    analyte_id?: string;
+    order_id?: string;
+    patient_age?: number;
+    patient_gender?: string;
+    original_value: string;
+    original_unit?: string;
+    reference_range_used?: string;
+    auto_determined_flag?: string;
+    auto_flag_source?: string;
+    auto_confidence?: number;
+    ai_suggested_flag?: string;
+    ai_confidence?: number;
+    ai_reasoning?: string;
+    priority?: 'low' | 'normal' | 'high' | 'critical';
+  }) {
+    const lab_id = await database.getCurrentUserLabId();
+    if (!lab_id) throw new Error('No lab context');
+    
+    return supabase
+      .from('ai_flag_audits')
+      .insert({ ...audit, lab_id })
+      .select()
+      .single();
+  },
+
+  async getPending(limit = 50) {
+    const lab_id = await database.getCurrentUserLabId();
+    if (!lab_id) throw new Error('No lab context');
+    
+    return supabase
+      .from('ai_flag_audits')
+      .select(`
+        *,
+        analytes(name, unit),
+        orders(order_number, patient:patients(name, age, gender))
+      `)
+      .eq('lab_id', lab_id)
+      .eq('status', 'pending')
+      .order('priority', { ascending: true })
+      .order('created_at', { ascending: true })
+      .limit(limit);
+  },
+
+  async getByResultValue(resultValueId: string) {
+    return supabase
+      .from('ai_flag_audits')
+      .select('*')
+      .eq('result_value_id', resultValueId)
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+  },
+
+  async resolve(id: string, data: {
+    final_flag: string;
+    resolution_method: 'auto_accepted' | 'ai_accepted' | 'manual_override' | 'ignored';
+    resolution_notes?: string;
+  }) {
+    const { data: { user } } = await supabase.auth.getUser();
+    
+    return supabase
+      .from('ai_flag_audits')
+      .update({
+        ...data,
+        status: data.resolution_method === 'ignored' ? 'ignored' : 'manually_resolved',
+        resolved_by: user?.id,
+        resolved_at: new Date().toISOString(),
+        updated_at: new Date().toISOString()
+      })
+      .eq('id', id)
+      .select()
+      .single();
+  },
+
+  async getStats() {
+    const lab_id = await database.getCurrentUserLabId();
+    if (!lab_id) throw new Error('No lab context');
+    
+    const { data } = await supabase
+      .from('ai_flag_audits')
+      .select('status, priority')
+      .eq('lab_id', lab_id);
+    
+    return {
+      pending: data?.filter(d => d.status === 'pending').length || 0,
+      pendingCritical: data?.filter(d => d.status === 'pending' && d.priority === 'critical').length || 0,
+      resolved: data?.filter(d => d.status !== 'pending').length || 0
+    };
+  }
+};
+
+const analyteFlagRules = {
+  async getForAnalyte(analyteId: string) {
+    const lab_id = await database.getCurrentUserLabId();
+    
+    return supabase
+      .from('analyte_flag_rules')
+      .select('*')
+      .eq('analyte_id', analyteId)
+      .or(`lab_id.eq.${lab_id},lab_id.is.null`)
+      .eq('is_active', true)
+      .order('rule_priority', { ascending: false });
+  },
+
+  async getAll() {
+    const lab_id = await database.getCurrentUserLabId();
+    if (!lab_id) throw new Error('No lab context');
+    
+    return supabase
+      .from('analyte_flag_rules')
+      .select(`
+        *,
+        analytes(name, unit, category)
+      `)
+      .or(`lab_id.eq.${lab_id},lab_id.is.null`)
+      .eq('is_active', true)
+      .order('rule_priority', { ascending: false });
+  },
+
+  async create(rule: {
+    analyte_id: string;
+    rule_name: string;
+    rule_priority?: number;
+    age_min?: number;
+    age_max?: number;
+    gender?: 'Male' | 'Female';
+    ref_low?: number;
+    ref_high?: number;
+    critical_low?: number;
+    critical_high?: number;
+    normal_values?: string[];
+    abnormal_values?: string[];
+  }) {
+    const lab_id = await database.getCurrentUserLabId();
+    if (!lab_id) throw new Error('No lab context');
+    
+    return supabase
+      .from('analyte_flag_rules')
+      .insert({ ...rule, lab_id })
+      .select()
+      .single();
+  },
+
+  async update(id: string, updates: Partial<{
+    rule_name: string;
+    rule_priority: number;
+    age_min: number;
+    age_max: number;
+    gender: string;
+    ref_low: number;
+    ref_high: number;
+    critical_low: number;
+    critical_high: number;
+    normal_values: string[];
+    abnormal_values: string[];
+    is_active: boolean;
+  }>) {
+    return supabase
+      .from('analyte_flag_rules')
+      .update(updates)
+      .eq('id', id)
+      .select()
+      .single();
+  },
+
+  async delete(id: string) {
+    return supabase
+      .from('analyte_flag_rules')
+      .delete()
+      .eq('id', id);
+  }
+};
+
+// Add flag audit helpers to database object
+Object.assign(database, {
+  flagAudits,
+  analyteFlagRules,
+});
+
+/**
+ * Invoice Templates Database Functions
+ */
+export const invoiceTemplates = {
+  /**
+   * Get all invoice templates for current lab
+   */
+  async getAll() {
+    const lab_id = await database.getCurrentUserLabId();
+    if (!lab_id) throw new Error('No lab context');
+
+    return supabase
+      .from('invoice_templates')
+      .select('*')
+      .eq('lab_id', lab_id)
+      .eq('is_active', true)
+      .order('is_default', { ascending: false })
+      .order('created_at', { ascending: false });
+  },
+
+  /**
+   * Get default invoice template for current lab
+   */
+  async getDefault(labId?: string) {
+    const lab_id = labId || await database.getCurrentUserLabId();
+    if (!lab_id) throw new Error('No lab context');
+
+    return supabase
+      .from('invoice_templates')
+      .select('*')
+      .eq('lab_id', lab_id)
+      .eq('is_default', true)
+      .eq('is_active', true)
+      .maybeSingle();
+  },
+
+  /**
+   * Get invoice template by ID
+   */
+  async getById(id: string) {
+    return supabase
+      .from('invoice_templates')
+      .select('*')
+      .eq('id', id)
+      .single();
+  },
+
+  /**
+   * Create new invoice template
+   */
+  async create(template: {
+    template_name: string;
+    template_description?: string;
+    category?: string;
+    gjs_html?: string;
+    gjs_css?: string;
+    gjs_components?: any;
+    gjs_styles?: any;
+    gjs_project?: any;
+    is_default?: boolean;
+    include_payment_terms?: boolean;
+    payment_terms_text?: string;
+    include_tax_breakdown?: boolean;
+    include_bank_details?: boolean;
+    bank_details?: any;
+    tax_disclaimer?: string;
+  }) {
+    const lab_id = await database.getCurrentUserLabId();
+    if (!lab_id) throw new Error('No lab context');
+
+    const { data: { user } } = await supabase.auth.getUser();
+
+    return supabase
+      .from('invoice_templates')
+      .insert({
+        ...template,
+        lab_id,
+        created_by: user?.id,
+      })
+      .select()
+      .single();
+  },
+
+  /**
+   * Update invoice template
+   */
+  async update(id: string, updates: Partial<{
+    template_name: string;
+    template_description: string;
+    category: string;
+    gjs_html: string;
+    gjs_css: string;
+    gjs_components: any;
+    gjs_styles: any;
+    gjs_project: any;
+    is_default: boolean;
+    is_active: boolean;
+    include_payment_terms: boolean;
+    payment_terms_text: string;
+    include_tax_breakdown: boolean;
+    include_bank_details: boolean;
+    bank_details: any;
+    tax_disclaimer: string;
+  }>) {
+    const { data: { user } } = await supabase.auth.getUser();
+
+    return supabase
+      .from('invoice_templates')
+      .update({
+        ...updates,
+        updated_by: user?.id,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', id)
+      .select()
+      .single();
+  },
+
+  /**
+   * Set template as default (unsets other defaults)
+   */
+  async setDefault(id: string) {
+    const lab_id = await database.getCurrentUserLabId();
+    if (!lab_id) throw new Error('No lab context');
+
+    // The trigger will handle unsetting other defaults
+    return supabase
+      .from('invoice_templates')
+      .update({ is_default: true })
+      .eq('id', id)
+      .select()
+      .single();
+  },
+
+  /**
+   * Soft delete invoice template
+   */
+  async delete(id: string) {
+    return supabase
+      .from('invoice_templates')
+      .update({ is_active: false })
+      .eq('id', id);
+  },
+
+  /**
+   * Hard delete invoice template (admin only)
+   */
+  async permanentDelete(id: string) {
+    return supabase
+      .from('invoice_templates')
+      .delete()
+      .eq('id', id);
+  },
+};
+
+// Add invoice templates to database object
+Object.assign(database, {
+  invoiceTemplates,
 });
 
 async function syncLabBrandingDefaultsForLab(

@@ -246,6 +246,14 @@ export function ResultIntake({ order, onResultProcessed }: Props) {
 
         const { error: valuesErr } = await supabase.from('result_values').insert(values)
         if (valuesErr) throw valuesErr
+
+        // Run AI flag analysis automatically after inserting result values
+        try {
+          const { runAIFlagAnalysis } = await import('../../utils/aiFlagAnalysis');
+          await runAIFlagAnalysis(order.id, { applyToDatabase: true, createAudit: true });
+        } catch (flagErr) {
+          console.warn('AI flag analysis failed (non-blocking):', flagErr);
+        }
       }
 
       setToast(mode === 'draft' ? 'Draft saved successfully.' : 'Results submitted successfully.')

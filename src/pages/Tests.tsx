@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
-import { Plus, Edit2, Trash2, Search, Filter, X, Save, AlertCircle, Beaker, Layers, Package, DollarSign, Eye, Edit } from 'lucide-react';
-import { database } from '../utils/supabase';
+import { Plus, Edit2, Trash2, Search, Filter, X, Save, AlertCircle, Beaker, Layers, Package, DollarSign, Eye, Edit, Link2, Calculator } from 'lucide-react';
+import { database, supabase } from '../utils/supabase';
 import TestGroupForm from '../components/Tests/TestGroupForm';
 import TestForm from '../components/Tests/TestForm';
 import AnalyteForm from '../components/Tests/AnalyteForm';
@@ -10,6 +10,7 @@ import AnalyteDetailModal from '../components/Tests/AnalyteDetailModal';
 import TestGroupDetailModal from '../components/Tests/TestGroupDetailModal';
 import PackageDetailModal from '../components/Tests/PackageDetailModal';
 import { SimpleAnalyteEditor } from '../components/TestGroups/SimpleAnalyteEditor';
+import AnalyteDependencyManager from '../components/Tests/AnalyteDependencyManager';
 
 interface Test {
   id: string;
@@ -39,6 +40,11 @@ interface Analyte {
   category: string;
   isActive?: boolean;
   createdDate?: string;
+  // Calculated parameter fields
+  isCalculated?: boolean;
+  formula?: string;
+  formulaVariables?: string[];
+  formulaDescription?: string;
 }
 
 interface TestGroup {
@@ -108,8 +114,10 @@ const Tests: React.FC = () => {
   const [editingPackage, setEditingPackage] = useState<PackageType | null>(null);
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedCategory, setSelectedCategory] = useState('All');
-  const [activeTab, setActiveTab] = useState<'groups' | 'analytes' | 'legacy'>('groups');
+  const [activeTab, setActiveTab] = useState<'groups' | 'analytes' | 'packages' | 'legacy'>('groups');
   const [showEditAnalyteModal, setShowEditAnalyteModal] = useState(false);
+  const [showDependencyManager, setShowDependencyManager] = useState(false);
+  const [dependencyAnalyte, setDependencyAnalyte] = useState<Analyte | null>(null);
   const [error, setError] = useState<string | null>(null);
   
   console.log('✅ Tests component state initialized');
@@ -137,7 +145,12 @@ const Tests: React.FC = () => {
             interpretation: analyte.interpretation,
             category: analyte.category,
             isActive: analyte.is_active ?? true,
-            createdDate: analyte.created_at || new Date().toISOString()
+            createdDate: analyte.created_at || new Date().toISOString(),
+            // Calculated fields
+            isCalculated: analyte.is_calculated || false,
+            formula: analyte.formula || '',
+            formulaVariables: analyte.formula_variables || [],
+            formulaDescription: analyte.formula_description || ''
           }));
           setAnalytes(transformedAnalytes);
         }
@@ -181,8 +194,29 @@ const Tests: React.FC = () => {
           setTestGroups(transformedTestGroups);
         }
 
+        // Load packages from database
+        const { data: dbPackagesData, error: packagesError } = await database.packages.getAll();
+        if (packagesError) {
+          console.error('❌ Error loading packages from database:', packagesError);
+          setPackages([]);
+        } else {
+          console.log('✅ Packages loaded:', dbPackagesData?.length || 0, 'records');
+          const transformedPackages = (dbPackagesData || []).map(pkg => ({
+            id: pkg.id,
+            name: pkg.name,
+            description: pkg.description || '',
+            price: pkg.price,
+            discountPercentage: pkg.discount_percentage || 0,
+            category: pkg.category || 'General',
+            validityDays: pkg.validity_days || 30,
+            isActive: pkg.is_active ?? true,
+            testGroupIds: pkg.package_test_groups?.map((ptg: any) => ptg.test_group_id) || [],
+            createdDate: pkg.created_at || new Date().toISOString()
+          }));
+          setPackages(transformedPackages);
+        }
+
         setTests([]);
-        setPackages([]);
       } catch (error) {
         console.error('Error loading data:', error);
         setAnalytes([]);
@@ -258,6 +292,11 @@ const Tests: React.FC = () => {
         interpretation_high: formData.interpretation?.high,
         category: formData.category,
         is_active: formData.isActive ?? true,
+        // Calculated parameter fields
+        is_calculated: formData.isCalculated || false,
+        formula: formData.formula || null,
+        formula_variables: formData.formulaVariables || [],
+        formula_description: formData.formulaDescription || null,
       });
       
       if (error) {
@@ -277,12 +316,24 @@ const Tests: React.FC = () => {
           interpretation: newAnalyte.interpretation_low || '',
           category: newAnalyte.category,
           isActive: newAnalyte.is_active,
-          createdDate: newAnalyte.created_at || new Date().toISOString()
+          createdDate: newAnalyte.created_at || new Date().toISOString(),
+          // Calculated fields
+          isCalculated: newAnalyte.is_calculated || false,
+          formula: newAnalyte.formula || '',
+          formulaVariables: newAnalyte.formula_variables || [],
+          formulaDescription: newAnalyte.formula_description || ''
         };
         
         setAnalytes(prev => [...prev, transformedAnalyte]);
         setShowAnalyteForm(false);
-        alert('Analyte created successfully!');
+        
+        // If it's a calculated analyte, prompt to manage dependencies
+        if (newAnalyte.is_calculated && newAnalyte.formula_variables?.length > 0) {
+          setDependencyAnalyte(transformedAnalyte);
+          setShowDependencyManager(true);
+        } else {
+          alert('Analyte created successfully!');
+        }
       }
     } catch (error) {
       console.error('Unexpected error:', error);
@@ -312,10 +363,66 @@ const Tests: React.FC = () => {
     }
   };
 
-  const handleAddPackage = (_formData: any) => {
-    console.warn('Packages are not supported yet. Please use test groups instead.');
-    alert('Packages are not supported yet. Please use test groups instead.');
-    setShowPackageForm(false);
+  const handleAddPackage = async (formData: any) => {
+    console.log('Creating package with data:', formData);
+    try {
+      // Create the package first
+      const { data: newPackage, error: packageError } = await database.packages.create({
+        name: formData.name,
+        description: formData.description,
+        price: formData.price,
+        discount_percentage: formData.discountPercentage || 0,
+        category: formData.category,
+        validity_days: formData.validityDays || 30,
+        is_active: formData.isActive ?? true,
+      });
+      
+      if (packageError || !newPackage) {
+        console.error('Error creating package:', packageError);
+        alert('Failed to create package. Please try again.');
+        return;
+      }
+      
+      // Link test groups to package
+      if (formData.testGroupIds && formData.testGroupIds.length > 0) {
+        const packageTestGroups = formData.testGroupIds.map((tgId: string) => ({
+          package_id: newPackage.id,
+          test_group_id: tgId
+        }));
+        
+        const { error: linkError } = await supabase
+          .from('package_test_groups')
+          .insert(packageTestGroups);
+          
+        if (linkError) {
+          console.error('Error linking test groups to package:', linkError);
+        }
+      }
+      
+      // Reload packages to get the updated list
+      const { data: dbPackagesData } = await database.packages.getAll();
+      if (dbPackagesData) {
+        const transformedPackages = dbPackagesData.map(pkg => ({
+          id: pkg.id,
+          name: pkg.name,
+          description: pkg.description || '',
+          price: pkg.price,
+          discountPercentage: pkg.discount_percentage || 0,
+          category: pkg.category || 'General',
+          validityDays: pkg.validity_days || 30,
+          isActive: pkg.is_active ?? true,
+          testGroups: pkg.package_test_groups?.map((ptg: any) => ptg.test_group_id) || []
+        }));
+        setPackages(transformedPackages);
+      }
+      
+      setShowPackageForm(false);
+      setEditingPackage(null);
+      console.log('✅ Package created successfully:', newPackage.id);
+    } catch (error) {
+      console.error('Error creating package:', error);
+      alert('Failed to create package. Please try again.');
+    }
   };
 
   // View handlers
@@ -361,24 +468,69 @@ const Tests: React.FC = () => {
   };
 
   // Update handlers
-  const handleUpdatePackage = (formData: any) => {
+  const handleUpdatePackage = async (formData: any) => {
     if (!editingPackage) return;
     
-    const updatedPackage = {
-      ...editingPackage,
-      name: formData.name,
-      description: formData.description,
-      testGroupIds: formData.testGroupIds,
-      price: formData.price,
-      discountPercentage: formData.discountPercentage,
-      category: formData.category,
-      validityDays: formData.validityDays,
-      isActive: formData.isActive,
-    };
-    
-    setPackages(prev => prev.map(p => p.id === editingPackage.id ? updatedPackage : p));
-    setShowPackageForm(false);
-    setEditingPackage(null);
+    try {
+      // Update the package
+      const { error: updateError } = await database.packages.update(editingPackage.id, {
+        name: formData.name,
+        description: formData.description,
+        price: formData.price,
+        discount_percentage: formData.discountPercentage || 0,
+        category: formData.category,
+        validity_days: formData.validityDays || 30,
+        is_active: formData.isActive ?? true,
+      });
+      
+      if (updateError) {
+        console.error('Error updating package:', updateError);
+        alert('Failed to update package. Please try again.');
+        return;
+      }
+      
+      // Update test group links - delete existing and insert new
+      await supabase
+        .from('package_test_groups')
+        .delete()
+        .eq('package_id', editingPackage.id);
+      
+      if (formData.testGroupIds && formData.testGroupIds.length > 0) {
+        const packageTestGroups = formData.testGroupIds.map((tgId: string) => ({
+          package_id: editingPackage.id,
+          test_group_id: tgId
+        }));
+        
+        await supabase
+          .from('package_test_groups')
+          .insert(packageTestGroups);
+      }
+      
+      // Reload packages
+      const { data: dbPackagesData } = await database.packages.getAll();
+      if (dbPackagesData) {
+        const transformedPackages = dbPackagesData.map(pkg => ({
+          id: pkg.id,
+          name: pkg.name,
+          description: pkg.description || '',
+          price: pkg.price,
+          discountPercentage: pkg.discount_percentage || 0,
+          category: pkg.category || 'General',
+          validityDays: pkg.validity_days || 30,
+          isActive: pkg.is_active ?? true,
+          testGroupIds: pkg.package_test_groups?.map((ptg: any) => ptg.test_group_id) || [],
+          createdDate: pkg.created_at
+        }));
+        setPackages(transformedPackages);
+      }
+      
+      setShowPackageForm(false);
+      setEditingPackage(null);
+      console.log('✅ Package updated successfully');
+    } catch (error) {
+      console.error('Error updating package:', error);
+      alert('Failed to update package. Please try again.');
+    }
   };
 
   const handleUpdateTestGroup = async (formData: any) => {
@@ -526,40 +678,40 @@ const Tests: React.FC = () => {
   };
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-3 max-w-7xl mx-auto">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-3xl font-bold text-gray-900">Test Management System</h1>
-          <p className="text-gray-600 mt-1">Manage analytes, test groups, and diagnostic panels</p>
+          <h1 className="text-2xl font-bold text-gray-900">Test Management System</h1>
+          <p className="text-gray-500 text-sm">Manage analytes, test groups, and diagnostic panels</p>
         </div>
-        <div className="flex space-x-3">
+        <div className="flex space-x-2">
           <button 
             onClick={() => setShowAnalyteForm(true)}
-            className="flex items-center px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors"
+            className="flex items-center px-3 py-1.5 text-sm border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors"
           >
-            <Beaker className="h-4 w-4 mr-2" />
+            <Beaker className="h-4 w-4 mr-1" />
             Add Analyte
           </button>
           <button 
             onClick={() => setShowPackageForm(true)}
-            className="flex items-center px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 transition-colors"
+            className="flex items-center px-3 py-1.5 text-sm bg-purple-600 text-white rounded-lg hover:bg-purple-700 transition-colors"
           >
-            <Plus className="h-5 w-5 mr-2" />
+            <Plus className="h-4 w-4 mr-1" />
             Create Package
           </button>
           <button 
             onClick={() => setShowTestGroupForm(true)}
-            className="flex items-center px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
+            className="flex items-center px-3 py-1.5 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
           >
-            <Plus className="h-5 w-5 mr-2" />
+            <Plus className="h-4 w-4 mr-1" />
             Create Test Group
           </button>
         </div>
       </div>
 
       {error && (
-        <div className="mb-4 p-4 bg-red-50 border border-red-200 rounded-md flex items-center space-x-2">
-          <AlertCircle className="w-5 h-5 text-red-600" />
+        <div className="mb-2 p-3 bg-red-50 border border-red-200 rounded-md flex items-center space-x-2 text-sm">
+          <AlertCircle className="w-4 h-4 text-red-600" />
           <span className="text-red-700">{error}</span>
           <button
             onClick={() => setError(null)}
@@ -570,12 +722,12 @@ const Tests: React.FC = () => {
         </div>
       )}
 
-      {/* Tab Navigation */}
+      {/* Tab Navigation - Compact */}
       <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-1">
         <div className="flex space-x-1">
           <button
             onClick={() => setActiveTab('groups')}
-            className={`flex-1 flex items-center justify-center px-4 py-3 rounded-md text-sm font-medium transition-all ${
+            className={`flex-1 flex items-center justify-center px-3 py-2 rounded-md text-sm font-medium transition-all ${
               activeTab === 'groups'
                 ? 'bg-blue-600 text-white shadow-sm'
                 : 'text-gray-600 hover:text-gray-900 hover:bg-gray-50'
@@ -586,7 +738,7 @@ const Tests: React.FC = () => {
           </button>
           <button
             onClick={() => setActiveTab('analytes')}
-            className={`flex-1 flex items-center justify-center px-4 py-3 rounded-md text-sm font-medium transition-all ${
+            className={`flex-1 flex items-center justify-center px-3 py-2 rounded-md text-sm font-medium transition-all ${
               activeTab === 'analytes'
                 ? 'bg-blue-600 text-white shadow-sm'
                 : 'text-gray-600 hover:text-gray-900 hover:bg-gray-50'
@@ -595,63 +747,73 @@ const Tests: React.FC = () => {
             <Beaker className="h-4 w-4 mr-2" />
             Analytes ({analytes.length})
           </button>
+          <button
+            onClick={() => setActiveTab('packages')}
+            className={`flex-1 flex items-center justify-center px-3 py-2 rounded-md text-sm font-medium transition-all ${
+              activeTab === 'packages'
+                ? 'bg-purple-600 text-white shadow-sm'
+                : 'text-gray-600 hover:text-gray-900 hover:bg-gray-50'
+            }`}
+          >
+            <Package className="h-4 w-4 mr-2" />
+            Packages ({packages.length})
+          </button>
         </div>
       </div>
-
-      {/* Stats Cards */}
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
-        <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
+      {/* Stats Cards - Compact */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+        <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-3">
           <div className="flex items-center">
-            <div className="bg-purple-100 p-3 rounded-lg">
-              <Package className="h-6 w-6 text-purple-600" />
+            <div className="bg-purple-100 p-2 rounded-lg">
+              <Package className="h-5 w-5 text-purple-600" />
             </div>
-            <div className="ml-4">
-              <div className="text-2xl font-bold text-gray-900">{packages.length}</div>
-              <div className="text-sm text-gray-600">Health Packages</div>
+            <div className="ml-3">
+              <div className="text-xl font-bold text-gray-900">{packages.length}</div>
+              <div className="text-xs text-gray-600">Health Packages</div>
             </div>
           </div>
         </div>
         
-        <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
+        <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-3">
           <div className="flex items-center">
-            <div className="bg-green-100 p-3 rounded-lg">
-              <Layers className="h-6 w-6 text-green-600" />
+            <div className="bg-green-100 p-2 rounded-lg">
+              <Layers className="h-5 w-5 text-green-600" />
             </div>
-            <div className="ml-4">
-              <div className="text-2xl font-bold text-gray-900">{testGroups.length}</div>
-              <div className="text-sm text-gray-600">Test Groups</div>
+            <div className="ml-3">
+              <div className="text-xl font-bold text-gray-900">{testGroups.length}</div>
+              <div className="text-xs text-gray-600">Test Groups</div>
             </div>
           </div>
         </div>
         
-        <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
+        <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-3">
           <div className="flex items-center">
-            <div className="bg-blue-100 p-3 rounded-lg">
-              <Beaker className="h-6 w-6 text-blue-600" />
+            <div className="bg-blue-100 p-2 rounded-lg">
+              <Beaker className="h-5 w-5 text-blue-600" />
             </div>
-            <div className="ml-4">
-              <div className="text-2xl font-bold text-gray-900">{analytes.length}</div>
-              <div className="text-sm text-gray-600">Analytes</div>
+            <div className="ml-3">
+              <div className="text-xl font-bold text-gray-900">{analytes.length}</div>
+              <div className="text-xs text-gray-600">Analytes</div>
             </div>
           </div>
         </div>
 
-        <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
+        <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-3">
           <div className="flex items-center">
-            <div className="bg-orange-100 p-3 rounded-lg">
-              <DollarSign className="h-6 w-6 text-orange-600" />
+            <div className="bg-orange-100 p-2 rounded-lg">
+              <DollarSign className="h-5 w-5 text-orange-600" />
             </div>
-            <div className="ml-4">
-              <div className="text-2xl font-bold text-gray-900">₹{packages.length > 0 ? Math.round(packages.reduce((sum, pkg) => sum + pkg.price, 0) / packages.length) : 0}</div>
-              <div className="text-sm text-gray-600">Avg Package Price</div>
+            <div className="ml-3">
+              <div className="text-xl font-bold text-gray-900">₹{packages.length > 0 ? Math.round(packages.reduce((sum, pkg) => sum + pkg.price, 0) / packages.length) : 0}</div>
+              <div className="text-xs text-gray-600">Avg Package Price</div>
             </div>
           </div>
         </div>
       </div>
 
-      {/* Search and Filter Bar */}
-      <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-4">
-        <div className="flex flex-col sm:flex-row gap-4">
+      {/* Search and Filter Bar - Compact */}
+      <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-3">
+        <div className="flex flex-col sm:flex-row gap-2">
           <div className="flex-1 relative">
             <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-gray-400" />
             <input
@@ -659,20 +821,20 @@ const Tests: React.FC = () => {
               placeholder="Search tests by name or ID..."
               value={searchTerm}
               onChange={(e) => setSearchTerm(e.target.value)}
-              className="pl-10 pr-4 py-2 w-full border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+              className="pl-9 pr-3 py-1.5 w-full text-sm border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
             />
           </div>
           <select
             value={selectedCategory}
             onChange={(e) => setSelectedCategory(e.target.value)}
-            className="px-4 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+            className="px-3 py-1.5 text-sm border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
           >
             {categories.map(category => (
               <option key={category} value={category}>{category}</option>
             ))}
           </select>
-          <button className="flex items-center px-4 py-2 border border-gray-300 rounded-md hover:bg-gray-50 transition-colors">
-            <Filter className="h-4 w-4 mr-2" />
+          <button className="flex items-center px-3 py-1.5 text-sm border border-gray-300 rounded-md hover:bg-gray-50 transition-colors">
+            <Filter className="h-4 w-4 mr-1" />
             More Filters
           </button>
         </div>
@@ -681,50 +843,48 @@ const Tests: React.FC = () => {
       {/* Test Groups Tab */}
       {activeTab === 'groups' && (
         <div className="bg-white rounded-lg shadow-sm border border-gray-200 overflow-hidden">
-          <div className="px-6 py-4 border-b border-gray-200">
-            <h3 className="text-lg font-semibold text-gray-900">
+          <div className="px-3 py-2 border-b border-gray-200">
+            <h3 className="text-sm font-semibold text-gray-900">
               Test Groups ({filteredTestGroups.length})
             </h3>
           </div>
           
           <div className="overflow-x-auto">
-            <table className="min-w-full divide-y divide-gray-200">
+            <table className="w-full divide-y divide-gray-200 text-sm">
               <thead className="bg-gray-50">
                 <tr>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Group Details</th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Category</th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Analytes</th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Price</th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Sample Type</th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Actions</th>
+                  <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Group Details</th>
+                  <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Category</th>
+                  <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Analytes</th>
+                  <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Price</th>
+                  <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Sample</th>
+                  <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Actions</th>
                 </tr>
               </thead>
               <tbody className="bg-white divide-y divide-gray-200">
                 {filteredTestGroups.map((group) => (
                   <tr key={group.id} className="hover:bg-gray-50 transition-colors">
-                    <td className="px-6 py-4 whitespace-nowrap">
+                    <td className="px-3 py-2">
                       <div>
-                        <div className="text-sm font-medium text-gray-900">{group.name}</div>
-                        <div className="text-sm text-gray-500">Code: {group.code} • {group.turnaroundTime}</div>
-                        <div className="text-xs text-gray-400 mt-1">{group.clinicalPurpose}</div>
+                        <div className="font-medium text-gray-900 text-sm">{group.name}</div>
+                        <div className="text-xs text-gray-500">Code: {group.code} • {group.turnaroundTime}</div>
                       </div>
                     </td>
-                    <td className="px-6 py-4 whitespace-nowrap">
-                      <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${getCategoryColor(group.category)}`}>
+                    <td className="px-3 py-2">
+                      <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium ${getCategoryColor(group.category)}`}>
                         {group.category}
                       </span>
                     </td>
-                    <td className="px-6 py-4 whitespace-nowrap">
-                      <div className="text-sm text-gray-900">{group.analytes?.length || 0} analytes</div>
+                    <td className="px-3 py-2">
+                      <div className="text-sm text-gray-900">{group.analytes?.length || 0}</div>
                     </td>
-                    <td className="px-6 py-4 whitespace-nowrap">
-                      <div className="text-sm font-medium text-gray-900">₹{group.price || 0}</div>
-                      {group.requiresFasting && <div className="text-xs text-orange-600">Fasting required</div>}
+                    <td className="px-3 py-2">
+                      <div className="font-medium text-gray-900">₹{group.price || 0}</div>
                     </td>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-600">
+                    <td className="px-3 py-2 text-gray-600 text-xs">
                       {group.sampleType || 'N/A'}
                     </td>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm font-medium space-x-2">
+                    <td className="px-3 py-2 text-sm font-medium">
                       <button 
                         onClick={() => handleViewTestGroup(group)}
                         className="text-blue-600 hover:text-blue-900 p-1 rounded"
@@ -751,68 +911,183 @@ const Tests: React.FC = () => {
       {/* Analytes Tab */}
       {activeTab === 'analytes' && (
         <div className="bg-white rounded-lg shadow-sm border border-gray-200 overflow-hidden">
-          <div className="px-6 py-4 border-b border-gray-200">
-            <h3 className="text-lg font-semibold text-gray-900">
+          <div className="px-3 py-2 border-b border-gray-200">
+            <h3 className="text-sm font-semibold text-gray-900">
               Analytes ({filteredAnalytes.length})
             </h3>
           </div>
           
           <div className="overflow-x-auto">
-            <table className="min-w-full divide-y divide-gray-200">
+            <table className="w-full divide-y divide-gray-200 text-sm">
               <thead className="bg-gray-50">
                 <tr>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Analyte Details</th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Category</th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Reference Range</th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Critical Values</th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Actions</th>
+                  <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Analyte Details</th>
+                  <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Category</th>
+                  <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Reference Range</th>
+                  <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Critical Values</th>
+                  <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Actions</th>
                 </tr>
               </thead>
               <tbody className="bg-white divide-y divide-gray-200">
                 {filteredAnalytes.map((analyte) => (
                   <tr key={analyte.id} className="hover:bg-gray-50 transition-colors">
-                    <td className="px-6 py-4 whitespace-nowrap">
+                    <td className="px-3 py-2">
                       <div>
-                        <div className="text-sm font-medium text-gray-900">{analyte.name}</div>
-                        <div className="text-sm text-gray-500">ID: {analyte.id} • Unit: {analyte.unit}</div>
+                        <div className="flex items-center gap-1.5">
+                          <span className="font-medium text-gray-900">{analyte.name}</span>
+                          {analyte.isCalculated && (
+                            <span className="inline-flex items-center px-1.5 py-0.5 rounded bg-amber-100 text-amber-700 text-xs font-medium">
+                              <Calculator className="h-3 w-3 mr-0.5" />
+                              Calc
+                            </span>
+                          )}
+                        </div>
+                        <div className="text-xs text-gray-500">Unit: {analyte.unit}</div>
+                        {analyte.isCalculated && analyte.formula && (
+                          <div className="text-xs text-amber-600 font-mono mt-0.5">{analyte.formula}</div>
+                        )}
                       </div>
                     </td>
-                    <td className="px-6 py-4 whitespace-nowrap">
-                      <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${getCategoryColor(analyte.category)}`}>
+                    <td className="px-3 py-2">
+                      <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium ${getCategoryColor(analyte.category)}`}>
                         {analyte.category}
                       </span>
                     </td>
-                    <td className="px-6 py-4">
-                      <div className="text-sm text-gray-900">{analyte.referenceRange || 'N/A'}</div>
+                    <td className="px-3 py-2">
+                      <div className="text-gray-900 text-xs">{analyte.referenceRange || 'N/A'}</div>
                     </td>
-                    <td className="px-6 py-4 whitespace-nowrap">
-                      <div className="text-sm text-gray-900">
+                    <td className="px-3 py-2">
+                      <div className="text-xs">
                         {analyte.lowCritical && <div className="text-red-600">Low: {analyte.lowCritical}</div>}
                         {analyte.highCritical && <div className="text-red-600">High: {analyte.highCritical}</div>}
-                        {!analyte.lowCritical && !analyte.highCritical && <span className="text-gray-400">None</span>}
+                        {!analyte.lowCritical && !analyte.highCritical && <span className="text-gray-400">-</span>}
                       </div>
                     </td>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm font-medium space-x-2">
-                      <button 
-                        onClick={() => handleViewAnalyte(analyte)}
-                        className="text-blue-600 hover:text-blue-900 p-1 rounded"
-                        title="View Analyte Details"
-                      >
-                        <Eye className="h-4 w-4" />
-                      </button>
-                      <button 
-                        onClick={() => handleEditAnalyte(analyte)}
-                        className="text-gray-600 hover:text-gray-900 p-1 rounded"
-                        title="Edit Analyte"
-                      >
-                        <Edit className="h-4 w-4" />
-                      </button>
+                    <td className="px-3 py-2">
+                      <div className="flex items-center gap-0.5">
+                        <button 
+                          onClick={() => handleViewAnalyte(analyte)}
+                          className="text-blue-600 hover:text-blue-900 p-1 rounded"
+                          title="View Analyte Details"
+                        >
+                          <Eye className="h-4 w-4" />
+                        </button>
+                        <button 
+                          onClick={() => handleEditAnalyte(analyte)}
+                          className="text-gray-600 hover:text-gray-900 p-1 rounded"
+                          title="Edit Analyte"
+                        >
+                          <Edit className="h-4 w-4" />
+                        </button>
+                        {analyte.isCalculated && (
+                          <button 
+                            onClick={() => {
+                              setDependencyAnalyte(analyte);
+                              setShowDependencyManager(true);
+                            }}
+                            className="text-amber-600 hover:text-amber-900 p-1 rounded"
+                            title="Manage Dependencies"
+                          >
+                            <Link2 className="h-4 w-4" />
+                          </button>
+                        )}
+                      </div>
                     </td>
                   </tr>
                 ))}
               </tbody>
             </table>
           </div>
+        </div>
+      )}
+
+      {/* Packages Tab */}
+      {activeTab === 'packages' && (
+        <div className="bg-white rounded-lg shadow-sm border border-gray-200 overflow-hidden">
+          <div className="px-3 py-2 border-b border-gray-200 flex items-center justify-between">
+            <h3 className="text-sm font-semibold text-gray-900">
+              Health Packages ({packages.length})
+            </h3>
+          </div>
+          
+          {packages.length === 0 ? (
+            <div className="p-8 text-center text-gray-500">
+              <Package className="h-12 w-12 mx-auto mb-3 text-gray-300" />
+              <p>No health packages created yet.</p>
+              <button
+                onClick={() => setShowPackageForm(true)}
+                className="mt-3 px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 text-sm"
+              >
+                Create Your First Package
+              </button>
+            </div>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full divide-y divide-gray-200 text-sm">
+                <thead className="bg-gray-50">
+                  <tr>
+                    <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Package Details</th>
+                    <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Category</th>
+                    <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Tests</th>
+                    <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Price</th>
+                    <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Status</th>
+                    <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Actions</th>
+                  </tr>
+                </thead>
+                <tbody className="bg-white divide-y divide-gray-200">
+                  {packages.map((pkg) => (
+                    <tr key={pkg.id} className="hover:bg-gray-50 transition-colors">
+                      <td className="px-3 py-2">
+                        <div>
+                          <div className="font-medium text-gray-900">{pkg.name}</div>
+                          <div className="text-xs text-gray-500 truncate max-w-xs">{pkg.description}</div>
+                        </div>
+                      </td>
+                      <td className="px-3 py-2">
+                        <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-purple-100 text-purple-800">
+                          {pkg.category || 'General'}
+                        </span>
+                      </td>
+                      <td className="px-3 py-2">
+                        <div className="text-sm text-gray-900">{pkg.testGroupIds?.length || 0} tests</div>
+                      </td>
+                      <td className="px-3 py-2">
+                        <div className="font-medium text-green-600">₹{pkg.price || 0}</div>
+                        {pkg.discountPercentage > 0 && (
+                          <div className="text-xs text-gray-500">{pkg.discountPercentage}% discount</div>
+                        )}
+                      </td>
+                      <td className="px-3 py-2">
+                        <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium ${
+                          pkg.isActive ? 'bg-green-100 text-green-800' : 'bg-gray-100 text-gray-600'
+                        }`}>
+                          {pkg.isActive ? 'Active' : 'Inactive'}
+                        </span>
+                      </td>
+                      <td className="px-3 py-2">
+                        <div className="flex items-center gap-0.5">
+                          <button 
+                            onClick={() => handleViewPackage(pkg)}
+                            className="text-blue-600 hover:text-blue-900 p-1 rounded"
+                            title="View Package Details"
+                          >
+                            <Eye className="h-4 w-4" />
+                          </button>
+                          <button 
+                            onClick={() => handleEditPackage(pkg)}
+                            className="text-gray-600 hover:text-gray-900 p-1 rounded"
+                            title="Edit Package"
+                          >
+                            <Edit className="h-4 w-4" />
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
         </div>
       )}
 
@@ -905,6 +1180,26 @@ const Tests: React.FC = () => {
           analyte={editingAnalyte}
           onSave={handleUpdateAnalyte}
           onCancel={handleCloseAnalyteModal}
+        />
+      )}
+
+      {/* Dependency Manager Modal */}
+      {showDependencyManager && dependencyAnalyte && (
+        <AnalyteDependencyManager
+          analyte={{
+            id: dependencyAnalyte.id,
+            name: dependencyAnalyte.name,
+            formula: dependencyAnalyte.formula || '',
+            formulaVariables: dependencyAnalyte.formulaVariables || []
+          }}
+          onClose={() => {
+            setShowDependencyManager(false);
+            setDependencyAnalyte(null);
+          }}
+          onSaved={() => {
+            // Refresh analytes after saving dependencies
+            console.log('Dependencies saved, refreshing...');
+          }}
         />
       )}
     </div>
