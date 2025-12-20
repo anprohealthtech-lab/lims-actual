@@ -204,7 +204,6 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
         price: parseFloat(formData.price),
         default_ai_processing_type: formData.default_ai_processing_type,
         group_level_prompt: formData.group_level_prompt,
-        group_level_prompt: formData.group_level_prompt,
         lab_id: labId, // Add lab_id for lab-specific test group
         to_be_copied: false, // Default to not template (owner will promote manually)
         is_outsourced: formData.is_outsourced,

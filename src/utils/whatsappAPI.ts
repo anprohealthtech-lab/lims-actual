@@ -256,7 +256,9 @@ export class WhatsAppAPI {
         
         // Handle backend response format: { success: true, data: { sessions: [...] } }
         if (result?.data?.sessions && Array.isArray(result.data.sessions)) {
-          const activeSession = result.data.sessions.find((s: any) => s.isConnected);
+          console.log('[WhatsAppAPI] Raw sessions:', result.data.sessions);
+          const activeSession = result.data.sessions.find((s: any) => s.isConnected || s.connected || s.status === 'authenticated');
+          console.log('[WhatsAppAPI] Found active session:', activeSession);
           return {
             success: result.success,
             isConnected: !!activeSession,
@@ -276,7 +278,8 @@ export class WhatsAppAPI {
         
         // Handle backend response format: { success: true, data: { sessions: [...] } }
         if (result?.data?.sessions && Array.isArray(result.data.sessions)) {
-          const activeSession = result.data.sessions.find((s: any) => s.isConnected);
+          console.log('[WhatsAppAPI-REST] Raw sessions:', result.data.sessions);
+          const activeSession = result.data.sessions.find((s: any) => s.isConnected || s.connected || s.status === 'authenticated');
           return {
             success: result.success,
             isConnected: !!activeSession,

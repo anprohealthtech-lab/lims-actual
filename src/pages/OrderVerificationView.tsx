@@ -67,7 +67,7 @@ interface Analyte {
   flag_source?: 'rule' | 'ai' | 'manual' | null;
   flag_confidence?: number | null;
   ai_interpretation?: string | null;
-  ai_audit_status?: 'pending' | 'approved' | 'rejected' | null;
+  ai_audit_status?: 'pending' | 'confirmed' | 'overridden' | 'needs_review' | 'none' | 'approved' | 'rejected' | null;
   verify_status: "pending" | "approved" | "rejected" | null;
   verify_note: string | null;
   verified_by: string | null;
@@ -163,7 +163,7 @@ const OrderVerificationView: React.FC<OrderVerificationViewProps> = ({ onBackToP
   const loadPanels = async () => {
     setLoading(true);
     setError(null);
-    
+
     // Get current lab ID for filtering
     const labId = currentLabId || await database.getCurrentUserLabId();
     if (!labId) {
@@ -200,8 +200,8 @@ const OrderVerificationView: React.FC<OrderVerificationViewProps> = ({ onBackToP
     const filtered = panels.filter(row => {
       const matchesSearch = q
         ? (row.patient_name || "").toLowerCase().includes(q.toLowerCase()) ||
-          (row.test_group_name || "").toLowerCase().includes(q.toLowerCase()) ||
-          row.order_id.toLowerCase().includes(q.toLowerCase())
+        (row.test_group_name || "").toLowerCase().includes(q.toLowerCase()) ||
+        row.order_id.toLowerCase().includes(q.toLowerCase())
         : true;
 
       if (!matchesSearch) return false;
@@ -297,7 +297,7 @@ const OrderVerificationView: React.FC<OrderVerificationViewProps> = ({ onBackToP
         return mapped;
       }
     }
-    
+
     return []; // Return empty array if all else fails
   };
 
@@ -550,7 +550,7 @@ const OrderVerificationView: React.FC<OrderVerificationViewProps> = ({ onBackToP
   const handleGenerateClinicalSummary = async (order: OrderGroup, forceRegenerate: boolean = false) => {
     // Set loading state
     setGeneratingClinicalSummary(prev => ({ ...prev, [order.orderId]: true }));
-    
+
     try {
       // First, check if a saved summary already exists (unless force regenerate)
       if (!forceRegenerate) {
@@ -587,7 +587,7 @@ const OrderVerificationView: React.FC<OrderVerificationViewProps> = ({ onBackToP
 
         if (savedText) {
           console.log('Showing saved clinical summary');
-          
+
           // Create a mock ClinicalSummaryResponse for the modal
           const parsedSummary: ClinicalSummaryResponse = {
             executive_summary: savedText, // Show the full saved text
@@ -599,7 +599,7 @@ const OrderVerificationView: React.FC<OrderVerificationViewProps> = ({ onBackToP
             _savedFromDb: true, // Flag to indicate this is saved
             _generatedAt: savedAt
           };
-          
+
           setAiClinicalSummary(prev => ({ ...prev, [order.orderId]: parsedSummary }));
           setAiSummaryTarget({ type: "clinical", orderId: order.orderId });
           setShowAiSummaryModal(true);
@@ -607,7 +607,7 @@ const OrderVerificationView: React.FC<OrderVerificationViewProps> = ({ onBackToP
           return;
         }
       }
-      
+
       // No existing summary or force regenerate - generate new
       const testGroups = await Promise.all(
         order.panels.map(async panel => {
@@ -741,7 +741,7 @@ ${summary.urgent_findings.map(f => `• ${f}`).join('\n')}` : ''}
   // Handle include in report option - persist to database
   const handleIncludeInReport = async (orderId: string, include: boolean) => {
     setIncludeSummaryInReport(prev => ({ ...prev, [orderId]: include }));
-    
+
     // Save to database so PDF generation picks it up
     try {
       const result = await toggleOrderSummaryInReport(orderId, include);
@@ -1276,15 +1276,14 @@ ${summary.urgent_findings.map(f => `• ${f}`).join('\n')}` : ''}
                                           <td className="px-4 py-4">
                                             {analyte.flag && (
                                               <div className="flex flex-col gap-1">
-                                                <span className={`inline-flex items-center px-2 py-1 text-xs rounded-full ${
-                                                  analyte.flag === 'H' || analyte.flag === 'high' || analyte.flag === 'critical_high' 
-                                                    ? 'bg-red-100 text-red-800' 
-                                                    : analyte.flag === 'L' || analyte.flag === 'low' || analyte.flag === 'critical_low'
+                                                <span className={`inline-flex items-center px-2 py-1 text-xs rounded-full ${analyte.flag === 'H' || analyte.flag === 'high' || analyte.flag === 'critical_high'
+                                                  ? 'bg-red-100 text-red-800'
+                                                  : analyte.flag === 'L' || analyte.flag === 'low' || analyte.flag === 'critical_low'
                                                     ? 'bg-blue-100 text-blue-800'
                                                     : analyte.flag === 'abnormal' || analyte.flag === 'Positive'
-                                                    ? 'bg-amber-100 text-amber-800'
-                                                    : 'bg-gray-100 text-gray-800'
-                                                }`}>
+                                                      ? 'bg-amber-100 text-amber-800'
+                                                      : 'bg-gray-100 text-gray-800'
+                                                  }`}>
                                                   {analyte.flag}
                                                   {analyte.flag_source && (
                                                     <span className="ml-1 opacity-60 text-[10px]">
@@ -1483,15 +1482,15 @@ const AISummaryModal: React.FC<AISummaryModalProps> = ({ target, summaries, onCl
   const [sendToDoctor, setSendToDoctor] = useState(false);
   const [isEditing, setIsEditing] = useState(false);
   const [saving, setSaving] = useState(false);
-  
+
   const isVerifier = target.type === "verifier";
   const originalSummary = isVerifier
     ? target.resultId
       ? summaries.verifier[target.resultId]
       : null
     : target.orderId
-    ? summaries.clinical[target.orderId]
-    : null;
+      ? summaries.clinical[target.orderId]
+      : null;
 
   // Editable state for clinical summary
   const [editedSummary, setEditedSummary] = useState<ClinicalSummaryResponse | null>(
@@ -1513,7 +1512,7 @@ const AISummaryModal: React.FC<AISummaryModalProps> = ({ target, summaries, onCl
 
   const handleSaveEdits = async () => {
     if (!editedSummary || !target.orderId || !onSaveClinicalSummary) return;
-    
+
     setSaving(true);
     try {
       await onSaveClinicalSummary(target.orderId, editedSummary);
@@ -1536,10 +1535,10 @@ const AISummaryModal: React.FC<AISummaryModalProps> = ({ target, summaries, onCl
           await onSaveClinicalSummary(target.orderId, summary as ClinicalSummaryResponse);
           console.log('✅ Clinical summary saved to database');
         }
-        
+
         // Notify parent about report inclusion preference
         onIncludeInReport?.(target.orderId, includeInReport);
-        
+
         // Handle send to doctor
         if (sendToDoctor && onSendToDoctor) {
           onSendToDoctor(target.orderId, summary as ClinicalSummaryResponse);
@@ -1855,14 +1854,14 @@ const AISummaryModal: React.FC<AISummaryModalProps> = ({ target, summaries, onCl
                   <span>Clinical summary has been automatically saved to database</span>
                 </div>
               )}
-              
+
               {isEditing && (
                 <div className="flex items-center gap-2 text-sm text-amber-700 bg-amber-50 px-3 py-2 rounded-lg">
                   <Edit className="h-4 w-4" />
                   <span>Editing mode - make your changes and click "Save Changes"</span>
                 </div>
               )}
-              
+
               {/* Options */}
               <div className="flex flex-col sm:flex-row sm:items-center gap-4">
                 <label className="flex items-center gap-2 cursor-pointer">
@@ -1874,7 +1873,7 @@ const AISummaryModal: React.FC<AISummaryModalProps> = ({ target, summaries, onCl
                   />
                   <span className="text-sm text-gray-700">Include in final PDF report</span>
                 </label>
-                
+
                 <label className="flex items-center gap-2 cursor-pointer">
                   <input
                     type="checkbox"
@@ -1885,7 +1884,7 @@ const AISummaryModal: React.FC<AISummaryModalProps> = ({ target, summaries, onCl
                   <span className="text-sm text-gray-700">Send summary with report to doctor</span>
                 </label>
               </div>
-              
+
               {/* Actions */}
               <div className="flex items-center justify-between pt-2">
                 {/* Edit/Save toggle */}
@@ -1927,7 +1926,7 @@ const AISummaryModal: React.FC<AISummaryModalProps> = ({ target, summaries, onCl
                     </>
                   )}
                 </div>
-                
+
                 {/* Confirm/Close */}
                 <div className="flex items-center gap-3">
                   <button

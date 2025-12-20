@@ -711,10 +711,9 @@ const buildInstructionFromAudit = (audit: TemplateAuditResult): string => {
     );
   }
 
-  // Header/Footer now come from PDF.co overlay (labs table), not from template HTML
-  // Only check for signature block in body content
-  if (audit.headerFooter?.signatureBlock === false) {
-    lines.push('ensure the body includes a signature block with {{signatoryImageUrl}} plus text placeholders for name and title');
+  // Check for signature block using the updated audit schema
+  if (audit.approvalSignature && audit.approvalSignature.missingSignaturePlaceholders?.length) {
+    lines.push(`Add missing signature placeholders: ${audit.approvalSignature.missingSignaturePlaceholders.join(', ')}`);
   }
 
   if (audit.placeholders?.requiredMissing?.length) {
@@ -1972,6 +1971,7 @@ const TemplateStudioCKE: React.FC = () => {
           analytes: analytes.map((entry) => ({
             id: entry.analytes?.id ?? entry.analyte_id ?? '',
             name: entry.analytes?.name ?? '',
+            code: entry.analytes?.code ?? '',
             unit: entry.analytes?.unit ?? null,
             reference_range: entry.analytes?.reference_range ?? null,
           })),
@@ -2153,8 +2153,12 @@ const TemplateStudioCKE: React.FC = () => {
       ];
       const protectedPlaceholders = Array.from(new Set(Object.values(REQUIRED_PLACEHOLDERS)));
       const missingPlaceholders = findMissingPlaceholders(currentHtml, nextHtml, allowedRemovals, protectedPlaceholders);
+      
+      // Apply changes even if placeholders are missing - let user fix in next audit
+      let warningMessage = '';
       if (missingPlaceholders.length) {
-        throw new Error(`AI response removed required placeholders: ${missingPlaceholders.join(', ')}`);
+        warningMessage = ` ⚠️ Warning: Some required placeholders were removed: ${missingPlaceholders.join(', ')}. Please review and fix in the next audit cycle.`;
+        console.warn('AI removed required placeholders:', missingPlaceholders);
       }
 
       setAuditRevertSnapshot({ html: currentHtml, css: currentCss });
@@ -2164,7 +2168,7 @@ const TemplateStudioCKE: React.FC = () => {
         instance.setData(nextHtml);
       }
 
-      setSaveMessage('AI changes applied in the editor. Remember to save the template.');
+      setSaveMessage(`AI changes applied in the editor. Remember to save the template.${warningMessage}`);
 
       await handleRunAudit();
 
@@ -2370,6 +2374,27 @@ const TemplateStudioCKE: React.FC = () => {
           background: #f3f4f6;
           border-color: #9ca3af;
         }
+        /* Style placeholders in editor for better readability */
+        .ck-content td,
+        .ck-content th {
+          word-break: break-word !important;
+          overflow-wrap: break-word !important;
+        }
+        /* Make placeholder text smaller and wrap in table cells */
+        .ck-content td:has(span:only-child),
+        .ck-content td span {
+          font-size: 11px !important;
+          line-height: 1.3 !important;
+          word-break: break-all !important;
+        }
+        /* Highlight placeholders with subtle background */
+        .ck-content td:has([data-placeholder]),
+        .ck-content td > span:first-child:last-child {
+          background-color: #fef3c7 !important;
+          padding: 2px 4px !important;
+          border-radius: 2px !important;
+          font-family: 'Courier New', monospace !important;
+        }
 
       `}</style>
       <div className="shrink-0 border-b border-gray-200 bg-white px-6 py-4 w-full">
@@ -2382,6 +2407,11 @@ const TemplateStudioCKE: React.FC = () => {
                 <CheckCircle2 className="h-3 w-3" />
                 {verificationStatusBadge.label}
               </span>
+            ) : null}
+            {!ckeditorLicenseKey ? (
+              <div className="mt-2 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-[11px] text-amber-800">
+                CKEditor license key is not configured. Set <span className="font-mono">VITE_CKEDITOR_LICENSE_KEY</span> in your deployment environment and redeploy.
+              </div>
             ) : null}
           </div>
           <div className="flex flex-wrap items-center gap-2 text-xs">

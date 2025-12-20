@@ -16,11 +16,36 @@ export interface TemplateAuditResult {
   placeholders?: {
     requiredMissing?: string[];
     unknownPlaceholders?: string[];
+    invalidAnalytePlaceholders?: string[];
     duplicates?: string[];
+    deprecatedPlaceholders?: string[];
+  };
+  resultsLoop?: {
+    hasResultsLoop?: boolean;
+    hasAnalyteName?: boolean;
+    hasValue?: boolean;
+    hasUnit?: boolean;
+    hasReferenceRange?: boolean;
+    hasFlag?: boolean;
+    missingLoopPlaceholders?: string[];
   };
   analyteCoverage?: {
+    invalidIndividualPlaceholders?: string[];
+    recommendation?: string;
     referencedButUnknown?: string[];
     missingFromTemplate?: string[];
+  };
+  sectionContent?: {
+    hasAnySectionPlaceholder?: boolean;
+    foundSectionPlaceholders?: string[];
+    deprecatedSectionPlaceholders?: string[];
+    recommendedSectionPlaceholders?: string[];
+  };
+  approvalSignature?: {
+    hasSignatoryName?: boolean;
+    hasSignatoryDesignation?: boolean;
+    hasSignatoryImage?: boolean;
+    missingSignaturePlaceholders?: string[];
   };
   recommendations?: string[];
 }
@@ -159,14 +184,17 @@ const TemplateAIAuditModal: React.FC<TemplateAIAuditModalProps> = ({
                 </div>
               </section>
 
-              <section>
-                <h3 className="text-xs font-semibold uppercase tracking-wide text-gray-500">Header &amp; Footer</h3>
-                <div className="mt-1 grid gap-2 sm:grid-cols-3">
-                  <AuditCheckCard label="Header image" active={!!result.headerFooter?.headerImage} />
-                  <AuditCheckCard label="Footer image" active={!!result.headerFooter?.footerImage} />
-                  <AuditCheckCard label="Signature block" active={!!result.headerFooter?.signatureBlock} />
-                </div>
-              </section>
+              {/* Header & Footer (optional, only show if audit includes it) */}
+              {result.headerFooter && (
+                <section>
+                  <h3 className="text-xs font-semibold uppercase tracking-wide text-gray-500">Header &amp; Footer</h3>
+                  <div className="mt-1 grid gap-2 sm:grid-cols-3">
+                    <AuditCheckCard label="Header image" active={!!result.headerFooter?.headerImage} />
+                    <AuditCheckCard label="Footer image" active={!!result.headerFooter?.footerImage} />
+                    <AuditCheckCard label="Signature block" active={!!result.headerFooter?.signatureBlock} />
+                  </div>
+                </section>
+              )}
 
               {/* Section Content Validation */}
               {result.sectionContent && (
@@ -203,37 +231,33 @@ const TemplateAIAuditModal: React.FC<TemplateAIAuditModalProps> = ({
                   <div className="mt-1 space-y-2 text-sm">
                     <div className={clsx(
                       'rounded-md border px-3 py-2',
-                      result.approvalSignature.hasApproverName 
+                      result.approvalSignature.hasSignatoryName 
                         ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
                         : 'border-red-200 bg-red-50 text-red-700'
                     )}>
-                      <strong>Approver Name:</strong> {result.approvalSignature.hasApproverName ? '✓ Present' : '✗ Missing (add {{approverName}} or {{approvedByName}})'}
+                      <strong>Signatory Name:</strong> {result.approvalSignature.hasSignatoryName ? '✓ Present' : '✗ Missing (add {{signatoryName}})'}
                     </div>
                     <div className={clsx(
                       'rounded-md border px-3 py-2',
-                      result.approvalSignature.hasApproverRole 
+                      result.approvalSignature.hasSignatoryDesignation 
                         ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
                         : 'border-amber-200 bg-amber-50 text-amber-700'
                     )}>
-                      <strong>Approver Role/Title:</strong> {result.approvalSignature.hasApproverRole ? '✓ Present' : '⚠ Optional (add {{approverRole}} for designation)'}
+                      <strong>Signatory Designation:</strong> {result.approvalSignature.hasSignatoryDesignation ? '✓ Present' : '⚠ Optional (add {{signatoryDesignation}} for title)'}
                     </div>
                     <div className={clsx(
                       'rounded-md border px-3 py-2',
-                      result.approvalSignature.hasApproverSignature 
+                      result.approvalSignature.hasSignatoryImage 
                         ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
                         : 'border-amber-200 bg-amber-50 text-amber-700'
                     )}>
-                      <strong>Signature Image:</strong> {result.approvalSignature.hasApproverSignature ? '✓ Present' : '⚠ Optional (add {{approverSignature}} for signature image)'}
+                      <strong>Signature Image:</strong> {result.approvalSignature.hasSignatoryImage ? '✓ Present' : '⚠ Optional (add {{signatoryImageUrl}} for signature image)'}
                     </div>
-                    {result.approvalSignature.deprecatedApprovalPlaceholders && result.approvalSignature.deprecatedApprovalPlaceholders.length > 0 && (
+                    {result.approvalSignature.missingSignaturePlaceholders && result.approvalSignature.missingSignaturePlaceholders.length > 0 && (
                       <AuditList
-                        title="Deprecated approval placeholders (replace immediately)"
-                        items={result.approvalSignature.deprecatedApprovalPlaceholders.map((p) => {
-                          if (p.includes('signatoryName')) return `${p} → Use {{approverName}} instead`;
-                          if (p.includes('signatoryTitle')) return `${p} → Use {{approverRole}} instead`;
-                          return `${p} → Replace with current placeholder`;
-                        })}
-                        tone="danger"
+                        title="Missing signature placeholders"
+                        items={result.approvalSignature.missingSignaturePlaceholders}
+                        tone="warning"
                       />
                     )}
                   </div>
@@ -243,8 +267,12 @@ const TemplateAIAuditModal: React.FC<TemplateAIAuditModalProps> = ({
               <section>
                 <h3 className="text-xs font-semibold uppercase tracking-wide text-gray-500">Placeholders</h3>
                 <div className="mt-1 space-y-2 text-sm">
-                  {result.placeholders?.missingFlags?.length ? (
-                    <AuditList title="Missing flag placeholders (CRITICAL)" items={result.placeholders.missingFlags} tone="danger" />
+                  {result.placeholders?.invalidAnalytePlaceholders?.length ? (
+                    <AuditList 
+                      title="Invalid analyte placeholders (CRITICAL - these will NOT render)" 
+                      items={result.placeholders.invalidAnalytePlaceholders.map(p => `${p} → Use {{#results}}...{{/results}} loop instead`)} 
+                      tone="danger" 
+                    />
                   ) : null}
                   {result.placeholders?.deprecatedPlaceholders?.length ? (
                     <AuditList title="Deprecated placeholders" items={result.placeholders.deprecatedPlaceholders} tone="danger" />
@@ -258,7 +286,8 @@ const TemplateAIAuditModal: React.FC<TemplateAIAuditModalProps> = ({
                   {result.placeholders?.duplicates?.length ? (
                     <AuditList title="Duplicates" items={result.placeholders.duplicates} tone="info" />
                   ) : null}
-                  {!result.placeholders?.requiredMissing?.length &&
+                  {!result.placeholders?.invalidAnalytePlaceholders?.length &&
+                  !result.placeholders?.requiredMissing?.length &&
                   !result.placeholders?.unknownPlaceholders?.length &&
                   !result.placeholders?.duplicates?.length ? (
                     <p className="rounded-md border border-emerald-200 bg-emerald-50 px-3 py-1 text-sm text-emerald-700">
@@ -268,9 +297,83 @@ const TemplateAIAuditModal: React.FC<TemplateAIAuditModalProps> = ({
                 </div>
               </section>
 
+              {/* Results Loop Validation */}
+              {result.resultsLoop && (
+                <section>
+                  <h3 className="text-xs font-semibold uppercase tracking-wide text-gray-500">Results Loop Structure</h3>
+                  <div className="mt-1 space-y-2 text-sm">
+                    <div className={clsx(
+                      'rounded-md border px-3 py-2',
+                      result.resultsLoop.hasResultsLoop 
+                        ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
+                        : 'border-red-200 bg-red-50 text-red-700'
+                    )}>
+                      <strong>Loop Markers:</strong> {result.resultsLoop.hasResultsLoop ? '✓ {{#results}}...{{/results}} present' : '✗ Missing {{#results}}...{{/results}} loop'}
+                    </div>
+                    {result.resultsLoop.hasResultsLoop && (
+                      <>
+                        <div className="grid grid-cols-2 gap-2">
+                          <div className={clsx(
+                            'rounded-md border px-2 py-1 text-xs',
+                            result.resultsLoop.hasAnalyteName ? 'border-emerald-200 bg-emerald-50 text-emerald-700' : 'border-amber-200 bg-amber-50 text-amber-700'
+                          )}>
+                            {result.resultsLoop.hasAnalyteName ? '✓' : '⚠'} analyteName
+                          </div>
+                          <div className={clsx(
+                            'rounded-md border px-2 py-1 text-xs',
+                            result.resultsLoop.hasValue ? 'border-emerald-200 bg-emerald-50 text-emerald-700' : 'border-amber-200 bg-amber-50 text-amber-700'
+                          )}>
+                            {result.resultsLoop.hasValue ? '✓' : '⚠'} value
+                          </div>
+                          <div className={clsx(
+                            'rounded-md border px-2 py-1 text-xs',
+                            result.resultsLoop.hasUnit ? 'border-emerald-200 bg-emerald-50 text-emerald-700' : 'border-amber-200 bg-amber-50 text-amber-700'
+                          )}>
+                            {result.resultsLoop.hasUnit ? '✓' : '⚠'} unit
+                          </div>
+                          <div className={clsx(
+                            'rounded-md border px-2 py-1 text-xs',
+                            result.resultsLoop.hasReferenceRange ? 'border-emerald-200 bg-emerald-50 text-emerald-700' : 'border-amber-200 bg-amber-50 text-amber-700'
+                          )}>
+                            {result.resultsLoop.hasReferenceRange ? '✓' : '⚠'} referenceRange
+                          </div>
+                          <div className={clsx(
+                            'rounded-md border px-2 py-1 text-xs',
+                            result.resultsLoop.hasFlag ? 'border-emerald-200 bg-emerald-50 text-emerald-700' : 'border-amber-200 bg-amber-50 text-amber-700'
+                          )}>
+                            {result.resultsLoop.hasFlag ? '✓' : '⚠'} flag
+                          </div>
+                        </div>
+                        {result.resultsLoop.missingLoopPlaceholders && result.resultsLoop.missingLoopPlaceholders.length > 0 && (
+                          <AuditList
+                            title="Missing loop placeholders"
+                            items={result.resultsLoop.missingLoopPlaceholders}
+                            tone="warning"
+                          />
+                        )}
+                      </>
+                    )}
+                  </div>
+                </section>
+              )}
+
               <section>
                 <h3 className="text-xs font-semibold uppercase tracking-wide text-gray-500">Analyte Coverage</h3>
                 <div className="mt-1 space-y-2 text-sm">
+                  {result.analyteCoverage?.invalidIndividualPlaceholders?.length ? (
+                    <div className="space-y-2">
+                      <AuditList
+                        title="Invalid individual analyte placeholders (CRITICAL)"
+                        items={result.analyteCoverage.invalidIndividualPlaceholders.map(p => `${p} will NOT render any data`)}
+                        tone="danger"
+                      />
+                      {result.analyteCoverage.recommendation && (
+                        <div className="rounded-md border border-blue-200 bg-blue-50 px-3 py-2 text-blue-700">
+                          <strong>Recommendation:</strong> {result.analyteCoverage.recommendation}
+                        </div>
+                      )}
+                    </div>
+                  ) : null}
                   {result.analyteCoverage?.referencedButUnknown?.length ? (
                     <AuditList
                       title="Referenced but not in test group"
@@ -285,7 +388,8 @@ const TemplateAIAuditModal: React.FC<TemplateAIAuditModalProps> = ({
                       tone="warning"
                     />
                   ) : null}
-                  {!result.analyteCoverage?.referencedButUnknown?.length &&
+                  {!result.analyteCoverage?.invalidIndividualPlaceholders?.length &&
+                  !result.analyteCoverage?.referencedButUnknown?.length &&
                   !result.analyteCoverage?.missingFromTemplate?.length ? (
                     <p className="rounded-md border border-emerald-200 bg-emerald-50 px-3 py-1 text-sm text-emerald-700">
                       Template and test group are aligned.

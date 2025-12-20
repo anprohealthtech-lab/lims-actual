@@ -93,7 +93,7 @@ const InvoiceGenerationModal: React.FC<InvoiceGenerationModalProps> = ({
 
   const handleDownload = () => {
     if (!generatedPdfUrl) return;
-    
+
     // Create temporary anchor element to trigger download
     const link = document.createElement('a');
     link.href = generatedPdfUrl;
@@ -113,30 +113,37 @@ const InvoiceGenerationModal: React.FC<InvoiceGenerationModalProps> = ({
 
       // Fetch invoice details for patient phone
       const { data: invoice, error: invoiceError } = await database.invoices.getById(invoiceId);
-      
+
       if (invoiceError || !invoice) {
         throw new Error('Failed to fetch invoice details');
       }
 
       // Get patient phone number
       const { data: patient, error: patientError } = await database.patients.getById(invoice.patient_id);
-      
+
       if (patientError || !patient || !patient.phone) {
         throw new Error('Patient phone number not found');
       }
 
-      const message = `Dear ${patient.name},\n\nYour invoice is ready. Please find the invoice PDF here:\n\n${generatedPdfUrl}\n\nThank you for choosing our services!`;
+      const cleanMessage = `Dear ${patient.name},\n\nYour invoice is ready.\n\nThank you for choosing our services!`;
+      const messageWithLink = `Dear ${patient.name},\n\nYour invoice is ready. Please find the invoice PDF here:\n\n${generatedPdfUrl}\n\nThank you for choosing our services!`;
 
       // Try backend API first
       try {
         const connection = await WhatsAppAPI.getConnectionStatus();
-        
-        if (!connection.connected) {
+
+        if (!connection.isConnected) {
           throw new Error('WhatsApp not connected');
         }
 
-        const result = await WhatsAppAPI.sendMessage(patient.phone, message);
-        
+        const result = await WhatsAppAPI.sendReportFromUrl(
+          patient.phone,
+          generatedPdfUrl,
+          cleanMessage, // Send cleaner message without URL
+          patient.name,
+          'Invoice'
+        );
+
         if (result.success) {
           alert('Invoice sent via WhatsApp successfully!');
           return;
@@ -148,7 +155,7 @@ const InvoiceGenerationModal: React.FC<InvoiceGenerationModalProps> = ({
       // Fallback to manual WhatsApp link
       const { success: manualSuccess } = await openWhatsAppManually(
         patient.phone,
-        message
+        messageWithLink
       );
 
       if (manualSuccess) {
@@ -238,11 +245,10 @@ const InvoiceGenerationModal: React.FC<InvoiceGenerationModalProps> = ({
                   {templates.map((template) => (
                     <label
                       key={template.id}
-                      className={`block p-4 border-2 rounded-lg cursor-pointer transition-all ${
-                        selectedTemplateId === template.id
-                          ? 'border-blue-500 bg-blue-50'
-                          : 'border-gray-200 hover:border-gray-300 bg-white'
-                      }`}
+                      className={`block p-4 border-2 rounded-lg cursor-pointer transition-all ${selectedTemplateId === template.id
+                        ? 'border-blue-500 bg-blue-50'
+                        : 'border-gray-200 hover:border-gray-300 bg-white'
+                        }`}
                     >
                       <div className="flex items-start space-x-3">
                         <input

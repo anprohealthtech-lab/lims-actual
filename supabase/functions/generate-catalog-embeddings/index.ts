@@ -53,6 +53,7 @@ serve(async (req) => {
         analyte:analytes!inner(
           id,
           name,
+          code,
           unit,
           category,
           description
@@ -101,6 +102,9 @@ serve(async (req) => {
     const genAI = new GoogleGenerativeAI(GOOGLE_API_KEY)
     const model = genAI.getGenerativeModel({ model: 'text-embedding-004' })
 
+    // Track used placeholder names to handle duplicates
+    const usedPlaceholders = new Map<string, number>() // placeholder -> count
+
     for (const labAnalyte of labAnalytes) {
       const analyte = labAnalyte.analyte
 
@@ -133,11 +137,18 @@ serve(async (req) => {
 
         // Create embedding records for each placeholder type
         for (const type of placeholderTypes) {
-          // Use analyte ID to ensure uniqueness (first 8 chars)
-          const analyteIdShort = analyte.id.substring(0, 8)
-          const placeholderName = `ANALYTE_${analyteIdShort}_${type.toUpperCase()}`
+          // Use code if available, otherwise generate from name
+          const analyteCode = analyte.code || analyte.name.replace(/[^a-zA-Z0-9]/g, '_').toUpperCase()
+          let basePlaceholder = `ANALYTE_${analyteCode}_${type.toUpperCase()}`
           
-          console.log(`  → Creating: ${placeholderName} for "${analyte.name}"`)
+          // Check for duplicates and add counter if needed
+          const count = usedPlaceholders.get(basePlaceholder) || 0
+          usedPlaceholders.set(basePlaceholder, count + 1)
+          
+          // If this is a duplicate, add suffix _2, _3, etc.
+          const placeholderName = count === 0 ? basePlaceholder : `${basePlaceholder}_${count + 1}`
+          
+          console.log(`  → Creating: ${placeholderName} for "${analyte.name}"${count > 0 ? ' (duplicate #' + (count + 1) + ')' : ''}`)
           
           embeddingRecords.push({
             lab_id: labId,
@@ -145,7 +156,7 @@ serve(async (req) => {
             analyte_id: analyte.id,
             lab_analyte_id: labAnalyte.id,
             search_text: searchText,
-            placeholder_name: placeholderName,
+            placeholder_name: placeholderName, // Keep placeholder readable
             placeholder_type: type,
             embedding: JSON.stringify(embedding),
             display_name: `${analyte.name} (${type.charAt(0).toUpperCase() + type.slice(1)})`,
@@ -169,18 +180,24 @@ serve(async (req) => {
 
     console.log(`Generated ${embeddingRecords.length} embedding records`)
 
-    // 3. Upsert embeddings (insert or update if exists)
+    // 3. Upsert embeddings in batches (insert or update if exists)
     if (embeddingRecords.length > 0) {
-      const { error: insertError } = await supabaseClient
-        .from('test_catalog_embeddings')
-        .upsert(embeddingRecords, {
-          onConflict: 'lab_id,placeholder_name',
-          ignoreDuplicates: false,
-        })
+      const BATCH_SIZE = 100
+      for (let i = 0; i < embeddingRecords.length; i += BATCH_SIZE) {
+        const batch = embeddingRecords.slice(i, i + BATCH_SIZE)
+        console.log(`  Inserting batch ${Math.floor(i/BATCH_SIZE) + 1}/${Math.ceil(embeddingRecords.length/BATCH_SIZE)}...`)
+        
+        const { error: insertError } = await supabaseClient
+          .from('test_catalog_embeddings')
+          .upsert(batch, {
+            onConflict: 'lab_id,placeholder_name',
+            ignoreDuplicates: false,
+          })
 
-      if (insertError) {
-        console.error('Failed to insert embeddings:', insertError)
-        throw new Error(`Failed to insert embeddings: ${insertError.message}`)
+        if (insertError) {
+          console.error('Failed to insert embeddings:', insertError)
+          throw new Error(`Failed to insert embeddings: ${insertError.message}`)
+        }
       }
     }
 

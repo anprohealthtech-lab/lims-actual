@@ -70,7 +70,7 @@ export interface AIFlagAnalysisResult {
   flagSource: 'auto_numeric' | 'auto_text' | 'auto_rule' | 'ai' | 'manual' | 'inherited';
   flagConfidence: number;
   interpretation?: string;
-  auditStatus: 'pending' | 'approved' | 'rejected';
+  auditStatus: 'pending' | 'confirmed' | 'overridden' | 'needs_review' | 'none' | 'approved' | 'rejected'; // Matches DB constraint
   auditNotes?: string;
   changed: boolean;
   valueType?: string;
@@ -432,10 +432,10 @@ export async function applyFlagAnalysis(
     .map(r => ({
       id: r.resultValueId,
       flag: r.newFlag?.substring(0, 10), // Truncate to 10 chars for DB constraint
-      flag_source: r.flagSource,
+      flag_source: r.flagSource as any,
       flag_confidence: r.flagConfidence,
       ai_interpretation: r.interpretation,
-      ai_audit_status: r.auditStatus
+      ai_audit_status: r.auditStatus as any
     }));
 
   const result = await database.resultValues.bulkUpdateWithAIFlags(updates);
@@ -621,10 +621,10 @@ export async function analyzeAndSaveFlag(
   if (result.changed || result.newFlag) {
     await database.resultValues.updateWithAIFlag(resultValueId, {
       flag: result.newFlag,
-      flag_source: result.flagSource,
+      flag_source: result.flagSource as any, // Cast to match DB expected type if different
       flag_confidence: result.flagConfidence,
       ai_interpretation: result.interpretation,
-      ai_audit_status: result.auditStatus,
+      ai_audit_status: result.auditStatus as any, // Cast to match DB expected type
       ai_audit_notes: result.auditNotes
     });
   }

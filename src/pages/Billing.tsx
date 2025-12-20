@@ -10,7 +10,6 @@ import MonthlyAccountBilling from '../components/Billing/MonthlyAccountBilling';
 import RefundRequestModal from '../components/Billing/RefundRequestModal';
 import RefundApprovalConsole from '../components/Billing/RefundApprovalConsole';
 import InvoiceGenerationModal from '../components/Billing/InvoiceGenerationModal';
-import InvoiceGenerationModal from '../components/Billing/InvoiceGenerationModal';
 
 type DateRangePreset = 'custom' | 'today' | '7d' | '30d' | '90d' | 'all';
 type PendingScope = 'pending' | 'all';

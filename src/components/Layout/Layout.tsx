@@ -12,6 +12,7 @@ interface LayoutProps {
 const Layout: React.FC<LayoutProps> = ({ children }) => {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [isCollapsed, setIsCollapsed] = useState(false);
+  const [headerCollapsed, setHeaderCollapsed] = useState(false);
   const isMobile = isNative();
 
   return (
@@ -27,7 +28,11 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
 
       <div className={`flex-1 flex flex-col transition-all duration-300 ease-in-out ${isCollapsed ? 'lg:pl-20' : 'lg:pl-64'}`}>
         {/* Header - Show on both web and mobile */}
-        <Header onMenuClick={() => setSidebarOpen(!sidebarOpen)} />
+        <Header 
+          onMenuClick={() => setSidebarOpen(!sidebarOpen)} 
+          isCollapsed={headerCollapsed}
+          onToggleCollapse={() => setHeaderCollapsed(!headerCollapsed)}
+        />
 
         {/* Main content - Add bottom padding for Android nav */}
         <main className={`flex-1 min-w-0 p-4 md:p-6 safe-area-x ${isMobile ? 'pb-20' : 'safe-area-bottom mb-16 lg:mb-0'}`}>

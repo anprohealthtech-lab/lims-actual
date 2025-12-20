@@ -1,12 +1,14 @@
 import React from 'react';
-import { Menu, Bell, Search, User, LogOut } from 'lucide-react';
+import { Menu, Bell, Search, User, LogOut, ChevronUp, ChevronDown } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
 
 interface HeaderProps {
   onMenuClick: () => void;
+  isCollapsed?: boolean;
+  onToggleCollapse?: () => void;
 }
 
-const Header: React.FC<HeaderProps> = ({ onMenuClick }) => {
+const Header: React.FC<HeaderProps> = ({ onMenuClick, isCollapsed = false, onToggleCollapse }) => {
   const { user, signOut } = useAuth();
 
   const handleSignOut = async () => {
@@ -14,7 +16,25 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick }) => {
   };
 
   return (
-    <header className="bg-white shadow-sm border-b border-gray-200 safe-area-top safe-area-x relative z-50">
+    <>
+      {/* Toggle Button - Always visible */}
+      {onToggleCollapse && (
+        <button
+          onClick={onToggleCollapse}
+          className="fixed top-2 right-2 z-[100] bg-white shadow-md hover:shadow-lg border border-gray-300 rounded-md p-1.5 transition-all duration-200 hover:bg-gray-50"
+          title={isCollapsed ? 'Show Header' : 'Hide Header'}
+        >
+          {isCollapsed ? (
+            <ChevronDown className="h-4 w-4 text-gray-600" />
+          ) : (
+            <ChevronUp className="h-4 w-4 text-gray-600" />
+          )}
+        </button>
+      )}
+
+      {/* Header - Conditionally rendered */}
+      {!isCollapsed && (
+        <header className="bg-white shadow-sm border-b border-gray-200 safe-area-top safe-area-x relative z-50">
       <div className="flex items-center justify-between h-14 md:h-16 px-4 md:px-6">
         <div className="flex items-center">
           <button
@@ -79,6 +99,8 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick }) => {
         </div>
       </div>
     </header>
+      )}
+    </>
   );
 };
 

@@ -62,7 +62,7 @@ export interface DashboardOrder {
   doctor: string | null;
   doctor_phone?: string | null;
   doctor_email?: string | null;
-  
+
   sample_id: string | null;
   color_code: string | null;
   color_name: string | null;
@@ -85,7 +85,7 @@ export interface DashboardOrder {
     outsourced_lab_id?: string | null;
     outsourced_labs?: { name?: string | null } | null;
   }[];
-  
+
   // Report info
   report_url?: string | null;
 
@@ -110,7 +110,7 @@ const DashboardOrderModal: React.FC<DashboardOrderModalProps> = ({
   const { user } = useAuth();
   const [qrCodeUrl, setQrCodeUrl] = useState<string | null>(null);
   const [labId, setLabId] = useState<string | null>(null);
-  
+
   // Billing Modals
   const [showInvoiceModal, setShowInvoiceModal] = useState(false);
   const [showPaymentModal, setShowPaymentModal] = useState(false);
@@ -120,7 +120,7 @@ const DashboardOrderModal: React.FC<DashboardOrderModalProps> = ({
   const [showOutsourceModal, setShowOutsourceModal] = useState(false);
   const [outsourcedLabs, setOutsourcedLabs] = useState<any[]>([]);
   const [selectedOutsourceLab, setSelectedOutsourceLab] = useState<string>("");
-  
+
   // Sample Collection
   const { markSampleCollected: markCollectedCentral } = useOrderStatusCentral();
   const [updatingCollection, setUpdatingCollection] = useState(false);
@@ -148,7 +148,7 @@ const DashboardOrderModal: React.FC<DashboardOrderModalProps> = ({
 
   // Transit/Dispatch
   const [showDispatchModal, setShowDispatchModal] = useState(false);
-  const [dispatchLocations, setDispatchLocations] = useState<{id: string; name: string; type: string; is_processing_center: boolean}[]>([]);
+  const [dispatchLocations, setDispatchLocations] = useState<{ id: string; name: string; type: string; is_processing_center: boolean }[]>([]);
   const [dispatchDestination, setDispatchDestination] = useState<string>('');
   const [dispatchNotes, setDispatchNotes] = useState('');
   const [dispatchPriority, setDispatchPriority] = useState<'normal' | 'urgent' | 'high' | 'low'>('normal');
@@ -164,7 +164,7 @@ const DashboardOrderModal: React.FC<DashboardOrderModalProps> = ({
       console.log('[DashboardOrderModal] Order location:', order.location, 'location_id:', order.location_id);
       console.log('[DashboardOrderModal] Sample collected:', order.sample_collected_at);
       console.log('[DashboardOrderModal] Transit status:', order.transit_status);
-      
+
       if (id) {
         const { data } = await supabase
           .from('outsourced_labs')
@@ -184,10 +184,10 @@ const DashboardOrderModal: React.FC<DashboardOrderModalProps> = ({
           .eq('lab_id', id)
           .eq('is_active', true)
           .order('name');
-        
+
         console.log('[DashboardOrderModal] Dispatch locations:', locations, 'Error:', locationsError);
         setDispatchLocations(locations || []);
-        
+
         // Default to a processing center if available, otherwise first location
         if (locations && locations.length > 0) {
           // Try to find a processing center first
@@ -211,9 +211,9 @@ const DashboardOrderModal: React.FC<DashboardOrderModalProps> = ({
   // Pre-select doctor when editing starts
   useEffect(() => {
     if (isEditingDoctor && doctors.length > 0) {
-       const match = doctors.find(d => d.name === order.doctor);
-       if (match) setEditDoctorId(match.id);
-       else setEditDoctorId('');
+      const match = doctors.find(d => d.name === order.doctor);
+      if (match) setEditDoctorId(match.id);
+      else setEditDoctorId('');
     }
   }, [isEditingDoctor, doctors, order.doctor]);
 
@@ -226,7 +226,7 @@ const DashboardOrderModal: React.FC<DashboardOrderModalProps> = ({
         p: order.patient_name,
         d: order.order_date
       });
-      
+
       QRCodeLib.toDataURL(qrData, { width: 200, margin: 1 })
         .then(setQrCodeUrl)
         .catch(err => console.error("QR Gen Error:", err));
@@ -262,7 +262,7 @@ const DashboardOrderModal: React.FC<DashboardOrderModalProps> = ({
           setTrfExtraction(result);
           // Here we could auto-update order details if needed, or just show success
           // For now, we just store the result and file
-          
+
           // Upload file to attachments
           // TODO: Use database.attachments.uploadForOrder when available
           // For now, we can't easily upload without that helper or direct storage access
@@ -277,7 +277,14 @@ const DashboardOrderModal: React.FC<DashboardOrderModalProps> = ({
   };
 
   const handleViewInvoice = async () => {
-    if (!order.invoice_id) return;
+    console.log('[DashboardOrderModal] View Invoice clicked. Order:', order);
+
+    if (!order.invoice_id) {
+      console.error('[DashboardOrderModal] Invoice ID is missing despite billing status:', order.billing_status);
+      alert('Invoice record not found. Please contact support or try regenerating the invoice.');
+      return;
+    }
+
     setViewInvoiceLoading(true);
 
     try {
@@ -294,27 +301,27 @@ const DashboardOrderModal: React.FC<DashboardOrderModalProps> = ({
 
       // 2. Generate PDF if not already generated
       let pdfUrl = invoice.pdf_url;
-      
+
       if (!pdfUrl) {
         console.log('PDF not found, generating invoice PDF...');
-        
+
         // Get default template if not specified
         let templateId = invoice.template_id;
-        
+
         if (!templateId) {
           const { data: templates } = await database.invoiceTemplates.getAll();
           const defaultTemplate = templates?.find((t: any) => t.is_default) || templates?.[0];
-          
+
           if (!defaultTemplate) {
             throw new Error('No invoice template found. Please configure templates in Settings.');
           }
-          
+
           templateId = defaultTemplate.id;
         }
-        
+
         // Generate PDF using the proper invoice PDF service
         pdfUrl = await generateInvoicePDF(invoice.id, templateId);
-        
+
         if (!pdfUrl) {
           throw new Error('Failed to generate invoice PDF');
         }
@@ -322,7 +329,7 @@ const DashboardOrderModal: React.FC<DashboardOrderModalProps> = ({
 
       // 3. Open PDF in new tab
       window.open(pdfUrl, '_blank');
-      
+
     } catch (err) {
       console.error('Failed to view invoice', err);
       alert(`Failed to view invoice: ${err instanceof Error ? err.message : 'Unknown error'}`);
@@ -362,7 +369,7 @@ const DashboardOrderModal: React.FC<DashboardOrderModalProps> = ({
             phone: editPatientPhone
           })
           .eq('id', order.patient_id);
-        
+
         if (error) throw error;
         setIsEditingPatient(false);
         onUpdateStatus(order.id, order.status);
@@ -379,7 +386,7 @@ const DashboardOrderModal: React.FC<DashboardOrderModalProps> = ({
         alert('Please select a doctor');
         return;
       }
-      
+
       const selectedDoc = doctors.find(d => d.id === editDoctorId);
       if (!selectedDoc) return;
 
@@ -398,7 +405,7 @@ const DashboardOrderModal: React.FC<DashboardOrderModalProps> = ({
         .eq('id', order.id);
 
       if (error) throw error;
-      
+
       setIsEditingDoctor(false);
       onUpdateStatus(order.id, order.status);
     } catch (e) {
@@ -424,7 +431,7 @@ const DashboardOrderModal: React.FC<DashboardOrderModalProps> = ({
     try {
       // Generate batch ID for tracking (must be UUID to match DB schema)
       const batchId = crypto.randomUUID();
-      
+
       // Get current user info
       const { data: { user: authUser } } = await supabase.auth.getUser();
       const { data: userData } = await supabase
@@ -435,7 +442,7 @@ const DashboardOrderModal: React.FC<DashboardOrderModalProps> = ({
 
       // Create transit record
       const trackingBarcode = `TRN-${Date.now()}-${Math.random().toString(36).slice(2, 8).toUpperCase()}`;
-      
+
       const { error: transitError } = await supabase
         .from('sample_transits')
         .insert({
@@ -547,7 +554,7 @@ const DashboardOrderModal: React.FC<DashboardOrderModalProps> = ({
 
   const handleOutsource = async () => {
     if (!selectedOutsourceLab) return;
-    
+
     try {
       const { error } = await supabase
         .from('orders')
@@ -559,7 +566,7 @@ const DashboardOrderModal: React.FC<DashboardOrderModalProps> = ({
         .eq('id', order.id);
 
       if (error) throw error;
-      
+
       alert('Order outsourced successfully');
       setShowOutsourceModal(false);
       onUpdateStatus(order.id, 'In Progress');
@@ -573,7 +580,7 @@ const DashboardOrderModal: React.FC<DashboardOrderModalProps> = ({
   return ReactDOM.createPortal(
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4 animate-in fade-in duration-200">
       <div className="bg-white rounded-xl shadow-2xl w-full max-w-4xl max-h-[90vh] overflow-hidden flex flex-col">
-        
+
         {/* Header */}
         <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100 bg-gray-50/50">
           <div className="flex items-center gap-4">
@@ -608,7 +615,7 @@ const DashboardOrderModal: React.FC<DashboardOrderModalProps> = ({
 
         {/* Body */}
         <div className="flex-1 overflow-y-auto p-6 space-y-6">
-          
+
           {/* TRF Upload Section */}
           <section className="space-y-3 bg-gradient-to-r from-purple-50 to-blue-50 p-4 rounded-lg border-2 border-dashed border-purple-300">
             <div className="flex items-center gap-2 mb-2">
@@ -654,7 +661,7 @@ const DashboardOrderModal: React.FC<DashboardOrderModalProps> = ({
               <div className="font-mono font-bold text-gray-900">#{order.id.slice(-6)}</div>
               <div className="text-sm text-gray-600 mt-1 flex items-center gap-1">
                 <Calendar className="h-3 w-3" /> {new Date(order.order_date).toLocaleDateString()}
-                <Clock className="h-3 w-3 ml-1" /> {new Date(order.order_date).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}
+                <Clock className="h-3 w-3 ml-1" /> {new Date(order.order_date).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
               </div>
             </div>
 
@@ -668,7 +675,7 @@ const DashboardOrderModal: React.FC<DashboardOrderModalProps> = ({
                   </button>
                 )}
               </div>
-              
+
               {isEditingDoctor ? (
                 <div className="space-y-2">
                   <select
@@ -721,30 +728,29 @@ const DashboardOrderModal: React.FC<DashboardOrderModalProps> = ({
                 {order.location || 'Main Lab'}
               </div>
               {order.transit_status && (
-                <div className={`text-xs mt-1 px-2 py-0.5 rounded-full inline-flex items-center gap-1 ${
-                  order.transit_status === 'in_transit' ? 'bg-amber-200 text-amber-800' :
-                  order.transit_status === 'received_at_lab' ? 'bg-green-200 text-green-800' :
-                  'bg-gray-200 text-gray-700'
-                }`}>
+                <div className={`text-xs mt-1 px-2 py-0.5 rounded-full inline-flex items-center gap-1 ${order.transit_status === 'in_transit' ? 'bg-amber-200 text-amber-800' :
+                    order.transit_status === 'received_at_lab' ? 'bg-green-200 text-green-800' :
+                      'bg-gray-200 text-gray-700'
+                  }`}>
                   <Truck className="h-3 w-3" />
                   {order.transit_status === 'in_transit' ? 'In Transit' :
-                   order.transit_status === 'received_at_lab' ? 'Received' :
-                   order.transit_status === 'at_collection_point' ? 'At Collection' :
-                   order.transit_status}
+                    order.transit_status === 'received_at_lab' ? 'Received' :
+                      order.transit_status === 'at_collection_point' ? 'At Collection' :
+                        order.transit_status}
                 </div>
               )}
               {/* Send Sample button - show if sample collected and locations exist */}
-              {order.sample_collected_at && 
-               (!order.transit_status || order.transit_status === 'at_collection_point') && 
-               dispatchLocations.length > 0 && (
-                <button
-                  onClick={() => setShowDispatchModal(true)}
-                  className="mt-2 w-full flex items-center justify-center gap-1 text-xs font-medium bg-amber-600 text-white px-2 py-1.5 rounded hover:bg-amber-700 transition-colors"
-                >
-                  <Send className="h-3 w-3" />
-                  Send Sample
-                </button>
-              )}
+              {order.sample_collected_at &&
+                (!order.transit_status || order.transit_status === 'at_collection_point') &&
+                dispatchLocations.length > 0 && (
+                  <button
+                    onClick={() => setShowDispatchModal(true)}
+                    className="mt-2 w-full flex items-center justify-center gap-1 text-xs font-medium bg-amber-600 text-white px-2 py-1.5 rounded hover:bg-amber-700 transition-colors"
+                  >
+                    <Send className="h-3 w-3" />
+                    Send Sample
+                  </button>
+                )}
               {/* Debug: Show why button not showing */}
               {!order.sample_collected_at && (
                 <div className="text-xs text-gray-400 mt-1">Sample not collected yet</div>
@@ -760,68 +766,68 @@ const DashboardOrderModal: React.FC<DashboardOrderModalProps> = ({
 
           {/* Patient Info (Editable) */}
           <div className="bg-white border border-gray-200 rounded-xl p-4 relative group">
-             <div className="flex justify-between items-start mb-2">
-                <h3 className="font-semibold text-gray-900 flex items-center gap-2">
-                  <User className="h-4 w-4 text-gray-500" />
-                  Patient Information
-                </h3>
-                {!isEditingPatient && (
-                  <button onClick={() => setIsEditingPatient(true)} className="opacity-0 group-hover:opacity-100 p-1 hover:bg-gray-100 rounded transition-opacity">
-                    <Edit2 className="h-3 w-3 text-gray-600" />
-                  </button>
-                )}
-             </div>
-             
-             {isEditingPatient ? (
-               <div className="grid grid-cols-2 gap-4">
-                 <div>
-                   <label className="text-xs text-gray-500">Name</label>
-                   <input 
-                     type="text" 
-                     value={editPatientName} 
-                     onChange={(e) => setEditPatientName(e.target.value)}
-                     className="w-full border rounded p-1 text-sm"
-                   />
-                 </div>
-                 <div>
-                   <label className="text-xs text-gray-500">Phone</label>
-                   <input 
-                     type="text" 
-                     value={editPatientPhone} 
-                     onChange={(e) => setEditPatientPhone(e.target.value)}
-                     className="w-full border rounded p-1 text-sm"
-                   />
-                 </div>
-                 <div className="col-span-2 flex gap-2 justify-end">
-                   <button onClick={handleSavePatient} className="text-xs bg-blue-600 text-white px-3 py-1 rounded">Save Changes</button>
-                   <button onClick={() => setIsEditingPatient(false)} className="text-xs bg-gray-200 px-3 py-1 rounded">Cancel</button>
-                 </div>
-               </div>
-             ) : (
-               <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
-                 <div>
-                   <span className="text-gray-500 block text-xs">Name</span>
-                   <span className="font-medium">{order.patient_name}</span>
-                 </div>
-                 <div>
-                   <span className="text-gray-500 block text-xs">Phone</span>
-                   <span className="font-medium">{order.patient_phone || 'N/A'}</span>
-                 </div>
-                 <div>
-                   <span className="text-gray-500 block text-xs">Age/Gender</span>
-                   <span className="font-medium">{order.patient?.age} / {order.patient?.gender}</span>
-                 </div>
-                 <div>
-                   <span className="text-gray-500 block text-xs">ID</span>
-                   <span className="font-medium">{order.patient_id}</span>
-                 </div>
-               </div>
-             )}
+            <div className="flex justify-between items-start mb-2">
+              <h3 className="font-semibold text-gray-900 flex items-center gap-2">
+                <User className="h-4 w-4 text-gray-500" />
+                Patient Information
+              </h3>
+              {!isEditingPatient && (
+                <button onClick={() => setIsEditingPatient(true)} className="opacity-0 group-hover:opacity-100 p-1 hover:bg-gray-100 rounded transition-opacity">
+                  <Edit2 className="h-3 w-3 text-gray-600" />
+                </button>
+              )}
+            </div>
+
+            {isEditingPatient ? (
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="text-xs text-gray-500">Name</label>
+                  <input
+                    type="text"
+                    value={editPatientName}
+                    onChange={(e) => setEditPatientName(e.target.value)}
+                    className="w-full border rounded p-1 text-sm"
+                  />
+                </div>
+                <div>
+                  <label className="text-xs text-gray-500">Phone</label>
+                  <input
+                    type="text"
+                    value={editPatientPhone}
+                    onChange={(e) => setEditPatientPhone(e.target.value)}
+                    className="w-full border rounded p-1 text-sm"
+                  />
+                </div>
+                <div className="col-span-2 flex gap-2 justify-end">
+                  <button onClick={handleSavePatient} className="text-xs bg-blue-600 text-white px-3 py-1 rounded">Save Changes</button>
+                  <button onClick={() => setIsEditingPatient(false)} className="text-xs bg-gray-200 px-3 py-1 rounded">Cancel</button>
+                </div>
+              </div>
+            ) : (
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
+                <div>
+                  <span className="text-gray-500 block text-xs">Name</span>
+                  <span className="font-medium">{order.patient_name}</span>
+                </div>
+                <div>
+                  <span className="text-gray-500 block text-xs">Phone</span>
+                  <span className="font-medium">{order.patient_phone || 'N/A'}</span>
+                </div>
+                <div>
+                  <span className="text-gray-500 block text-xs">Age/Gender</span>
+                  <span className="font-medium">{order.patient?.age} / {order.patient?.gender}</span>
+                </div>
+                <div>
+                  <span className="text-gray-500 block text-xs">ID</span>
+                  <span className="font-medium">{order.patient_id}</span>
+                </div>
+              </div>
+            )}
           </div>
 
           {/* Middle Row: Tests & Billing */}
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-            
+
             {/* Tests List */}
             <div className="lg:col-span-2 border border-gray-200 rounded-xl overflow-hidden">
               <div className="bg-gray-50 px-4 py-3 border-b border-gray-200 flex justify-between items-center">
@@ -837,7 +843,7 @@ const DashboardOrderModal: React.FC<DashboardOrderModalProps> = ({
                 {tests.map((test, i) => (
                   <div key={i} className="px-4 py-3 flex items-center justify-between hover:bg-gray-50">
                     <span className="text-sm font-medium text-gray-700">{test.test_name}</span>
-                    
+
                     {/* Outsourcing Dropdown */}
                     <select
                       value={test.outsourced_lab_id || 'inhouse'}
@@ -864,7 +870,7 @@ const DashboardOrderModal: React.FC<DashboardOrderModalProps> = ({
                   <CreditCard className="h-4 w-4 text-gray-500" />
                   Billing Status
                 </h3>
-                
+
                 <div className="space-y-2 mb-4">
                   <div className="flex justify-between text-sm">
                     <span className="text-gray-600">Total Amount</span>
@@ -892,7 +898,7 @@ const DashboardOrderModal: React.FC<DashboardOrderModalProps> = ({
                       Create Invoice
                     </button>
                   )}
-                  
+
                   {order.billing_status === 'billed' && (order.due_amount || 0) > 0 && (
                     <button
                       onClick={() => setShowPaymentModal(true)}
@@ -913,7 +919,7 @@ const DashboardOrderModal: React.FC<DashboardOrderModalProps> = ({
                         <FileText className="h-4 w-4" />
                         {viewInvoiceLoading ? 'Downloading…' : 'View Invoice'}
                       </button>
-                      
+
                       {/* Invoice Delivery Tracker */}
                       {order.invoice_id && (
                         <div className="w-full flex justify-center">
@@ -937,7 +943,7 @@ const DashboardOrderModal: React.FC<DashboardOrderModalProps> = ({
               <div className="bg-gray-50 border border-gray-200 rounded-xl p-4">
                 <h3 className="font-semibold text-gray-900 mb-3 text-sm">Front Desk Actions</h3>
                 <div className="grid grid-cols-2 gap-2">
-                  <button 
+                  <button
                     onClick={handlePrintBarcode}
                     disabled={!order.sample_id}
                     className="flex flex-col items-center justify-center p-3 bg-white border border-gray-200 rounded-lg hover:border-blue-300 hover:shadow-sm transition-all disabled:opacity-50 disabled:cursor-not-allowed"
@@ -945,8 +951,8 @@ const DashboardOrderModal: React.FC<DashboardOrderModalProps> = ({
                     <QrCode className="h-5 w-5 text-gray-600 mb-1" />
                     <span className="text-xs font-medium text-gray-700">Barcode</span>
                   </button>
-                  
-                  <button 
+
+                  <button
                     onClick={handlePrintTRF}
                     className="flex flex-col items-center justify-center p-3 bg-white border border-gray-200 rounded-lg hover:border-blue-300 hover:shadow-sm transition-all"
                   >
@@ -956,7 +962,7 @@ const DashboardOrderModal: React.FC<DashboardOrderModalProps> = ({
 
 
 
-                  <button 
+                  <button
                     onClick={handleDownloadReport}
                     disabled={!order.report_url}
                     className="col-span-2 flex items-center justify-center gap-2 p-3 bg-white border border-gray-200 rounded-lg hover:border-blue-300 hover:shadow-sm transition-all disabled:opacity-50 disabled:cursor-not-allowed"
@@ -972,7 +978,7 @@ const DashboardOrderModal: React.FC<DashboardOrderModalProps> = ({
           {/* Bottom Row: Status & Sample Collection */}
           <div className="border-t border-gray-100 pt-6">
             <h3 className="font-semibold text-gray-900 mb-4">Order Status & Workflow</h3>
-            
+
             <div className="flex flex-col md:flex-row gap-6">
               {/* Status Buttons */}
               <div className="flex-1">
@@ -994,7 +1000,7 @@ const DashboardOrderModal: React.FC<DashboardOrderModalProps> = ({
                         <p className="text-sm text-orange-700 mt-1 mb-3">
                           Sample has not been collected yet.
                         </p>
-                        
+
                         {showPhlebotomistSelector ? (
                           <div className="space-y-3">
                             <PhlebotomistSelector
@@ -1061,7 +1067,7 @@ const DashboardOrderModal: React.FC<DashboardOrderModalProps> = ({
             setShowInvoiceModal(false);
             // Trigger a refresh in parent if needed, or just close
             // Ideally we should refresh the order data here, but for now we rely on parent refresh
-            onClose(); 
+            onClose();
           }}
         />
       )}
@@ -1119,7 +1125,7 @@ const DashboardOrderModal: React.FC<DashboardOrderModalProps> = ({
                   )}
                 </select>
               </div>
-              
+
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">
                   Priority
@@ -1177,7 +1183,7 @@ const DashboardOrderModal: React.FC<DashboardOrderModalProps> = ({
               <Building className="h-5 w-5 text-purple-600" />
               Outsource Order
             </h3>
-            
+
             <div className="space-y-4">
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">Select Lab</label>

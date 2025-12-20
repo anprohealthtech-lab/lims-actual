@@ -4774,6 +4774,7 @@ export const database = {
             analytes(
               id,
               name,
+              code,
               unit,
               reference_range,
               ai_processing_type,
@@ -4813,6 +4814,7 @@ export const database = {
             analytes(
               id,
               name,
+              code,
               unit,
               reference_range,
               ai_processing_type,
@@ -4851,6 +4853,7 @@ export const database = {
             analytes(
               id,
               name,
+              code,
               unit,
               reference_range,
               ai_processing_type,
