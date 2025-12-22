@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Plus, Edit2, Trash2, Search, Filter, X, Save, AlertCircle, Beaker, Layers, Package, DollarSign, Eye, Edit, Link2, Calculator } from 'lucide-react';
+import { Plus, Edit2, Trash2, Search, Filter, X, Save, AlertCircle, Beaker, Layers, Package, DollarSign, Eye, Edit, Link2, Calculator, RefreshCw } from 'lucide-react';
 import { database, supabase } from '../utils/supabase';
 import TestGroupForm from '../components/Tests/TestGroupForm';
 import TestForm from '../components/Tests/TestForm';
@@ -91,7 +91,7 @@ interface PackageType {
 
 const Tests: React.FC = () => {
   console.log('🔵 Tests.tsx page is opening/rendering');
-  
+
   const [tests, setTests] = useState<Test[]>([]);
   const [testGroups, setTestGroups] = useState<TestGroup[]>([]);
   const [analytes, setAnalytes] = useState<Analyte[]>([]);
@@ -119,7 +119,10 @@ const Tests: React.FC = () => {
   const [showDependencyManager, setShowDependencyManager] = useState(false);
   const [dependencyAnalyte, setDependencyAnalyte] = useState<Analyte | null>(null);
   const [error, setError] = useState<string | null>(null);
-  
+  const [syncing, setSyncing] = useState(false);
+  const [syncMode, setSyncMode] = useState<'sync' | 'reset' | null>(null);
+  const [syncStatus, setSyncStatus] = useState<string>('');
+
   console.log('✅ Tests component state initialized');
 
   // Load data on component mount
@@ -154,7 +157,7 @@ const Tests: React.FC = () => {
           }));
           setAnalytes(transformedAnalytes);
         }
-        
+
         // Load test groups from database
         const { data: dbTestGroupsData, error: testGroupsError } = await database.testGroups.getAll();
         if (testGroupsError) {
@@ -225,7 +228,7 @@ const Tests: React.FC = () => {
         setPackages([]);
       }
     };
-    
+
     loadData().then(() => {
       console.log('✅ All data loaded successfully');
     });
@@ -235,28 +238,28 @@ const Tests: React.FC = () => {
 
   const filteredPackages = packages.filter(pkg => {
     const matchesSearch = pkg.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-                         pkg.description.toLowerCase().includes(searchTerm.toLowerCase());
+      pkg.description.toLowerCase().includes(searchTerm.toLowerCase());
     const matchesCategory = selectedCategory === 'All' || pkg.category === selectedCategory;
     return matchesSearch && matchesCategory;
   });
 
   const filteredTestGroups = testGroups.filter(group => {
     const matchesSearch = group.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-                         (group.code?.toLowerCase().includes(searchTerm.toLowerCase()) ?? false);
+      (group.code?.toLowerCase().includes(searchTerm.toLowerCase()) ?? false);
     const matchesCategory = selectedCategory === 'All' || group.category === selectedCategory;
     return matchesSearch && matchesCategory;
   });
 
   const filteredAnalytes = analytes.filter(analyte => {
     const matchesSearch = analyte.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-                         analyte.id.toLowerCase().includes(searchTerm.toLowerCase());
+      analyte.id.toLowerCase().includes(searchTerm.toLowerCase());
     const matchesCategory = selectedCategory === 'All' || analyte.category === selectedCategory;
     return matchesSearch && matchesCategory;
   });
 
   const filteredLegacyTests = tests.filter(test => {
     const matchesSearch = test.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-                         test.id.toLowerCase().includes(searchTerm.toLowerCase());
+      test.id.toLowerCase().includes(searchTerm.toLowerCase());
     const matchesCategory = selectedCategory === 'All' || test.category === selectedCategory;
     return matchesSearch && matchesCategory;
   });
@@ -298,13 +301,13 @@ const Tests: React.FC = () => {
         formula_variables: formData.formulaVariables || [],
         formula_description: formData.formulaDescription || null,
       });
-      
+
       if (error) {
         console.error('Error creating analyte:', error);
         alert('Failed to create analyte. Please try again.');
         return;
       }
-      
+
       if (newAnalyte) {
         const transformedAnalyte = {
           id: newAnalyte.id,
@@ -323,10 +326,10 @@ const Tests: React.FC = () => {
           formulaVariables: newAnalyte.formula_variables || [],
           formulaDescription: newAnalyte.formula_description || ''
         };
-        
+
         setAnalytes(prev => [...prev, transformedAnalyte]);
         setShowAnalyteForm(false);
-        
+
         // If it's a calculated analyte, prompt to manage dependencies
         if (newAnalyte.is_calculated && newAnalyte.formula_variables?.length > 0) {
           setDependencyAnalyte(transformedAnalyte);
@@ -345,13 +348,13 @@ const Tests: React.FC = () => {
     console.log('Creating test group with data:', formData);
     try {
       const { data: newTestGroup, error } = await database.testGroups.create(formData);
-      
+
       if (error) {
         console.error('Error creating test group:', error);
         alert('Failed to create test group. Please try again.');
         return;
       }
-      
+
       if (newTestGroup) {
         setTestGroups(prev => [...prev, newTestGroup]);
         setShowTestGroupForm(false);
@@ -376,29 +379,29 @@ const Tests: React.FC = () => {
         validity_days: formData.validityDays || 30,
         is_active: formData.isActive ?? true,
       });
-      
+
       if (packageError || !newPackage) {
         console.error('Error creating package:', packageError);
         alert('Failed to create package. Please try again.');
         return;
       }
-      
+
       // Link test groups to package
       if (formData.testGroupIds && formData.testGroupIds.length > 0) {
         const packageTestGroups = formData.testGroupIds.map((tgId: string) => ({
           package_id: newPackage.id,
           test_group_id: tgId
         }));
-        
+
         const { error: linkError } = await supabase
           .from('package_test_groups')
           .insert(packageTestGroups);
-          
+
         if (linkError) {
           console.error('Error linking test groups to package:', linkError);
         }
       }
-      
+
       // Reload packages to get the updated list
       const { data: dbPackagesData } = await database.packages.getAll();
       if (dbPackagesData) {
@@ -415,7 +418,7 @@ const Tests: React.FC = () => {
         }));
         setPackages(transformedPackages);
       }
-      
+
       setShowPackageForm(false);
       setEditingPackage(null);
       console.log('✅ Package created successfully:', newPackage.id);
@@ -470,7 +473,7 @@ const Tests: React.FC = () => {
   // Update handlers
   const handleUpdatePackage = async (formData: any) => {
     if (!editingPackage) return;
-    
+
     try {
       // Update the package
       const { error: updateError } = await database.packages.update(editingPackage.id, {
@@ -482,30 +485,30 @@ const Tests: React.FC = () => {
         validity_days: formData.validityDays || 30,
         is_active: formData.isActive ?? true,
       });
-      
+
       if (updateError) {
         console.error('Error updating package:', updateError);
         alert('Failed to update package. Please try again.');
         return;
       }
-      
+
       // Update test group links - delete existing and insert new
       await supabase
         .from('package_test_groups')
         .delete()
         .eq('package_id', editingPackage.id);
-      
+
       if (formData.testGroupIds && formData.testGroupIds.length > 0) {
         const packageTestGroups = formData.testGroupIds.map((tgId: string) => ({
           package_id: editingPackage.id,
           test_group_id: tgId
         }));
-        
+
         await supabase
           .from('package_test_groups')
           .insert(packageTestGroups);
       }
-      
+
       // Reload packages
       const { data: dbPackagesData } = await database.packages.getAll();
       if (dbPackagesData) {
@@ -523,7 +526,7 @@ const Tests: React.FC = () => {
         }));
         setPackages(transformedPackages);
       }
-      
+
       setShowPackageForm(false);
       setEditingPackage(null);
       console.log('✅ Package updated successfully');
@@ -538,13 +541,13 @@ const Tests: React.FC = () => {
 
     try {
       const { data: updatedTestGroup, error } = await database.testGroups.update(editingTestGroup.id, formData);
-      
+
       if (error) {
         console.error('Error updating test group:', error);
         alert('Failed to update test group. Please try again.');
         return;
       }
-      
+
       if (updatedTestGroup) {
         setTestGroups(prev => prev.map(tg => tg.id === editingTestGroup.id ? updatedTestGroup : tg));
         setShowTestGroupForm(false);
@@ -559,7 +562,7 @@ const Tests: React.FC = () => {
 
   const handleUpdateAnalyte = async (formData: any) => {
     if (!editingAnalyte) return;
-    
+
     console.log('Updating analyte with data:', formData);
     try {
       // Get current lab ID
@@ -594,13 +597,13 @@ const Tests: React.FC = () => {
           lab_specific_interpretation_high: formData.interpretation?.high,
         }
       );
-      
+
       if (error) {
         console.error('Error updating lab analyte:', error);
         alert('Failed to update analyte. Please try again.');
         return;
       }
-      
+
       if (updatedAnalyte) {
         const transformedAnalyte = {
           id: updatedAnalyte.analyte_id || editingAnalyte.id, // Use analyte_id from lab_analytes
@@ -614,7 +617,7 @@ const Tests: React.FC = () => {
           isActive: updatedAnalyte.is_active,
           createdDate: updatedAnalyte.created_at || editingAnalyte.createdDate
         };
-        
+
         setAnalytes(prev => prev.map(a => a.id === editingAnalyte.id ? transformedAnalyte : a));
         setShowEditAnalyteModal(false);
         setEditingAnalyte(null);
@@ -628,7 +631,7 @@ const Tests: React.FC = () => {
 
   const handleUpdateTest = (formData: any) => {
     if (!editingTest) return;
-    
+
     const updatedTest = {
       ...editingTest,
       name: formData.name,
@@ -645,7 +648,7 @@ const Tests: React.FC = () => {
       criticalValues: formData.criticalValues,
       interpretation: formData.interpretation,
     };
-    
+
     setTests(prev => prev.map(t => t.id === editingTest.id ? updatedTest : t));
     setShowTestForm(false);
     setEditingTest(null);
@@ -677,532 +680,849 @@ const Tests: React.FC = () => {
     setEditingAnalyte(null);
   };
 
+  // Sync test groups and analytes from global catalog
+  const handleSyncFromGlobal = async () => {
+    if (syncing) return;
+
+    const confirmed = window.confirm(
+      'This will sync your test groups and analytes from the global catalog with AI configuration.\n\n' +
+      'Existing test groups will be updated with AI settings. New test groups from the global catalog will be added.\n\n' +
+      'Do you want to continue?'
+    );
+
+    if (!confirmed) return;
+
+    setSyncing(true);
+    setSyncMode('sync');
+    setSyncStatus('Initializing sync...');
+    setError(null);
+
+    try {
+      setSyncStatus('Connecting to lab...');
+      const labId = await database.getCurrentUserLabId();
+      if (!labId) {
+        setError('Unable to determine lab context');
+        setSyncing(false);
+        setSyncMode(null);
+        return;
+      }
+
+      console.log('🔄 Syncing from global catalog for lab:', labId);
+      setSyncStatus('Syncing from global catalog...');
+
+      // Call the onboarding-lab edge function
+      const { data, error: fnError } = await supabase.functions.invoke('onboarding-lab', {
+        body: { lab_id: labId, mode: 'sync' }
+      });
+
+      if (fnError) {
+        console.error('Edge function error:', fnError);
+        setError(`Sync failed: ${fnError.message}`);
+        setSyncing(false);
+        setSyncMode(null);
+        return;
+      }
+
+      console.log('✅ Sync response:', data);
+      setSyncStatus('Reloading test groups...');
+
+      // Reload test groups to reflect changes
+      const { data: dbTestGroupsData, error: testGroupsError } = await database.testGroups.getAll();
+      if (!testGroupsError && dbTestGroupsData) {
+        const transformedTestGroups = (dbTestGroupsData || []).map(group => ({
+          id: group.id,
+          name: group.name,
+          code: group.code,
+          category: group.category,
+          clinicalPurpose: group.clinical_purpose,
+          price: group.price,
+          turnaroundTime: group.turnaround_time,
+          sampleType: group.sample_type,
+          requiresFasting: group.requires_fasting,
+          isActive: group.is_active,
+          createdDate: group.created_at,
+          default_ai_processing_type: group.default_ai_processing_type,
+          group_level_prompt: group.group_level_prompt,
+          testType: group.test_type || 'Default',
+          gender: group.gender || 'Both',
+          sampleColor: group.sample_color || 'Red',
+          barcodeSuffix: group.barcode_suffix,
+          lmpRequired: group.lmp_required || false,
+          idRequired: group.id_required || false,
+          consentForm: group.consent_form || false,
+          preCollectionGuidelines: group.pre_collection_guidelines,
+          flabsId: group.flabs_id,
+          onlyFemale: group.only_female || false,
+          onlyMale: group.only_male || false,
+          onlyBilling: group.only_billing || false,
+          startFromNextPage: group.start_from_next_page || false,
+          analytes: group.test_group_analytes ? group.test_group_analytes.map((tga: any) => tga.analyte_id) : []
+        }));
+        setTestGroups(transformedTestGroups);
+      }
+
+      setSyncStatus('Reloading analytes...');
+      // Reload analytes
+      const { data: dbAnalytesData, error: analytesError } = await database.analytes.getAll();
+      if (!analytesError && dbAnalytesData) {
+        const transformedAnalytes = (dbAnalytesData || []).map(analyte => ({
+          id: analyte.id,
+          name: analyte.name,
+          unit: analyte.unit,
+          referenceRange: analyte.reference_range || analyte.referenceRange,
+          lowCritical: analyte.low_critical,
+          highCritical: analyte.high_critical,
+          interpretation: analyte.interpretation,
+          category: analyte.category,
+          isActive: analyte.is_active ?? true,
+          createdDate: analyte.created_at || new Date().toISOString(),
+          isCalculated: analyte.is_calculated || false,
+          formula: analyte.formula || '',
+          formulaVariables: analyte.formula_variables || [],
+          formulaDescription: analyte.formula_description || ''
+        }));
+        setAnalytes(transformedAnalytes);
+      }
+
+      setSyncStatus('Complete!');
+      const message = data?.message || 'Sync completed successfully!';
+      alert(`✅ ${message}\n\nTest groups: ${data?.testGroupsCreated || 0} created\nAnalytes: ${data?.analytesCreated || 0} synced`);
+
+    } catch (err) {
+      console.error('Sync error:', err);
+      setError(`Sync failed: ${err instanceof Error ? err.message : 'Unknown error'}`);
+    } finally {
+      setSyncing(false);
+      setSyncMode(null);
+      setSyncStatus('');
+    }
+  };
+
+  // Reset test groups to defaults from global catalog (deletes all and recreates)
+  const handleResetToDefaults = async () => {
+    if (syncing) return;
+
+    const confirmed = window.confirm(
+      '⚠️ WARNING: This will DELETE ALL your existing test groups and restore them from the global catalog.\n\n' +
+      'This action cannot be undone. All custom test groups and modifications will be lost.\n\n' +
+      'This will also remove any duplicate test entries.\n\n' +
+      'Are you sure you want to continue?'
+    );
+
+    if (!confirmed) return;
+
+    // Double confirmation for destructive action
+    const doubleConfirm = window.confirm(
+      'Please confirm again: DELETE all test groups and restore defaults?\n\n' +
+      'Type "yes" in your mind and click OK to proceed.'
+    );
+
+    if (!doubleConfirm) return;
+
+    setSyncing(true);
+    setSyncMode('reset');
+    setSyncStatus('Preparing reset...');
+    setError(null);
+
+    try {
+      setSyncStatus('Connecting to lab...');
+      const labId = await database.getCurrentUserLabId();
+      if (!labId) {
+        setError('Unable to determine lab context');
+        setSyncing(false);
+        setSyncMode(null);
+        return;
+      }
+
+      console.log('🔄 Resetting test groups to defaults for lab:', labId);
+      setSyncStatus('Deleting existing test groups...');
+
+      // Call the onboarding-lab edge function with reset mode
+      const { data, error: fnError } = await supabase.functions.invoke('onboarding-lab', {
+        body: { lab_id: labId, mode: 'reset' }
+      });
+
+      if (fnError) {
+        console.error('Edge function error:', fnError);
+        setError(`Reset failed: ${fnError.message}`);
+        setSyncing(false);
+        setSyncMode(null);
+        return;
+      }
+
+      console.log('✅ Reset response:', data);
+      setSyncStatus('Reloading test groups...');
+
+      // Reload test groups to reflect changes
+      const { data: dbTestGroupsData, error: testGroupsError } = await database.testGroups.getAll();
+      if (!testGroupsError && dbTestGroupsData) {
+        const transformedTestGroups = (dbTestGroupsData || []).map(group => ({
+          id: group.id,
+          name: group.name,
+          code: group.code,
+          category: group.category,
+          clinicalPurpose: group.clinical_purpose,
+          price: group.price,
+          turnaroundTime: group.turnaround_time,
+          sampleType: group.sample_type,
+          requiresFasting: group.requires_fasting,
+          isActive: group.is_active,
+          createdDate: group.created_at,
+          default_ai_processing_type: group.default_ai_processing_type,
+          group_level_prompt: group.group_level_prompt,
+          testType: group.test_type || 'Default',
+          gender: group.gender || 'Both',
+          sampleColor: group.sample_color || 'Red',
+          barcodeSuffix: group.barcode_suffix,
+          lmpRequired: group.lmp_required || false,
+          idRequired: group.id_required || false,
+          consentForm: group.consent_form || false,
+          preCollectionGuidelines: group.pre_collection_guidelines,
+          flabsId: group.flabs_id,
+          onlyFemale: group.only_female || false,
+          onlyMale: group.only_male || false,
+          onlyBilling: group.only_billing || false,
+          startFromNextPage: group.start_from_next_page || false,
+          analytes: group.test_group_analytes ? group.test_group_analytes.map((tga: any) => tga.analyte_id) : []
+        }));
+        setTestGroups(transformedTestGroups);
+      }
+
+      setSyncStatus('Complete!');
+      const message = data?.message || 'Reset completed successfully!';
+      alert(`✅ ${message}\n\nTest groups deleted: ${data?.testGroupsDeleted || 0}\nTest groups created: ${data?.testGroupsCreated || 0}\nDuplicates removed: ${data?.duplicatesRemoved || 0}\nOrphan lab_analytes deleted: ${data?.orphanLabAnalytesDeleted || 0}\nOrphan lab_templates deleted: ${data?.orphanLabTemplatesDeleted || 0}`);
+
+    } catch (err) {
+      console.error('Reset error:', err);
+      setError(`Reset failed: ${err instanceof Error ? err.message : 'Unknown error'}`);
+    } finally {
+      setSyncing(false);
+      setSyncMode(null);
+      setSyncStatus('');
+    }
+  };
+
   return (
-    <div className="space-y-3 max-w-7xl mx-auto">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-bold text-gray-900">Test Management System</h1>
-          <p className="text-gray-500 text-sm">Manage analytes, test groups, and diagnostic panels</p>
-        </div>
-        <div className="flex space-x-2">
-          <button 
-            onClick={() => setShowAnalyteForm(true)}
-            className="flex items-center px-3 py-1.5 text-sm border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors"
-          >
-            <Beaker className="h-4 w-4 mr-1" />
-            Add Analyte
-          </button>
-          <button 
-            onClick={() => setShowPackageForm(true)}
-            className="flex items-center px-3 py-1.5 text-sm bg-purple-600 text-white rounded-lg hover:bg-purple-700 transition-colors"
-          >
-            <Plus className="h-4 w-4 mr-1" />
-            Create Package
-          </button>
-          <button 
-            onClick={() => setShowTestGroupForm(true)}
-            className="flex items-center px-3 py-1.5 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
-          >
-            <Plus className="h-4 w-4 mr-1" />
-            Create Test Group
-          </button>
-        </div>
-      </div>
+    <>
+      {/* Sync/Reset Loading Modal */}
+      {syncing && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
+          <div className="bg-white rounded-2xl shadow-2xl p-8 max-w-md w-full mx-4 transform animate-pulse">
+            {/* Header */}
+            <div className="text-center mb-6">
+              <div className="inline-flex items-center justify-center w-16 h-16 bg-gradient-to-br from-blue-500 to-purple-600 rounded-full mb-4">
+                <RefreshCw className="h-8 w-8 text-white animate-spin" />
+              </div>
+              <h3 className="text-xl font-bold text-gray-900">
+                {syncMode === 'reset' ? '🔄 Resetting Test Groups' : '🔄 Syncing from Global'}
+              </h3>
+            </div>
 
-      {error && (
-        <div className="mb-2 p-3 bg-red-50 border border-red-200 rounded-md flex items-center space-x-2 text-sm">
-          <AlertCircle className="w-4 h-4 text-red-600" />
-          <span className="text-red-700">{error}</span>
-          <button
-            onClick={() => setError(null)}
-            className="ml-auto text-red-600 hover:text-red-800"
-          >
-            <X className="w-4 h-4" />
-          </button>
-        </div>
-      )}
+            {/* Progress Animation */}
+            <div className="mb-6">
+              <div className="flex items-center justify-center space-x-2 mb-4">
+                <div className="w-3 h-3 bg-blue-500 rounded-full animate-bounce" style={{ animationDelay: '0ms' }}></div>
+                <div className="w-3 h-3 bg-purple-500 rounded-full animate-bounce" style={{ animationDelay: '150ms' }}></div>
+                <div className="w-3 h-3 bg-blue-500 rounded-full animate-bounce" style={{ animationDelay: '300ms' }}></div>
+              </div>
 
-      {/* Tab Navigation - Compact */}
-      <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-1">
-        <div className="flex space-x-1">
-          <button
-            onClick={() => setActiveTab('groups')}
-            className={`flex-1 flex items-center justify-center px-3 py-2 rounded-md text-sm font-medium transition-all ${
-              activeTab === 'groups'
-                ? 'bg-blue-600 text-white shadow-sm'
-                : 'text-gray-600 hover:text-gray-900 hover:bg-gray-50'
-            }`}
-          >
-            <Layers className="h-4 w-4 mr-2" />
-            Test Groups ({testGroups.length})
-          </button>
-          <button
-            onClick={() => setActiveTab('analytes')}
-            className={`flex-1 flex items-center justify-center px-3 py-2 rounded-md text-sm font-medium transition-all ${
-              activeTab === 'analytes'
-                ? 'bg-blue-600 text-white shadow-sm'
-                : 'text-gray-600 hover:text-gray-900 hover:bg-gray-50'
-            }`}
-          >
-            <Beaker className="h-4 w-4 mr-2" />
-            Analytes ({analytes.length})
-          </button>
-          <button
-            onClick={() => setActiveTab('packages')}
-            className={`flex-1 flex items-center justify-center px-3 py-2 rounded-md text-sm font-medium transition-all ${
-              activeTab === 'packages'
-                ? 'bg-purple-600 text-white shadow-sm'
-                : 'text-gray-600 hover:text-gray-900 hover:bg-gray-50'
-            }`}
-          >
-            <Package className="h-4 w-4 mr-2" />
-            Packages ({packages.length})
-          </button>
-        </div>
-      </div>
-      {/* Stats Cards - Compact */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-        <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-3">
-          <div className="flex items-center">
-            <div className="bg-purple-100 p-2 rounded-lg">
-              <Package className="h-5 w-5 text-purple-600" />
+              {/* Pulsing bar */}
+              <div className="w-full bg-gray-200 rounded-full h-2 overflow-hidden">
+                <div className="h-full bg-gradient-to-r from-blue-500 via-purple-500 to-blue-500 animate-pulse rounded-full"
+                  style={{ width: '100%', animation: 'pulse 1.5s ease-in-out infinite' }}></div>
+              </div>
             </div>
-            <div className="ml-3">
-              <div className="text-xl font-bold text-gray-900">{packages.length}</div>
-              <div className="text-xs text-gray-600">Health Packages</div>
-            </div>
-          </div>
-        </div>
-        
-        <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-3">
-          <div className="flex items-center">
-            <div className="bg-green-100 p-2 rounded-lg">
-              <Layers className="h-5 w-5 text-green-600" />
-            </div>
-            <div className="ml-3">
-              <div className="text-xl font-bold text-gray-900">{testGroups.length}</div>
-              <div className="text-xs text-gray-600">Test Groups</div>
-            </div>
-          </div>
-        </div>
-        
-        <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-3">
-          <div className="flex items-center">
-            <div className="bg-blue-100 p-2 rounded-lg">
-              <Beaker className="h-5 w-5 text-blue-600" />
-            </div>
-            <div className="ml-3">
-              <div className="text-xl font-bold text-gray-900">{analytes.length}</div>
-              <div className="text-xs text-gray-600">Analytes</div>
-            </div>
-          </div>
-        </div>
 
-        <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-3">
-          <div className="flex items-center">
-            <div className="bg-orange-100 p-2 rounded-lg">
-              <DollarSign className="h-5 w-5 text-orange-600" />
+            {/* Status Text */}
+            <div className="text-center">
+              <p className="text-gray-700 font-medium mb-2">{syncStatus || 'Processing...'}</p>
+              <p className="text-sm text-gray-500">
+                {syncMode === 'reset'
+                  ? 'Deleting old data and restoring from global catalog...'
+                  : 'Syncing your test groups with AI configuration...'}
+              </p>
             </div>
-            <div className="ml-3">
-              <div className="text-xl font-bold text-gray-900">₹{packages.length > 0 ? Math.round(packages.reduce((sum, pkg) => sum + pkg.price, 0) / packages.length) : 0}</div>
-              <div className="text-xs text-gray-600">Avg Package Price</div>
-            </div>
-          </div>
-        </div>
-      </div>
 
-      {/* Search and Filter Bar - Compact */}
-      <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-3">
-        <div className="flex flex-col sm:flex-row gap-2">
-          <div className="flex-1 relative">
-            <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-gray-400" />
-            <input
-              type="text"
-              placeholder="Search tests by name or ID..."
-              value={searchTerm}
-              onChange={(e) => setSearchTerm(e.target.value)}
-              className="pl-9 pr-3 py-1.5 w-full text-sm border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-            />
-          </div>
-          <select
-            value={selectedCategory}
-            onChange={(e) => setSelectedCategory(e.target.value)}
-            className="px-3 py-1.5 text-sm border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-          >
-            {categories.map(category => (
-              <option key={category} value={category}>{category}</option>
-            ))}
-          </select>
-          <button className="flex items-center px-3 py-1.5 text-sm border border-gray-300 rounded-md hover:bg-gray-50 transition-colors">
-            <Filter className="h-4 w-4 mr-1" />
-            More Filters
-          </button>
-        </div>
-      </div>
-
-      {/* Test Groups Tab */}
-      {activeTab === 'groups' && (
-        <div className="bg-white rounded-lg shadow-sm border border-gray-200 overflow-hidden">
-          <div className="px-3 py-2 border-b border-gray-200">
-            <h3 className="text-sm font-semibold text-gray-900">
-              Test Groups ({filteredTestGroups.length})
-            </h3>
-          </div>
-          
-          <div className="overflow-x-auto">
-            <table className="w-full divide-y divide-gray-200 text-sm">
-              <thead className="bg-gray-50">
-                <tr>
-                  <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Group Details</th>
-                  <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Category</th>
-                  <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Analytes</th>
-                  <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Price</th>
-                  <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Sample</th>
-                  <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Actions</th>
-                </tr>
-              </thead>
-              <tbody className="bg-white divide-y divide-gray-200">
-                {filteredTestGroups.map((group) => (
-                  <tr key={group.id} className="hover:bg-gray-50 transition-colors">
-                    <td className="px-3 py-2">
-                      <div>
-                        <div className="font-medium text-gray-900 text-sm">{group.name}</div>
-                        <div className="text-xs text-gray-500">Code: {group.code} • {group.turnaroundTime}</div>
-                      </div>
-                    </td>
-                    <td className="px-3 py-2">
-                      <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium ${getCategoryColor(group.category)}`}>
-                        {group.category}
-                      </span>
-                    </td>
-                    <td className="px-3 py-2">
-                      <div className="text-sm text-gray-900">{group.analytes?.length || 0}</div>
-                    </td>
-                    <td className="px-3 py-2">
-                      <div className="font-medium text-gray-900">₹{group.price || 0}</div>
-                    </td>
-                    <td className="px-3 py-2 text-gray-600 text-xs">
-                      {group.sampleType || 'N/A'}
-                    </td>
-                    <td className="px-3 py-2 text-sm font-medium">
-                      <button 
-                        onClick={() => handleViewTestGroup(group)}
-                        className="text-blue-600 hover:text-blue-900 p-1 rounded"
-                        title="View Test Group Details"
-                      >
-                        <Eye className="h-4 w-4" />
-                      </button>
-                      <button 
-                        onClick={() => handleEditTestGroup(group)}
-                        className="text-gray-600 hover:text-gray-900 p-1 rounded"
-                        title="Edit Test Group"
-                      >
-                        <Edit className="h-4 w-4" />
-                      </button>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+            {/* Warning for reset mode */}
+            {syncMode === 'reset' && (
+              <div className="mt-6 p-3 bg-amber-50 border border-amber-200 rounded-lg">
+                <p className="text-sm text-amber-700 text-center">
+                  ⚠️ This may take a moment. Please don't close this page.
+                </p>
+              </div>
+            )}
           </div>
         </div>
       )}
 
-      {/* Analytes Tab */}
-      {activeTab === 'analytes' && (
-        <div className="bg-white rounded-lg shadow-sm border border-gray-200 overflow-hidden">
-          <div className="px-3 py-2 border-b border-gray-200">
-            <h3 className="text-sm font-semibold text-gray-900">
-              Analytes ({filteredAnalytes.length})
-            </h3>
+      <div className="space-y-3 max-w-7xl mx-auto">
+        <div className="flex items-center justify-between">
+          <div>
+            <h1 className="text-2xl font-bold text-gray-900">Test Management System</h1>
+            <p className="text-gray-500 text-sm">Manage analytes, test groups, and diagnostic panels</p>
           </div>
-          
-          <div className="overflow-x-auto">
-            <table className="w-full divide-y divide-gray-200 text-sm">
-              <thead className="bg-gray-50">
-                <tr>
-                  <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Analyte Details</th>
-                  <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Category</th>
-                  <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Reference Range</th>
-                  <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Critical Values</th>
-                  <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Actions</th>
-                </tr>
-              </thead>
-              <tbody className="bg-white divide-y divide-gray-200">
-                {filteredAnalytes.map((analyte) => (
-                  <tr key={analyte.id} className="hover:bg-gray-50 transition-colors">
-                    <td className="px-3 py-2">
-                      <div>
-                        <div className="flex items-center gap-1.5">
-                          <span className="font-medium text-gray-900">{analyte.name}</span>
-                          {analyte.isCalculated && (
-                            <span className="inline-flex items-center px-1.5 py-0.5 rounded bg-amber-100 text-amber-700 text-xs font-medium">
-                              <Calculator className="h-3 w-3 mr-0.5" />
-                              Calc
-                            </span>
-                          )}
-                        </div>
-                        <div className="text-xs text-gray-500">Unit: {analyte.unit}</div>
-                        {analyte.isCalculated && analyte.formula && (
-                          <div className="text-xs text-amber-600 font-mono mt-0.5">{analyte.formula}</div>
-                        )}
-                      </div>
-                    </td>
-                    <td className="px-3 py-2">
-                      <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium ${getCategoryColor(analyte.category)}`}>
-                        {analyte.category}
-                      </span>
-                    </td>
-                    <td className="px-3 py-2">
-                      <div className="text-gray-900 text-xs">{analyte.referenceRange || 'N/A'}</div>
-                    </td>
-                    <td className="px-3 py-2">
-                      <div className="text-xs">
-                        {analyte.lowCritical && <div className="text-red-600">Low: {analyte.lowCritical}</div>}
-                        {analyte.highCritical && <div className="text-red-600">High: {analyte.highCritical}</div>}
-                        {!analyte.lowCritical && !analyte.highCritical && <span className="text-gray-400">-</span>}
-                      </div>
-                    </td>
-                    <td className="px-3 py-2">
-                      <div className="flex items-center gap-0.5">
-                        <button 
-                          onClick={() => handleViewAnalyte(analyte)}
-                          className="text-blue-600 hover:text-blue-900 p-1 rounded"
-                          title="View Analyte Details"
-                        >
-                          <Eye className="h-4 w-4" />
-                        </button>
-                        <button 
-                          onClick={() => handleEditAnalyte(analyte)}
-                          className="text-gray-600 hover:text-gray-900 p-1 rounded"
-                          title="Edit Analyte"
-                        >
-                          <Edit className="h-4 w-4" />
-                        </button>
-                        {analyte.isCalculated && (
-                          <button 
-                            onClick={() => {
-                              setDependencyAnalyte(analyte);
-                              setShowDependencyManager(true);
-                            }}
-                            className="text-amber-600 hover:text-amber-900 p-1 rounded"
-                            title="Manage Dependencies"
-                          >
-                            <Link2 className="h-4 w-4" />
-                          </button>
-                        )}
-                      </div>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+          <div className="flex space-x-2">
+            <button
+              onClick={handleSyncFromGlobal}
+              disabled={syncing}
+              className="flex items-center px-3 py-1.5 text-sm border border-green-500 text-green-600 rounded-lg hover:bg-green-50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              title="Sync test groups and analytes from global catalog with AI configuration"
+            >
+              <RefreshCw className={`h-4 w-4 mr-1 ${syncing ? 'animate-spin' : ''}`} />
+              {syncing ? 'Syncing...' : 'Sync from Global'}
+            </button>
+            <button
+              onClick={handleResetToDefaults}
+              disabled={syncing}
+              className="flex items-center px-3 py-1.5 text-sm border border-red-500 text-red-600 rounded-lg hover:bg-red-50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              title="Delete all test groups and restore from global catalog (removes duplicates)"
+            >
+              <Trash2 className="h-4 w-4 mr-1" />
+              Reset to Defaults
+            </button>
+            <button
+              onClick={() => setShowAnalyteForm(true)}
+              className="flex items-center px-3 py-1.5 text-sm border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors"
+            >
+              <Beaker className="h-4 w-4 mr-1" />
+              Add Analyte
+            </button>
+            <button
+              onClick={() => setShowPackageForm(true)}
+              className="flex items-center px-3 py-1.5 text-sm bg-purple-600 text-white rounded-lg hover:bg-purple-700 transition-colors"
+            >
+              <Plus className="h-4 w-4 mr-1" />
+              Create Package
+            </button>
+            <button
+              onClick={() => setShowTestGroupForm(true)}
+              className="flex items-center px-3 py-1.5 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
+            >
+              <Plus className="h-4 w-4 mr-1" />
+              Create Test Group
+            </button>
           </div>
         </div>
-      )}
 
-      {/* Packages Tab */}
-      {activeTab === 'packages' && (
-        <div className="bg-white rounded-lg shadow-sm border border-gray-200 overflow-hidden">
-          <div className="px-3 py-2 border-b border-gray-200 flex items-center justify-between">
-            <h3 className="text-sm font-semibold text-gray-900">
-              Health Packages ({packages.length})
-            </h3>
-          </div>
-          
-          {packages.length === 0 ? (
-            <div className="p-8 text-center text-gray-500">
-              <Package className="h-12 w-12 mx-auto mb-3 text-gray-300" />
-              <p>No health packages created yet.</p>
+        {
+          error && (
+            <div className="mb-2 p-3 bg-red-50 border border-red-200 rounded-md flex items-center space-x-2 text-sm">
+              <AlertCircle className="w-4 h-4 text-red-600" />
+              <span className="text-red-700">{error}</span>
               <button
-                onClick={() => setShowPackageForm(true)}
-                className="mt-3 px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 text-sm"
+                onClick={() => setError(null)}
+                className="ml-auto text-red-600 hover:text-red-800"
               >
-                Create Your First Package
+                <X className="w-4 h-4" />
               </button>
             </div>
-          ) : (
-            <div className="overflow-x-auto">
-              <table className="w-full divide-y divide-gray-200 text-sm">
-                <thead className="bg-gray-50">
-                  <tr>
-                    <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Package Details</th>
-                    <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Category</th>
-                    <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Tests</th>
-                    <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Price</th>
-                    <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Status</th>
-                    <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Actions</th>
-                  </tr>
-                </thead>
-                <tbody className="bg-white divide-y divide-gray-200">
-                  {packages.map((pkg) => (
-                    <tr key={pkg.id} className="hover:bg-gray-50 transition-colors">
-                      <td className="px-3 py-2">
-                        <div>
-                          <div className="font-medium text-gray-900">{pkg.name}</div>
-                          <div className="text-xs text-gray-500 truncate max-w-xs">{pkg.description}</div>
-                        </div>
-                      </td>
-                      <td className="px-3 py-2">
-                        <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-purple-100 text-purple-800">
-                          {pkg.category || 'General'}
-                        </span>
-                      </td>
-                      <td className="px-3 py-2">
-                        <div className="text-sm text-gray-900">{pkg.testGroupIds?.length || 0} tests</div>
-                      </td>
-                      <td className="px-3 py-2">
-                        <div className="font-medium text-green-600">₹{pkg.price || 0}</div>
-                        {pkg.discountPercentage > 0 && (
-                          <div className="text-xs text-gray-500">{pkg.discountPercentage}% discount</div>
-                        )}
-                      </td>
-                      <td className="px-3 py-2">
-                        <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium ${
-                          pkg.isActive ? 'bg-green-100 text-green-800' : 'bg-gray-100 text-gray-600'
-                        }`}>
-                          {pkg.isActive ? 'Active' : 'Inactive'}
-                        </span>
-                      </td>
-                      <td className="px-3 py-2">
-                        <div className="flex items-center gap-0.5">
-                          <button 
-                            onClick={() => handleViewPackage(pkg)}
+          )
+        }
+
+        {/* Tab Navigation - Compact */}
+        <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-1">
+          <div className="flex space-x-1">
+            <button
+              onClick={() => setActiveTab('groups')}
+              className={`flex-1 flex items-center justify-center px-3 py-2 rounded-md text-sm font-medium transition-all ${activeTab === 'groups'
+                ? 'bg-blue-600 text-white shadow-sm'
+                : 'text-gray-600 hover:text-gray-900 hover:bg-gray-50'
+                }`}
+            >
+              <Layers className="h-4 w-4 mr-2" />
+              Test Groups ({testGroups.length})
+            </button>
+            <button
+              onClick={() => setActiveTab('analytes')}
+              className={`flex-1 flex items-center justify-center px-3 py-2 rounded-md text-sm font-medium transition-all ${activeTab === 'analytes'
+                ? 'bg-blue-600 text-white shadow-sm'
+                : 'text-gray-600 hover:text-gray-900 hover:bg-gray-50'
+                }`}
+            >
+              <Beaker className="h-4 w-4 mr-2" />
+              Analytes ({analytes.length})
+            </button>
+            <button
+              onClick={() => setActiveTab('packages')}
+              className={`flex-1 flex items-center justify-center px-3 py-2 rounded-md text-sm font-medium transition-all ${activeTab === 'packages'
+                ? 'bg-purple-600 text-white shadow-sm'
+                : 'text-gray-600 hover:text-gray-900 hover:bg-gray-50'
+                }`}
+            >
+              <Package className="h-4 w-4 mr-2" />
+              Packages ({packages.length})
+            </button>
+          </div>
+        </div>
+        {/* Stats Cards - Compact */}
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+          <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-3">
+            <div className="flex items-center">
+              <div className="bg-purple-100 p-2 rounded-lg">
+                <Package className="h-5 w-5 text-purple-600" />
+              </div>
+              <div className="ml-3">
+                <div className="text-xl font-bold text-gray-900">{packages.length}</div>
+                <div className="text-xs text-gray-600">Health Packages</div>
+              </div>
+            </div>
+          </div>
+
+          <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-3">
+            <div className="flex items-center">
+              <div className="bg-green-100 p-2 rounded-lg">
+                <Layers className="h-5 w-5 text-green-600" />
+              </div>
+              <div className="ml-3">
+                <div className="text-xl font-bold text-gray-900">{testGroups.length}</div>
+                <div className="text-xs text-gray-600">Test Groups</div>
+              </div>
+            </div>
+          </div>
+
+          <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-3">
+            <div className="flex items-center">
+              <div className="bg-blue-100 p-2 rounded-lg">
+                <Beaker className="h-5 w-5 text-blue-600" />
+              </div>
+              <div className="ml-3">
+                <div className="text-xl font-bold text-gray-900">{analytes.length}</div>
+                <div className="text-xs text-gray-600">Analytes</div>
+              </div>
+            </div>
+          </div>
+
+          <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-3">
+            <div className="flex items-center">
+              <div className="bg-orange-100 p-2 rounded-lg">
+                <DollarSign className="h-5 w-5 text-orange-600" />
+              </div>
+              <div className="ml-3">
+                <div className="text-xl font-bold text-gray-900">₹{packages.length > 0 ? Math.round(packages.reduce((sum, pkg) => sum + pkg.price, 0) / packages.length) : 0}</div>
+                <div className="text-xs text-gray-600">Avg Package Price</div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* Search and Filter Bar - Compact */}
+        <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-3">
+          <div className="flex flex-col sm:flex-row gap-2">
+            <div className="flex-1 relative">
+              <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-gray-400" />
+              <input
+                type="text"
+                placeholder="Search tests by name or ID..."
+                value={searchTerm}
+                onChange={(e) => setSearchTerm(e.target.value)}
+                className="pl-9 pr-3 py-1.5 w-full text-sm border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+              />
+            </div>
+            <select
+              value={selectedCategory}
+              onChange={(e) => setSelectedCategory(e.target.value)}
+              className="px-3 py-1.5 text-sm border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+            >
+              {categories.map(category => (
+                <option key={category} value={category}>{category}</option>
+              ))}
+            </select>
+            <button className="flex items-center px-3 py-1.5 text-sm border border-gray-300 rounded-md hover:bg-gray-50 transition-colors">
+              <Filter className="h-4 w-4 mr-1" />
+              More Filters
+            </button>
+          </div>
+        </div>
+
+        {/* Test Groups Tab */}
+        {
+          activeTab === 'groups' && (
+            <div className="bg-white rounded-lg shadow-sm border border-gray-200 overflow-hidden">
+              <div className="px-3 py-2 border-b border-gray-200">
+                <h3 className="text-sm font-semibold text-gray-900">
+                  Test Groups ({filteredTestGroups.length})
+                </h3>
+              </div>
+
+              <div className="overflow-x-auto">
+                <table className="w-full divide-y divide-gray-200 text-sm">
+                  <thead className="bg-gray-50">
+                    <tr>
+                      <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Group Details</th>
+                      <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Category</th>
+                      <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Analytes</th>
+                      <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Price</th>
+                      <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Sample</th>
+                      <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody className="bg-white divide-y divide-gray-200">
+                    {filteredTestGroups.map((group) => (
+                      <tr key={group.id} className="hover:bg-gray-50 transition-colors">
+                        <td className="px-3 py-2">
+                          <div>
+                            <div className="font-medium text-gray-900 text-sm">{group.name}</div>
+                            <div className="text-xs text-gray-500">Code: {group.code} • {group.turnaroundTime}</div>
+                          </div>
+                        </td>
+                        <td className="px-3 py-2">
+                          <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium ${getCategoryColor(group.category)}`}>
+                            {group.category}
+                          </span>
+                        </td>
+                        <td className="px-3 py-2">
+                          <div className="text-sm text-gray-900">{group.analytes?.length || 0}</div>
+                        </td>
+                        <td className="px-3 py-2">
+                          <div className="font-medium text-gray-900">₹{group.price || 0}</div>
+                        </td>
+                        <td className="px-3 py-2 text-gray-600 text-xs">
+                          {group.sampleType || 'N/A'}
+                        </td>
+                        <td className="px-3 py-2 text-sm font-medium">
+                          <button
+                            onClick={() => handleViewTestGroup(group)}
                             className="text-blue-600 hover:text-blue-900 p-1 rounded"
-                            title="View Package Details"
+                            title="View Test Group Details"
                           >
                             <Eye className="h-4 w-4" />
                           </button>
-                          <button 
-                            onClick={() => handleEditPackage(pkg)}
+                          <button
+                            onClick={() => handleEditTestGroup(group)}
                             className="text-gray-600 hover:text-gray-900 p-1 rounded"
-                            title="Edit Package"
+                            title="Edit Test Group"
                           >
                             <Edit className="h-4 w-4" />
                           </button>
-                        </div>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
             </div>
-          )}
-        </div>
-      )}
+          )
+        }
 
-      {/* Test Form Modal */}
-      {showTestForm && (
-        <TestForm
-          onClose={handleCloseTestForm}
-          onSubmit={editingTest ? handleUpdateTest : handleAddTest}
-          test={editingTest}
-        />
-      )}
+        {/* Analytes Tab */}
+        {
+          activeTab === 'analytes' && (
+            <div className="bg-white rounded-lg shadow-sm border border-gray-200 overflow-hidden">
+              <div className="px-3 py-2 border-b border-gray-200">
+                <h3 className="text-sm font-semibold text-gray-900">
+                  Analytes ({filteredAnalytes.length})
+                </h3>
+              </div>
 
-      {/* Analyte Form Modal */}
-      {showAnalyteForm && (
-        <AnalyteForm
-          onClose={handleCloseAnalyteForm}
-          onSubmit={editingAnalyte ? handleUpdateAnalyte : handleAddAnalyte}
-          analyte={editingAnalyte}
-        />
-      )}
+              <div className="overflow-x-auto">
+                <table className="w-full divide-y divide-gray-200 text-sm">
+                  <thead className="bg-gray-50">
+                    <tr>
+                      <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Analyte Details</th>
+                      <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Category</th>
+                      <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Reference Range</th>
+                      <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Critical Values</th>
+                      <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody className="bg-white divide-y divide-gray-200">
+                    {filteredAnalytes.map((analyte) => (
+                      <tr key={analyte.id} className="hover:bg-gray-50 transition-colors">
+                        <td className="px-3 py-2">
+                          <div>
+                            <div className="flex items-center gap-1.5">
+                              <span className="font-medium text-gray-900">{analyte.name}</span>
+                              {analyte.isCalculated && (
+                                <span className="inline-flex items-center px-1.5 py-0.5 rounded bg-amber-100 text-amber-700 text-xs font-medium">
+                                  <Calculator className="h-3 w-3 mr-0.5" />
+                                  Calc
+                                </span>
+                              )}
+                            </div>
+                            <div className="text-xs text-gray-500">Unit: {analyte.unit}</div>
+                            {analyte.isCalculated && analyte.formula && (
+                              <div className="text-xs text-amber-600 font-mono mt-0.5">{analyte.formula}</div>
+                            )}
+                          </div>
+                        </td>
+                        <td className="px-3 py-2">
+                          <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium ${getCategoryColor(analyte.category)}`}>
+                            {analyte.category}
+                          </span>
+                        </td>
+                        <td className="px-3 py-2">
+                          <div className="text-gray-900 text-xs">{analyte.referenceRange || 'N/A'}</div>
+                        </td>
+                        <td className="px-3 py-2">
+                          <div className="text-xs">
+                            {analyte.lowCritical && <div className="text-red-600">Low: {analyte.lowCritical}</div>}
+                            {analyte.highCritical && <div className="text-red-600">High: {analyte.highCritical}</div>}
+                            {!analyte.lowCritical && !analyte.highCritical && <span className="text-gray-400">-</span>}
+                          </div>
+                        </td>
+                        <td className="px-3 py-2">
+                          <div className="flex items-center gap-0.5">
+                            <button
+                              onClick={() => handleViewAnalyte(analyte)}
+                              className="text-blue-600 hover:text-blue-900 p-1 rounded"
+                              title="View Analyte Details"
+                            >
+                              <Eye className="h-4 w-4" />
+                            </button>
+                            <button
+                              onClick={() => handleEditAnalyte(analyte)}
+                              className="text-gray-600 hover:text-gray-900 p-1 rounded"
+                              title="Edit Analyte"
+                            >
+                              <Edit className="h-4 w-4" />
+                            </button>
+                            {analyte.isCalculated && (
+                              <button
+                                onClick={() => {
+                                  setDependencyAnalyte(analyte);
+                                  setShowDependencyManager(true);
+                                }}
+                                className="text-amber-600 hover:text-amber-900 p-1 rounded"
+                                title="Manage Dependencies"
+                              >
+                                <Link2 className="h-4 w-4" />
+                              </button>
+                            )}
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )
+        }
 
-      {/* Test Group Form Modal - USES ENHANCED TESTGROUPFORM */}
-      {showTestGroupForm && (
-        <TestGroupForm
-          onClose={handleCloseTestGroupForm}
-          onSubmit={editingTestGroup ? handleUpdateTestGroup : handleAddTestGroup}
-          testGroup={editingTestGroup}
-        />
-      )}
+        {/* Packages Tab */}
+        {
+          activeTab === 'packages' && (
+            <div className="bg-white rounded-lg shadow-sm border border-gray-200 overflow-hidden">
+              <div className="px-3 py-2 border-b border-gray-200 flex items-center justify-between">
+                <h3 className="text-sm font-semibold text-gray-900">
+                  Health Packages ({packages.length})
+                </h3>
+              </div>
 
-      {/* Package Form Modal */}
-      {showPackageForm && (
-        <PackageForm
-          onClose={handleClosePackageForm}
-          onSubmit={editingPackage ? handleUpdatePackage : handleAddPackage}
-          package={editingPackage}
-        />
-      )}
+              {packages.length === 0 ? (
+                <div className="p-8 text-center text-gray-500">
+                  <Package className="h-12 w-12 mx-auto mb-3 text-gray-300" />
+                  <p>No health packages created yet.</p>
+                  <button
+                    onClick={() => setShowPackageForm(true)}
+                    className="mt-3 px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 text-sm"
+                  >
+                    Create Your First Package
+                  </button>
+                </div>
+              ) : (
+                <div className="overflow-x-auto">
+                  <table className="w-full divide-y divide-gray-200 text-sm">
+                    <thead className="bg-gray-50">
+                      <tr>
+                        <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Package Details</th>
+                        <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Category</th>
+                        <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Tests</th>
+                        <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Price</th>
+                        <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Status</th>
+                        <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody className="bg-white divide-y divide-gray-200">
+                      {packages.map((pkg) => (
+                        <tr key={pkg.id} className="hover:bg-gray-50 transition-colors">
+                          <td className="px-3 py-2">
+                            <div>
+                              <div className="font-medium text-gray-900">{pkg.name}</div>
+                              <div className="text-xs text-gray-500 truncate max-w-xs">{pkg.description}</div>
+                            </div>
+                          </td>
+                          <td className="px-3 py-2">
+                            <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-purple-100 text-purple-800">
+                              {pkg.category || 'General'}
+                            </span>
+                          </td>
+                          <td className="px-3 py-2">
+                            <div className="text-sm text-gray-900">{pkg.testGroupIds?.length || 0} tests</div>
+                          </td>
+                          <td className="px-3 py-2">
+                            <div className="font-medium text-green-600">₹{pkg.price || 0}</div>
+                            {pkg.discountPercentage > 0 && (
+                              <div className="text-xs text-gray-500">{pkg.discountPercentage}% discount</div>
+                            )}
+                          </td>
+                          <td className="px-3 py-2">
+                            <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium ${pkg.isActive ? 'bg-green-100 text-green-800' : 'bg-gray-100 text-gray-600'
+                              }`}>
+                              {pkg.isActive ? 'Active' : 'Inactive'}
+                            </span>
+                          </td>
+                          <td className="px-3 py-2">
+                            <div className="flex items-center gap-0.5">
+                              <button
+                                onClick={() => handleViewPackage(pkg)}
+                                className="text-blue-600 hover:text-blue-900 p-1 rounded"
+                                title="View Package Details"
+                              >
+                                <Eye className="h-4 w-4" />
+                              </button>
+                              <button
+                                onClick={() => handleEditPackage(pkg)}
+                                className="text-gray-600 hover:text-gray-900 p-1 rounded"
+                                title="Edit Package"
+                              >
+                                <Edit className="h-4 w-4" />
+                              </button>
+                            </div>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          )
+        }
 
-      {/* Detail Modals */}
-      {showTestDetail && selectedTest && (
-        <TestDetailModal
-          test={selectedTest}
-          onClose={() => setShowTestDetail(false)}
-          onEdit={() => {
-            setShowTestDetail(false);
-            handleEditLegacyTest(selectedTest);
-          }}
-        />
-      )}
+        {/* Test Form Modal */}
+        {
+          showTestForm && (
+            <TestForm
+              onClose={handleCloseTestForm}
+              onSubmit={editingTest ? handleUpdateTest : handleAddTest}
+              test={editingTest}
+            />
+          )
+        }
 
-      {showAnalyteDetail && selectedAnalyte && (
-        <AnalyteDetailModal
-          analyte={selectedAnalyte}
-          onClose={() => setShowAnalyteDetail(false)}
-          onEdit={() => {
-            setShowAnalyteDetail(false);
-            handleEditAnalyte(selectedAnalyte);
-          }}
-        />
-      )}
+        {/* Analyte Form Modal */}
+        {
+          showAnalyteForm && (
+            <AnalyteForm
+              onClose={handleCloseAnalyteForm}
+              onSubmit={editingAnalyte ? handleUpdateAnalyte : handleAddAnalyte}
+              analyte={editingAnalyte}
+            />
+          )
+        }
 
-      {showTestGroupDetail && selectedTestGroup && (
-        <TestGroupDetailModal
-          testGroup={selectedTestGroup}
-          analytes={analytes}
-          onClose={() => setShowTestGroupDetail(false)}
-          onEdit={() => {
-            setShowTestGroupDetail(false);
-            handleEditTestGroup(selectedTestGroup);
-          }}
-        />
-      )}
+        {/* Test Group Form Modal - USES ENHANCED TESTGROUPFORM */}
+        {
+          showTestGroupForm && (
+            <TestGroupForm
+              onClose={handleCloseTestGroupForm}
+              onSubmit={editingTestGroup ? handleUpdateTestGroup : handleAddTestGroup}
+              testGroup={editingTestGroup}
+            />
+          )
+        }
 
-      {showPackageDetail && selectedPackage && (
-        <PackageDetailModal
-          package={selectedPackage}
-          testGroups={testGroups}
-          onClose={() => setShowPackageDetail(false)}
-          onEdit={() => {
-            setShowPackageDetail(false);
-            handleEditPackage(selectedPackage);
-          }}
-        />
-      )}
+        {/* Package Form Modal */}
+        {
+          showPackageForm && (
+            <PackageForm
+              onClose={handleClosePackageForm}
+              onSubmit={editingPackage ? handleUpdatePackage : handleAddPackage}
+              package={editingPackage}
+            />
+          )
+        }
 
-      {/* Edit Analyte Modal */}
-      {showEditAnalyteModal && editingAnalyte && (
-        <SimpleAnalyteEditor
-          analyte={editingAnalyte}
-          onSave={handleUpdateAnalyte}
-          onCancel={handleCloseAnalyteModal}
-        />
-      )}
+        {/* Detail Modals */}
+        {
+          showTestDetail && selectedTest && (
+            <TestDetailModal
+              test={selectedTest}
+              onClose={() => setShowTestDetail(false)}
+              onEdit={() => {
+                setShowTestDetail(false);
+                handleEditLegacyTest(selectedTest);
+              }}
+            />
+          )
+        }
 
-      {/* Dependency Manager Modal */}
-      {showDependencyManager && dependencyAnalyte && (
-        <AnalyteDependencyManager
-          analyte={{
-            id: dependencyAnalyte.id,
-            name: dependencyAnalyte.name,
-            formula: dependencyAnalyte.formula || '',
-            formulaVariables: dependencyAnalyte.formulaVariables || []
-          }}
-          onClose={() => {
-            setShowDependencyManager(false);
-            setDependencyAnalyte(null);
-          }}
-          onSaved={() => {
-            // Refresh analytes after saving dependencies
-            console.log('Dependencies saved, refreshing...');
-          }}
-        />
-      )}
-    </div>
+        {
+          showAnalyteDetail && selectedAnalyte && (
+            <AnalyteDetailModal
+              analyte={selectedAnalyte}
+              onClose={() => setShowAnalyteDetail(false)}
+              onEdit={() => {
+                setShowAnalyteDetail(false);
+                handleEditAnalyte(selectedAnalyte);
+              }}
+            />
+          )
+        }
+
+        {
+          showTestGroupDetail && selectedTestGroup && (
+            <TestGroupDetailModal
+              testGroup={selectedTestGroup}
+              analytes={analytes}
+              onClose={() => setShowTestGroupDetail(false)}
+              onEdit={() => {
+                setShowTestGroupDetail(false);
+                handleEditTestGroup(selectedTestGroup);
+              }}
+            />
+          )
+        }
+
+        {
+          showPackageDetail && selectedPackage && (
+            <PackageDetailModal
+              package={selectedPackage}
+              testGroups={testGroups}
+              onClose={() => setShowPackageDetail(false)}
+              onEdit={() => {
+                setShowPackageDetail(false);
+                handleEditPackage(selectedPackage);
+              }}
+            />
+          )
+        }
+
+        {/* Edit Analyte Modal */}
+        {
+          showEditAnalyteModal && editingAnalyte && (
+            <SimpleAnalyteEditor
+              analyte={editingAnalyte}
+              onSave={handleUpdateAnalyte}
+              onCancel={handleCloseAnalyteModal}
+            />
+          )
+        }
+
+        {/* Dependency Manager Modal */}
+        {
+          showDependencyManager && dependencyAnalyte && (
+            <AnalyteDependencyManager
+              analyte={{
+                id: dependencyAnalyte.id,
+                name: dependencyAnalyte.name,
+                formula: dependencyAnalyte.formula || '',
+                formulaVariables: dependencyAnalyte.formulaVariables || []
+              }}
+              onClose={() => {
+                setShowDependencyManager(false);
+                setDependencyAnalyte(null);
+              }}
+              onSaved={() => {
+                // Refresh analytes after saving dependencies
+                console.log('Dependencies saved, refreshing...');
+              }}
+            />
+          )
+        }
+      </div>
+    </>
   );
 };
 

@@ -55,7 +55,7 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
     sampleType: testGroup?.sampleType || '',
     requiresFasting: testGroup?.requiresFasting ?? false,
     isActive: testGroup?.isActive ?? true,
-    default_ai_processing_type: testGroup?.default_ai_processing_type || 'ocr_report',
+    default_ai_processing_type: testGroup?.default_ai_processing_type || 'THERMAL_SLIP_OCR',
     group_level_prompt: testGroup?.group_level_prompt || '',
     // New fields from the screenshot
     testType: testGroup?.testType || 'Default',
@@ -233,10 +233,18 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
   };
 
   const aiProcessingTypes = [
-    { value: 'none', label: 'None - Manual Entry Only', description: 'No AI processing for this test group' },
-    { value: 'ocr_report', label: 'OCR Report Processing', description: 'Extract values from printed reports and instrument displays' },
-    { value: 'vision_card', label: 'Vision Card Analysis', description: 'Analyze test cards and lateral flow devices' },
-    { value: 'vision_color', label: 'Vision Color Analysis', description: 'Color-based analysis for strips and visual tests' },
+    { value: 'MANUAL_ENTRY_NO_VISION', label: 'Manual Entry (No AI)', description: 'Manual data entry without AI vision processing' },
+    { value: 'THERMAL_SLIP_OCR', label: 'Thermal Slip OCR', description: 'Extract values from thermal printer slips (analyzers)' },
+    { value: 'INSTRUMENT_SCREEN_OCR', label: 'Instrument Screen OCR', description: 'Extract values from instrument display screens' },
+    { value: 'RAPID_CARD_LFA', label: 'Rapid Card / LFA', description: 'Analyze lateral flow assay cards (pregnancy, malaria, etc.)' },
+    { value: 'COLOR_STRIP_MULTIPARAM', label: 'Color Strip (Multi-param)', description: 'Multi-parameter color strip analysis (urine, water)' },
+    { value: 'SINGLE_WELL_COLORIMETRIC', label: 'Single Well Colorimetric', description: 'Single well/tube color analysis (ELISA, chemistry)' },
+    { value: 'AGGLUTINATION_CARD', label: 'Agglutination Card', description: 'Blood typing and agglutination pattern analysis' },
+    { value: 'MICROSCOPY_MORPHOLOGY', label: 'Microscopy Morphology', description: 'Microscope image analysis (blood smear, microbiology)' },
+    { value: 'ZONE_OF_INHIBITION', label: 'Zone of Inhibition', description: 'Antibiotic sensitivity zone measurement' },
+    { value: 'MENISCUS_SCALE_READING', label: 'Meniscus Scale Reading', description: 'ESR tube or graduated scale reading' },
+    { value: 'SAMPLE_QUALITY_TUBE_CHECK', label: 'Sample Quality Check', description: 'Sample quality verification (hemolysis, lipemia)' },
+    { value: 'UNKNOWN_NEEDS_REVIEW', label: 'Unknown (Needs Review)', description: 'Uncategorized - requires manual classification' },
   ];
 
   const selectedAnalyteDetails = analytes.filter(analyte =>

@@ -14,10 +14,13 @@ serve(async (req) => {
 
   try {
     // 1. Parse Input
-    const { lab_id } = await req.json();
+    const { lab_id, mode } = await req.json();
     if (!lab_id) {
       throw new Error('lab_id is required');
     }
+
+    const isSync = mode === 'sync'; // Sync mode updates existing records
+    const isReset = mode === 'reset'; // Reset mode deletes ALL and restores from global
 
     // 2. Init Supabase Client
     const supabaseClient = createClient(
@@ -25,15 +28,20 @@ serve(async (req) => {
       Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
     );
 
-    console.log(`🚀 Starting ROBUST onboarding for Lab: ${lab_id}`);
+    console.log(`🚀 Starting ${isReset ? 'RESET' : isSync ? 'SYNC' : 'ONBOARD'} for Lab: ${lab_id}`);
 
     // --- Counters for Logging ---
-    let stats = {
+    let stats: Record<string, number> = {
       analytesHydrated: 0,
       testsCreated: 0,
+      testsUpdated: 0,
       testsSkipped: 0,
+      testsDeleted: 0,
+      duplicatesRemoved: 0,
       templatesCloned: 0,
-      packagesCreated: 0
+      packagesCreated: 0,
+      orphanLabAnalytesDeleted: 0,
+      orphanLabTemplatesDeleted: 0
     };
 
     // --- A. Hydrate Analytes (Safe Upsert) ---
@@ -58,21 +66,135 @@ serve(async (req) => {
       if (laError) console.error('Error hydrating analytes:', laError);
     }
 
-    // --- B. Hydrate Test Groups (Check First) ---
+    // --- B. Handle RESET Mode - Delete ALL test groups first ---
+    if (isReset) {
+      console.log('🗑️ RESET MODE: Deleting all existing test groups for lab...');
+      
+      // Get all test groups for this lab
+      const { data: existingTestGroups } = await supabaseClient
+        .from('test_groups')
+        .select('id')
+        .eq('lab_id', lab_id);
+      
+      if (existingTestGroups && existingTestGroups.length > 0) {
+        const testGroupIds = existingTestGroups.map(tg => tg.id);
+        
+        // Delete related records first (foreign key constraints)
+        // 1. Delete test_group_analytes
+        await supabaseClient
+          .from('test_group_analytes')
+          .delete()
+          .in('test_group_id', testGroupIds);
+        
+        // 2. Delete lab_templates linked to these test groups
+        await supabaseClient
+          .from('lab_templates')
+          .delete()
+          .in('test_group_id', testGroupIds);
+        
+        // 3. Delete package_test_groups
+        await supabaseClient
+          .from('package_test_groups')
+          .delete()
+          .in('test_group_id', testGroupIds);
+        
+        // 4. Delete test_workflow_map 
+        await supabaseClient
+          .from('test_workflow_map')
+          .delete()
+          .in('test_group_id', testGroupIds);
+        
+        // 5. Finally delete the test groups themselves
+        const { error: deleteError } = await supabaseClient
+          .from('test_groups')
+          .delete()
+          .eq('lab_id', lab_id);
+        
+        if (deleteError) {
+          console.error('Error deleting test groups:', deleteError);
+        } else {
+          stats.testsDeleted = existingTestGroups.length;
+          console.log(`   🗑️ Deleted ${existingTestGroups.length} existing test groups`);
+        }
+      }
+    }
+
+    // --- C. Hydrate Test Groups (Check First) ---
     console.log('...Hydrating Test Groups');
     const { data: globalTestGroups } = await supabaseClient.from('global_test_catalog').select('*');
 
     if (globalTestGroups) {
       console.log(`   Found ${globalTestGroups.length} global test groups.`);
       
-      for (const gtg of globalTestGroups) {
-        // 1. Check Existence
-        const { data: existingTg } = await supabaseClient
+      // First, detect and remove duplicates by NAME (keep the one matching global code if possible)
+      if (!isReset) {
+        console.log('...Checking for duplicate test groups by name...');
+        
+        for (const gtg of globalTestGroups) {
+          // Find all test groups with this name (should be just one)
+          const { data: sameNameGroups } = await supabaseClient
             .from('test_groups')
-            .select('id')
+            .select('id, code, name, created_at')
+            .eq('lab_id', lab_id)
+            .eq('name', gtg.name)
+            .order('created_at', { ascending: true });
+          
+          if (sameNameGroups && sameNameGroups.length > 1) {
+            console.log(`   ⚠️ Found ${sameNameGroups.length} duplicates for "${gtg.name}"`);
+            
+            // Keep the one with matching code, or the oldest one
+            const matchingCode = sameNameGroups.find(g => g.code === gtg.code);
+            const keepId = matchingCode?.id || sameNameGroups[0].id;
+            
+            // Delete the duplicates (all except the one we're keeping)
+            for (const duplicate of sameNameGroups) {
+              if (duplicate.id !== keepId) {
+                // Delete related records first
+                await supabaseClient.from('test_group_analytes').delete().eq('test_group_id', duplicate.id);
+                await supabaseClient.from('lab_templates').delete().eq('test_group_id', duplicate.id);
+                await supabaseClient.from('package_test_groups').delete().eq('test_group_id', duplicate.id);
+                await supabaseClient.from('test_workflow_map').delete().eq('test_group_id', duplicate.id);
+                
+                // Delete the duplicate test group
+                const { error: delError } = await supabaseClient
+                  .from('test_groups')
+                  .delete()
+                  .eq('id', duplicate.id);
+                
+                if (!delError) {
+                  stats.duplicatesRemoved++;
+                  console.log(`   🗑️ Removed duplicate: ${duplicate.name} (code: ${duplicate.code})`);
+                }
+              }
+            }
+          }
+        }
+        
+        if (stats.duplicatesRemoved > 0) {
+          console.log(`   ✅ Removed ${stats.duplicatesRemoved} duplicate test groups`);
+        }
+      }
+      
+      for (const gtg of globalTestGroups) {
+        // 1. Check Existence by BOTH code AND name (to catch all duplicates)
+        const { data: existingByCode } = await supabaseClient
+            .from('test_groups')
+            .select('id, default_ai_processing_type, code, name')
             .eq('lab_id', lab_id)
             .eq('code', gtg.code)
             .maybeSingle();
+        
+        // Also check by name if code match failed (handles case where code was modified)
+        let existingTg = existingByCode;
+        if (!existingTg) {
+          const { data: existingByName } = await supabaseClient
+            .from('test_groups')
+            .select('id, default_ai_processing_type, code, name')
+            .eq('lab_id', lab_id)
+            .eq('name', gtg.name)
+            .maybeSingle();
+          existingTg = existingByName;
+        }
 
         let testGroupId = existingTg?.id;
 
@@ -118,6 +240,34 @@ serve(async (req) => {
              }));
              await supabaseClient.from('test_group_analytes').insert(linksPayload);
            }
+        } else if (isSync || isReset) {
+           // In sync/reset mode, update existing test groups with AI config and ensure code matches global
+           const needsUpdate = !existingTg.default_ai_processing_type || 
+                               existingTg.default_ai_processing_type !== gtg.default_ai_processing_type ||
+                               existingTg.code !== gtg.code; // Also update if code doesn't match global
+           
+           if (needsUpdate) {
+             const { error: updateError } = await supabaseClient
+               .from('test_groups')
+               .update({
+                 code: gtg.code, // Ensure code matches global catalog
+                 default_ai_processing_type: gtg.default_ai_processing_type,
+                 group_level_prompt: gtg.group_level_prompt || null,
+                 ai_config: gtg.ai_config || {},
+                 sample_type: gtg.specimen_type_default || 'EDTA Blood',
+                 category: gtg.department_default || 'General'
+               })
+               .eq('id', existingTg.id);
+             
+             if (updateError) {
+               console.error(`Failed to update test group ${gtg.code}:`, updateError);
+             } else {
+               stats.testsUpdated++;
+               console.log(`   🔄 Updated Test Group: ${gtg.code} (AI: ${gtg.default_ai_processing_type})`);
+             }
+           } else {
+             stats.testsSkipped++;
+           }
         } else {
            stats.testsSkipped++;
            // console.log(`   ⏩ Skipped existing Test Group: ${gtg.code}`);
@@ -159,7 +309,7 @@ serve(async (req) => {
       }
     }
 
-    // --- C. Hydrate Packages (Check First) ---
+    // --- D. Hydrate Packages (Check First) ---
     console.log('...Hydrating Packages');
     const { data: globalPackages } = await supabaseClient.from('global_package_catalog').select('*');
     
@@ -214,13 +364,107 @@ serve(async (req) => {
       }
     }
     
-    // --- D. Global Templates (Generic) ---
+    // --- E. Global Templates (Generic) ---
     // Skipping generic for now to reduce noise as per previous logic
     
-    console.log(`✅ Onboarding Complete. Stats:`, stats);
+    // --- F. Final Cleanup (at the END, after everything is created) ---
+    if (isReset) {
+      console.log('🧹 Final cleanup: Removing orphan lab_analytes and lab_templates...');
+      
+      // --- 1. Delete orphan lab_analytes (not connected to any test_group_analytes for this lab) ---
+      // Get all test_groups for this lab
+      const { data: labTestGroups } = await supabaseClient
+        .from('test_groups')
+        .select('id')
+        .eq('lab_id', lab_id);
+      
+      const labTestGroupIds = (labTestGroups || []).map(tg => tg.id);
+      
+      if (labTestGroupIds.length > 0) {
+        // Get all analyte_ids that ARE connected to test_group_analytes for this lab's test groups
+        const { data: connectedTGAs } = await supabaseClient
+          .from('test_group_analytes')
+          .select('analyte_id')
+          .in('test_group_id', labTestGroupIds);
+        
+        const connectedAnalyteIds = new Set((connectedTGAs || []).map(tga => tga.analyte_id));
+        
+        // Get all lab_analytes for this lab
+        const { data: allLabAnalytes } = await supabaseClient
+          .from('lab_analytes')
+          .select('id, analyte_id')
+          .eq('lab_id', lab_id);
+        
+        // Find orphan lab_analytes (not connected to any test_group_analytes)
+        const orphanLabAnalyteIds = (allLabAnalytes || [])
+          .filter(la => !connectedAnalyteIds.has(la.analyte_id))
+          .map(la => la.id);
+        
+        if (orphanLabAnalyteIds.length > 0) {
+          const { error: deleteOrphanLAError } = await supabaseClient
+            .from('lab_analytes')
+            .delete()
+            .in('id', orphanLabAnalyteIds);
+          
+          if (!deleteOrphanLAError) {
+            stats.orphanLabAnalytesDeleted = orphanLabAnalyteIds.length;
+            console.log(`   🧹 Deleted ${orphanLabAnalyteIds.length} orphan lab_analytes (not linked to any test group)`);
+          } else {
+            console.error('Error deleting orphan lab_analytes:', deleteOrphanLAError);
+          }
+        } else {
+          console.log('   ✅ No orphan lab_analytes found');
+        }
+      }
+      
+      // --- 2. Delete orphan lab_templates (not linked to any test_groups for this lab) ---
+      const { data: labTemplates } = await supabaseClient
+        .from('lab_templates')
+        .select('id, test_group_id')
+        .eq('lab_id', lab_id);
+      
+      if (labTemplates && labTemplates.length > 0) {
+        const validTestGroupIdsSet = new Set(labTestGroupIds);
+        
+        // Find orphan lab_templates (where test_group_id doesn't exist in this lab's test groups)
+        const orphanTemplateIds = labTemplates
+          .filter(lt => lt.test_group_id && !validTestGroupIdsSet.has(lt.test_group_id))
+          .map(lt => lt.id);
+        
+        if (orphanTemplateIds.length > 0) {
+          const { error: orphanTmplError } = await supabaseClient
+            .from('lab_templates')
+            .delete()
+            .in('id', orphanTemplateIds);
+          
+          if (!orphanTmplError) {
+            stats.orphanLabTemplatesDeleted = orphanTemplateIds.length;
+            console.log(`   🧹 Deleted ${orphanTemplateIds.length} orphan lab_templates (not linked to any test group)`);
+          } else {
+            console.error('Error deleting orphan lab_templates:', orphanTmplError);
+          }
+        } else {
+          console.log('   ✅ No orphan lab_templates found');
+        }
+      }
+    }
+    
+    console.log(`✅ ${isReset ? 'Reset' : isSync ? 'Sync' : 'Onboarding'} Complete. Stats:`, stats);
 
     return new Response(
-      JSON.stringify({ message: 'Onboarding complete', lab_id, stats }),
+      JSON.stringify({ 
+        message: isReset ? 'Reset complete - test groups restored from global catalog, orphans cleaned up' : 
+                 isSync ? 'Sync complete' : 'Onboarding complete', 
+        lab_id, 
+        stats,
+        testGroupsCreated: stats.testsCreated,
+        testGroupsUpdated: stats.testsUpdated,
+        testGroupsDeleted: stats.testsDeleted,
+        duplicatesRemoved: stats.duplicatesRemoved,
+        analytesHydrated: stats.analytesHydrated,
+        orphanLabAnalytesDeleted: stats.orphanLabAnalytesDeleted,
+        orphanLabTemplatesDeleted: stats.orphanLabTemplatesDeleted
+      }),
       { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
     );
 
