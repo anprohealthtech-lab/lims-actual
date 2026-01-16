@@ -13,8 +13,8 @@ const corsHeaders = {
 
 // CONFIGURATION
 const PDFCO_API_URL = 'https://api.pdf.co/v1/pdf/convert/from/html'
-const PDFCO_API_KEY = Deno.env.get('PDFCO_API_KEY') || 'landinquiryfirm@gmail.com_AEu7lrDUacQsWOHuJ757dQDYPrJz6XbsYQcX2HrSVXf1LX8cvBn94TPzmfpeVgrT'
-const ANTHROPIC_API_KEY = Deno.env.get('ANTHROPIC_API_KEY') || "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"
+const PDFCO_API_KEY = Deno.env.get('PDFCO_API_KEY') || ''
+const ANTHROPIC_API_KEY = Deno.env.get('ANTHROPIC_API_KEY') || ''
 
 // GLOBAL STYLES (User Provided + Wrapper)
 const STABLE_REPORT_CSS = `

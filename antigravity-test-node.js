@@ -32,11 +32,11 @@ try {
 }
 
 // 2. CONFIGURATION
-const PDFCO_API_KEY = 'landinquiryfirm@gmail.com_AEu7lrDUacQsWOHuJ757dQDYPrJz6XbsYQcX2HrSVXf1LX8cvBn94TPzmfpeVgrT';
+const PDFCO_API_KEY = process.env.PDFCO_API_KEY || 'YOUR_PDFCO_API_KEY';
 const PDFCO_API_URL = 'https://api.pdf.co/v1/pdf/convert/from/html';
 
-// User provided specific ANTHROPIC KEY for this test
-const ANTHROPIC_API_KEY = "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";
+// Use environment variable for Anthropic API key
+const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || 'YOUR_ANTHROPIC_API_KEY';
 
 const SUPABASE_URL = process.env.SUPABASE_URL || envConfig.VITE_SUPABASE_URL || envConfig.SUPABASE_URL;
 const SUPABASE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || envConfig.SUPABASE_SERVICE_ROLE_KEY || envConfig.VITE_SUPABASE_ANON_KEY;
