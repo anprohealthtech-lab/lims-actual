@@ -218,14 +218,22 @@ export const AITestConfigurator: React.FC<AITestConfiguratorProps> = ({
   // Helper function to generate report template HTML with placeholders
   const generateReportTemplate = (config: TestConfigurationResponse): string => {
     const placeholders = config.analytes.map(analyte => {
-      const analyteName = analyte.name.replace(/[^a-zA-Z0-9]/g, '_');
+      // Create code: Uppercase, alphanumeric, replace spaces/symbols with underscore
+      // Ensure no double underscores and no leading/trailing underscores
+      const code = analyte.name
+        .toUpperCase()
+        .replace(/[^A-Z0-9]+/g, '_')
+        .replace(/^_|_$/g, '');
+
+      const placeholderBase = `ANALYTE_${code}`;
+
       return `
         <tr>
           <td style="padding: 8px; border-bottom: 1px solid #eee;">${analyte.name}</td>
-          <td style="padding: 8px; border-bottom: 1px solid #eee; font-weight: bold;">{{${analyteName}_value}}</td>
-          <td style="padding: 8px; border-bottom: 1px solid #eee;">{{${analyteName}_unit}}</td>
-          <td style="padding: 8px; border-bottom: 1px solid #eee;">{{${analyteName}_refRange}}</td>
-          <td style="padding: 8px; border-bottom: 1px solid #eee;">{{${analyteName}_flag}}</td>
+          <td style="padding: 8px; border-bottom: 1px solid #eee; font-weight: bold;">{{${placeholderBase}_VALUE}}</td>
+          <td style="padding: 8px; border-bottom: 1px solid #eee;">{{${placeholderBase}_UNIT}}</td>
+          <td style="padding: 8px; border-bottom: 1px solid #eee;">{{${placeholderBase}_REFERENCE}}</td>
+          <td style="padding: 8px; border-bottom: 1px solid #eee;">{{${placeholderBase}_FLAG}}</td>
         </tr>`;
     }).join('\n');
 

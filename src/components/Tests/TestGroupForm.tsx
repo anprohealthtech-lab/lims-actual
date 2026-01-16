@@ -1,7 +1,8 @@
 import React, { useState, useEffect } from 'react';
-import { X, Layers, TestTube, DollarSign, Clock, Settings, Plus, Search, AlertCircle, Brain, Building2 } from 'lucide-react';
+import { X, Layers, TestTube, DollarSign, Clock, Settings, Plus, Search, AlertCircle, Brain, Building2, Edit } from 'lucide-react';
 import { database, supabase } from '../../utils/supabase';
 import AnalyteForm from './AnalyteForm';
+import { SimpleAnalyteEditor } from '../TestGroups/SimpleAnalyteEditor';
 
 interface TestGroupFormProps {
   onClose: () => void;
@@ -84,6 +85,7 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
   const [searchQuery, setSearchQuery] = useState('');
   const [showAnalyteForm, setShowAnalyteForm] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [editingAttachedAnalyte, setEditingAttachedAnalyte] = useState<any>(null);
 
   // Load analytes and outsourced labs
   useEffect(() => {
@@ -168,6 +170,51 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
     } catch (error) {
       console.error('Error creating analyte:', error);
       alert('Failed to create analyte. Please try again.');
+    }
+  };
+
+  const handleUpdateAttachedAnalyte = async (updatedAnalyte: any) => {
+    try {
+        console.log("Updating Attached Analyte", updatedAnalyte);
+        // Update in DB
+        const { error } = await supabase
+            .from('analytes')
+            .update({
+                name: updatedAnalyte.name,
+                unit: updatedAnalyte.unit,
+                reference_range: updatedAnalyte.referenceRange,
+                low_critical: updatedAnalyte.lowCritical,
+                high_critical: updatedAnalyte.highCritical,
+                interpretation_low: updatedAnalyte.interpretationLow,
+                interpretation_normal: updatedAnalyte.interpretationNormal,
+                interpretation_high: updatedAnalyte.interpretationHigh,
+                category: updatedAnalyte.category,
+                is_active: updatedAnalyte.isActive,
+                ai_processing_type: updatedAnalyte.aiProcessingType,
+                ref_range_knowledge: updatedAnalyte.ref_range_knowledge,
+                updated_at: new Date().toISOString()
+            })
+            .eq('id', updatedAnalyte.id);
+
+        if (error) throw error;
+
+        // Update local state 'analytes' array to reflect changes immediately
+        setAnalytes(prev => prev.map(a => a.id === updatedAnalyte.id ? {
+            ...a,
+            name: updatedAnalyte.name,
+            unit: updatedAnalyte.unit,
+            referenceRange: updatedAnalyte.referenceRange,
+            category: updatedAnalyte.category,
+            // ... map other fields if needed for display ...
+        } : a));
+        
+        // Also refresh data to be sure
+        await loadData();
+
+        setEditingAttachedAnalyte(null);
+    } catch (err: any) {
+        console.error("Error updating attached analyte:", err);
+        alert("Failed to update analyte: " + err.message);
     }
   };
 
@@ -840,11 +887,25 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
             {formData.selectedAnalytes.length > 0 && (
               <div className="bg-green-50 border border-green-200 rounded-lg p-4">
                 <h4 className="font-medium text-green-900 mb-2">Selected Analytes ({formData.selectedAnalytes.length})</h4>
-                <div className="flex flex-wrap gap-2">
+                <div className="space-y-2">
                   {selectedAnalyteDetails.map((analyte) => (
-                    <span key={analyte.id} className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-800">
-                      {analyte.name}
-                    </span>
+                    <div key={analyte.id} className="flex items-center justify-between bg-white p-2 rounded border border-green-100 shadow-sm">
+                        <div className="flex items-center">
+                            <span className="font-medium text-gray-800 text-sm">{analyte.name}</span>
+                            <span className="ml-2 text-xs text-gray-500">
+                                {analyte.referenceRange ? `(${analyte.referenceRange})` : ''} 
+                                {analyte.unit ? ` [${analyte.unit}]` : ''}
+                            </span>
+                        </div>
+                        <button
+                            type="button"
+                            onClick={() => setEditingAttachedAnalyte(analyte)}
+                            className="text-blue-600 hover:text-blue-800 text-xs font-medium px-2 py-1 rounded hover:bg-blue-50 flex items-center"
+                        >
+                            <Edit className="w-3 h-3 mr-1" />
+                            Edit
+                        </button>
+                    </div>
                   ))}
                 </div>
               </div>
@@ -960,15 +1021,25 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
         </form>
       </div >
 
-      {/* Analyte Form Modal */}
-      {
-        showAnalyteForm && (
-          <AnalyteForm
-            onClose={() => setShowAnalyteForm(false)}
-            onSubmit={handleAddNewAnalyte}
-          />
-        )
-      }
+       {/* Analyte Form Modal */}
+       {
+         showAnalyteForm && (
+           <AnalyteForm
+             onClose={() => setShowAnalyteForm(false)}
+             onSubmit={handleAddNewAnalyte}
+           />
+         )
+       }
+
+        {/* Edit Attached Analyte Modal */}
+        {editingAttachedAnalyte && (
+            <SimpleAnalyteEditor
+                analyte={editingAttachedAnalyte}
+                isOpen={true}
+                onClose={() => setEditingAttachedAnalyte(null)}
+                onSave={handleUpdateAttachedAnalyte}
+            />
+        )}
     </div >
   );
 };

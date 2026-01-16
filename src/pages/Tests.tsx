@@ -834,7 +834,6 @@ const Tests: React.FC = () => {
           interpretation: updatedAnalyte.interpretation_low || '',
           category: updatedAnalyte.category,
           isActive: updatedAnalyte.is_active,
-          isActive: updatedAnalyte.is_active,
           createdDate: updatedAnalyte.created_at || editingAnalyte.createdDate,
           ref_range_knowledge: updatedAnalyte.ref_range_knowledge
         };
@@ -1129,6 +1128,36 @@ const Tests: React.FC = () => {
       setSyncing(false);
       setSyncMode(null);
       setSyncStatus('');
+    }
+  };
+
+  const handleDeleteTestGroup = async (group: TestGroup) => {
+    if (!window.confirm(`Are you sure you want to delete test group "${group.name}"? This cannot be undone.`)) return;
+
+    try {
+      const { error } = await database.testGroups.delete(group.id);
+      if (error) throw error;
+      setTestGroups(prev => prev.filter(g => g.id !== group.id));
+    } catch (e: any) {
+      console.error("Delete failed", e);
+      alert("Failed to delete test group. It may be used in existing orders.");
+    }
+  };
+
+  const handleDeleteAnalyte = async (analyte: Analyte) => {
+    if (!window.confirm(`Are you sure you want to delete/hide analyte "${analyte.name}"?`)) return;
+
+    try {
+      const labId = await database.getCurrentUserLabId();
+      if (!labId) return;
+
+      const { error } = await database.labAnalytes.updateLabSpecific(labId, analyte.id, { visible: false });
+      if (error) throw error;
+
+      setAnalytes(prev => prev.filter(a => a.id !== analyte.id));
+    } catch (e: any) {
+      console.error("Hide failed", e);
+      alert("Failed to delete analyte.");
     }
   };
 
@@ -1431,6 +1460,13 @@ const Tests: React.FC = () => {
                           >
                             <Edit className="h-4 w-4" />
                           </button>
+                          <button
+                            onClick={() => handleDeleteTestGroup(group)}
+                            className="text-red-500 hover:text-red-700 p-1 rounded"
+                            title="Delete Test Group"
+                          >
+                            <Trash2 className="h-4 w-4" />
+                          </button>
                         </td>
                       </tr>
                     ))}
@@ -1512,6 +1548,13 @@ const Tests: React.FC = () => {
                               title="Edit Analyte"
                             >
                               <Edit className="h-4 w-4" />
+                            </button>
+                            <button
+                              onClick={() => handleDeleteAnalyte(analyte)}
+                              className="text-red-500 hover:text-red-700 p-1 rounded"
+                              title="Delete Analyte"
+                            >
+                              <Trash2 className="h-4 w-4" />
                             </button>
                             {analyte.isCalculated && (
                               <button

@@ -26,6 +26,7 @@ interface ReferenceRangeResult {
   critical_low: number | null;
   critical_high: number | null;
   flag: 'N' | 'L' | 'H' | 'LL' | 'HH' | null;
+  used_reference_range: string;
   applied_rule: string;
   reasoning: string;
   confidence: number;
@@ -48,9 +49,10 @@ serve(async (req) => {
     console.log(`Resolving ranges for Order: ${orderId}, TestGroup: ${testGroupId}`);
 
     // 1. Fetch order with patient context (Fallback to patient record if context missing)
+    // 1. Fetch order with patient context (Fallback to patient record if context missing)
     const { data: order } = await supabase
       .from('orders')
-      .select('patient_context, patient_id')
+      .select('patient_context, patient_id, lab_id')
       .eq('id', orderId)
       .single()
 
@@ -106,11 +108,35 @@ serve(async (req) => {
       .select('id, name, ref_range_knowledge, reference_range, unit')
       .in('id', analyteIds)
 
+    // 3b. Fetch lab specific overrides
+    let labOverridesMap: Record<string, any> = {};
+    if (order.lab_id) {
+      const { data: labAnalytes } = await supabase
+        .from('lab_analytes')
+        .select('analyte_id, ref_range_knowledge')
+        .eq('lab_id', order.lab_id)
+        .in('analyte_id', analyteIds);
+      
+      if (labAnalytes) {
+        labOverridesMap = Object.fromEntries(
+          labAnalytes.map((la: any) => [la.analyte_id, la.ref_range_knowledge])
+        );
+      }
+    }
+
+    // Merge knowledge
+    const mergedAnalyteKnowledge = (analyteData || []).map((a: any) => ({
+      ...a,
+      ref_range_knowledge: labOverridesMap[a.id] && Object.keys(labOverridesMap[a.id]).length > 0
+        ? labOverridesMap[a.id] 
+        : a.ref_range_knowledge
+    }));
+
     // 4. Build AI prompt
     const prompt = buildReferenceRangePrompt(
       patientContext || {},
       testGroup?.ref_range_ai_config || {},
-      analyteData || [],
+      mergedAnalyteKnowledge,
       analytes
     )
 
@@ -229,7 +255,9 @@ INSTRUCTIONS:
    - Use age-specific ranges (newborn, infant, child)
    - Consider developmental stage by AGE IN MONTHS/DAYS provided in context.
 
-5. Provide reasoning for each decision
+6. Determine the specific "used_reference_range" string.
+   - This should be the exact text representation of the applied range (e.g., "13.5 - 17.5" or "< 200" or "Negative").
+   - This string will be displayed on the final report, so ensure it is user-friendly and accurate.
 
 Return JSON array with this structure:
 [{
@@ -239,6 +267,7 @@ Return JSON array with this structure:
   "ref_high": number | null,
   "critical_low": number | null,
   "critical_high": number | null,
+  "used_reference_range": "string (e.g. '10-20' or '< 50')",
   "flag": "N" | "L" | "H" | "LL" | "HH" | null,
   "applied_rule": "string (e.g., 'Pregnant Trimester 2', 'Adult Female', 'Pediatric 5y')",
   "reasoning": "string (brief clinical reasoning)",

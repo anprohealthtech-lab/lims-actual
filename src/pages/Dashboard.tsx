@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState } from "react";
+import ReactDOM from "react-dom";
 import {
   Plus,
   Search,
@@ -37,13 +38,14 @@ import PaymentCapture from "../components/Billing/PaymentCapture";
 import { OrderStatusDisplay } from "../components/Orders/OrderStatusDisplay";
 import { WhatsAppAPI } from "../utils/whatsappAPI";
 import { openWhatsAppManually } from "../utils/whatsappUtils";
-import ReactDOM from "react-dom";
+
 import { usePDFGeneration } from "../hooks/usePDFGeneration";
 import SampleTransitWidget from "../components/Dashboard/SampleTransitWidget";
 import { generateInvoicePDF } from "../utils/invoicePdfService";
 import PhlebotomistSelector from "../components/Users/PhlebotomistSelector";
 import { SampleTypeIndicator } from "../components/Common/SampleTypeIndicator";
 import { SampleCollectionTracker } from "../components/Samples/SampleCollectionTracker";
+import BookingQueue from "../components/Dashboard/BookingQueue";
 
 /* ===========================
    Types
@@ -248,6 +250,7 @@ const Dashboard: React.FC = () => {
   const [allDates, setAllDates] = useState(false); // ✅ FIX: “All Dates” without breaking query
 
   const [showOrderForm, setShowOrderForm] = useState(false);
+  const [processingBooking, setProcessingBooking] = useState<any>(null); // State for booking being processed
   const [selectedOrder, setSelectedOrder] = useState<CardOrder | null>(null);
 
   // State for invoice modal
@@ -259,7 +262,7 @@ const Dashboard: React.FC = () => {
   const [paymentInvoiceId, setPaymentInvoiceId] = useState<string | null>(null);
 
   // PDF Generation
-  const { generatePDF } = usePDFGeneration();
+  // const { generatePDF } = usePDFGeneration(); // Currently unused
   const [isSendingReport, setIsSendingReport] = useState<string | null>(null);
   const [isSendingInvoice, setIsSendingInvoice] = useState<string | null>(null);
 
@@ -465,7 +468,7 @@ id, patient_id, patient_name, status, priority, order_date, expected_date, total
         total_amount: o.total_amount,
         final_amount: !invoiceInfo?.invoice
           ? (o.total_amount || o.final_amount || 0)
-          : ((invoiceInfo.invoice.total ?? invoiceInfo.invoice.total_amount ?? 0) + Math.max(0, (o.total_amount || 0) - (invoiceInfo.invoice.subtotal ?? o.total_amount ?? 0))),
+          : ((invoiceInfo.invoice.total_after_discount ?? invoiceInfo.invoice.total ?? invoiceInfo.invoice.total_amount ?? 0) + Math.max(0, (o.total_amount || 0) - (invoiceInfo.invoice.subtotal ?? o.total_amount ?? 0))),
         doctor: o.doctor,
         doctor_phone,
         doctor_email,
@@ -483,11 +486,27 @@ id, patient_id, patient_name, status, priority, order_date, expected_date, total
         paid_amount: invoiceInfo?.paidAmount || 0,
         due_amount: !invoiceInfo?.invoice
           ? Math.max(0, (o.total_amount || 0) - (invoiceInfo?.paidAmount || 0))
-          : Math.max(0, ((invoiceInfo.invoice.total ?? invoiceInfo.invoice.total_amount ?? 0) + Math.max(0, (o.total_amount || 0) - (invoiceInfo.invoice.subtotal ?? o.total_amount ?? 0))) - (invoiceInfo.paidAmount || 0)),
+          : (() => {
+            const invTotal = invoiceInfo.invoice.total_after_discount ?? invoiceInfo.invoice.total ?? invoiceInfo.invoice.total_amount ?? 0;
+            const paid = invoiceInfo.paidAmount || 0;
+            const invDue = Math.max(0, invTotal - paid);
+
+            const orderTotal = o.total_amount || 0;
+            const invSubtotal = invoiceInfo.invoice.subtotal ?? orderTotal;
+            const unbilled = Math.max(0, orderTotal - invSubtotal);
+
+            // If unbilled amount is explained by discount, ignore it
+            const discount = invoiceInfo.invoice.discount_amount || invoiceInfo.invoice.discount || 0;
+            if (unbilled > 0 && Math.abs(unbilled - discount) < 2) { // 2.0 tolerance
+              return invDue;
+            }
+
+            return invDue + unbilled;
+          })(),
         payment_status: !invoiceInfo?.invoice
           ? "unpaid"
           : (() => {
-            const invTotal = invoiceInfo.invoice.total ?? invoiceInfo.invoice.total_amount ?? 0;
+            const invTotal = invoiceInfo.invoice.total_after_discount ?? invoiceInfo.invoice.total ?? invoiceInfo.invoice.total_amount ?? 0;
             const invSub = invoiceInfo.invoice.subtotal ?? o.total_amount ?? 0;
             const ordTotal = o.total_amount || 0;
             const unbilled = Math.max(0, ordTotal - invSub);
@@ -653,6 +672,21 @@ id,
         }
       } catch (sampleCheckErr) {
         console.error("Error auto-creating samples from Dashboard:", sampleCheckErr);
+      }
+
+      // 5. Update Booking Status (if converted)
+      if (processingBooking) {
+        try {
+          await database.bookings.update(processingBooking.id, {
+            status: 'converted',
+            converted_order_id: order.id,
+            updated_at: new Date().toISOString()
+          });
+          console.log('✅ Booking status updated to converted:', processingBooking.id);
+        } catch (bookingErr) {
+          console.error('Failed to update booking status:', bookingErr);
+          // Non-blocking error
+        }
       }
 
       await fetchOrders();
@@ -1291,151 +1325,249 @@ id,
   const mobile = useMobileOptimizations();
 
   return (
-    <div className={mobile.spacing}>
-      {/* Header */}
-      <div className="flex flex-col gap-3">
-        <div className="flex items-center justify-between">
-          <h1 className={`${mobile.titleSize} font-bold text-gray-900 flex items-center gap-2`}>
-            Test Orders
-            <button
-              onClick={() => setIsHeaderCollapsed(!isHeaderCollapsed)}
-              className="p-1.5 hover:bg-gray-100 rounded-lg transition-colors text-gray-500"
-              title={isHeaderCollapsed ? "Show Filters" : "Hide Filters"}
-            >
-              {isHeaderCollapsed ? <ChevronDown className="h-5 w-5" /> : <ChevronUp className="h-5 w-5" />}
-            </button>
-          </h1>
+    <>
+      <div className={mobile.spacing}>
+        {/* Header */}
+        <div className="flex flex-col gap-3">
+          <div className="flex items-center justify-between">
+            <h1 className={`${mobile.titleSize} font-bold text-gray-900 flex items-center gap-2`}>
+              Test Orders
+              <button
+                onClick={() => setIsHeaderCollapsed(!isHeaderCollapsed)}
+                className="p-1.5 hover:bg-gray-100 rounded-lg transition-colors text-gray-500"
+                title={isHeaderCollapsed ? "Show Filters" : "Hide Filters"}
+              >
+                {isHeaderCollapsed ? <ChevronDown className="h-5 w-5" /> : <ChevronUp className="h-5 w-5" />}
+              </button>
+            </h1>
+            {!mobile.isMobile && (
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => setIsCollapsedView(!isCollapsedView)}
+                  className={`px-4 py-2 rounded-lg font-medium transition-colors ${isCollapsedView ? "bg-blue-600 text-white" : "bg-gray-100 text-gray-700 hover:bg-gray-200"}`}
+                >
+                  {isCollapsedView ? "Expand Cards" : "Collapse Cards"}
+                </button>
+                <button
+                  onClick={() => setShowOrderForm(true)}
+                  className="inline-flex items-center px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 shadow-sm"
+                >
+                  <Plus className="h-5 w-5 mr-2" />
+                  Create Order
+                </button>
+              </div>
+            )}
+          </div>
+
           {!mobile.isMobile && (
             <div className="flex items-center gap-2">
-              <button
-                onClick={() => setIsCollapsedView(!isCollapsedView)}
-                className={`px-4 py-2 rounded-lg font-medium transition-colors ${isCollapsedView ? "bg-blue-600 text-white" : "bg-gray-100 text-gray-700 hover:bg-gray-200"}`}
-              >
-                {isCollapsedView ? "Expand Cards" : "Collapse Cards"}
+              <button className="inline-flex items-center gap-2 px-4 py-2 bg-blue-50 text-blue-700 border border-blue-200 rounded-lg font-medium shadow-sm transition-all">
+                <LayoutDashboard className="h-4 w-4" />
+                Standard View
               </button>
-              <button
-                onClick={() => setShowOrderForm(true)}
-                className="inline-flex items-center px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 shadow-sm"
-              >
-                <Plus className="h-5 w-5 mr-2" />
-                Create Order
+              <button className="inline-flex items-center gap-2 px-4 py-2 bg-white text-gray-700 border border-gray-200 rounded-lg font-medium hover:bg-gray-50 shadow-sm transition-all">
+                <Users className="h-4 w-4" />
+                Patient Visits
               </button>
             </div>
           )}
         </div>
 
-        {!mobile.isMobile && (
-          <div className="flex items-center gap-2">
-            <button className="inline-flex items-center gap-2 px-4 py-2 bg-blue-50 text-blue-700 border border-blue-200 rounded-lg font-medium shadow-sm transition-all">
-              <LayoutDashboard className="h-4 w-4" />
-              Standard View
-            </button>
-            <button className="inline-flex items-center gap-2 px-4 py-2 bg-white text-gray-700 border border-gray-200 rounded-lg font-medium hover:bg-gray-50 shadow-sm transition-all">
-              <Users className="h-4 w-4" />
-              Patient Visits
-            </button>
+        {!isHeaderCollapsed && (
+          <div className="mt-4 space-y-4">
+            {/* Overview cards */}
+            <div className={`grid ${mobile.gridCols} ${mobile.isMobile ? "gap-3" : mobile.gap}`}>
+              <div className={`bg-green-50 border border-green-200 rounded-lg ${mobile.isMobile ? "p-4" : mobile.cardPadding} shadow-sm transition-all hover:shadow-md`}>
+                <div className="flex items-center justify-between">
+                  <div>
+                    <div className="text-2xl font-bold text-green-900">{summary.allDone}</div>
+                    <div className={`${mobile.isMobile ? "text-sm" : mobile.textSize} text-green-700 font-medium`}>All Done</div>
+                  </div>
+                  <div className="bg-green-500 p-2 rounded-lg shadow-sm">
+                    <CheckCircle className="h-5 w-5 text-white" />
+                  </div>
+                </div>
+              </div>
+
+              <div className={`bg-blue-50 border border-blue-200 rounded-lg ${mobile.isMobile ? "p-4" : mobile.cardPadding} shadow-sm transition-all hover:shadow-md`}>
+                <div className="flex items-center justify-between">
+                  <div>
+                    <div className="text-2xl font-bold text-blue-900">{summary.mostlyDone}</div>
+                    <div className={`${mobile.isMobile ? "text-sm" : mobile.textSize} text-blue-700 font-medium`}>Mostly Done</div>
+                  </div>
+                  <div className="bg-blue-500 p-2 rounded-lg shadow-sm">
+                    <TrendingUp className="h-5 w-5 text-white" />
+                  </div>
+                </div>
+              </div>
+
+              <div className={`bg-yellow-50 border border-yellow-200 rounded-lg ${mobile.isMobile ? "p-4" : mobile.cardPadding} shadow-sm transition-all hover:shadow-md`}>
+                <div className="flex items-center justify-between">
+                  <div>
+                    <div className="text-2xl font-bold text-yellow-900">{summary.pending}</div>
+                    <div className={`${mobile.isMobile ? "text-sm" : mobile.textSize} text-yellow-700 font-medium`}>Pending</div>
+                  </div>
+                  <div className="bg-yellow-500 p-2 rounded-lg shadow-sm">
+                    <ClockIcon className="h-5 w-5 text-white" />
+                  </div>
+                </div>
+              </div>
+
+              <div className={`bg-orange-50 border border-orange-200 rounded-lg ${mobile.isMobile ? "p-4" : mobile.cardPadding} shadow-sm transition-all hover:shadow-md`}>
+                <div className="flex items-center justify-between">
+                  <div>
+                    <div className="text-2xl font-bold text-orange-900">{summary.awaitingApproval}</div>
+                    <div className={`${mobile.isMobile ? "text-sm" : mobile.textSize} text-orange-700 font-medium`}>Awaiting Approval</div>
+                  </div>
+                  <div className="bg-orange-500 p-2 rounded-lg shadow-sm">
+                    <AlertTriangle className="h-5 w-5 text-white" />
+                  </div>
+                </div>
+              </div>
+            </div>
           </div>
         )}
-      </div>
 
-      {!isHeaderCollapsed && (
-        <div className="mt-4 space-y-4">
-          {/* Overview cards */}
-          <div className={`grid ${mobile.gridCols} ${mobile.isMobile ? "gap-3" : mobile.gap}`}>
-            <div className={`bg-green-50 border border-green-200 rounded-lg ${mobile.isMobile ? "p-4" : mobile.cardPadding} shadow-sm transition-all hover:shadow-md`}>
-              <div className="flex items-center justify-between">
-                <div>
-                  <div className="text-2xl font-bold text-green-900">{summary.allDone}</div>
-                  <div className={`${mobile.isMobile ? "text-sm" : mobile.textSize} text-green-700 font-medium`}>All Done</div>
-                </div>
-                <div className="bg-green-500 p-2 rounded-lg shadow-sm">
-                  <CheckCircle className="h-5 w-5 text-white" />
-                </div>
-              </div>
-            </div>
-
-            <div className={`bg-blue-50 border border-blue-200 rounded-lg ${mobile.isMobile ? "p-4" : mobile.cardPadding} shadow-sm transition-all hover:shadow-md`}>
-              <div className="flex items-center justify-between">
-                <div>
-                  <div className="text-2xl font-bold text-blue-900">{summary.mostlyDone}</div>
-                  <div className={`${mobile.isMobile ? "text-sm" : mobile.textSize} text-blue-700 font-medium`}>Mostly Done</div>
-                </div>
-                <div className="bg-blue-500 p-2 rounded-lg shadow-sm">
-                  <TrendingUp className="h-5 w-5 text-white" />
-                </div>
-              </div>
-            </div>
-
-            <div className={`bg-yellow-50 border border-yellow-200 rounded-lg ${mobile.isMobile ? "p-4" : mobile.cardPadding} shadow-sm transition-all hover:shadow-md`}>
-              <div className="flex items-center justify-between">
-                <div>
-                  <div className="text-2xl font-bold text-yellow-900">{summary.pending}</div>
-                  <div className={`${mobile.isMobile ? "text-sm" : mobile.textSize} text-yellow-700 font-medium`}>Pending</div>
-                </div>
-                <div className="bg-yellow-500 p-2 rounded-lg shadow-sm">
-                  <ClockIcon className="h-5 w-5 text-white" />
-                </div>
-              </div>
-            </div>
-
-            <div className={`bg-orange-50 border border-orange-200 rounded-lg ${mobile.isMobile ? "p-4" : mobile.cardPadding} shadow-sm transition-all hover:shadow-md`}>
-              <div className="flex items-center justify-between">
-                <div>
-                  <div className="text-2xl font-bold text-orange-900">{summary.awaitingApproval}</div>
-                  <div className={`${mobile.isMobile ? "text-sm" : mobile.textSize} text-orange-700 font-medium`}>Awaiting Approval</div>
-                </div>
-                <div className="bg-orange-500 p-2 rounded-lg shadow-sm">
-                  <AlertTriangle className="h-5 w-5 text-white" />
-                </div>
-              </div>
-            </div>
+        {/* New Bookings/Samples Queue */}
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-6">
+          <BookingQueue
+            onProcessBooking={(booking) => {
+              setProcessingBooking(booking);
+              setShowOrderForm(true);
+            }}
+          />
+          <div className="hidden lg:block">
+            {/* Placeholder or move SampleCollectionTracker here if desired, 
+                   otherwise keep layout balanced */}
           </div>
+        </div>
 
-          <SampleTransitWidget />
+        <SampleTransitWidget />
 
-          {/* Search / Filters */}
-          <div className={`bg-white rounded-lg border border-gray-200 shadow-sm ${mobile.cardPadding}`}>
-            <div className="flex flex-col gap-3">
-              <div className="relative">
-                <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-400" />
-                <input
-                  value={search}
-                  onChange={(e) => setSearch(e.target.value)}
-                  placeholder={mobile.isMobile ? "Search patient..." : "Search by patient, order ID, or patient ID…"}
-                  className={`w-full pl-10 pr-4 ${mobile.isMobile ? "py-2.5 text-base" : "py-2"} border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 shadow-sm transition-all`}
-                />
-              </div>
+        {/* Search / Filters */}
+        <div className={`bg-white rounded-lg border border-gray-200 shadow-sm ${mobile.cardPadding}`}>
+          <div className="flex flex-col gap-3">
+            <div className="relative">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-400" />
+              <input
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                placeholder={mobile.isMobile ? "Search patient..." : "Search by patient, order ID, or patient ID…"}
+                className={`w-full pl-10 pr-4 ${mobile.isMobile ? "py-2.5 text-base" : "py-2"} border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 shadow-sm transition-all`}
+              />
+            </div>
 
-              <div className="flex gap-2">
-                <select
-                  value={statusFilter}
-                  onChange={(e) => setStatusFilter(e.target.value as any)}
-                  className={`flex-1 ${mobile.isMobile ? "px-3 py-2.5 text-base" : "px-3 py-2"} border border-gray-300 rounded-lg bg-white font-medium shadow-sm focus:border-blue-500 focus:ring-2 focus:ring-blue-200`}
-                >
-                  {["All", "Order Created", "Sample Collection", "In Progress", "Pending Approval", "Completed", "Delivered"].map((s) => (
-                    <option key={s} value={s}>
-                      {s}
-                    </option>
-                  ))}
-                </select>
+            <div className="flex gap-2">
+              <select
+                value={statusFilter}
+                onChange={(e) => setStatusFilter(e.target.value as any)}
+                className={`flex-1 ${mobile.isMobile ? "px-3 py-2.5 text-base" : "px-3 py-2"} border border-gray-300 rounded-lg bg-white font-medium shadow-sm focus:border-blue-500 focus:ring-2 focus:ring-blue-200`}
+              >
+                {["All", "Order Created", "Sample Collection", "In Progress", "Pending Approval", "Completed", "Delivered"].map((s) => (
+                  <option key={s} value={s}>
+                    {s}
+                  </option>
+                ))}
+              </select>
 
-                {!mobile.isMobile && (
-                  <button className="inline-flex items-center px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-50 bg-white shadow-sm transition-all">
-                    <Filter className="h-4 w-4 mr-2" />
-                    More Filters
-                  </button>
+              {!mobile.isMobile && (
+                <button className="inline-flex items-center px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-50 bg-white shadow-sm transition-all">
+                  <Filter className="h-4 w-4 mr-2" />
+                  More Filters
+                </button>
+              )}
+            </div>
+
+            {/* Date Range */}
+            {mobile.isMobile ? (
+              <div className="bg-gradient-to-br from-gray-50 to-blue-50 rounded-xl p-4 space-y-4 border border-gray-200">
+                <h3 className="text-base font-bold text-gray-900">Date Range:</h3>
+
+                {!allDates && (
+                  <div className="space-y-2">
+                    <div className="flex items-center gap-2">
+                      <label className="text-sm font-medium text-gray-600 w-16">From:</label>
+                      <input
+                        type="date"
+                        value={dateFrom}
+                        onChange={(e) => {
+                          setAllDates(false);
+                          setDateFrom(e.target.value);
+                        }}
+                        className="flex-1 px-3 py-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 bg-white"
+                      />
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <label className="text-sm font-medium text-gray-600 w-16">To:</label>
+                      <input
+                        type="date"
+                        value={dateTo}
+                        onChange={(e) => {
+                          setAllDates(false);
+                          setDateTo(e.target.value);
+                        }}
+                        className="flex-1 px-3 py-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 bg-white"
+                      />
+                    </div>
+                  </div>
                 )}
+
+                <div className="grid grid-cols-2 gap-2">
+                  <button onClick={setToday} className="px-3 py-2.5 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700 font-medium shadow-sm">
+                    Today
+                  </button>
+                  <button onClick={() => setDateRange(7)} className="px-3 py-2.5 text-sm bg-white border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 font-medium">
+                    7 days
+                  </button>
+                  <button onClick={() => setDateRange(30)} className="px-3 py-2.5 text-sm bg-white border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 font-medium">
+                    30 days
+                  </button>
+                  <button onClick={() => setDateRange(90)} className="px-3 py-2.5 text-sm bg-white border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 font-medium">
+                    90 days
+                  </button>
+                  <button
+                    onClick={() => setAllDates(true)}
+                    className="col-span-2 px-3 py-2.5 text-sm bg-white border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 font-medium"
+                  >
+                    All Dates
+                  </button>
+                </div>
+
+                <div className="grid grid-cols-2 gap-2 pt-2 border-t border-gray-200">
+                  <button
+                    onClick={() => setStatusFilter("Pending Approval")}
+                    className={`px-3 py-2.5 text-sm rounded-lg font-medium ${statusFilter === "Pending Approval" ? "bg-orange-500 text-white shadow-sm" : "bg-orange-100 text-orange-700 hover:bg-orange-200"
+                      } `}
+                  >
+                    Pending
+                  </button>
+                  <button
+                    onClick={() => setStatusFilter("All")}
+                    className={`px-3 py-2.5 text-sm rounded-lg font-medium ${statusFilter === "All" ? "bg-gray-700 text-white shadow-sm" : "bg-gray-100 text-gray-700 hover:bg-gray-200"
+                      } `}
+                  >
+                    All
+                  </button>
+                </div>
               </div>
+            ) : (
+              <div className="pt-2 border-t border-gray-100">
+                <div className="flex items-center gap-2 mb-2">
+                  <Calendar className="h-4 w-4 text-gray-600" />
+                  <span className="text-sm font-medium text-gray-700">Date Range:</span>
+                  <button
+                    onClick={() => setAllDates(!allDates)}
+                    className={`ml-2 px-2 py-0.5 text-xs rounded border ${allDates ? "bg-blue-50 border-blue-200 text-blue-700" : "bg-white border-gray-200 text-gray-600"} `}
+                  >
+                    {allDates ? "All Dates ON" : "All Dates OFF"}
+                  </button>
+                </div>
 
-              {/* Date Range */}
-              {mobile.isMobile ? (
-                <div className="bg-gradient-to-br from-gray-50 to-blue-50 rounded-xl p-4 space-y-4 border border-gray-200">
-                  <h3 className="text-base font-bold text-gray-900">Date Range:</h3>
-
-                  {!allDates && (
-                    <div className="space-y-2">
-                      <div className="flex items-center gap-2">
-                        <label className="text-sm font-medium text-gray-600 w-16">From:</label>
+                {!allDates && (
+                  <>
+                    <div className="flex gap-2 mb-2">
+                      <div className="flex-1">
+                        <label className="text-sm text-gray-600 block mb-1">From:</label>
                         <input
                           type="date"
                           value={dateFrom}
@@ -1443,11 +1575,12 @@ id,
                             setAllDates(false);
                             setDateFrom(e.target.value);
                           }}
-                          className="flex-1 px-3 py-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 bg-white"
+                          className="w-full px-3 py-1.5 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500"
                         />
                       </div>
-                      <div className="flex items-center gap-2">
-                        <label className="text-sm font-medium text-gray-600 w-16">To:</label>
+
+                      <div className="flex-1">
+                        <label className="text-sm text-gray-600 block mb-1">To:</label>
                         <input
                           type="date"
                           value={dateTo}
@@ -1455,138 +1588,57 @@ id,
                             setAllDates(false);
                             setDateTo(e.target.value);
                           }}
-                          className="flex-1 px-3 py-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 bg-white"
+                          className="w-full px-3 py-1.5 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500"
                         />
                       </div>
                     </div>
-                  )}
 
-                  <div className="grid grid-cols-2 gap-2">
-                    <button onClick={setToday} className="px-3 py-2.5 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700 font-medium shadow-sm">
-                      Today
-                    </button>
-                    <button onClick={() => setDateRange(7)} className="px-3 py-2.5 text-sm bg-white border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 font-medium">
-                      7 days
-                    </button>
-                    <button onClick={() => setDateRange(30)} className="px-3 py-2.5 text-sm bg-white border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 font-medium">
-                      30 days
-                    </button>
-                    <button onClick={() => setDateRange(90)} className="px-3 py-2.5 text-sm bg-white border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 font-medium">
-                      90 days
-                    </button>
-                    <button
-                      onClick={() => setAllDates(true)}
-                      className="col-span-2 px-3 py-2.5 text-sm bg-white border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 font-medium"
-                    >
-                      All Dates
-                    </button>
-                  </div>
+                    <div className="flex flex-wrap gap-1">
+                      <button onClick={setToday} className="px-3 py-1 text-sm bg-blue-100 text-blue-700 rounded hover:bg-blue-200">
+                        Today
+                      </button>
+                      <button onClick={() => setDateRange(7)} className="px-3 py-1 text-sm bg-gray-100 text-gray-700 rounded hover:bg-gray-200">
+                        7 days
+                      </button>
+                      <button onClick={() => setDateRange(30)} className="px-3 py-1 text-sm bg-gray-100 text-gray-700 rounded hover:bg-gray-200">
+                        30 days
+                      </button>
+                      <button onClick={() => setDateRange(90)} className="px-3 py-1 text-sm bg-gray-100 text-gray-700 rounded hover:bg-gray-200">
+                        90 days
+                      </button>
+                    </div>
+                  </>
+                )}
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
 
-                  <div className="grid grid-cols-2 gap-2 pt-2 border-t border-gray-200">
-                    <button
-                      onClick={() => setStatusFilter("Pending Approval")}
-                      className={`px-3 py-2.5 text-sm rounded-lg font-medium ${statusFilter === "Pending Approval" ? "bg-orange-500 text-white shadow-sm" : "bg-orange-100 text-orange-700 hover:bg-orange-200"
-                        } `}
-                    >
-                      Pending
-                    </button>
-                    <button
-                      onClick={() => setStatusFilter("All")}
-                      className={`px-3 py-2.5 text-sm rounded-lg font-medium ${statusFilter === "All" ? "bg-gray-700 text-white shadow-sm" : "bg-gray-100 text-gray-700 hover:bg-gray-200"
-                        } `}
-                    >
-                      All
-                    </button>
-                  </div>
-                </div>
-              ) : (
-                <div className="pt-2 border-t border-gray-100">
-                  <div className="flex items-center gap-2 mb-2">
-                    <Calendar className="h-4 w-4 text-gray-600" />
-                    <span className="text-sm font-medium text-gray-700">Date Range:</span>
-                    <button
-                      onClick={() => setAllDates(!allDates)}
-                      className={`ml-2 px-2 py-0.5 text-xs rounded border ${allDates ? "bg-blue-50 border-blue-200 text-blue-700" : "bg-white border-gray-200 text-gray-600"} `}
-                    >
-                      {allDates ? "All Dates ON" : "All Dates OFF"}
-                    </button>
-                  </div>
-
-                  {!allDates && (
-                    <>
-                      <div className="flex gap-2 mb-2">
-                        <div className="flex-1">
-                          <label className="text-sm text-gray-600 block mb-1">From:</label>
-                          <input
-                            type="date"
-                            value={dateFrom}
-                            onChange={(e) => {
-                              setAllDates(false);
-                              setDateFrom(e.target.value);
-                            }}
-                            className="w-full px-3 py-1.5 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500"
-                          />
-                        </div>
-
-                        <div className="flex-1">
-                          <label className="text-sm text-gray-600 block mb-1">To:</label>
-                          <input
-                            type="date"
-                            value={dateTo}
-                            onChange={(e) => {
-                              setAllDates(false);
-                              setDateTo(e.target.value);
-                            }}
-                            className="w-full px-3 py-1.5 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500"
-                          />
-                        </div>
-                      </div>
-
-                      <div className="flex flex-wrap gap-1">
-                        <button onClick={setToday} className="px-3 py-1 text-sm bg-blue-100 text-blue-700 rounded hover:bg-blue-200">
-                          Today
-                        </button>
-                        <button onClick={() => setDateRange(7)} className="px-3 py-1 text-sm bg-gray-100 text-gray-700 rounded hover:bg-gray-200">
-                          7 days
-                        </button>
-                        <button onClick={() => setDateRange(30)} className="px-3 py-1 text-sm bg-gray-100 text-gray-700 rounded hover:bg-gray-200">
-                          30 days
-                        </button>
-                        <button onClick={() => setDateRange(90)} className="px-3 py-1 text-sm bg-gray-100 text-gray-700 rounded hover:bg-gray-200">
-                          90 days
-                        </button>
-                      </div>
-                    </>
-                  )}
-                </div>
-              )}
+      {
+        isHeaderCollapsed && (
+          <div className="mt-4 flex flex-wrap items-center gap-3 animate-in fade-in slide-in-from-top-2 duration-300">
+            <div className="relative flex-1 min-w-[200px]">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-400" />
+              <input
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                placeholder="Quick search..."
+                className="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 h-10 shadow-sm transition-all"
+              />
             </div>
+            <select
+              value={statusFilter}
+              onChange={(e) => setStatusFilter(e.target.value as any)}
+              className="w-full sm:w-48 px-3 py-2 border border-gray-300 rounded-lg bg-white font-medium h-10 shadow-sm focus:ring-2 focus:ring-blue-200 transition-all"
+            >
+              {["All", "Order Created", "Sample Collection", "In Progress", "Pending Approval", "Completed", "Delivered"].map((s) => (
+                <option key={s} value={s}>{s}</option>
+              ))}
+            </select>
           </div>
-        </div>
-      )}
-
-      {isHeaderCollapsed && (
-        <div className="mt-4 flex flex-wrap items-center gap-3 animate-in fade-in slide-in-from-top-2 duration-300">
-          <div className="relative flex-1 min-w-[200px]">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-400" />
-            <input
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              placeholder="Quick search..."
-              className="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 h-10 shadow-sm transition-all"
-            />
-          </div>
-          <select
-            value={statusFilter}
-            onChange={(e) => setStatusFilter(e.target.value as any)}
-            className="w-full sm:w-48 px-3 py-2 border border-gray-300 rounded-lg bg-white font-medium h-10 shadow-sm focus:ring-2 focus:ring-blue-200 transition-all"
-          >
-            {["All", "Order Created", "Sample Collection", "In Progress", "Pending Approval", "Completed", "Delivered"].map((s) => (
-              <option key={s} value={s}>{s}</option>
-            ))}
-          </select>
-        </div>
-      )}
+        )
+      }
 
       {/* Groups + Cards */}
       <div className={`mt-6 bg-white rounded-lg border border-gray-200 shadow-sm ${mobile.isMobile ? "mb-20" : ""}`}>
@@ -2228,7 +2280,7 @@ id,
       </div>
 
       {/* Footer stats */}
-      < div className="bg-gradient-to-r from-blue-50 to-purple-50 rounded-lg p-4 border border-blue-200" >
+      <div className="bg-gradient-to-r from-blue-50 to-purple-50 rounded-lg p-4 border border-blue-200">
         <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 text-sm">
           <div className="flex items-center gap-6">
             <div className="flex items-center">
@@ -2271,7 +2323,9 @@ id,
       {
         showOrderForm && (
           <OrderForm
+            initialBookingData={processingBooking}
             onClose={() => {
+              setProcessingBooking(null); // Clear processing booking
               setShowOrderForm(false);
               fetchOrders();
             }}
@@ -2317,8 +2371,7 @@ id,
             onSuccess={() => {
               setShowInvoiceModal(false);
               setInvoiceOrderId(null);
-              // Small delay to ensure DB propagation
-              setTimeout(() => fetchOrders(), 500);
+              fetchOrders();
             }}
           />
         )
@@ -2343,9 +2396,7 @@ id,
       }
 
       {
-        showCollectionModal &&
-        collectionOrder &&
-        ReactDOM.createPortal(
+        showCollectionModal && collectionOrder && ReactDOM.createPortal(
           <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4 animate-in fade-in duration-200">
             <div className="bg-white rounded-lg shadow-xl w-full max-w-md overflow-hidden">
               <div className="flex items-center justify-between px-4 py-3 bg-gray-50 border-b border-gray-100">
@@ -2355,9 +2406,7 @@ id,
                 </h3>
                 <button onClick={() => setShowCollectionModal(false)} className="text-gray-400 hover:text-gray-600">
                   <span className="sr-only">Close</span>
-                  <svg className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                  </svg>
+                  <X className="h-6 w-6" />
                 </button>
               </div>
 
@@ -2410,8 +2459,12 @@ id,
         )
       }
 
-      <MobileFAB icon={Plus} onClick={() => setShowOrderForm(true)} label="Create Order" />
-    </div >
+      {
+        Math.max(window.innerWidth) < 768 && (
+          <MobileFAB icon={Plus} onClick={() => setShowOrderForm(true)} label="Create Order" />
+        )
+      }
+    </>
   );
 };
 

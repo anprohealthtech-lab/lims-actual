@@ -15,6 +15,7 @@
 
 import { database, supabase } from './supabase';
 import { determineFlag, FlagResult, ValueType, AnalyteConfig, PatientContext as FlagPatientContext } from './flagDetermination';
+import { resolveReferenceRanges } from './referenceRangeService';
 
 // Netlify function URL for AI interpretation (keeps API key secure)
 const AI_FLAG_FUNCTION_URL = '/.netlify/functions/ai-flag-interpretation';
@@ -38,6 +39,7 @@ export interface ResultValueContext {
   result_id?: string;
   order_id?: string;
   lab_id?: string;
+  test_group_id?: string;
 }
 
 export interface AnalyteContext {
@@ -561,12 +563,103 @@ export async function runAIFlagAnalysis(
         const toProcess = defaultOptions.useAIService === true ? resultValues : resultsNeedingAI;
 
         if (toProcess.length > 0) {
+          
+          // --------------- DYNAMIC RANGE RESOLUTION START ---------------
+          // If we have "Age-specific" or placeholder ranges, resolve them FIRST
+          // using the referenceRangeService (which consults Knowledge Base + Patient Context)
+          try {
+            // SAFEGUARD: Ensure test_group_id is present (some queries might omit it)
+            if (toProcess.some(rv => !rv.test_group_id)) {
+               console.log('[AI Flag] Some results missing test_group_id, re-fetching...');
+               const { data: dbRvs } = await supabase
+                  .from('result_values')
+                  .select('id, test_group_id')
+                  .eq('order_id', orderId);
+               
+               if (dbRvs) {
+                  toProcess.forEach(rv => {
+                     if (!rv.test_group_id) {
+                        const match = dbRvs.find(d => d.id === rv.id);
+                        if (match) rv.test_group_id = match.test_group_id;
+                     }
+                  });
+               }
+            }
+
+            // Group by test group ID for batch resolution
+            const rvsByGroup: Record<string, typeof toProcess> = {};
+            toProcess.forEach(rv => {
+              // Ensure we have a test_group_id (fetched from DB)
+              // @ts-ignore - test_group_id exists on the DB record even if not in type
+              const tgId = rv.test_group_id; 
+              if (tgId) {
+                if (!rvsByGroup[tgId]) rvsByGroup[tgId] = [];
+                rvsByGroup[tgId].push(rv);
+              }
+            });
+
+            // Process each group
+            for (const [tgId, groupRvs] of Object.entries(rvsByGroup)) {
+               // Check if any result in this group uses "Age-specific" or generic text
+               const needsResolution = groupRvs.some(rv => 
+                 rv.reference_range?.toLowerCase().includes('age-specific') || 
+                 rv.reference_range?.toLowerCase().includes('interpretation') ||
+                 rv.reference_range?.toLowerCase().includes('dynamic')
+               );
+
+               if (needsResolution) {
+                 console.log(`[AI Flag] 🔍 Resolving dynamic ranges for Test Group ${tgId}...`);
+                 
+                 // Call the Edge Function
+                 const analytesPayload = groupRvs.map(rv => ({
+                   id: rv.analyte_id || '',
+                   name: rv.parameter || '',
+                   value: rv.value,
+                   unit: rv.unit || ''
+                 }));
+
+                 const resolved = await resolveReferenceRanges(orderId, tgId, analytesPayload);
+                 
+                 if (resolved) {
+                   let updatedCount = 0;
+                   // Apply back to the resultValues arrays (IN MEMORY) so AI gets '13.5-17.5' instead of 'Age-specific'
+                   resolved.forEach(res => {
+                    if (res.used_reference_range) {
+                      const match = groupRvs.find(rv => rv.analyte_id === res.id || rv.parameter === res.name);
+                      if (match && match.reference_range !== res.used_reference_range) {
+                        console.log(`[AI Flag] ✅ Resolved Range for ${match.parameter}: "${match.reference_range}" -> "${res.used_reference_range}"`);
+                        match.reference_range = res.used_reference_range;
+                        
+                        // Persist the resolved range to the database so it displays correctly in UI/Reports
+                        supabase.from('result_values')
+                          .update({ reference_range: res.used_reference_range })
+                          .eq('id', match.id)
+                          .then(({ error }) => {
+                            if (error) console.error('[AI Flag] ❌ Failed to save resolved range to DB:', error);
+                            else console.log(`[AI Flag] 💾 Saved resolved range to DB for ${match.parameter}`);
+                          });
+                          
+                        updatedCount++;
+                      }
+                    }
+                   });
+                   console.log(`[AI Flag] Updated ${updatedCount} ranges with dynamic values.`);
+                 }
+               }
+            }
+          } catch (resErr) {
+            console.warn('[AI Flag] ⚠️ Dynamic range resolution failed (continuing with generic ranges):', resErr);
+          }
+          // --------------- DYNAMIC RANGE RESOLUTION END ---------------
+
           const aiInput = toProcess.map(rv => ({
             id: rv.id,
             parameter: rv.parameter,
             value: rv.value,
             unit: rv.unit,
             reference_range: rv.reference_range,
+            lab_id: rv.lab_id,
+            ref_range_knowledge: rv.analytes?.ref_range_knowledge,
             reference_range_male: rv.analytes?.reference_range_male,
             reference_range_female: rv.analytes?.reference_range_female,
             low_critical: rv.analytes?.low_critical,

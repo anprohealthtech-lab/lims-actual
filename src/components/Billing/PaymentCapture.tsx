@@ -145,7 +145,17 @@ const PaymentCapture: React.FC<PaymentCaptureProps> = ({ invoiceId, onClose, onS
             </div>
             <div>
               <div className="text-sm text-gray-600">Invoice Amount</div>
-              <div className="font-medium">₹{invoiceTotal.toFixed(2)}</div>
+              <div className="font-medium">
+                {invoice.discount && invoice.discount > 0 ? (
+                  <div className="flex flex-col">
+                    <span className="line-through text-gray-400 text-xs">₹{(invoice.subtotal || invoice.total_before_discount || invoice.total)?.toFixed(2)}</span>
+                    <span className="text-green-600 font-bold">₹{invoiceTotal.toFixed(2)}</span>
+                    <span className="text-xs text-green-600">({invoice.total_discount || invoice.discount} off)</span>
+                  </div>
+                ) : (
+                  <span>₹{invoiceTotal.toFixed(2)}</span>
+                )}
+              </div>
             </div>
             <div>
               <div className="text-sm text-gray-600">Payment Type</div>

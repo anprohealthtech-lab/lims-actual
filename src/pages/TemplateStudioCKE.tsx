@@ -1142,11 +1142,37 @@ const TemplateStudioCKE: React.FC = () => {
           console.warn('Test group parameter fetch failed:', testError);
         } else if (testParams?.length) {
           console.log('Raw testParams from API:', testParams);
-          const mappedParams = testParams.map((item) => ({
-            ...item,
-            group: 'test' as const,
-          }));
-          console.log('Mapped testParams with group:', mappedParams);
+          const mappedParams = testParams.flatMap((item) => {
+            const base = {
+              ...item,
+              group: 'test' as const,
+            };
+
+            // Main value placeholder
+            const mainOption = { ...base };
+
+            // Generate variations
+            const basePlaceholderName = base.placeholder.replace(/^{{|}}$/g, '');
+
+            const variations = [
+              { suffix: '_UNIT', labelSuffix: 'Unit', sample: item.unit },
+              { suffix: '_REF_RANGE', labelSuffix: 'Reference Range', sample: item.referenceRange },
+              { suffix: '_FLAG', labelSuffix: 'Flag', sample: 'High/Low' },
+              { suffix: '_NOTE', labelSuffix: 'Note', sample: 'Comments' },
+            ];
+
+            const extras = variations.map((v) => ({
+              ...base,
+              id: `${base.id}${v.suffix}`,
+              label: `${base.label} (${v.labelSuffix})`,
+              placeholder: `{{${basePlaceholderName}${v.suffix}}}`,
+              unit: v.suffix === '_UNIT' ? item.unit : null,
+              referenceRange: v.suffix === '_REF_RANGE' ? item.referenceRange : null,
+            }));
+
+            return [mainOption, ...extras];
+          });
+          console.log('Mapped testParams with group and variations:', mappedParams);
           aggregated.push(...mappedParams);
         }
       }
@@ -3136,6 +3162,12 @@ const TemplateStudioCKE: React.FC = () => {
                             result = result.replace(/\{\{ANALYTE_[A-Z0-9_]+_REFERENCE_RANGE\}\}/g, '10.0 - 40.0');
                             result = result.replace(/\{\{ANALYTE_[A-Z0-9_]+_REFERENCE\}\}/g, '10.0 - 40.0');
                             result = result.replace(/\{\{ANALYTE_[A-Z0-9_]+_FLAG\}\}/g, 'Normal');
+
+                            // 5. Generic fallback for new suffixes
+                            result = result.replace(/\{\{[A-Za-z0-9_]+_UNIT\}\}/g, 'mg/dL');
+                            result = result.replace(/\{\{[A-Za-z0-9_]+_REF_RANGE\}\}/g, '10 - 40');
+                            result = result.replace(/\{\{[A-Za-z0-9_]+_FLAG\}\}/g, 'Normal');
+                            result = result.replace(/\{\{[A-Za-z0-9_]+_NOTE\}\}/g, 'Sample note');
 
                             return result;
                           };

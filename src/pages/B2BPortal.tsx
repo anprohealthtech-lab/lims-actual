@@ -1,11 +1,10 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { LogOut, Download, Eye, Filter, Search, Calendar, RefreshCw } from 'lucide-react';
+import { LogOut, Download, Filter, Search, Calendar, RefreshCw, PlusCircle } from 'lucide-react';
 import { supabase } from '../utils/supabase';
 import { getCurrentB2BAccount } from '../utils/b2bAuth';
 import AccountInfoCard from '../components/B2B/AccountInfoCard';
-import { OrderStatusDisplay } from '../components/Orders/OrderStatusDisplay';
-import { SampleTypeIndicator } from '../components/Common/SampleTypeIndicator';
+import B2BBookingModal from '../components/B2B/B2BBookingModal';
 
 interface Order {
     id: string;
@@ -36,6 +35,7 @@ const B2BPortal: React.FC = () => {
     const [searchTerm, setSearchTerm] = useState('');
     const [statusFilter, setStatusFilter] = useState('All');
     const [dateRange, setDateRange] = useState({ from: '', to: '' });
+    const [showBookingModal, setShowBookingModal] = useState(false);
 
     // Load account and orders
     useEffect(() => {
@@ -175,13 +175,22 @@ const B2BPortal: React.FC = () => {
                             <h1 className="text-2xl font-bold text-gray-900">B2B Portal</h1>
                             <p className="text-sm text-gray-600 mt-1">Welcome back, {account?.name}</p>
                         </div>
-                        <button
-                            onClick={handleLogout}
-                            className="flex items-center px-4 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 transition-colors"
-                        >
-                            <LogOut className="h-4 w-4 mr-2" />
-                            Logout
-                        </button>
+                        <div className="flex items-center gap-3">
+                            <button
+                                onClick={() => setShowBookingModal(true)}
+                                className="flex items-center px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors shadow-sm"
+                            >
+                                <PlusCircle className="h-4 w-4 mr-2" />
+                                Book New Test
+                            </button>
+                            <button
+                                onClick={handleLogout}
+                                className="flex items-center px-4 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 transition-colors"
+                            >
+                                <LogOut className="h-4 w-4 mr-2" />
+                                Logout
+                            </button>
+                        </div>
                     </div>
                 </div>
             </header>
@@ -359,6 +368,17 @@ const B2BPortal: React.FC = () => {
                     </div>
                 </div>
             </main>
+
+            {showBookingModal && account && (
+                <B2BBookingModal
+                    accountId={account.id}
+                    onClose={() => setShowBookingModal(false)}
+                    onSuccess={() => {
+                        loadData();
+                        alert('Booking created successfully! It will appear in your orders once processed by the lab.');
+                    }}
+                />
+            )}
         </div>
     );
 };

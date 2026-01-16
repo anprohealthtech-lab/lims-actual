@@ -711,7 +711,7 @@ const ResultVerificationConsole: React.FC = () => {
       alert("Note is required to send for re-run");
       return;
     }
-    
+
     setBusyFor(rv_id, true);
     const { error } = await supabase
       .from("result_values")
@@ -728,9 +728,9 @@ const ResultVerificationConsole: React.FC = () => {
       setRowsByResult((s) => {
         const next = { ...s };
         for (const rid in next) {
-          next[rid] = next[rid].map((a) => 
-            a.id === rv_id 
-              ? { ...a, verify_status: "pending", verify_note: `RE-RUN REQUESTED: ${note}`, verified_at: null, verified_by: null } 
+          next[rid] = next[rid].map((a) =>
+            a.id === rv_id
+              ? { ...a, verify_status: "pending", verify_note: `RE-RUN REQUESTED: ${note}`, verified_at: null, verified_by: null }
               : a
           );
         }
@@ -791,19 +791,19 @@ const ResultVerificationConsole: React.FC = () => {
       setRowsByResult((s) => {
         const next = { ...s };
         for (const rid in next) {
-          next[rid] = next[rid].map((a) => 
-            a.id === rv_id 
-              ? { 
-                  ...a, 
-                  value: editValues.value,
-                  unit: editValues.unit,
-                  reference_range: editValues.reference_range,
-                  flag: editValues.flag,
-                  verify_status: "pending",
-                  verify_note: "Value edited by verifier",
-                  verified_at: null,
-                  verified_by: null
-                } 
+          next[rid] = next[rid].map((a) =>
+            a.id === rv_id
+              ? {
+                ...a,
+                value: editValues.value,
+                unit: editValues.unit,
+                reference_range: editValues.reference_range,
+                flag: editValues.flag,
+                verify_status: "pending",
+                verify_note: "Value edited by verifier",
+                verified_at: null,
+                verified_by: null
+              }
               : a
           );
         }
@@ -1032,7 +1032,7 @@ const ResultVerificationConsole: React.FC = () => {
             <div className="flex items-center space-x-2">
               <div className="font-semibold text-gray-900">{a.parameter}</div>
               {a.is_auto_calculated && (
-                <span 
+                <span
                   className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-amber-100 text-amber-800 border border-amber-200"
                   title={a.calculation_inputs ? `Calculated from: ${Object.entries(a.calculation_inputs).map(([k, v]) => `${k}=${v}`).join(', ')}` : 'Auto-calculated value'}
                 >
@@ -1248,6 +1248,36 @@ const ResultVerificationConsole: React.FC = () => {
         )}
       </>
     );
+  };
+
+  const handleRunAIAnalysis = async (row: PanelRow) => {
+    if (!confirm(`Run AI Flag & Range Analysis for order #${row.order_id.slice(-8)}?`)) return;
+
+    setBusyFor(row.result_id, true);
+    try {
+      // Dynamic import to avoid loading AI logic unless needed
+      const { runAIFlagAnalysis } = await import('../utils/aiFlagAnalysis');
+
+      const result = await runAIFlagAnalysis(row.order_id, {
+        useAIService: true, // Force AI service
+        applyToDatabase: true,
+        createAudit: true,
+        overrideManual: false
+      });
+
+      if (result.flagsChanged > 0 || result.results.length > 0) {
+        alert(`AI Analysis Completed.\nFlags Changed: ${result.flagsChanged}\nTotal Processed: ${result.totalProcessed}`);
+        // Reload data
+        await ensureAnalytesLoaded(row.result_id);
+      } else {
+        alert('AI Analysis Completed. No changes detected.');
+      }
+    } catch (e) {
+      console.error(e);
+      alert('AI Analysis failed.');
+    } finally {
+      setBusyFor(row.result_id, false);
+    }
   };
 
   const PanelCard: React.FC<{ row: PanelRow }> = ({ row }) => {
@@ -1474,6 +1504,21 @@ const ResultVerificationConsole: React.FC = () => {
                     <Zap className="h-4 w-4 mr-2" />
                   )}
                   AI Interpretations
+                </button>
+
+                {/* AI Flag & Range Analysis Button - MANUAL TRIGGER */}
+                <button
+                  disabled={!!busy[row.result_id]}
+                  onClick={() => handleRunAIAnalysis(row)}
+                  className="inline-flex items-center px-4 py-2 bg-gradient-to-r from-purple-500 to-indigo-500 text-white rounded-lg hover:from-purple-600 hover:to-indigo-600 transition-all duration-200 shadow-sm font-medium text-sm disabled:opacity-50"
+                  title="Run Full AI Analysis (Ranges & Flags)"
+                >
+                  {busy[row.result_id] ? (
+                    <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                  ) : (
+                    <Sparkles className="h-4 w-4 mr-2" />
+                  )}
+                  AI Range & Flag
                 </button>
 
                 {/* AI Verifier Summary Button */}

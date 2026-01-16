@@ -1883,22 +1883,26 @@ const Reports: React.FC = () => {
                                       )}
                                       <span>{(generatingOrderId === group.order_id || pdfQueueStatus.get(group.order_id)?.status === 'processing') ? 'Generating...' : 'Generate Final'}</span>
                                     </button>
-                                    <button
-                                      className="flex items-center space-x-1 px-3 py-1.5 text-sm bg-indigo-600 text-white rounded-md hover:bg-indigo-700 transition-colors"
-                                      onClick={() => handleHtmlPreview(group.order_id)}
-                                      title="Preview HTML"
-                                    >
-                                      <FileCode className="w-4 h-4" />
-                                      <span>HTML</span>
-                                    </button>
-                                    <button
-                                      className="flex items-center space-x-1 px-3 py-1.5 text-sm bg-orange-600 text-white rounded-md hover:bg-orange-700 transition-colors"
-                                      onClick={() => handleLetterheadGeneration(group.order_id)}
-                                      title="Generate with Letterhead Function"
-                                    >
-                                      <FileCode className="w-4 h-4" />
-                                      <span>LF</span>
-                                    </button>
+                                    {false && (
+                                      <>
+                                        <button
+                                          className="flex items-center space-x-1 px-3 py-1.5 text-sm bg-indigo-600 text-white rounded-md hover:bg-indigo-700 transition-colors"
+                                          onClick={() => handleHtmlPreview(group.order_id)}
+                                          title="Preview HTML"
+                                        >
+                                          <FileCode className="w-4 h-4" />
+                                          <span>HTML</span>
+                                        </button>
+                                        <button
+                                          className="flex items-center space-x-1 px-3 py-1.5 text-sm bg-orange-600 text-white rounded-md hover:bg-orange-700 transition-colors"
+                                          onClick={() => handleLetterheadGeneration(group.order_id)}
+                                          title="Generate with Letterhead Function"
+                                        >
+                                          <FileCode className="w-4 h-4" />
+                                          <span>LF</span>
+                                        </button>
+                                      </>
+                                    )}
                                     <button
                                       className="flex items-center space-x-1 px-3 py-1.5 text-sm bg-gray-600 text-white rounded-md hover:bg-gray-700 transition-colors"
                                       onClick={() => handleOpenPDFSettings(group.order_id)}
@@ -1926,22 +1930,26 @@ const Reports: React.FC = () => {
                                       <Download className="w-4 h-4" />
                                       <span>Download Final</span>
                                     </button>
-                                    <button
-                                      className="flex items-center space-x-1 px-3 py-1.5 text-sm bg-indigo-600 text-white rounded-md hover:bg-indigo-700 transition-colors"
-                                      onClick={() => handleHtmlPreview(group.order_id)}
-                                      title="Preview HTML"
-                                    >
-                                      <FileCode className="w-4 h-4" />
-                                      <span>HTML</span>
-                                    </button>
-                                    <button
-                                      className="flex items-center space-x-1 px-3 py-1.5 text-sm bg-orange-600 text-white rounded-md hover:bg-orange-700 transition-colors"
-                                      onClick={() => handleLetterheadGeneration(group.order_id)}
-                                      title="Generate with Letterhead Function"
-                                    >
-                                      <FileCode className="w-4 h-4" />
-                                      <span>LF</span>
-                                    </button>
+                                    {false && (
+                                      <>
+                                        <button
+                                          className="flex items-center space-x-1 px-3 py-1.5 text-sm bg-indigo-600 text-white rounded-md hover:bg-indigo-700 transition-colors"
+                                          onClick={() => handleHtmlPreview(group.order_id)}
+                                          title="Preview HTML"
+                                        >
+                                          <FileCode className="w-4 h-4" />
+                                          <span>HTML</span>
+                                        </button>
+                                        <button
+                                          className="flex items-center space-x-1 px-3 py-1.5 text-sm bg-orange-600 text-white rounded-md hover:bg-orange-700 transition-colors"
+                                          onClick={() => handleLetterheadGeneration(group.order_id)}
+                                          title="Generate with Letterhead Function"
+                                        >
+                                          <FileCode className="w-4 h-4" />
+                                          <span>LF</span>
+                                        </button>
+                                      </>
+                                    )}
                                     <button
                                       className="flex items-center space-x-1 px-3 py-1.5 text-sm bg-gray-600 text-white rounded-md hover:bg-gray-700 transition-colors"
                                       onClick={() => handleOpenPDFSettings(group.order_id)}
@@ -2163,22 +2171,26 @@ const Reports: React.FC = () => {
                                     )}
                                     <span>{(generatingOrderId === group.order_id || pdfQueueStatus.get(group.order_id)?.status === 'processing') ? 'Gen...' : 'Final'}</span>
                                   </button>
-                                  <button
-                                    className="flex-1 flex items-center justify-center space-x-1 px-3 py-2 text-sm bg-indigo-600 text-white rounded-md hover:bg-indigo-700 transition-colors"
-                                    onClick={() => handleHtmlPreview(group.order_id)}
-                                    title="Preview HTML"
-                                  >
-                                    <FileCode className="w-4 h-4" />
-                                    <span>HTML</span>
-                                  </button>
-                                  <button
-                                    className="flex-1 flex items-center justify-center space-x-1 px-3 py-2 text-sm bg-orange-600 text-white rounded-md hover:bg-orange-700 transition-colors"
-                                    onClick={() => handleLetterheadGeneration(group.order_id)}
-                                    title="Generate with Letterhead Function"
-                                  >
-                                    <FileCode className="w-4 h-4" />
-                                    <span>LF</span>
-                                  </button>
+                                  {false && (
+                                    <>
+                                      <button
+                                        className="flex-1 flex items-center justify-center space-x-1 px-3 py-2 text-sm bg-indigo-600 text-white rounded-md hover:bg-indigo-700 transition-colors"
+                                        onClick={() => handleHtmlPreview(group.order_id)}
+                                        title="Preview HTML"
+                                      >
+                                        <FileCode className="w-4 h-4" />
+                                        <span>HTML</span>
+                                      </button>
+                                      <button
+                                        className="flex-1 flex items-center justify-center space-x-1 px-3 py-2 text-sm bg-orange-600 text-white rounded-md hover:bg-orange-700 transition-colors"
+                                        onClick={() => handleLetterheadGeneration(group.order_id)}
+                                        title="Generate with Letterhead Function"
+                                      >
+                                        <FileCode className="w-4 h-4" />
+                                        <span>LF</span>
+                                      </button>
+                                    </>
+                                  )}
                                   <button
                                     className="flex items-center justify-center px-3 py-2 text-sm bg-gray-600 text-white rounded-md hover:bg-gray-700 transition-colors"
                                     onClick={() => handleOpenPDFSettings(group.order_id)}
@@ -2204,22 +2216,26 @@ const Reports: React.FC = () => {
                                     <Download className="w-4 h-4" />
                                     <span>Download</span>
                                   </button>
-                                  <button
-                                    className="flex-1 flex items-center justify-center space-x-1 px-3 py-2 text-sm bg-indigo-600 text-white rounded-md hover:bg-indigo-700 transition-colors"
-                                    onClick={() => handleHtmlPreview(group.order_id)}
-                                    title="Preview HTML"
-                                  >
-                                    <FileCode className="w-4 h-4" />
-                                    <span>HTML</span>
-                                  </button>
-                                  <button
-                                    className="flex-1 flex items-center justify-center space-x-1 px-3 py-2 text-sm bg-orange-600 text-white rounded-md hover:bg-orange-700 transition-colors"
-                                    onClick={() => handleLetterheadGeneration(group.order_id)}
-                                    title="Generate with Letterhead Function"
-                                  >
-                                    <FileCode className="w-4 h-4" />
-                                    <span>LF</span>
-                                  </button>
+                                  {false && (
+                                    <>
+                                      <button
+                                        className="flex-1 flex items-center justify-center space-x-1 px-3 py-2 text-sm bg-indigo-600 text-white rounded-md hover:bg-indigo-700 transition-colors"
+                                        onClick={() => handleHtmlPreview(group.order_id)}
+                                        title="Preview HTML"
+                                      >
+                                        <FileCode className="w-4 h-4" />
+                                        <span>HTML</span>
+                                      </button>
+                                      <button
+                                        className="flex-1 flex items-center justify-center space-x-1 px-3 py-2 text-sm bg-orange-600 text-white rounded-md hover:bg-orange-700 transition-colors"
+                                        onClick={() => handleLetterheadGeneration(group.order_id)}
+                                        title="Generate with Letterhead Function"
+                                      >
+                                        <FileCode className="w-4 h-4" />
+                                        <span>LF</span>
+                                      </button>
+                                    </>
+                                  )}
                                   <button
                                     className="flex-1 flex items-center justify-center space-x-1 px-3 py-2 text-sm bg-gradient-to-r from-pink-500 to-rose-500 text-white rounded-md hover:from-pink-600 hover:to-rose-600 transition-colors shadow-sm"
                                     onClick={() => handleSmartReport(group.order_id)}

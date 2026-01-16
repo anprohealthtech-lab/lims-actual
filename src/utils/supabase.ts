@@ -1153,6 +1153,69 @@ export const database = {
     }
   },
 
+  bookings: {
+    create: async (payload: any) => {
+      const lab_id = await database.getCurrentUserLabId();
+      if (!lab_id) {
+        return { data: null, error: new Error('No lab_id found for current user') };
+      }
+      const { data, error } = await supabase
+        .from('bookings')
+        .insert({
+          ...payload,
+          lab_id,
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        })
+        .select()
+        .single();
+      return { data, error };
+    },
+
+    update: async (id: string, updates: any) => {
+      const { data, error } = await supabase
+        .from('bookings')
+        .update({
+          ...updates,
+          updated_at: new Date().toISOString(),
+        })
+        .eq('id', id)
+        .select()
+        .single();
+      return { data, error };
+    },
+
+    list: async (filters?: { status?: string; source?: string }) => {
+      const lab_id = await database.getCurrentUserLabId();
+      if (!lab_id) return { data: [], error: new Error('No lab_id') };
+
+      let query = supabase
+        .from('bookings')
+        .select('*')
+        .eq('lab_id', lab_id)
+        .order('created_at', { ascending: false });
+
+      if (filters?.status) {
+        query = query.eq('status', filters.status);
+      }
+      if (filters?.source) {
+        query = query.eq('booking_source', filters.source);
+      }
+
+      const { data, error } = await query;
+      return { data: (data as any[]) || [], error };
+    },
+
+    getById: async (id: string) => {
+      const { data, error } = await supabase
+        .from('bookings')
+        .select('*')
+        .eq('id', id)
+        .single();
+      return { data, error };
+    },
+  },
+
   aiProtocols: {
     create: async (payload: {
       name: string;

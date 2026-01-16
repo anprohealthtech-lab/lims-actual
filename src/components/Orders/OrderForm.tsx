@@ -108,9 +108,10 @@ interface OrderFormProps {
   onClose: () => void;
   onSubmit: (orderData: any) => void;
   preSelectedPatientId?: string;
+  initialBookingData?: any;
 }
 
-const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPatientId }) => {
+const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPatientId, initialBookingData }) => {
   // Masters
   const [doctors, setDoctors] = useState<Doctor[]>([]);
   const searchInputRef = useRef<HTMLInputElement>(null);
@@ -416,6 +417,37 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
     phone: string;
     email: string;
   }>({ name: '', age: '', gender: 'Male', phone: '', email: '' });
+
+  // Pre-fill from Booking Data
+  useEffect(() => {
+    if (initialBookingData) {
+      console.log('Pre-filling Order Form from Booking:', initialBookingData);
+
+      // 1. Patient Info (Loose text -> manual entry mode primarily)
+      if (initialBookingData.patient_info) {
+        // We set newPatientName/etc directly as if user typed them
+        setNewPatientName(initialBookingData.patient_info.name || '');
+        setNewPatientPhone(initialBookingData.patient_info.phone || '');
+        setNewPatientGender(initialBookingData.patient_info.gender || 'Male');
+        setNewPatientAge(initialBookingData.patient_info.age?.toString() || '');
+
+        // Also set search so it looks like a manual entry
+        setPatientSearch(initialBookingData.patient_info.name || '');
+      }
+
+      // 2. Tests
+      if (initialBookingData.test_details && Array.isArray(initialBookingData.test_details)) {
+        const testIds = initialBookingData.test_details.filter((t: any) => t.id).map((t: any) => t.id);
+        setSelectedTests(testIds);
+      }
+
+      // 3. Collection Type
+      if (initialBookingData.collection_type === 'home_collection' && initialBookingData.home_collection_address) {
+        // You might set a note or handle home collection specific logic here if fields exist
+        setNotes(`Home Collection Address: ${initialBookingData.home_collection_address.address}, ${initialBookingData.home_collection_address.city}`);
+      }
+    }
+  }, [initialBookingData]);
 
   // Initial loads
   useEffect(() => {
@@ -1715,6 +1747,7 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
                         <option value="Trimester 1">First Trimester (1-12 weeks)</option>
                         <option value="Trimester 2">Second Trimester (13-26 weeks)</option>
                         <option value="Trimester 3">Third Trimester (27+ weeks)</option>
+                        <option value="Lactating">Lactating</option>
                       </select>
                     ) : info === 'lmp' ? (
                       <input

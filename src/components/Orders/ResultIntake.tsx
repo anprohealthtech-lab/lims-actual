@@ -190,7 +190,7 @@ export function ResultIntake({ order, onResultProcessed }: Props) {
           if (next[r.id]) {
             next[r.id] = {
               ...next[r.id],
-              reference: r.ref_low && r.ref_high ? `${r.ref_low} - ${r.ref_high}` : next[r.id].reference,
+              reference: r.used_reference_range || (r.ref_low && r.ref_high ? `${r.ref_low} - ${r.ref_high}` : next[r.id].reference),
               flag: (r.flag || '') as FlagCode
             };
           } else if (!isCompleted(groupData.tg.analytes.find(a => a.id === r.id)!)) {

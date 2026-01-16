@@ -648,17 +648,38 @@ function generateAnalytePlaceholders(analytes: any[]): Record<string, any> {
   if (!analytes || analytes.length === 0) return placeholders;
   
   analytes.forEach((analyte) => {
-    const shortKey = generateAnalyteShortKey(analyte.parameter || analyte.name || analyte.test_name || '');
-    if (!shortKey) return;
-    
-    placeholders[`ANALYTE_${shortKey}_VALUE`] = analyte.value || '';
-    placeholders[`ANALYTE_${shortKey}_UNIT`] = analyte.unit || '';
-    placeholders[`ANALYTE_${shortKey}_REFERENCE`] = analyte.reference_range || '';
-    placeholders[`ANALYTE_${shortKey}_FLAG`] = analyte.flag || '';
-    placeholders[`ANALYTE_${shortKey}_DISPLAYFLAG`] = analyte.displayFlag || '';
+    const name = analyte.parameter || analyte.name || analyte.test_name || '';
+    if (!name) return;
+
+    // 1. Existing Short Key Logic (ANALYTE_HB_VALUE)
+    const shortKey = generateAnalyteShortKey(name);
+    if (shortKey) {
+      placeholders[`ANALYTE_${shortKey}_VALUE`] = analyte.value || '';
+      placeholders[`ANALYTE_${shortKey}_UNIT`] = analyte.unit || '';
+      placeholders[`ANALYTE_${shortKey}_REFERENCE`] = analyte.reference_range || '';
+      placeholders[`ANALYTE_${shortKey}_FLAG`] = analyte.flag || '';
+      placeholders[`ANALYTE_${shortKey}_DISPLAYFLAG`] = analyte.displayFlag || '';
+    }
+
+    // 2. New Full Slug Logic (Hemoglobin_VALUE) - Matches Frontend Picker
+    // Slugify: "Hemoglobin (Hb)" -> "HemoglobinHb"
+    const slug = name.replace(/[^a-zA-Z0-9]+/g, ' ').trim().replace(/\s+/g, '');
+    if (slug) {
+      // Direct values
+      placeholders[`${slug}`] = analyte.value || ''; // {{Hemoglobin}}
+
+      // Suffix variations
+      placeholders[`${slug}_VALUE`] = analyte.value || '';
+      placeholders[`${slug}_UNIT`] = analyte.unit || '';
+      placeholders[`${slug}_REF_RANGE`] = analyte.reference_range || ''; // Matching _REF_RANGE from frontend
+      placeholders[`${slug}_REFERENCE`] = analyte.reference_range || ''; // Alias
+      placeholders[`${slug}_FLAG`] = analyte.flag || '';
+      placeholders[`${slug}_DISPLAYFLAG`] = analyte.displayFlag || '';
+      placeholders[`${slug}_NOTE`] = analyte.notes || analyte.comments || '';
+    }
   });
   
-  console.log('📋 Generated analyte placeholders for keys:', Object.keys(placeholders).filter(k => k.endsWith('_VALUE')).map(k => k.replace('ANALYTE_', '').replace('_VALUE', '')));
+  console.log('📋 Generated extended analyte placeholders');
   
   return placeholders;
 }

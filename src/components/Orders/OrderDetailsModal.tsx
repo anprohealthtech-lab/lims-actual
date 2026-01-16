@@ -1903,13 +1903,56 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
     setSubmittingResults(true);
     setSaveMessage(null);
 
+    // Initial clone for mutation by AI
+    let finalResults = validResults.map(v => ({ ...v }));
+
     try {
+      // 1. AUTO-RESOLVE RANGES for dynamic panels
+      const groupsToResolve = testGroups.filter(tg =>
+        (tg.test_group_name || '').toLowerCase().includes('age-specific') ||
+        tg.analytes.some(a => (a.reference_range || '').toLowerCase().includes('age-specific'))
+      );
+
+      if (groupsToResolve.length > 0) {
+        setSaveMessage(`Auto-resolving ranges for ${groupsToResolve.length} group(s)...`);
+        const { resolveReferenceRanges } = await import('../../utils/referenceRangeService');
+
+        for (const tg of groupsToResolve) {
+          const payload = tg.analytes.map(a => {
+            const vItem = finalResults.find(v => v.parameter === a.name);
+            return {
+              id: a.id,
+              name: a.name,
+              value: vItem?.value || '',
+              unit: a.units || vItem?.unit || ''
+            };
+          });
+
+          try {
+            const resolved = await resolveReferenceRanges(order.id, tg.test_group_id, payload);
+            resolved?.forEach(r => {
+              if (r.used_reference_range) {
+                const target = finalResults.find(v => v.parameter === r.name);
+                if (target) {
+                  target.reference = r.used_reference_range;
+                  if (r.flag && ['H', 'L', 'C', 'LL', 'HH'].includes(r.flag)) target.flag = r.flag;
+                }
+              }
+            });
+          } catch (aiErr) {
+            console.warn(`Failed to auto-resolve group ${tg.test_group_name}`, aiErr);
+          }
+        }
+      }
+
+      setSaveMessage("Saving results...");
+
       const currentUser = await supabase.auth.getUser();
       const userLabId = await database.getCurrentUserLabId();
 
       for (const testGroup of testGroups) {
         // Save only for analytes that are still editable and belong to this TG
-        const testGroupResults = validResults.filter((v) => testGroup.analytes.some((a) => a.name === v.parameter));
+        const testGroupResults = finalResults.filter((v) => testGroup.analytes.some((a) => a.name === v.parameter));
         if (testGroupResults.length === 0) continue;
 
         // ✅ Duplicate-safe: reuse results row if it already exists for this panel
@@ -1984,7 +2027,7 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
       }
 
       // Local immediate UX: hide submitted analytes now
-      markAnalytesAsSubmitted(validResults);
+      markAnalytesAsSubmitted(finalResults);
 
       // Refresh read-only view + progress ONCE after all saves complete
       fetchReadonlyResults();
@@ -1996,7 +2039,7 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
       setTimeout(() => {
         // Call whichever callback is provided
         if (onSubmitResults) {
-          onSubmitResults(order.id, validResults);
+          onSubmitResults(order.id, finalResults);
         } else if (onAfterSubmit) {
           onAfterSubmit();
         }
@@ -2227,6 +2270,53 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
     </div>
   );
 
+  // === AI Auto-Range Handler ===
+  const handleAIResolve = async (tgId: string) => {
+    const tg = testGroups.find((t) => t.test_group_id === tgId);
+    if (!tg) return;
+
+    setSaveMessage("Resolving reference ranges...");
+
+    const payload = tg.analytes.map((a) => {
+      const val = manualValues.find((mv) => mv.parameter === a.name);
+      return {
+        id: a.id,
+        name: a.name,
+        value: val?.value || "",
+        unit: val?.unit || a.units || "",
+      };
+    });
+
+    try {
+      const { resolveReferenceRanges } = await import('../../utils/referenceRangeService');
+      const resolved = await resolveReferenceRanges(order.id, tgId, payload);
+
+      if (resolved) {
+        setManualValues((prev) => {
+          const next = [...prev];
+          resolved.forEach((r) => {
+            if (r.used_reference_range) {
+              const idx = next.findIndex((n) => n.parameter === r.name);
+              if (idx !== -1) {
+                next[idx] = {
+                  ...next[idx],
+                  reference: r.used_reference_range,
+                };
+              }
+            }
+          });
+          return next;
+        });
+        setSaveMessage("Ranges Applied!");
+        setTimeout(() => setSaveMessage(null), 3000);
+      }
+    } catch (err) {
+      console.error(err);
+      setSaveMessage("Request Failed");
+      setTimeout(() => setSaveMessage(null), 3000);
+    }
+  };
+
   const TestGroupResultEntry: React.FC<{
     testGroup: TestGroupResult;
     entryMode: "manual" | "ai";
@@ -2252,6 +2342,17 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
         <div className="flex items-center justify-between mb-4">
           <div className="flex items-center space-x-4">
             <h4 className="text-lg font-medium">{testGroup.test_group_name}</h4>
+
+            {/* AI Auto-Range Button */}
+            <button
+              type="button"
+              onClick={() => handleAIResolve(testGroup.test_group_id)}
+              className="flex items-center gap-1 px-2 py-1 text-xs font-medium text-purple-700 bg-purple-50 hover:bg-purple-100 border border-purple-200 rounded transition-colors"
+              title="Resolve Reference Ranges automatically"
+            >
+              <Brain className="w-3 h-3" />
+              <span className="hidden sm:inline">Auto-Range</span>
+            </button>
 
             {/* Sample Collection Status */}
             <div className="flex items-center gap-2">
