@@ -904,18 +904,30 @@ function generateDynamicCss(settings: any): string {
 
 /**
  * Build PDF body HTML document (main content)
- * Now supports letterhead background image and padding settings
+ * Now supports letterhead background image, padding settings, and QR Verification Code
  */
-function buildPdfBodyDocumentV2(bodyHtml: string, customCss: string, letterheadBackgroundUrl?: string | null, pdfSettings?: any): string {
-  console.log('🚀🚀🚀 VERSION 3.0 - LETTERHEAD SUPPORT ENABLED (RENAMED) 🚀🚀🚀');
+function buildPdfBodyDocumentV2(bodyHtml: string, customCss: string, letterheadBackgroundUrl?: string | null, pdfSettings?: any, verificationUrl?: string | null): string {
+  console.log('🚀🚀🚀 VERSION 3.2 - QR AUTH SUPPORT ADDED 🚀🚀🚀');
   console.log('🏗️ buildPdfBodyDocumentV2 called with:', {
     bodyHtmlLength: bodyHtml?.length || 0,
     customCssLength: customCss?.length || 0,
     letterheadUrl: letterheadBackgroundUrl || 'NONE',
     hasLetterhead: !!letterheadBackgroundUrl,
     hasPdfSettings: !!pdfSettings,
+    verificationUrl: verificationUrl || 'NONE'
   });
   
+  // Calculate spacer heights from settings (default to 130px)
+  const topSpacerHeight = pdfSettings?.margins?.top ?? 130;
+  const bottomSpacerHeight = pdfSettings?.margins?.bottom ?? 130;
+  
+  // Generate Qr Code HTML if verification URL provided
+  const qrCodeHtml = verificationUrl ? 
+    `<img src="https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=${encodeURIComponent(verificationUrl)}" 
+          class="report-auth-qr" 
+          alt="Verify Report"
+          style="position: absolute; top: 25px; right: 25px; width: 75px; height: 75px; z-index: 9999; border: 2px solid white; box-shadow: 0 2px 4px rgba(0,0,0,0.1);" />` 
+    : '';
   // 🎨 PDF.co compatibility: Expand CSS custom properties (variables) to literal values
   let normalizedCss = customCss
   if (customCss) {
@@ -1054,7 +1066,9 @@ function buildPdfBodyDocumentV2(bodyHtml: string, customCss: string, letterheadB
 
   // Wrap content with fixed background AND repeating layout table
   // This "Print Table" technique ensures top/bottom spacing repeats on EVERY page
+  // ALSO: Inject QR Code if enabled
   const wrappedBody = letterheadBackgroundUrl ? `
+    ${qrCodeHtml}
     <!-- Fixed background layer - repeats on every PDF page -->
     <div id="page-bg"></div>
     
@@ -1091,6 +1105,7 @@ function buildPdfBodyDocumentV2(bodyHtml: string, customCss: string, letterheadB
       </tbody>
     </table>
   ` : `
+    ${qrCodeHtml}
     <div class="limsv2-report">
       <main class="limsv2-report-body limsv2-report-body--pdf">${bodyHtml || '<p></p>'}</main>
     </div>
@@ -1137,43 +1152,89 @@ ${wrappedBody}
  * 2. Checks content (Normal, Low, High, Critical)
  * 3. Appends class="flag-low" etc. to the <td>
  */
+/**
+ * AUTO-FIX: Scans the rendered HTML and adds semantic classes to flag cells AND value cells
+ * This ensures existing templates get robust styling for both flags and values.
+ * 
+ * Logic:
+ * 1. Scans '<tr>' blocks to find rows with abnormal flags.
+ * 2. If a row has a flag (Low, High, Critical), it:
+ *    - Adds 'flag-[status]' to the flag cell.
+ *    - Adds 'value-[status]' to the numeric value cell in the SAME row.
+ */
 function addFlagClassesToHtml(html: string): string {
   if (!html) return html;
 
-  // Regex to find ANY table cell in a report-table
-  // We look for the pattern: <td ... > content </td>
-  // And we only touch it if the content matches a known flag
-  
-  return html.replace(/(<td[^>]*>)([\s\S]*?)(<\/td>)/gi, (match, openTag, content, closeTag) => {
-    // Clean content to check value
-    const text = content.replace(/<[^>]+>/g, '').trim().toLowerCase();
+  // Process each table row separately
+  return html.replace(/<tr[^>]*>[\s\S]*?<\/tr>/gi, (rowHtml) => {
+    // 1. Determine flag status of this row
+    let status = '';
+    const lowerRow = rowHtml.toLowerCase();
     
-    // Skip empty or long text
-    if (!text || text.length > 20) return match;
+    // Check for critical first (more specific)
+    if (lowerRow.includes('critical_h') || lowerRow.includes('criticalh')) status = 'critical_h';
+    else if (lowerRow.includes('critical_l') || lowerRow.includes('criticall')) status = 'critical_l';
+    else if (lowerRow.includes('critical')) status = 'critical';
+    
+    // High / Low
+    else if (lowerRow.includes('>high<') || lowerRow.includes('>h<') || lowerRow.includes('> hh <')) status = 'high';
+    else if (lowerRow.includes('>low<') || lowerRow.includes('>l<') || lowerRow.includes('> ll <')) status = 'low';
+    
+    // Qualitative Abnormal (Red)
+    else if (
+      lowerRow.includes('detected') && !lowerRow.includes('not detected') ||
+      lowerRow.includes('positive') ||
+      lowerRow.includes('present') ||
+      lowerRow.includes('reactive') && !lowerRow.includes('non-reactive')
+    ) status = 'abnormal';
+    
+    // Qualitative Warning (Amber)
+    else if (lowerRow.includes('trace') || lowerRow.includes('borderline') || lowerRow.includes('indeterminate')) status = 'trace';
+    
+    // Normal / Negative
+    else if (
+      lowerRow.includes('>normal<') || lowerRow.includes('>n<') ||
+      lowerRow.includes('negative') ||
+      lowerRow.includes('not detected') ||
+      lowerRow.includes('absent') ||
+      lowerRow.includes('non-reactive')
+    ) status = 'normal';
+    
+    if (!status) return rowHtml; // No flag found, return unchanged
 
-    let flagClass = '';
-    
-    // normalize text
-    const norm = text.replace(/\s+/g, '_').replace(/-/g, '_');
+    // 2. Inject classes into cells
+    return rowHtml.replace(/(<td[^>]*>)([\s\S]*?)(<\/td>)/gi, (cellMatch, openTag, content, closeTag) => {
+      const text = content.replace(/<[^>]+>/g, '').trim();
+      const lowerText = text.toLowerCase();
+      
+      // Is this the FLAG cell? (Matches the status text)
+      const isFlagCell = 
+        (status === 'critical_h' && (lowerText === 'critical_h' || lowerText === 'criticalh')) ||
+        (status === 'critical_l' && (lowerText === 'critical_l' || lowerText === 'criticall')) ||
+        (status === 'high' && (lowerText === 'high' || lowerText === 'h')) ||
+        (status === 'low' && (lowerText === 'low' || lowerText === 'l')) ||
+        (status === 'abnormal' && (lowerText.includes('detected') || lowerText === 'positive' || lowerText === 'present' || lowerText === 'reactive')) ||
+        (status === 'trace' && (lowerText === 'trace' || lowerText === 'borderline')) ||
+        (status === 'normal' && (lowerText === 'normal' || lowerText === 'n' || lowerText === 'negative' || lowerText.includes('not detected')));
 
-    if (norm === 'normal' || norm === 'n') flagClass = 'flag-normal';
-    else if (norm === 'low' || norm === 'l' || norm === 'll') flagClass = 'flag-low';
-    else if (norm === 'high' || norm === 'h' || norm === 'hh') flagClass = 'flag-high';
-    else if (norm === 'critical_h' || norm === 'critical_high' || norm === 'h*' || norm === 'criticalh') flagClass = 'flag-critical_h';
-    else if (norm === 'critical_l' || norm === 'critical_low' || norm === 'l*' || norm === 'criticall') flagClass = 'flag-critical_l';
-    else if (norm === 'abnormal' || norm === 'a' || norm === 'positive') flagClass = 'flag-abnormal';
-    
-    // If we found a flag match
-    if (flagClass) {
-      // Check if class attribute exists
-      if (openTag.includes('class="')) {
-        return openTag.replace('class="', `class="${flagClass} `) + content + closeTag;
-      } else {
-        return openTag.replace('<td', `<td class="${flagClass}"`) + content + closeTag;
+      // Is this the VALUE cell? (Is numeric and NOT the flag cell)
+      // Heuristic: It's a number, maybe with decimals/signs, and NOT empty
+      const isValueCell = !isFlagCell && /^[<>~]?\s*-?\d+(\.\d+)?\s*$/.test(text);
+
+      let newClass = '';
+      if (isFlagCell) newClass = `flag-${status}`;
+      else if (isValueCell) newClass = `value-${status}`;
+
+      if (newClass) {
+        if (openTag.includes('class="')) {
+          return openTag.replace('class="', `class="${newClass} `) + content + closeTag;
+        } else {
+          return openTag.replace('<td', `<td class="${newClass}"`) + content + closeTag;
+        }
       }
-    }
-    
-    return match;
+      
+      return cellMatch;
+    });
   });
 }
 
@@ -1196,11 +1257,14 @@ function applyFlagStyling(html: string, settings?: any): string {
      
      const css = `
 <style>
-.flag-high { color: ${high} !important; font-weight: 800; }
-.flag-low { color: ${low} !important; font-weight: 800; }
-.flag-critical_h { color: ${high} !important; font-weight: 900; }
-.flag-critical_l { color: ${low} !important; font-weight: 900; }
-.flag-normal { color: ${normal} !important; font-weight: 700; }
+.flag-high, .value-high { color: ${high} !important; font-weight: 800; }
+.flag-low, .value-low { color: ${low} !important; font-weight: 800; }
+.flag-critical, .value-critical,
+.flag-critical_h, .value-critical_h { color: ${high} !important; font-weight: 900; }
+.flag-critical_l, .value-critical_l { color: ${low} !important; font-weight: 900; }
+.flag-abnormal, .value-abnormal { color: ${high} !important; font-weight: 800; }
+.flag-trace, .value-trace { color: ${low} !important; font-weight: 800; }
+.flag-normal, .value-normal { color: ${normal} !important; font-weight: 700; }
 </style>`;
      if (newHtml.includes('</head>')) return newHtml.replace('</head>', css + '</head>');
      return css + newHtml;
@@ -3159,7 +3223,9 @@ serve(async (req) => {
       }
       
       console.log('🔧 About to call buildPdfBodyDocumentV2 with letterhead:', letterheadBackgroundUrl || 'NONE');
-      bodyHtml = buildPdfBodyDocumentV2(renderedHtml, (template.gjs_css || '') + '\n' + dynamicCss, letterheadBackgroundUrl, pdfSettings)
+      
+      const verifyUrl = `https://reports.limsapp.in/verify?id=${encodeURIComponent(context.sampleId || orderId || '')}`;
+      bodyHtml = buildPdfBodyDocumentV2(renderedHtml, (template.gjs_css || '') + '\n' + dynamicCss, letterheadBackgroundUrl, pdfSettings, verifyUrl)
       console.log('✅ buildPdfBodyDocumentV2 returned, HTML length:', bodyHtml.length);
       console.log('🔍 Checking if letterhead is in returned HTML:', bodyHtml.includes('page-background') ? 'YES' : 'NO');
       // CRITICAL: Do NOT save bodyHtml to rawHtmlForPrint if we are using V2/letterhead logic.
@@ -3273,7 +3339,9 @@ serve(async (req) => {
       console.log('✅ Merged multiple templates using base:', template.template_name)
       const dynamicCss = generateDynamicCss(pdfSettings)
       console.log('🔧 About to call buildPdfBodyDocumentV2 (multi-template) with letterhead:', letterheadBackgroundUrl || 'NONE');
-      bodyHtml = buildPdfBodyDocumentV2(renderedSections.join('\n'), (template.gjs_css || '') + '\n' + dynamicCss, letterheadBackgroundUrl)
+      
+      const verifyUrl = `https://reports.limsapp.in/verify?id=${encodeURIComponent(context.sampleId || orderId || '')}`;
+      bodyHtml = buildPdfBodyDocumentV2(renderedSections.join('\n'), (template.gjs_css || '') + '\n' + dynamicCss, letterheadBackgroundUrl, pdfSettings, verifyUrl)
       console.log('✅ buildPdfBodyDocumentV2 returned, HTML length:', bodyHtml.length);
       console.log('🔍 Checking if letterhead is in returned HTML:', bodyHtml.includes('page-background') ? 'YES' : 'NO');
       rawHtmlForPrint = bodyHtml // Save for print version
@@ -3389,9 +3457,13 @@ serve(async (req) => {
            printRenderedHtml = injectSignatureImage(printRenderedHtml, signatoryInfo.signatoryImageUrl, signatoryInfo.signatoryName, signatoryInfo.signatoryDesignation)
         }
         
+        // AUTO-FIX: Apply flag classes (so we can style them bold in print CSS)
+        printRenderedHtml = addFlagClassesToHtml(printRenderedHtml);
+        
         // Build print HTML WITHOUT gjs_css - pass empty string for clean print output
         // CRITICAL: Pass null for letterhead so we get a clean HTML without background/spacers
-        printHtml = buildPdfBodyDocumentV2(printRenderedHtml, '', null)
+        const verifyUrl = `https://reports.limsapp.in/verify?id=${encodeURIComponent(context.sampleId || orderId || '')}`;
+        printHtml = buildPdfBodyDocumentV2(printRenderedHtml, '', null, pdfSettings, verifyUrl)
         console.log('✅ Built print HTML without gjs_css (clean print mode)')
         
         // Also inject section content for this fallback path
@@ -3488,6 +3560,19 @@ serve(async (req) => {
 
           /* Hide non-print elements */
           .watermark, .draft-watermark { display: none !important; }
+
+          /* BOLD overrides for Result/Flag classes in Print Mode */
+          .value-low, .flag-low,
+          .value-high, .flag-high,
+          .value-critical, .flag-critical,
+          .value-abnormal, .flag-abnormal,
+          .value-trace, .flag-trace,
+          .value-critical_h, .flag-critical_h,
+          .value-critical_l, .flag-critical_l {
+            color: #000000 !important;
+            font-weight: 900 !important;
+            text-decoration: none !important;
+          }
         </style>
       `
       printHtml = printHtml.replace('</head>', `${printCss}</head>`)
