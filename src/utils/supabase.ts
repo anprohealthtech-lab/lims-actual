@@ -5473,6 +5473,38 @@ export const database = {
     }
   },
 
+  bookings: {
+    create: async (bookingData: any) => {
+      const lab_id = await database.getCurrentUserLabId();
+      if (!lab_id) return { data: null, error: { message: 'No lab context' } };
+      const { data, error } = await supabase
+        .from('bookings')
+        .insert([{ ...bookingData, lab_id }])
+        .select()
+        .single();
+      return { data, error };
+    },
+    list: async () => {
+      const lab_id = await database.getCurrentUserLabId();
+      if (!lab_id) return { data: null, error: { message: 'No lab context' } };
+      const { data, error } = await supabase
+        .from('bookings')
+        .select('*')
+        .eq('lab_id', lab_id)
+        .order('created_at', { ascending: false });
+      return { data, error };
+    },
+    update: async (id: string, updates: any) => {
+      const { data, error } = await supabase
+        .from('bookings')
+        .update(updates)
+        .eq('id', id)
+        .select()
+        .single();
+      return { data, error };
+    },
+  },
+
   packages: {
     getAll: async () => {
       const lab_id = await database.getCurrentUserLabId();

@@ -640,7 +640,37 @@ function generateAnalyteShortKey(name: string): string {
 }
 
 /**
- * Generate individual analyte placeholders for hardcoded template support
+ * Convert flag value to CSS classes for template styling
+ * Returns valueClass, flagClass, and normalized flagText
+ */
+function toFlagClass(flag?: string | null) {
+  const f = String(flag || '').trim().toLowerCase();
+  if (!f) return { valueClass: 'value-normal', flagClass: 'flag-normal', flagText: '' };
+
+  // normalize possible variants
+  const norm = f
+    .replace(/\s+/g, '_')
+    .replace(/-/g, '_');
+
+  if (norm === 'normal' || norm === 'n') return { valueClass: 'value-normal', flagClass: 'flag-normal', flagText: 'normal' };
+  if (norm === 'low' || norm === 'l' || norm === 'll') return { valueClass: 'value-low', flagClass: 'flag-low', flagText: 'low' };
+  if (norm === 'high' || norm === 'h' || norm === 'hh') return { valueClass: 'value-high', flagClass: 'flag-high', flagText: 'high' };
+
+  if (norm === 'critical_h' || norm === 'critical_high' || norm === 'h*' || norm === 'criticalh') {
+    return { valueClass: 'value-critical_h', flagClass: 'flag-critical_h', flagText: 'critical_h' };
+  }
+  if (norm === 'critical_l' || norm === 'critical_low' || norm === 'l*' || norm === 'criticall') {
+    return { valueClass: 'value-critical_l', flagClass: 'flag-critical_l', flagText: 'critical_l' };
+  }
+
+  // abnormal / anything else
+  return { valueClass: 'value-abnormal', flagClass: 'flag-abnormal', flagText: f };
+}
+
+/**
+ * Generate analyte-specific placeholders for templates
+ * Creates both short keys (ANALYTE_HB_VALUE) and full slugs (Hemoglobin_VALUE)
+ * Now includes CSS classes for styling: _VALUE_CLASS, _FLAG_CLASS, _FLAG_TEXT
  */
 function generateAnalytePlaceholders(analytes: any[]): Record<string, any> {
   const placeholders: Record<string, any> = {};
@@ -651,6 +681,9 @@ function generateAnalytePlaceholders(analytes: any[]): Record<string, any> {
     const name = analyte.parameter || analyte.name || analyte.test_name || '';
     if (!name) return;
 
+    // Get CSS classes from flag
+    const { valueClass, flagClass, flagText } = toFlagClass(analyte.flag);
+
     // 1. Existing Short Key Logic (ANALYTE_HB_VALUE)
     const shortKey = generateAnalyteShortKey(name);
     if (shortKey) {
@@ -659,6 +692,10 @@ function generateAnalytePlaceholders(analytes: any[]): Record<string, any> {
       placeholders[`ANALYTE_${shortKey}_REFERENCE`] = analyte.reference_range || '';
       placeholders[`ANALYTE_${shortKey}_FLAG`] = analyte.flag || '';
       placeholders[`ANALYTE_${shortKey}_DISPLAYFLAG`] = analyte.displayFlag || '';
+      // NEW: CSS class placeholders
+      placeholders[`ANALYTE_${shortKey}_FLAG_TEXT`] = flagText;
+      placeholders[`ANALYTE_${shortKey}_FLAG_CLASS`] = flagClass;
+      placeholders[`ANALYTE_${shortKey}_VALUE_CLASS`] = valueClass;
     }
 
     // 2. New Full Slug Logic (Hemoglobin_VALUE) - Matches Frontend Picker
@@ -676,6 +713,10 @@ function generateAnalytePlaceholders(analytes: any[]): Record<string, any> {
       placeholders[`${slug}_FLAG`] = analyte.flag || '';
       placeholders[`${slug}_DISPLAYFLAG`] = analyte.displayFlag || '';
       placeholders[`${slug}_NOTE`] = analyte.notes || analyte.comments || '';
+      // NEW: CSS class placeholders
+      placeholders[`${slug}_FLAG_TEXT`] = flagText;
+      placeholders[`${slug}_FLAG_CLASS`] = flagClass;
+      placeholders[`${slug}_VALUE_CLASS`] = valueClass;
     }
   });
   
@@ -863,15 +904,16 @@ function generateDynamicCss(settings: any): string {
 
 /**
  * Build PDF body HTML document (main content)
- * Now supports letterhead background image
+ * Now supports letterhead background image and padding settings
  */
-function buildPdfBodyDocumentV2(bodyHtml: string, customCss: string, letterheadBackgroundUrl?: string | null): string {
+function buildPdfBodyDocumentV2(bodyHtml: string, customCss: string, letterheadBackgroundUrl?: string | null, pdfSettings?: any): string {
   console.log('🚀🚀🚀 VERSION 3.0 - LETTERHEAD SUPPORT ENABLED (RENAMED) 🚀🚀🚀');
   console.log('🏗️ buildPdfBodyDocumentV2 called with:', {
     bodyHtmlLength: bodyHtml?.length || 0,
     customCssLength: customCss?.length || 0,
     letterheadUrl: letterheadBackgroundUrl || 'NONE',
-    hasLetterhead: !!letterheadBackgroundUrl
+    hasLetterhead: !!letterheadBackgroundUrl,
+    hasPdfSettings: !!pdfSettings,
   });
   
   // 🎨 PDF.co compatibility: Expand CSS custom properties (variables) to literal values
@@ -920,66 +962,127 @@ function buildPdfBodyDocumentV2(bodyHtml: string, customCss: string, letterheadB
   console.log('  letterheadBackgroundUrl truthy?:', !!letterheadBackgroundUrl);
   
   const letterheadStyles = letterheadBackgroundUrl ? `
-    /* Letterhead Background - Full Page */
-    @page { margin: 0; }
+    /* Letterhead Background - Fixed layer that repeats on every PDF page */
+    /* NOTE: Do NOT set @page { margin: 0; } - it overrides PDF.co margins! */
     
     html, body {
-      background: transparent !important;
+      margin: 0;
+      padding: 0;
+      -webkit-print-color-adjust: exact;
+      print-color-adjust: exact;
     }
     
-    #page-background {
+    /* The repeating full-page background layer */
+    #page-bg {
       position: fixed;
       top: 0;
       left: 0;
       width: 210mm;
       height: 297mm;
-      z-index: -100;
+      z-index: 0;
+      pointer-events: none;
       background-image: url('${letterheadBackgroundUrl}');
-      background-size: 100% 100%;
       background-repeat: no-repeat;
+      background-position: top left;
+      background-size: 210mm 297mm; /* A4 exact sizing */
     }
     
-    /* Layout Table for Content Spacing */
-    table.report-layout {
-      width: 100%;
-      border-collapse: collapse;
-      border: none;
+    /* Keep content above the background */
+    .limsv2-report,
+    .limsv2-report-body {
+      position: relative;
+      z-index: 1;
     }
     
-    /* Spacers for header/footer areas */
-    .header-spacer { height: 150px; }
-    .footer-spacer { height: 100px; }
+    /* CRITICAL: Remove the white sheet that hides the background layer */
+    .limsv2-report,
+    .limsv2-report-body {
+      background: transparent !important;
+      background-color: transparent !important;
+    }
     
-    /* Content cell with side padding */
-    .content-cell {
-      padding: 0 40px;
-      vertical-align: top;
+    /* Prevent white blocks from hiding the letterhead */
+    .report-container,
+    .report-body,
+    .report-region,
+    .report-region--body {
+      background: transparent !important;
+      background-color: transparent !important;
+    }
+    
+    /* Keep tables readable with semi-transparent background */
+    .patient-info,
+    .report-table,
+    .tbl-meta,
+    .tbl-results,
+    .tbl-interpretation {
+      background: rgba(255, 255, 255, 0.88) !important;
+    }
+    
+    /* Keep table cells readable */
+    .report-table tbody tr:nth-child(even),
+    .tbl-results tbody tr:nth-child(even),
+    .tbl-interpretation tbody tr:nth-child(even) {
+      background: rgba(248, 250, 252, 0.88) !important;
+    }
+    
+    /* Safe content area - spacing handled by HTML TABLE spacers now */
+    .limsv2-report-body--pdf {
+      padding: 0 20px !important;
+    }
+
+    /* Prevent table rows from being cut across pages */
+    .report-table tr,
+    .patient-info tr,
+    .tbl-interpretation tr {
+      break-inside: avoid;
+      page-break-inside: avoid;
+    }
+
+    /* Keep headers repeated on new pages */
+    .report-table thead,
+    .tbl-interpretation thead {
+      display: table-header-group;
     }
   ` : '';
   
   console.log('  letterheadStyles length:', letterheadStyles.length);
   
-  // Wrap content with letterhead background if provided
+  // Calculate spacer heights from settings (default to 130px)
+  const topSpacerHeight = pdfSettings?.margins?.top ?? 130;
+  const bottomSpacerHeight = pdfSettings?.margins?.bottom ?? 130;
+
+  // Wrap content with fixed background AND repeating layout table
+  // This "Print Table" technique ensures top/bottom spacing repeats on EVERY page
   const wrappedBody = letterheadBackgroundUrl ? `
-    <!-- Fixed Background on every page -->
-    <div id="page-background"></div>
+    <!-- Fixed background layer - repeats on every PDF page -->
+    <div id="page-bg"></div>
     
-    <!-- Layout Table -->
-    <table class="report-layout">
-      <!-- Header Spacer - Repeats on every page -->
-      <thead>
-        <tr><td><div class="header-spacer">&nbsp;</div></td></tr>
+    <!-- Layout Table for Multi-Page Spacing -->
+    <table style="width: 100%; border: none; border-collapse: collapse;">
+      
+      <!-- HEADER SPACER (Repeats on every page) -->
+      <thead style="display: table-header-group;">
+        <tr>
+          <td style="border: none; padding: 0;">
+            <div style="height: ${topSpacerHeight}px;"></div>
+          </td>
+        </tr>
       </thead>
       
-      <!-- Footer Spacer - Repeats on every page -->
-      <tfoot>
-        <tr><td><div class="footer-spacer">&nbsp;</div></td></tr>
+      <!-- FOOTER SPACER (Repeats on every page) -->
+      <tfoot style="display: table-footer-group;">
+        <tr>
+          <td style="border: none; padding: 0;">
+            <div style="height: ${bottomSpacerHeight}px;"></div>
+          </td>
+        </tr>
       </tfoot>
-
-      <!-- Main Content -->
+      
+      <!-- MAIN CONTENT -->
       <tbody>
         <tr>
-          <td class="content-cell">
+          <td style="border: none; padding: 0;">
             <div class="limsv2-report">
               <main class="limsv2-report-body limsv2-report-body--pdf">${bodyHtml || '<p></p>'}</main>
             </div>
@@ -1025,76 +1128,85 @@ ${wrappedBody}
  * - Wraps flag text (high, low, H, L, etc.) in styled spans
  * - Also colors the result value in the same table row
  */
+/**
+ * AUTO-FIX: Scans the rendered HTML and adds semantic classes to flag cells
+ * This ensures existing templates (without explicit {{_FLAG_CLASS}}) still get colored flags
+ * 
+ * Logic:
+ * 1. Finds table cells in .report-table
+ * 2. Checks content (Normal, Low, High, Critical)
+ * 3. Appends class="flag-low" etc. to the <td>
+ */
+function addFlagClassesToHtml(html: string): string {
+  if (!html) return html;
+
+  // Regex to find ANY table cell in a report-table
+  // We look for the pattern: <td ... > content </td>
+  // And we only touch it if the content matches a known flag
+  
+  return html.replace(/(<td[^>]*>)([\s\S]*?)(<\/td>)/gi, (match, openTag, content, closeTag) => {
+    // Clean content to check value
+    const text = content.replace(/<[^>]+>/g, '').trim().toLowerCase();
+    
+    // Skip empty or long text
+    if (!text || text.length > 20) return match;
+
+    let flagClass = '';
+    
+    // normalize text
+    const norm = text.replace(/\s+/g, '_').replace(/-/g, '_');
+
+    if (norm === 'normal' || norm === 'n') flagClass = 'flag-normal';
+    else if (norm === 'low' || norm === 'l' || norm === 'll') flagClass = 'flag-low';
+    else if (norm === 'high' || norm === 'h' || norm === 'hh') flagClass = 'flag-high';
+    else if (norm === 'critical_h' || norm === 'critical_high' || norm === 'h*' || norm === 'criticalh') flagClass = 'flag-critical_h';
+    else if (norm === 'critical_l' || norm === 'critical_low' || norm === 'l*' || norm === 'criticall') flagClass = 'flag-critical_l';
+    else if (norm === 'abnormal' || norm === 'a' || norm === 'positive') flagClass = 'flag-abnormal';
+    
+    // If we found a flag match
+    if (flagClass) {
+      // Check if class attribute exists
+      if (openTag.includes('class="')) {
+        return openTag.replace('class="', `class="${flagClass} `) + content + closeTag;
+      } else {
+        return openTag.replace('<td', `<td class="${flagClass}"`) + content + closeTag;
+      }
+    }
+    
+    return match;
+  });
+}
+
+/**
+ * DEPRECATED: Old applyFlagStyling (kept for reference but unused if we use clean classes)
+ */
 function applyFlagStyling(html: string, settings?: any): string {
-  if (!html) return html
+  // Pass through to the class adder first
+  let newHtml = addFlagClassesToHtml(html);
   
-  // Get colors from settings or use defaults
-  const highColor = settings?.resultColors?.high || '#dc2626'
-  const lowColor = settings?.resultColors?.low || '#ea580c'
-  const normalColor = settings?.resultColors?.normal || '#16a34a'
-  const enabled = settings?.resultColors?.enabled !== false // Default to enabled
+  // Checking opt-in for CSS injection
+  const optIn =
+    html.includes('lims:enable-flag-styling') ||
+    html.includes('LIMS_ENABLE_FLAG_STYLING');
+
+  if (optIn && settings?.resultColors?.enabled !== false) {
+     const high = settings.resultColors?.high || '#dc2626';
+     const low = settings.resultColors?.low || '#ea580c';
+     const normal = settings.resultColors?.normal || '#1f2937';
+     
+     const css = `
+<style>
+.flag-high { color: ${high} !important; font-weight: 800; }
+.flag-low { color: ${low} !important; font-weight: 800; }
+.flag-critical_h { color: ${high} !important; font-weight: 900; }
+.flag-critical_l { color: ${low} !important; font-weight: 900; }
+.flag-normal { color: ${normal} !important; font-weight: 700; }
+</style>`;
+     if (newHtml.includes('</head>')) return newHtml.replace('</head>', css + '</head>');
+     return css + newHtml;
+  }
   
-  if (!enabled) return html
-  
-  let styledHtml = html
-  
-  // Step 1: Process each table row to color both value and flag
-  // Match table rows: <tr>...</tr>
-  styledHtml = styledHtml.replace(/<tr[^>]*>([\s\S]*?)<\/tr>/gi, (trMatch) => {
-    // Check if this row contains a high/low/abnormal flag
-    const hasHighFlag = /\b(high|H|HH|H\*|critical[_\s-]?high|abnormal)\b/i.test(trMatch)
-    const hasLowFlag = /\b(low|L|LL|L\*|critical[_\s-]?low)\b/i.test(trMatch)
-    
-    // Skip if no flags - but still process individual flag text
-    if (!hasHighFlag && !hasLowFlag) {
-      return trMatch
-    }
-    
-    // Determine color based on flag type (high takes priority)
-    const flagColor = hasHighFlag ? highColor : lowColor
-    const flagClass = hasHighFlag ? 'result-high' : 'result-low'
-    
-    let processedRow = trMatch
-    
-    // Step 2: Find and color the result value cell (usually 2nd td or td with 'value' class)
-    // Pattern: td cell containing just a number (with optional decimal)
-    const tdCells = processedRow.match(/<td[^>]*>[\s\S]*?<\/td>/gi) || []
-    
-    for (let i = 0; i < tdCells.length; i++) {
-      const cell = tdCells[i]
-      
-      // Check if this cell contains a numeric value (the result)
-      // Look for cells that have 'value' or 'result' in class, or are the 2nd cell (index 1)
-      const isValueCell = /class="[^"]*(?:value|result|col-center)[^"]*"/.test(cell) && 
-                         /^[\s]*[\d.]+[\s]*$/.test(cell.replace(/<[^>]+>/g, '').trim()) ||
-                         (i === 1 && /^[\s]*[\d.]+[\s]*$/.test(cell.replace(/<[^>]+>/g, '').trim()))
-      
-      if (isValueCell) {
-        // Extract the numeric value and wrap it in a styled span
-        const coloredCell = cell.replace(
-          />(\s*)([\d.]+)(\s*)</,
-          `><span class="${flagClass}" style="color: ${flagColor}; font-weight: bold;">$2</span><`
-        )
-        processedRow = processedRow.replace(cell, coloredCell)
-      }
-      
-      // Also color the flag cell
-      const isFlagCell = cell.replace(/<[^>]+>/g, '').trim().match(/^(high|low|H|L|HH|LL|H\*|L\*|abnormal|normal|N)$/i)
-      if (isFlagCell) {
-        const flagText = isFlagCell[0]
-        const coloredFlagCell = cell.replace(
-          new RegExp(`>(\\s*)(${flagText})(\\s*)<`, 'i'),
-          `><span class="${flagClass}" style="color: ${flagColor}; font-weight: bold;">$2</span><`
-        )
-        processedRow = processedRow.replace(cell, coloredFlagCell)
-      }
-    }
-    
-    return processedRow
-  })
-  
-  console.log('🎨 Applied flag styling to HTML (values and flags)')
-  return styledHtml
+  return newHtml;
 }
 
 /**
@@ -3047,10 +3159,12 @@ serve(async (req) => {
       }
       
       console.log('🔧 About to call buildPdfBodyDocumentV2 with letterhead:', letterheadBackgroundUrl || 'NONE');
-      bodyHtml = buildPdfBodyDocumentV2(renderedHtml, (template.gjs_css || '') + '\n' + dynamicCss, letterheadBackgroundUrl)
+      bodyHtml = buildPdfBodyDocumentV2(renderedHtml, (template.gjs_css || '') + '\n' + dynamicCss, letterheadBackgroundUrl, pdfSettings)
       console.log('✅ buildPdfBodyDocumentV2 returned, HTML length:', bodyHtml.length);
       console.log('🔍 Checking if letterhead is in returned HTML:', bodyHtml.includes('page-background') ? 'YES' : 'NO');
-      rawHtmlForPrint = bodyHtml // Save for print version
+      // CRITICAL: Do NOT save bodyHtml to rawHtmlForPrint if we are using V2/letterhead logic.
+      // We want the print version to RE-RENDER cleanly without the letterhead structure.
+      // rawHtmlForPrint = bodyHtml 
     } else {
       // Multi Group Logic
       console.log('🔀 Multi-test group rendering...')
@@ -3235,12 +3349,19 @@ serve(async (req) => {
     const pdfStartTime = Date.now()
     
     // Build PDF settings
-    // Build PDF settings (Force 0 margins if letterhead is used to show full background)
-    const margins = letterheadBackgroundUrl 
-      ? '0px 0px 0px 0px' 
-      : (pdfSettings?.margins 
-          ? `${pdfSettings.margins.top}px ${pdfSettings.margins.right}px ${pdfSettings.margins.bottom}px ${pdfSettings.margins.left}px`
-          : DEFAULT_PDF_SETTINGS.margins)
+    // CRITICAL: If letterhead is present, we must set PDF margins to 0px top/bottom
+    // so the background image is not pushed down. Content spacing is handled by CSS padding.
+    let margins = DEFAULT_PDF_SETTINGS.margins;
+    
+    if (letterheadBackgroundUrl) {
+      // Letterhead Mode: 0px vertical margins (background full bleed), preserve side margins
+      const sideMargin = pdfSettings?.margins?.left || 20;
+      margins = `0px ${sideMargin}px 0px ${sideMargin}px`;
+      console.log('📄 Letterhead detected: Forcing 0px vertical margins for API, using CSS padding for content.');
+    } else if (pdfSettings?.margins) {
+      // Standard Mode: Use saved margins
+      margins = `${pdfSettings.margins.top}px ${pdfSettings.margins.right}px ${pdfSettings.margins.bottom}px ${pdfSettings.margins.left}px`;
+    }
     
     const filename = `Report_${context.sampleId || orderId}_${Date.now()}.pdf`
     
@@ -3261,9 +3382,16 @@ serve(async (req) => {
           watermarkText: '',
           showWatermark: false
         }
-        const printRenderedHtml = renderTemplate(template.gjs_html, printTemplateContext)
+        let printRenderedHtml = renderTemplate(template.gjs_html, printTemplateContext)
+        
+        // Inject signature image if template doesn't have one (Critical for print version)
+        if (signatoryInfo.signatoryImageUrl) {
+           printRenderedHtml = injectSignatureImage(printRenderedHtml, signatoryInfo.signatoryImageUrl, signatoryInfo.signatoryName, signatoryInfo.signatoryDesignation)
+        }
+        
         // Build print HTML WITHOUT gjs_css - pass empty string for clean print output
-        printHtml = buildPdfBodyDocument(printRenderedHtml, '', letterheadBackgroundUrl)
+        // CRITICAL: Pass null for letterhead so we get a clean HTML without background/spacers
+        printHtml = buildPdfBodyDocumentV2(printRenderedHtml, '', null)
         console.log('✅ Built print HTML without gjs_css (clean print mode)')
         
         // Also inject section content for this fallback path
@@ -3298,6 +3426,7 @@ serve(async (req) => {
       console.log('✅ Print HTML ready (using direct image URLs)')
       
       // Inject print-optimized CSS (grayscale, simplified colors)
+      // REFINED: Don't nuke ALL backgrounds (protects table headers)
       const printCss = `
         <style id="lims-print-css">
           /* FORCE BLACK & WHITE / GRAYSCALE */
@@ -3307,14 +3436,18 @@ serve(async (req) => {
             background: white !important;
             color: black !important;
           }
-          /** FORCE RESET ALL BACKGROUNDS AND SHADOWS */
-          * {
-            -webkit-print-color-adjust: exact !important;
-            print-color-adjust: exact !important;
-            background-color: transparent !important;
+          
+          /* RESET fancy UI backgrounds, but keep table headers readable */
+          .report-header,
+          .section-header,
+          .note,
+          .report-container {
             background: transparent !important;
             box-shadow: none !important;
-            text-shadow: none !important;
+          }
+          
+          /* Ensure explicit table borders for print legibility */
+          table, th, td {
             border-color: #000 !important;
           }
 

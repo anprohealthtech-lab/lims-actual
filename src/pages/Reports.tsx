@@ -146,6 +146,7 @@ const Reports: React.FC = () => {
   const [isTestingTemplate, setIsTestingTemplate] = useState(false);
   const [previewingOrderId, setPreviewingOrderId] = useState<string | null>(null);
   const [isAdmin, setIsAdmin] = useState(false);
+  const [userLabId, setUserLabId] = useState<string | null>(null);
 
   // PDF Settings Modal state
   const [showPDFSettings, setShowPDFSettings] = useState(false);
@@ -261,6 +262,9 @@ const Reports: React.FC = () => {
         setLoading(false);
         return;
       }
+
+      // Store lab ID for PDF settings
+      setUserLabId(lab_id);
 
       // Get date range based on filter
       let dateRange = { start: new Date(), end: new Date() };
@@ -2399,8 +2403,9 @@ const Reports: React.FC = () => {
           setPdfSettingsOrderId(null);
         }}
         onRegenerate={handleRegenerateWithSettings}
-        currentSettings={loadSavedPDFSettings() || PDF_PRESETS.standard}
+        currentSettings={undefined} // Let modal load settings internally
         isRegenerating={isGenerating}
+        labId={userLabId || undefined}
       />
 
       {/* Report Design Studio */}

@@ -342,13 +342,13 @@ export const generateViewerPDF = async (
     const contentWidth = pageWidth - 2 * margin;
     let yPos = margin;
 
-    // ============ Header Section ============
-    
-    // Try to load header image if URL available
-    let headerImageLoaded = false;
-    if (data.lab.headerUrl) {
+    // ============ Helper Function: Add Header Image ============
+    const addHeaderImage = async (): Promise<{ success: boolean; headerHeight: number }> => {
+      if (!data.lab.headerUrl) {
+        return { success: false, headerHeight: 0 };
+      }
+      
       try {
-        // Fetch image and convert to base64 for jsPDF
         const response = await fetch(data.lab.headerUrl);
         if (response.ok) {
           const blob = await response.blob();
@@ -358,17 +358,36 @@ export const generateViewerPDF = async (
             reader.readAsDataURL(blob);
           });
           
-          // Add header image (FULL PAGE WIDTH - no margins, like E-Copy PDF)
-          // Header images are typically around 100-120px height for A4
+          // Determine image format
+          let imgFormat: 'PNG' | 'JPEG' = 'PNG';
+          if (base64.includes('image/jpeg') || base64.includes('image/jpg')) {
+            imgFormat = 'JPEG';
+          }
+          
+          // Add header image (FULL PAGE WIDTH - no margins, like letterhead PDF)
           const headerHeight = 28; // ~28mm header height for full-width image
-          doc.addImage(base64, 'PNG', 0, 0, pageWidth, headerHeight, undefined, 'FAST');
-          yPos = headerHeight + 3;
-          headerImageLoaded = true;
-          console.log('✅ Header image loaded from URL');
+          doc.addImage(base64, imgFormat, 0, 0, pageWidth, headerHeight, undefined, 'FAST');
+          return { success: true, headerHeight };
         }
-      } catch (headerError) {
-        console.warn('Failed to load header image, using text fallback:', headerError);
+      } catch (error) {
+        console.warn('Failed to load header image:', error);
       }
+      
+      return { success: false, headerHeight: 0 };
+    };
+
+    // ============ Header Section ============
+    
+    // Try to load header image if URL available
+    let headerImageLoaded = false;
+    let headerHeight = 0;
+    
+    const headerResult = await addHeaderImage();
+    if (headerResult.success) {
+      headerImageLoaded = true;
+      headerHeight = headerResult.headerHeight;
+      yPos = headerHeight + 3;
+      console.log('✅ Header image loaded from URL');
     }
 
     // Fallback to text header if no image
@@ -492,7 +511,9 @@ export const generateViewerPDF = async (
         // Check for new page (heuristic)
         if (yPos > pageHeight - 50) {
             doc.addPage();
-            yPos = margin;
+            // Add header to new page
+            const newPageHeader = await addHeaderImage();
+            yPos = newPageHeader.success ? newPageHeader.headerHeight + 3 : margin;
         }
 
         // Test Header
@@ -546,7 +567,9 @@ export const generateViewerPDF = async (
             // Check if we need a new page
             if (yPos > pageHeight - 20) {
                 doc.addPage();
-                yPos = margin;
+                // Add header to new page
+                const newPageHeader = await addHeaderImage();
+                yPos = newPageHeader.success ? newPageHeader.headerHeight + 3 : margin;
                 
                 // Re-add table header on new page
                 doc.setFillColor(59, 130, 246);
@@ -638,7 +661,9 @@ export const generateViewerPDF = async (
       // Check if we need a new page
       if (yPos > pageHeight - 40) {
         doc.addPage();
-        yPos = margin;
+        // Add header to new page
+        const newPageHeader = await addHeaderImage();
+        yPos = newPageHeader.success ? newPageHeader.headerHeight + 3 : margin;
       }
 
       // Section header
@@ -671,7 +696,9 @@ export const generateViewerPDF = async (
       // Check if we need a new page
       if (yPos > pageHeight - 80) {
         doc.addPage();
-        yPos = margin;
+        // Add header to new page
+        const newPageHeader = await addHeaderImage();
+        yPos = newPageHeader.success ? newPageHeader.headerHeight + 3 : margin;
       }
 
       // Section header (no emojis - jsPDF doesn't support them properly)
@@ -689,7 +716,9 @@ export const generateViewerPDF = async (
       for (const chart of data.extras.trend_charts) {
         if (yPos > pageHeight - 70) {
           doc.addPage();
-          yPos = margin;
+          // Add header to new page
+          const newPageHeader = await addHeaderImage();
+          yPos = newPageHeader.success ? newPageHeader.headerHeight + 3 : margin;
         }
 
         // Trend item header
@@ -776,36 +805,9 @@ export const generateViewerPDF = async (
       // Always start clinical summary on a new page for better layout
       doc.addPage();
       
-      // Add header on this page too if header image is available
-      let summaryYPos = margin;
-      if (data.lab.headerUrl) {
-        try {
-          const response = await fetch(data.lab.headerUrl);
-          if (response.ok) {
-            const blob = await response.blob();
-            const base64 = await new Promise<string>((resolve) => {
-              const reader = new FileReader();
-              reader.onloadend = () => resolve(reader.result as string);
-              reader.readAsDataURL(blob);
-            });
-            
-            // Determine image format from base64 header
-            let imgFormat: 'PNG' | 'JPEG' = 'PNG';
-            if (base64.includes('image/jpeg') || base64.includes('image/jpg')) {
-              imgFormat = 'JPEG';
-            }
-            
-            const headerHeight = 28;
-            // Use x=0, y=0, full pageWidth to ensure no margins
-            doc.addImage(base64, imgFormat, 0, 0, pageWidth, headerHeight, undefined, 'FAST');
-            summaryYPos = headerHeight + 5; // Start content after header
-            console.log('✅ Clinical summary page: Header added with format:', imgFormat, 'width:', pageWidth);
-          }
-        } catch (e) {
-          console.warn('Failed to add header to clinical summary page:', e);
-        }
-      }
-      yPos = summaryYPos;
+      // Add header to new page
+      const summaryPageHeader = await addHeaderImage();
+      yPos = summaryPageHeader.success ? summaryPageHeader.headerHeight + 5 : margin;
 
       // Section header (no emojis - jsPDF doesn't support them properly)
       doc.setFontSize(12);
@@ -892,7 +894,9 @@ export const generateViewerPDF = async (
         
         if (yPos > pageHeight - 30) {
           doc.addPage();
-          yPos = margin;
+          // Add header to new page
+          const attachmentPageHeader = await addHeaderImage();
+          yPos = attachmentPageHeader.success ? attachmentPageHeader.headerHeight + 3 : margin;
         }
 
         // Attachment card

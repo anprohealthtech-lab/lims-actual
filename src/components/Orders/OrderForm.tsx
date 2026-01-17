@@ -425,11 +425,15 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
 
       // 1. Patient Info (Loose text -> manual entry mode primarily)
       if (initialBookingData.patient_info) {
-        // We set newPatientName/etc directly as if user typed them
-        setNewPatientName(initialBookingData.patient_info.name || '');
-        setNewPatientPhone(initialBookingData.patient_info.phone || '');
-        setNewPatientGender(initialBookingData.patient_info.gender || 'Male');
-        setNewPatientAge(initialBookingData.patient_info.age?.toString() || '');
+        // Update newPatient state object
+        setNewPatient(prev => ({
+          ...prev,
+          name: initialBookingData.patient_info.name || '',
+          phone: initialBookingData.patient_info.phone || '',
+          gender: initialBookingData.patient_info.gender || 'Male',
+          age: initialBookingData.patient_info.age?.toString() || '',
+          email: initialBookingData.patient_info.email || prev.email
+        }));
 
         // Also set search so it looks like a manual entry
         setPatientSearch(initialBookingData.patient_info.name || '');

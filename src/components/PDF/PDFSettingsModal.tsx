@@ -77,6 +77,17 @@ export const PDF_PRESETS: Record<string, PDFRenderSettings> = {
     paperSize: 'A4',
     orientation: 'portrait',
   },
+  letterhead: {
+    scale: 1.0,
+    margins: { top: 120, right: 20, bottom: 80, left: 20 }, // Top margin for header image
+    headerHeight: 0,
+    footerHeight: 0,
+    displayHeaderFooter: false, // Header/footer are background images
+    mediaType: 'screen',
+    printBackground: true, // Essential for background images
+    paperSize: 'A4',
+    orientation: 'portrait',
+  },
 };
 
 // Storage key for localStorage fallback
@@ -92,7 +103,7 @@ export const loadSavedPDFSettings = async (labId?: string): Promise<PDFRenderSet
         .select('pdf_layout_settings')
         .eq('id', labId)
         .single();
-      
+
       if (!error && data?.pdf_layout_settings) {
         console.log('📄 Loaded PDF settings from database (lab-level)');
         return data.pdf_layout_settings as PDFRenderSettings;
@@ -101,7 +112,7 @@ export const loadSavedPDFSettings = async (labId?: string): Promise<PDFRenderSet
       console.warn('Failed to load PDF settings from database:', error);
     }
   }
-  
+
   // Fallback to localStorage
   try {
     const saved = localStorage.getItem(STORAGE_KEY);
@@ -112,7 +123,7 @@ export const loadSavedPDFSettings = async (labId?: string): Promise<PDFRenderSet
   } catch (error) {
     console.warn('Failed to load saved PDF settings from localStorage:', error);
   }
-  
+
   return null;
 };
 
@@ -123,12 +134,12 @@ export const savePDFSettingsToDatabase = async (labId: string, settings: PDFRend
       .from('labs')
       .update({ pdf_layout_settings: settings })
       .eq('id', labId);
-    
+
     if (error) {
       console.error('Failed to save PDF settings to database:', error);
       return false;
     }
-    
+
     console.log('✅ PDF settings saved to database (lab-level)');
     // Also save to localStorage as backup
     localStorage.setItem(STORAGE_KEY, JSON.stringify(settings));
@@ -187,19 +198,20 @@ const PDFSettingsModal: React.FC<PDFSettingsModalProps> = ({
     if (isOpen && labId) {
       loadSavedPDFSettings(labId).then((savedSettings) => {
         if (savedSettings) {
-          setSettings(savedSettings);
+          // Merge with defaults to ensure all properties exist
+          setSettings({ ...PDF_PRESETS.standard, ...savedSettings });
         } else if (currentSettings) {
-          setSettings((prev) => ({ ...prev, ...currentSettings }));
+          setSettings({ ...PDF_PRESETS.standard, ...currentSettings });
         }
       });
     } else if (isOpen && currentSettings) {
-      setSettings((prev) => ({ ...prev, ...currentSettings }));
+      setSettings({ ...PDF_PRESETS.standard, ...currentSettings });
     }
   }, [isOpen, labId, currentSettings]);
 
   // Check if current settings match any preset
   useEffect(() => {
-    const matchedPreset = Object.entries(PDF_PRESETS).find(([, preset]) => 
+    const matchedPreset = Object.entries(PDF_PRESETS).find(([, preset]) =>
       JSON.stringify(preset) === JSON.stringify(settings)
     );
     setSelectedPreset(matchedPreset ? matchedPreset[0] : 'custom');
@@ -224,11 +236,11 @@ const PDFSettingsModal: React.FC<PDFSettingsModalProps> = ({
       alert('Settings saved locally!');
       return;
     }
-    
+
     setIsSaving(true);
     const success = await savePDFSettingsToDatabase(labId, settings);
     setIsSaving(false);
-    
+
     if (success) {
       alert('Lab PDF settings saved successfully! These settings will be used for all PDFs in this lab.');
     } else {
@@ -275,11 +287,10 @@ const PDFSettingsModal: React.FC<PDFSettingsModalProps> = ({
                 <button
                   key={preset}
                   onClick={() => handlePresetChange(preset)}
-                  className={`px-3 py-1.5 text-sm rounded-lg border transition-all ${
-                    selectedPreset === preset
-                      ? 'bg-blue-600 text-white border-blue-600'
-                      : 'bg-white text-gray-700 border-gray-300 hover:border-blue-400'
-                  }`}
+                  className={`px-3 py-1.5 text-sm rounded-lg border transition-all ${selectedPreset === preset
+                    ? 'bg-blue-600 text-white border-blue-600'
+                    : 'bg-white text-gray-700 border-gray-300 hover:border-blue-400'
+                    }`}
                 >
                   {preset.charAt(0).toUpperCase() + preset.slice(1).replace(/([A-Z])/g, ' $1')}
                 </button>
@@ -352,7 +363,7 @@ const PDFSettingsModal: React.FC<PDFSettingsModalProps> = ({
                 <div className="w-11 h-6 bg-gray-200 peer-focus:ring-2 peer-focus:ring-blue-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-blue-600"></div>
               </label>
             </div>
-            
+
             {settings.displayHeaderFooter && (
               <div className="grid grid-cols-2 gap-3">
                 <div className="space-y-1">
