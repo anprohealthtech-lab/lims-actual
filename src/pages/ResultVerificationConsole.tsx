@@ -38,11 +38,12 @@ import {
 import { supabase, database } from "../utils/supabase";
 import AttachmentSelector from "../components/Reports/AttachmentSelector";
 import OrderVerificationView from "./OrderVerificationView";
-import { useAIResultIntelligence, type VerifierSummaryResponse, type ClinicalSummaryResponse, type GeneratedInterpretation, type ResultValue } from "../hooks/useAIResultIntelligence";
+import { useAIResultIntelligence, type VerifierSummaryResponse, type ClinicalSummaryResponse, type GeneratedInterpretation, type ResultValue, type DeltaCheckResponse } from "../hooks/useAIResultIntelligence";
 import { generateAndSaveTrendCharts, saveClinicalSummary } from "../utils/reportExtrasService";
 import TrendGraphPanel from "../components/Results/TrendGraphPanel";
 import AIResultSuggestionCard from "../components/Results/AIResultSuggestionCard";
 import SectionEditor from "../components/Results/SectionEditor";
+import WorkflowExecutionPanel from "../components/Workflow/WorkflowExecutionPanel";
 import { useCalculatedParameters } from "../hooks/useCalculatedParameters";
 
 /* =========================================
@@ -361,7 +362,7 @@ const ResultVerificationConsole: React.FC = () => {
   const [to, setTo] = useState(todayISO());
   const [q, setQ] = useState("");
   const [stateFilter, setStateFilter] = useState<StateFilter>("all");
-  const [viewMode, setViewMode] = useState<ViewMode>("panel");
+  const [viewMode, setViewMode] = useState<ViewMode>("order");
   const [showAdvancedFilters, setShowAdvancedFilters] = useState(false);
 
   // attachment view mode
@@ -391,10 +392,10 @@ const ResultVerificationConsole: React.FC = () => {
   const [showAiSummaryModal, setShowAiSummaryModal] = useState(false);
   const [aiSummaryTarget, setAiSummaryTarget] = useState<{ type: 'verifier' | 'clinical'; resultId?: string; orderId?: string } | null>(null);
   const [aiGeneratedInterpretations, setAiGeneratedInterpretations] = useState<Record<string, GeneratedInterpretation[]>>({});
-  const [showInterpretationsModal, setShowInterpretationsModal] = useState(false);
-  const [interpretationsTargetResultId, setInterpretationsTargetResultId] = useState<string | null>(null);
-  // New: AI suggestions for actual result values (not templates)
-  const [aiResultSuggestions, setAiResultSuggestions] = useState<Record<string, ResultValue[]>>({});
+  const [showDeltaCheckModal, setShowDeltaCheckModal] = useState(false);
+  const [deltaCheckTargetResultId, setDeltaCheckTargetResultId] = useState<string | null>(null);
+  // AI Delta Check results - quality control check comparing current vs historical values
+  const [aiDeltaCheckResults, setAiDeltaCheckResults] = useState<Record<string, DeltaCheckResponse>>({});
   const [currentLabId, setCurrentLabId] = useState<string | null>(null);
   const [trendData, setTrendData] = useState<Record<string, TrendData[]>>({});
   const [showTrendModal, setShowTrendModal] = useState(false);
@@ -468,13 +469,24 @@ const ResultVerificationConsole: React.FC = () => {
       return;
     }
 
-    const { data, error } = await supabase
+    // ✅ Apply location filtering for access control
+    const { shouldFilter, locationIds } = await database.shouldFilterByLocation();
+
+    // Build query with optional location filter
+    let query = supabase
       .from("v_result_panel_status")
       .select("*")
       .eq("lab_id", labId)
       .gte("order_date", from)
       .lte("order_date", to)
       .order("order_date", { ascending: false });
+
+    // Apply location filter if user is restricted
+    if (shouldFilter && locationIds.length > 0) {
+      query = query.in("location_id", locationIds);
+    }
+
+    const { data, error } = await query;
 
     if (error) {
       setErr(error.message);
@@ -1004,6 +1016,7 @@ const ResultVerificationConsole: React.FC = () => {
     const hasTrend = trendData[cacheKey] && trendData[cacheKey].length > 0;
     const [showAISuggestion, setShowAISuggestion] = useState(false);
     const isEditing = editingAnalyteId === a.id;
+    const isRerunRequest = a.verify_note && a.verify_note.toUpperCase().includes("RE-RUN");
 
     const getFlagBadge = (flag: string | null) => {
       if (!flag) return null;
@@ -1027,10 +1040,16 @@ const ResultVerificationConsole: React.FC = () => {
 
     return (
       <>
-        <tr className={`hover:bg-blue-50 transition-colors ${a.is_auto_calculated ? 'bg-amber-50/50' : ''}`}>
+        <tr className={`hover:bg-blue-50 transition-colors ${a.is_auto_calculated ? 'bg-amber-50/50' : ''} ${isRerunRequest ? 'bg-orange-50' : ''}`}>
           <td className="px-4 py-4">
             <div className="flex items-center space-x-2">
               <div className="font-semibold text-gray-900">{a.parameter}</div>
+              {isRerunRequest && (
+                <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-orange-100 text-orange-800 border border-orange-200">
+                  <RefreshCcw className="h-3 w-3 mr-1" />
+                  RE-RUN
+                </span>
+              )}
               {a.is_auto_calculated && (
                 <span
                   className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-amber-100 text-amber-800 border border-amber-200"
@@ -1065,7 +1084,12 @@ const ResultVerificationConsole: React.FC = () => {
                 <Sparkles className="h-4 w-4" />
               </button>
             </div>
-            {a.value && (
+            {isRerunRequest && a.verify_note && (
+              <div className="mt-1 text-xs text-orange-600 bg-orange-50 px-2 py-1 rounded border border-orange-200">
+                {a.verify_note}
+              </div>
+            )}
+            {a.value && !isRerunRequest && (
               <div className="text-sm text-gray-600 mt-1">
                 Last updated: {a.verified_at ? new Date(a.verified_at).toLocaleString() : 'Never'}
               </div>
@@ -1454,109 +1478,122 @@ const ResultVerificationConsole: React.FC = () => {
                 <span className="font-semibold ml-2">Approved:</span> {row.approved_analytes}
               </div>
               <div className="flex flex-wrap items-center gap-2">
-                {/* AI Generate Interpretations Button - Uses new system for actual values */}
+                {/* AI Delta Check Button - Quality control comparing current vs historical */}
                 <button
                   disabled={aiIntelligence.loading || analytes.length === 0}
                   onClick={async () => {
                     try {
-                      // Convert analytes to ResultValue format for AI analysis
-                      const resultValues: ResultValue[] = analytes
-                        .filter(a => a.value) // Only analyze analytes with values
-                        .map(a => ({
-                          id: a.id, // result_value ID for saving
-                          analyte_id: a.id,
-                          analyte_name: a.parameter,
-                          value: a.value || '',
-                          unit: a.unit,
-                          reference_range: a.reference_range,
-                          flag: a.flag as 'H' | 'L' | 'C' | null,
-                        }));
+                      // Get patient ID for fetching historical data
+                      const patientId = row.patient_id;
 
-                      if (resultValues.length === 0) {
+                      // Convert analytes to ResultValue format with historical data
+                      const resultValuesWithHistory: ResultValue[] = await Promise.all(
+                        analytes
+                          .filter(a => a.value)
+                          .map(async (a) => {
+                            // Fetch historical values for this analyte from past orders
+                            const { data: historyData } = await supabase
+                              .from('result_values')
+                              .select(`
+                                value,
+                                flag,
+                                created_at,
+                                results!inner(
+                                  order_id,
+                                  orders!inner(
+                                    patient_id,
+                                    created_at
+                                  )
+                                )
+                              `)
+                              .eq('analyte_id', a.analyte_id || a.id)
+                              .eq('results.orders.patient_id', patientId)
+                              .neq('id', a.id) // Exclude current value
+                              .not('value', 'is', null)
+                              .order('created_at', { ascending: false })
+                              .limit(10);
+
+                            // Also fetch external/outsourced results if available
+                            const { data: externalData } = await supabase
+                              .from('external_report_values')
+                              .select('value, flag, report_date, lab_name')
+                              .eq('patient_id', patientId)
+                              .ilike('parameter_name', `%${a.parameter}%`)
+                              .order('report_date', { ascending: false })
+                              .limit(5);
+
+                            const historicalValues = [
+                              ...(historyData || []).map((h: any) => ({
+                                date: new Date(h.created_at).toLocaleDateString(),
+                                value: h.value,
+                                flag: h.flag,
+                                source: 'internal' as const,
+                              })),
+                              ...(externalData || []).map((e: any) => ({
+                                date: new Date(e.report_date).toLocaleDateString(),
+                                value: e.value,
+                                flag: e.flag,
+                                source: 'external' as const,
+                                lab_name: e.lab_name,
+                              })),
+                            ].sort((x, y) => new Date(y.date).getTime() - new Date(x.date).getTime());
+
+                            return {
+                              id: a.id,
+                              analyte_id: a.analyte_id || a.id,
+                              analyte_name: a.parameter,
+                              value: a.value || '',
+                              unit: a.unit,
+                              reference_range: a.reference_range,
+                              flag: a.flag as 'H' | 'L' | 'C' | null,
+                              historical_values: historicalValues,
+                            };
+                          })
+                      );
+
+                      if (resultValuesWithHistory.length === 0) {
                         alert('No analyte values to analyze. Please enter values first.');
                         return;
                       }
 
-                      // Call new AI function for actual value analysis
-                      const suggestions = await aiIntelligence.generateResultValueSuggestions(
-                        resultValues,
-                        undefined // patient context - could be added
+                      const testGroup = {
+                        test_group_name: row.test_group_name || 'Unknown',
+                        test_group_code: row.test_group_id || '',
+                        category: 'General',
+                      };
+
+                      // Call Delta Check AI function
+                      const deltaCheckResult = await aiIntelligence.performDeltaCheck(
+                        testGroup,
+                        resultValuesWithHistory,
+                        { age: row.patient_age, gender: row.patient_gender }
                       );
 
-                      if (suggestions.length > 0) {
-                        setAiResultSuggestions(prev => ({ ...prev, [row.result_id]: suggestions }));
-                        setInterpretationsTargetResultId(row.result_id);
-                        setShowInterpretationsModal(true);
+                      if (deltaCheckResult) {
+                        setAiDeltaCheckResults(prev => ({ ...prev, [row.result_id]: deltaCheckResult }));
+                        setDeltaCheckTargetResultId(row.result_id);
+                        setShowDeltaCheckModal(true);
                       } else {
-                        alert('No suggestions generated. Please try again.');
+                        alert('No delta check results generated. Please try again.');
                       }
                     } catch (error) {
-                      console.error('AI Interpretations failed:', error);
-                      alert('Failed to generate interpretations: ' + (error instanceof Error ? error.message : 'Unknown error'));
+                      console.error('AI Delta Check failed:', error);
+                      alert('Failed to perform delta check: ' + (error instanceof Error ? error.message : 'Unknown error'));
                     }
                   }}
                   className="inline-flex items-center px-4 py-2 bg-gradient-to-r from-amber-500 to-orange-500 text-white rounded-lg hover:from-amber-600 hover:to-orange-600 transition-all duration-200 shadow-sm font-medium text-sm disabled:opacity-50"
-                  title="Generate AI flag and interpretation for actual result values"
+                  title="AI Delta Check - Compare current values with historical data to detect potential errors"
                 >
                   {aiIntelligence.loading ? (
                     <Loader2 className="h-4 w-4 mr-2 animate-spin" />
                   ) : (
                     <Zap className="h-4 w-4 mr-2" />
                   )}
-                  AI Interpretations
+                  AI Delta Check
                 </button>
 
-                {/* AI Flag & Range Analysis Button - MANUAL TRIGGER */}
-                <button
-                  disabled={!!busy[row.result_id]}
-                  onClick={() => handleRunAIAnalysis(row)}
-                  className="inline-flex items-center px-4 py-2 bg-gradient-to-r from-purple-500 to-indigo-500 text-white rounded-lg hover:from-purple-600 hover:to-indigo-600 transition-all duration-200 shadow-sm font-medium text-sm disabled:opacity-50"
-                  title="Run Full AI Analysis (Ranges & Flags)"
-                >
-                  {busy[row.result_id] ? (
-                    <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                  ) : (
-                    <Sparkles className="h-4 w-4 mr-2" />
-                  )}
-                  AI Range & Flag
-                </button>
-
-                {/* AI Verifier Summary Button */}
-                <button
-                  disabled={aiIntelligence.loading || analytes.length === 0}
-                  onClick={async () => {
-                    try {
-                      const testGroup = {
-                        test_group_name: row.test_group_name || 'Unknown',
-                        test_group_code: row.test_group_id || '',
-                        category: 'General',
-                      };
-                      const resultValues = analytes.map(a => ({
-                        analyte_name: a.parameter,
-                        value: a.value || '',
-                        unit: a.unit,
-                        reference_range: a.reference_range,
-                        flag: a.flag as 'H' | 'L' | 'C' | null,
-                      }));
-                      const summary = await aiIntelligence.getVerifierSummary(testGroup, resultValues);
-                      setAiVerifierSummary(prev => ({ ...prev, [row.result_id]: summary }));
-                      setAiSummaryTarget({ type: 'verifier', resultId: row.result_id });
-                      setShowAiSummaryModal(true);
-                    } catch (error) {
-                      console.error('AI Summary failed:', error);
-                      alert('Failed to generate AI summary: ' + (error instanceof Error ? error.message : 'Unknown error'));
-                    }
-                  }}
-                  className="inline-flex items-center px-4 py-2 bg-gradient-to-r from-purple-600 to-indigo-600 text-white rounded-lg hover:from-purple-700 hover:to-indigo-700 transition-all duration-200 shadow-sm font-medium text-sm disabled:opacity-50"
-                  title="Get AI-powered summary for verification"
-                >
-                  {aiIntelligence.loading ? (
-                    <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                  ) : (
-                    <Sparkles className="h-4 w-4 mr-2" />
-                  )}
-                  AI Summary
-                </button>
+                {/* AI Flag & Range Analysis Button - Hidden (now done in backend automatically) */}
+                {/* AI Verifier Summary Button - Hidden (now done in backend automatically) */}
 
                 <button
                   disabled={busy[row.result_id]}
@@ -1682,12 +1719,26 @@ const ResultVerificationConsole: React.FC = () => {
                 <SectionEditor
                   resultId={row.result_id}
                   testGroupId={row.test_group_id}
+                  showAIAssistant={false}
                   onSave={() => {
                     console.log('Section content saved for result:', row.result_id);
                   }}
                 />
               </div>
             )}
+
+            {/* Workflow Execution Panel - Shows workflow history and document generation */}
+            <div className="mt-6">
+              <WorkflowExecutionPanel
+                orderId={row.order_id}
+                testGroupId={row.test_group_id || undefined}
+                resultId={row.result_id}
+                showDocumentButton={true}
+                onGenerateDocument={(instanceId) => {
+                  console.log('Generate document for workflow instance:', instanceId);
+                }}
+              />
+            </div>
           </div>
         )}
       </div>
@@ -2122,91 +2173,81 @@ const ResultVerificationConsole: React.FC = () => {
     );
   };
 
-  /* ----------------- AI Interpretations Modal Component (New: Actual Value Analysis) ----------------- */
-  const AIInterpretationsModal: React.FC = () => {
-    const [saving, setSaving] = useState(false);
+  /* ----------------- AI Delta Check Modal Component ----------------- */
+  const AIDeltaCheckModal: React.FC = () => {
+    if (!showDeltaCheckModal || !deltaCheckTargetResultId) return null;
 
-    if (!showInterpretationsModal || !interpretationsTargetResultId) return null;
+    // Get Delta Check results
+    const deltaCheck = aiDeltaCheckResults[deltaCheckTargetResultId];
 
-    // Get AI suggestions for actual result values
-    const suggestions = aiResultSuggestions[interpretationsTargetResultId] || [];
+    if (!deltaCheck) return null;
 
-    const handleSaveToDb = async () => {
-      if (suggestions.length === 0) {
-        alert('No suggestions to save.');
-        return;
-      }
-
-      setSaving(true);
-      try {
-        // Save AI suggestions to result_values table (also updates the actual flag column)
-        const result = await aiIntelligence.saveResultValueSuggestions(suggestions, true);
-
-        if (result.success > 0) {
-          alert(`Successfully saved interpretations for ${result.success} analyte(s)!${result.failed > 0 ? ` (${result.failed} failed)` : ''}\n\nThe flags have been updated.`);
-
-          // Clear the cached analytes for this result to force reload
-          const targetResultId = interpretationsTargetResultId;
-          setRowsByResult(prev => {
-            const newState = { ...prev };
-            delete newState[targetResultId];
-            return newState;
-          });
-
-          setShowInterpretationsModal(false);
-          setInterpretationsTargetResultId(null);
-
-          // Reload panels to show updated flags
-          await loadPanels();
-        } else {
-          alert('Failed to save interpretations. Please try again.');
-        }
-      } catch (error) {
-        console.error('Failed to save interpretations:', error);
-        alert('Failed to save interpretations: ' + (error instanceof Error ? error.message : 'Unknown error'));
-      } finally {
-        setSaving(false);
+    // Helper to get severity color
+    const getSeverityColor = (severity: string) => {
+      switch (severity) {
+        case 'critical': return 'bg-red-100 text-red-800 border-red-300';
+        case 'warning': return 'bg-yellow-100 text-yellow-800 border-yellow-300';
+        case 'info': return 'bg-blue-100 text-blue-800 border-blue-300';
+        default: return 'bg-gray-100 text-gray-800 border-gray-300';
       }
     };
 
-    // Helper to get flag color
-    const getFlagColor = (flag: string | null | undefined) => {
-      switch (flag) {
-        case 'H': return 'bg-red-100 text-red-800 border-red-200';
-        case 'L': return 'bg-blue-100 text-blue-800 border-blue-200';
-        case 'C': return 'bg-purple-100 text-purple-800 border-purple-200';
-        case 'N': return 'bg-green-100 text-green-800 border-green-200';
-        default: return 'bg-gray-100 text-gray-600 border-gray-200';
+    const getSeverityIcon = (severity: string) => {
+      switch (severity) {
+        case 'critical': return <XCircle className="h-5 w-5 text-red-600" />;
+        case 'warning': return <AlertTriangle className="h-5 w-5 text-yellow-600" />;
+        case 'info': return <AlertCircle className="h-5 w-5 text-blue-600" />;
+        default: return <AlertCircle className="h-5 w-5 text-gray-600" />;
       }
     };
 
-    const getFlagLabel = (flag: string | null | undefined) => {
-      switch (flag) {
-        case 'H': return 'High';
-        case 'L': return 'Low';
-        case 'C': return 'Critical';
-        case 'N': return 'Normal';
-        default: return 'Unknown';
+    const getIssueTypeLabel = (type: string) => {
+      switch (type) {
+        case 'input_error': return 'Possible Input Error';
+        case 'sample_issue': return 'Sample Issue';
+        case 'conflicting_result': return 'Conflicting Results';
+        case 'unusual_change': return 'Unusual Change';
+        case 'quality_concern': return 'Quality Concern';
+        default: return type;
+      }
+    };
+
+    const getConfidenceColor = (level: string) => {
+      switch (level) {
+        case 'high': return 'from-green-500 to-emerald-500';
+        case 'medium': return 'from-yellow-500 to-amber-500';
+        case 'low': return 'from-red-500 to-rose-500';
+        default: return 'from-gray-500 to-slate-500';
+      }
+    };
+
+    const getRecommendationColor = (rec: string) => {
+      switch (rec) {
+        case 'approve': return 'bg-green-100 text-green-800 border-green-300';
+        case 'review_required': return 'bg-yellow-100 text-yellow-800 border-yellow-300';
+        case 'reject': return 'bg-red-100 text-red-800 border-red-300';
+        default: return 'bg-gray-100 text-gray-800 border-gray-300';
       }
     };
 
     return ReactDOM.createPortal(
       <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
         <div className="bg-white rounded-2xl shadow-2xl max-w-5xl w-full max-h-[90vh] overflow-hidden">
+          {/* Header */}
           <div className="bg-gradient-to-r from-amber-500 to-orange-500 px-6 py-4 flex items-center justify-between">
             <div className="flex items-center space-x-3">
               <Zap className="h-6 w-6 text-white" />
               <h3 className="text-xl font-bold text-white">
-                AI-Generated Interpretations
+                AI Delta Check Results
               </h3>
-              <span className="bg-white bg-opacity-20 px-2 py-1 rounded-full text-sm text-white">
-                {suggestions.length} analytes
+              <span className={`px-3 py-1 rounded-full text-sm font-semibold bg-gradient-to-r ${getConfidenceColor(deltaCheck.confidence_level)} text-white`}>
+                {deltaCheck.confidence_score}% Confidence
               </span>
             </div>
             <button
               onClick={() => {
-                setShowInterpretationsModal(false);
-                setInterpretationsTargetResultId(null);
+                setShowDeltaCheckModal(false);
+                setDeltaCheckTargetResultId(null);
               }}
               className="text-white hover:bg-white hover:bg-opacity-20 rounded-full p-2 transition-colors"
             >
@@ -2215,129 +2256,136 @@ const ResultVerificationConsole: React.FC = () => {
           </div>
 
           <div className="p-6 overflow-y-auto max-h-[calc(90vh-160px)]">
-            {suggestions.length === 0 ? (
-              <div className="text-center py-12">
-                <CheckCircle2 className="h-16 w-16 text-green-300 mx-auto mb-4" />
-                <p className="text-gray-500 text-lg">No suggestions available.</p>
-              </div>
-            ) : (
-              <div className="space-y-4">
-                {suggestions.map((suggestion, idx) => (
-                  <div key={suggestion.id || idx} className="bg-gray-50 rounded-xl p-4 border border-gray-200">
-                    <div className="flex items-center justify-between mb-3">
-                      <h4 className="font-bold text-gray-900 flex items-center">
-                        <Activity className="h-5 w-5 mr-2 text-amber-600" />
-                        {suggestion.analyte_name}
-                      </h4>
-                      <div className="flex items-center gap-3">
-                        <span className="text-sm text-gray-500">
-                          Value: <strong className="text-gray-900">{suggestion.value} {suggestion.unit}</strong>
-                        </span>
-                        <span className="text-sm text-gray-500">
-                          Ref: {suggestion.reference_range}
-                        </span>
-                      </div>
-                    </div>
-
-                    <div className="grid md:grid-cols-2 gap-4">
-                      {/* AI Suggested Flag */}
-                      <div className={`rounded-lg p-3 border ${getFlagColor(suggestion.ai_suggested_flag)}`}>
-                        <div className="text-xs font-semibold uppercase mb-1 flex items-center">
-                          <Target className="h-3 w-3 mr-1" />
-                          AI Suggested Flag
-                        </div>
-                        <div className="flex items-center gap-2">
-                          <span className="text-lg font-bold">
-                            {suggestion.ai_suggested_flag || 'N'}
-                          </span>
-                          <span className="text-sm">
-                            ({getFlagLabel(suggestion.ai_suggested_flag)})
-                          </span>
-                        </div>
-                      </div>
-
-                      {/* Current Flag Comparison */}
-                      <div className="bg-white rounded-lg p-3 border border-gray-200">
-                        <div className="text-xs font-semibold text-gray-500 uppercase mb-1 flex items-center">
-                          <ShieldCheck className="h-3 w-3 mr-1" />
-                          Current Flag
-                        </div>
-                        <div className="flex items-center gap-2">
-                          <span className={`text-lg font-bold ${suggestion.flag ? 'text-gray-900' : 'text-gray-400'}`}>
-                            {suggestion.flag || '-'}
-                          </span>
-                          {suggestion.flag !== suggestion.ai_suggested_flag && suggestion.ai_suggested_flag && (
-                            <span className="text-xs bg-yellow-100 text-yellow-800 px-2 py-0.5 rounded">
-                              Differs from AI
-                            </span>
-                          )}
-                        </div>
-                      </div>
-                    </div>
-
-                    {/* AI Interpretation */}
-                    {suggestion.ai_suggested_interpretation && (
-                      <div className="mt-3 bg-white rounded-lg p-4 border border-gray-200">
-                        <div className="text-xs font-semibold text-gray-500 uppercase mb-2 flex items-center">
-                          <Stethoscope className="h-3 w-3 mr-1" />
-                          AI Clinical Interpretation
-                        </div>
-                        <p className="text-sm text-gray-700 leading-relaxed">
-                          {suggestion.ai_suggested_interpretation}
-                        </p>
-                      </div>
-                    )}
-
-                    {/* Trend Interpretation (if available) */}
-                    {suggestion.trend_interpretation && (
-                      <div className="mt-3 bg-blue-50 rounded-lg p-4 border border-blue-200">
-                        <div className="text-xs font-semibold text-blue-700 uppercase mb-2 flex items-center">
-                          <TrendingUp className="h-3 w-3 mr-1" />
-                          Trend Analysis
-                        </div>
-                        <p className="text-sm text-blue-800">
-                          {suggestion.trend_interpretation}
-                        </p>
-                      </div>
-                    )}
+            {/* Summary Section */}
+            <div className="mb-6">
+              <div className="flex items-start gap-4 p-4 bg-gray-50 rounded-xl border border-gray-200">
+                <div className={`flex-shrink-0 p-3 rounded-full ${deltaCheck.confidence_level === 'high' ? 'bg-green-100' : deltaCheck.confidence_level === 'medium' ? 'bg-yellow-100' : 'bg-red-100'}`}>
+                  {deltaCheck.confidence_level === 'high' ? (
+                    <CheckCircle2 className="h-8 w-8 text-green-600" />
+                  ) : deltaCheck.confidence_level === 'medium' ? (
+                    <AlertTriangle className="h-8 w-8 text-yellow-600" />
+                  ) : (
+                    <XCircle className="h-8 w-8 text-red-600" />
+                  )}
+                </div>
+                <div className="flex-1">
+                  <h4 className="font-bold text-gray-900 text-lg mb-1">Summary</h4>
+                  <p className="text-gray-700">{deltaCheck.summary}</p>
+                  <div className="mt-3 flex items-center gap-3">
+                    <span className={`inline-flex items-center px-3 py-1 rounded-full text-sm font-semibold border ${getRecommendationColor(deltaCheck.recommendation)}`}>
+                      Recommendation: {deltaCheck.recommendation.replace('_', ' ').toUpperCase()}
+                    </span>
                   </div>
-                ))}
+                </div>
+              </div>
+            </div>
+
+            {/* Issues Section */}
+            {deltaCheck.issues.length > 0 && (
+              <div className="mb-6">
+                <h4 className="font-bold text-gray-900 text-lg mb-3 flex items-center">
+                  <AlertTriangle className="h-5 w-5 mr-2 text-amber-600" />
+                  Issues Identified ({deltaCheck.issues.length})
+                </h4>
+                <div className="space-y-3">
+                  {deltaCheck.issues.map((issue, idx) => (
+                    <div key={idx} className={`rounded-xl p-4 border ${getSeverityColor(issue.severity)}`}>
+                      <div className="flex items-start gap-3">
+                        {getSeverityIcon(issue.severity)}
+                        <div className="flex-1">
+                          <div className="flex items-center gap-2 mb-1">
+                            <span className="font-bold text-gray-900">{getIssueTypeLabel(issue.issue_type)}</span>
+                            <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${issue.severity === 'critical' ? 'bg-red-200 text-red-800' : issue.severity === 'warning' ? 'bg-yellow-200 text-yellow-800' : 'bg-blue-200 text-blue-800'}`}>
+                              {issue.severity.toUpperCase()}
+                            </span>
+                          </div>
+                          <p className="text-sm text-gray-700 mb-2">{issue.description}</p>
+                          <div className="flex flex-wrap gap-1 mb-2">
+                            {issue.affected_analytes.map((analyte, i) => (
+                              <span key={i} className="text-xs bg-white bg-opacity-60 px-2 py-0.5 rounded border">
+                                {analyte}
+                              </span>
+                            ))}
+                          </div>
+                          <div className="grid md:grid-cols-2 gap-3 mt-3">
+                            <div className="bg-white bg-opacity-50 rounded-lg p-3">
+                              <div className="text-xs font-semibold text-gray-500 uppercase mb-1">Evidence</div>
+                              <p className="text-sm text-gray-700">{issue.evidence}</p>
+                            </div>
+                            <div className="bg-white bg-opacity-50 rounded-lg p-3">
+                              <div className="text-xs font-semibold text-gray-500 uppercase mb-1">Suggested Action</div>
+                              <p className="text-sm text-gray-700">{issue.suggested_action}</p>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Validated Results */}
+            {deltaCheck.validated_results.length > 0 && (
+              <div className="mb-6">
+                <h4 className="font-bold text-gray-900 text-lg mb-3 flex items-center">
+                  <CheckCircle2 className="h-5 w-5 mr-2 text-green-600" />
+                  Validated Results ({deltaCheck.validated_results.length})
+                </h4>
+                <div className="flex flex-wrap gap-2">
+                  {deltaCheck.validated_results.map((result, idx) => (
+                    <span key={idx} className="inline-flex items-center px-3 py-1 bg-green-50 text-green-800 rounded-full text-sm border border-green-200">
+                      <CheckCircle2 className="h-4 w-4 mr-1" />
+                      {result}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Verifier Notes */}
+            {deltaCheck.verifier_notes && (
+              <div className="bg-blue-50 rounded-xl p-4 border border-blue-200">
+                <h4 className="font-bold text-blue-900 text-lg mb-2 flex items-center">
+                  <FileText className="h-5 w-5 mr-2" />
+                  Verifier Notes
+                </h4>
+                <p className="text-sm text-blue-800 whitespace-pre-wrap">{deltaCheck.verifier_notes}</p>
               </div>
             )}
           </div>
 
-          {/* Footer with Save Button */}
-          {suggestions.length > 0 && (
-            <div className="border-t bg-gray-50 px-6 py-4 flex items-center justify-between">
-              <p className="text-sm text-gray-600">
-                <AlertCircle className="h-4 w-4 inline mr-1 text-amber-500" />
-                Review the AI suggestions above before saving to result_values.
-              </p>
-              <div className="flex items-center gap-3">
-                <button
-                  onClick={() => {
-                    setShowInterpretationsModal(false);
-                    setInterpretationsTargetResultId(null);
-                  }}
-                  className="px-4 py-2 text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors font-medium"
-                >
-                  Cancel
-                </button>
-                <button
-                  onClick={handleSaveToDb}
-                  disabled={saving}
-                  className="inline-flex items-center px-6 py-2 bg-gradient-to-r from-green-600 to-emerald-600 text-white rounded-lg hover:from-green-700 hover:to-emerald-700 transition-all duration-200 shadow-sm font-semibold disabled:opacity-50"
-                >
-                  {saving ? (
-                    <Loader2 className="h-5 w-5 mr-2 animate-spin" />
-                  ) : (
-                    <CheckCircle2 className="h-5 w-5 mr-2" />
-                  )}
-                  Save to Database
-                </button>
-              </div>
+          {/* Footer */}
+          <div className="border-t bg-gray-50 px-6 py-4 flex items-center justify-between">
+            <p className="text-sm text-gray-600">
+              <AlertCircle className="h-4 w-4 inline mr-1 text-amber-500" />
+              Review the delta check findings before proceeding with verification.
+            </p>
+            <div className="flex items-center gap-3">
+              <button
+                onClick={() => {
+                  setShowDeltaCheckModal(false);
+                  setDeltaCheckTargetResultId(null);
+                }}
+                className="px-4 py-2 text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors font-medium"
+              >
+                Close
+              </button>
+              <button
+                onClick={() => {
+                  // Copy delta check results to clipboard
+                  const text = `DELTA CHECK RESULTS\n\nConfidence: ${deltaCheck.confidence_score}% (${deltaCheck.confidence_level})\nRecommendation: ${deltaCheck.recommendation}\n\nSummary:\n${deltaCheck.summary}\n\n${deltaCheck.issues.length > 0 ? `Issues (${deltaCheck.issues.length}):\n${deltaCheck.issues.map(i => `• [${i.severity.toUpperCase()}] ${i.issue_type}: ${i.description}`).join('\n')}\n\n` : ''}Validated: ${deltaCheck.validated_results.join(', ')}\n\nNotes:\n${deltaCheck.verifier_notes}`;
+                  navigator.clipboard.writeText(text).then(() => {
+                    alert('Delta check results copied to clipboard!');
+                  });
+                }}
+                className="inline-flex items-center px-6 py-2 bg-gradient-to-r from-blue-600 to-indigo-600 text-white rounded-lg hover:from-blue-700 hover:to-indigo-700 transition-all duration-200 shadow-sm font-semibold"
+              >
+                <FileText className="h-5 w-5 mr-2" />
+                Copy to Clipboard
+              </button>
             </div>
-          )}
+          </div>
         </div>
       </div>,
       document.body
@@ -2779,8 +2827,8 @@ const ResultVerificationConsole: React.FC = () => {
       {/* AI Summary Modal */}
       <AISummaryModal />
 
-      {/* AI Interpretations Modal */}
-      <AIInterpretationsModal />
+      {/* AI Delta Check Modal */}
+      <AIDeltaCheckModal />
 
       {/* Attachment Selector Modal */}
       {showAttachmentSelector && selectedOrderForAttachments && (

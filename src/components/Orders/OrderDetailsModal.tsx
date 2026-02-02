@@ -51,6 +51,7 @@ import PopoutInput from "./PopoutInput";
 import PhlebotomistSelector from "../Users/PhlebotomistSelector";
 import { OrderStatusDisplay } from "./OrderStatusDisplay";
 import { capturePhoto, isNative } from "../../utils/androidFileUpload";
+import { calculateFlagsForResults } from "../../utils/flagCalculation";
 
 interface WorkflowStep {
   name: string;
@@ -81,6 +82,10 @@ interface ExtractedValue {
   unit: string;
   reference: string;
   flag?: string;
+  analyte_id?: string | null;
+  expected_normal_values?: string[];
+  verify_note?: string; // Re-run request note from verifier
+  is_rerun?: boolean; // Indicates this is a re-run request
 }
 
 interface Order {
@@ -709,15 +714,33 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
   // When order analytes are ready, seed manual values (only those WITHOUT existing results)
   React.useEffect(() => {
     if (orderAnalytes.length > 0) {
+      console.log('📋 Initializing manualValues from orderAnalytes:', orderAnalytes);
+      // Show analytes that either:
+      // 1. Don't have an existing result, OR
+      // 2. Have a re-run request (verify_note contains "RE-RUN")
+      // Note: verify_status="pending" alone is NOT enough - that's the default for unverified results
+      const hasRerunRequest = (result: any) =>
+        result?.verify_note && result.verify_note.toUpperCase().includes("RE-RUN");
+
       const seed = orderAnalytes
-        .filter((a: any) => !a.existing_result) // hide already-submitted analytes
-        .map((analyte: any) => ({
-          parameter: analyte.name,
-          value: "",
-          unit: analyte.unit || "",
-          reference: analyte.reference_range || "",
-          flag: undefined,
-        }));
+        .filter((a: any) => !a.existing_result || hasRerunRequest(a.existing_result))
+        .map((analyte: any) => {
+          const existingResult = analyte.existing_result;
+          const isRerun = hasRerunRequest(existingResult);
+          return {
+            analyte_id: analyte.id,
+            parameter: analyte.name,
+            // Pre-fill with existing value for re-run requests so technician can see previous value
+            value: isRerun && existingResult ? existingResult.value || "" : "",
+            unit: analyte.unit || existingResult?.unit || "",
+            reference: analyte.reference_range || existingResult?.reference_range || "",
+            flag: isRerun && existingResult ? existingResult.flag : undefined,
+            expected_normal_values: analyte.expected_normal_values || [],
+            verify_note: isRerun && existingResult?.verify_note ? existingResult.verify_note : undefined,
+            is_rerun: isRerun,
+          };
+        });
+      console.log('📋 Seeded manualValues:', seed);
       setManualValues(seed);
       fetchExistingResult();
     }
@@ -837,7 +860,8 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
                   unit,
                   reference_range,
                   ai_processing_type,
-                  ai_prompt_override
+                  ai_prompt_override,
+                  expected_normal_values
                 )
               )
             )
@@ -860,7 +884,8 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
                   unit,
                   reference_range,
                   ai_processing_type,
-                  ai_prompt_override
+                  ai_prompt_override,
+                  expected_normal_values
                 )
               )
             )
@@ -886,7 +911,9 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
               flag,
               analyte_id,
               order_test_group_id,
-              order_test_id
+              order_test_id,
+              verify_status,
+              verify_note
             )
           )
         `
@@ -959,7 +986,46 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
       setTestGroups(merged);
 
       // Build flat analytes for initial manual seed (hide already-submitted ones)
-      const flatAnalytes = merged.flatMap((tg) => tg.analytes);
+      let flatAnalytes = merged.flatMap((tg) => tg.analytes);
+
+      // Fetch lab_analytes to get lab-specific expected_normal_values
+      const analyteIds = flatAnalytes.map((a: any) => a.id).filter(Boolean);
+      if (analyteIds.length > 0 && data.lab_id) {
+        const { data: labAnalytes } = await supabase
+          .from('lab_analytes')
+          .select('analyte_id, expected_normal_values')
+          .eq('lab_id', data.lab_id)
+          .in('analyte_id', analyteIds);
+
+        if (labAnalytes && labAnalytes.length > 0) {
+          // Create a map for quick lookup
+          const labAnalytesMap = new Map(
+            labAnalytes.map((la: any) => [la.analyte_id, la])
+          );
+
+          // Merge lab-specific expected_normal_values into analytes
+          flatAnalytes = flatAnalytes.map((analyte: any) => {
+            const labAnalyte = labAnalytesMap.get(analyte.id);
+            if (labAnalyte && labAnalyte.expected_normal_values) {
+              // Parse if string, otherwise use as-is
+              let expectedValues = labAnalyte.expected_normal_values;
+              if (typeof expectedValues === 'string') {
+                try {
+                  expectedValues = JSON.parse(expectedValues);
+                } catch {
+                  expectedValues = [];
+                }
+              }
+              return {
+                ...analyte,
+                expected_normal_values: expectedValues?.length > 0 ? expectedValues : analyte.expected_normal_values,
+              };
+            }
+            return analyte;
+          });
+        }
+      }
+
       setOrderAnalytes(flatAnalytes);
     } catch (err) {
       console.error("Error fetching order analytes:", err);
@@ -1402,15 +1468,43 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
       }
 
       // Determine target test group FIRST (before filtering images)
+      // Priority: 1) Selected test group, 2) Selected test, 3) Attachment's test, 4) Selected analyte, 5) First test
+
+      // Get test group info from active attachment (if available)
+      // Note: ai_metadata may be stored as JSON string in DB
+      let parsedAiMetadata = activeAttachment?.ai_metadata;
+      if (typeof parsedAiMetadata === 'string') {
+        try {
+          parsedAiMetadata = JSON.parse(parsedAiMetadata);
+        } catch (e) {
+          parsedAiMetadata = {};
+        }
+      }
+
+      const attachmentTestGroupId = parsedAiMetadata?.test_group_id ||
+                                    activeAttachment?.metadata?.test_group_id;
+      const attachmentOrderTestId = activeAttachment?.order_test_id;
+
+      console.log('[AI] Attachment test info:', {
+        attachmentTestGroupId,
+        attachmentOrderTestId,
+        selectedTestId,
+        attachmentTag: activeAttachment?.tag
+      });
+
       const targetTestGroup =
         (selectedTestGroup && testGroups.find((tg) => tg.test_group_id === selectedTestGroup)) ||
         (selectedTestId && testGroups.find((tg) => tg.order_test_id === selectedTestId)) ||
+        // NEW: Use attachment's order_test_id or test_group_id if available
+        (attachmentOrderTestId && testGroups.find((tg) => tg.order_test_id === attachmentOrderTestId)) ||
+        (attachmentTestGroupId && testGroups.find((tg) => tg.test_group_id === attachmentTestGroupId)) ||
         (selectedAnalyteForAI
           ? testGroups.find((tg) => tg.analytes?.some((analyte: any) => analyte.id === selectedAnalyteForAI.id))
           : undefined) ||
         testGroups[0];
 
       const targetTestGroupId = targetTestGroup?.test_group_id || null;
+      console.log('[AI] Target test group:', targetTestGroup?.test_group_name, 'ID:', targetTestGroupId);
 
       // Use user-selected images (if any selected), otherwise use all available
       let imagesForThisTest = selectedImagesForAI.size > 0
@@ -1449,7 +1543,35 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
 
       const activeTestGroupKey = targetTestGroupId || 'order';
 
-      const orderScopedAnalytes = (targetTestGroup?.analytes?.length ? targetTestGroup.analytes : orderAnalytes) || [];
+      // IMPORTANT: When a specific test is selected, ONLY use that test's analytes
+      // Do NOT fall back to all orderAnalytes - this causes AI to map wrong tests
+      let orderScopedAnalytes: any[] = [];
+
+      if (targetTestGroup?.analytes?.length) {
+        // Use selected test's analytes ONLY
+        orderScopedAnalytes = targetTestGroup.analytes;
+        console.log(`[AI] Using ${orderScopedAnalytes.length} analytes from selected test: ${targetTestGroup.test_group_name}`);
+      } else if (selectedTestId || selectedTestGroup) {
+        // Test was selected but no analytes found - warn and use empty (strict mode)
+        console.warn(`[AI] Test selected but no analytes found for: ${targetTestGroup?.test_group_name || selectedTestId}`);
+        // Try to find analytes from order_tests
+        const selectedOrderTest = order.order_tests?.find((ot: any) => ot.id === selectedTestId);
+        if (selectedOrderTest?.test_groups?.test_group_analytes?.length) {
+          orderScopedAnalytes = selectedOrderTest.test_groups.test_group_analytes.map((tga: any) => ({
+            ...tga.analytes,
+            code: selectedOrderTest.test_groups.code,
+          }));
+          console.log(`[AI] Found ${orderScopedAnalytes.length} analytes from order_tests fallback`);
+        } else {
+          // Still no analytes - use orderAnalytes but log warning
+          orderScopedAnalytes = orderAnalytes;
+          console.warn(`[AI] FALLBACK: Using all ${orderScopedAnalytes.length} order analytes (test-specific not found)`);
+        }
+      } else {
+        // No test selected - use all order analytes
+        orderScopedAnalytes = orderAnalytes || [];
+        console.log(`[AI] No test selected, using all ${orderScopedAnalytes.length} order analytes`);
+      }
 
       type AnalyteCatalogEntry = {
         id: string;
@@ -1570,7 +1692,7 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
       const geminiResponse = await supabase.functions.invoke("gemini-nlp", {
         body: requestBody,
         headers: {
-          "x-attachment-id": attachmentId,
+          "x-attachment-id": attachmentId || "",
           "x-order-id": order.id,
           "x-batch-id": visionPayload.batchId || "",
           "x-multi-image": imagesForThisTest.length > 1 ? "true" : "false",
@@ -1641,11 +1763,109 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
           setExtractedValues(extractedParams);
           setOcrResults(result);
           setManualValues((prev) => {
+            console.log('🔍 AI Extraction - Matching parameters:');
+            console.log('  Current manualValues:', prev);
+            console.log('  Extracted params:', extractedParams);
+
             const updated = [...prev];
+            const addedParameters: ExtractedValue[] = [];
+            let currentMatchedCount = 0;
+
+            // Get the raw extracted parameters with all fields (including matched_to)
+            const rawExtractedParams = result.extractedParameters || [];
+
             extractedParams.forEach((ep: ExtractedValue) => {
-              const idx = updated.findIndex((v) => v.parameter === ep.parameter);
-              if (idx !== -1) updated[idx] = { ...updated[idx], value: ep.value, flag: ep.flag };
+              // ✅ FIX: Find the matching raw param by parameter name, not by index
+              // This is needed because extractedParams is filtered (removes empty values)
+              // but rawExtractedParams is unfiltered
+              const rawEp = rawExtractedParams.find(
+                (r: any) => r.parameter === ep.parameter
+              ) || {};
+              const matchedTo = (rawEp.matched_to || '').toLowerCase();
+              const epNameLower = ep.parameter.toLowerCase();
+              const epAnalyteId = ep.analyte_id || rawEp.analyte_id;
+
+              // Try multiple matching strategies
+              const idx = updated.findIndex((v) => {
+                const vNameLower = v.parameter.toLowerCase();
+
+                // 1. Match by analyte_id (most accurate)
+                if (v.analyte_id && epAnalyteId && v.analyte_id === epAnalyteId) {
+                  return true;
+                }
+
+                // 2. Match by exact parameter name
+                if (vNameLower === epNameLower) {
+                  return true;
+                }
+
+                // 3. Match if matched_to contains the parameter name or vice versa
+                if (matchedTo && (matchedTo.includes(vNameLower) || vNameLower.includes(matchedTo))) {
+                  return true;
+                }
+
+                // 4. Match if parameter names share significant overlap (e.g., "WBC" in "White Blood Cell Count (WBC)")
+                if (vNameLower.includes(`(${epNameLower})`) || vNameLower.includes(` ${epNameLower} `)) {
+                  return true;
+                }
+
+                // 5. Match common abbreviation patterns
+                const abbreviations: Record<string, string[]> = {
+                  'wbc': ['white blood cell', 'leukocyte'],
+                  'rbc': ['red blood cell', 'erythrocyte'],
+                  'hgb': ['hemoglobin', 'haemoglobin'],
+                  'hct': ['hematocrit', 'haematocrit'],
+                  'plt': ['platelet'],
+                  'mcv': ['mean corpuscular volume', 'mean cell volume'],
+                  'mch': ['mean corpuscular hemoglobin'],
+                  'mchc': ['mean corpuscular hemoglobin concentration', 'mchc'],
+                  'neu': ['neutrophil', 'absolute neutrophil'],
+                  'lym': ['lymphocyte', 'absolute lymphocyte'],
+                  'mon': ['monocyte'],
+                  'eos': ['eosinophil', 'absolute eosinophil'],
+                  'bas': ['basophil', 'absolute basophil'],
+                  'mpv': ['mean platelet volume'],
+                  'rdw': ['red cell distribution width', 'rdw'],
+                  'rdw-cv': ['rdw-cv', 'rdw cv', 'red cell distribution width'],
+                  'rdw-sd': ['rdw-sd', 'rdw sd', 'red cell distribution width'],
+                  'pdw': ['platelet distribution width', 'pdw'],
+                  'pct': ['plateletcrit', 'pct', 'thrombocrit'],
+                };
+
+                const abbrevMatches = abbreviations[epNameLower];
+                // Also try stripping % and # suffixes (e.g., NEU% -> NEU)
+                const baseAbbrev = epNameLower.replace(/[%#]$/, '');
+                const finalMatches = abbrevMatches || abbreviations[baseAbbrev];
+                if (finalMatches) {
+                  return finalMatches.some(full => vNameLower.includes(full));
+                }
+
+                return false;
+              });
+
+              if (idx !== -1) {
+                console.log(`  ✅ Matched: ${ep.parameter} (${ep.value}) → ${updated[idx].parameter}`);
+                updated[idx] = { ...updated[idx], value: ep.value, flag: ep.flag };
+                currentMatchedCount++;
+              } else {
+                console.log(`  ➕ Adding new parameter: ${ep.parameter} (${ep.value})`);
+                addedParameters.push({
+                  analyte_id: epAnalyteId,
+                  parameter: ep.parameter,
+                  value: ep.value,
+                  unit: ep.unit,
+                  reference: ep.reference,
+                  flag: ep.flag
+                });
+              }
             });
+
+            console.log(`📊 Match summary: ${currentMatchedCount} updated, ${addedParameters.length} added`);
+
+            if (addedParameters.length > 0) {
+              return [...updated, ...addedParameters];
+            }
+
             return updated;
           });
           matchedCount = result.extractedParameters.filter((p: any) => p?.matched).length;
@@ -1679,7 +1899,7 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
             }
           })
           .in("id", processedImageIds);
-        
+
         // Update local state to reflect AI processing
         setAttachments((prev) =>
           prev.map((att) =>
@@ -1990,7 +2210,36 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
       const currentUser = await supabase.auth.getUser();
       const userLabId = await database.getCurrentUserLabId();
 
-      for (const testGroup of testGroups) {
+      // Determine which test groups to save to based on attachment info
+      // If image was test-specific, only save to that test group
+      let targetTestGroupsForSave = testGroups;
+
+      // Parse ai_metadata if it's a string
+      let attachmentAiMeta = activeAttachment?.ai_metadata;
+      if (typeof attachmentAiMeta === 'string') {
+        try {
+          attachmentAiMeta = JSON.parse(attachmentAiMeta);
+        } catch (e) {
+          attachmentAiMeta = {};
+        }
+      }
+
+      const saveToOrderTestId = activeAttachment?.order_test_id;
+      const saveToTestGroupId = attachmentAiMeta?.test_group_id || activeAttachment?.metadata?.test_group_id;
+
+      if (saveToOrderTestId || saveToTestGroupId) {
+        // Filter to only the target test group
+        targetTestGroupsForSave = testGroups.filter((tg) =>
+          (saveToOrderTestId && tg.order_test_id === saveToOrderTestId) ||
+          (saveToTestGroupId && tg.test_group_id === saveToTestGroupId)
+        );
+        console.log(`[SAVE] Test-specific image - only saving to ${targetTestGroupsForSave.length} test group(s):`,
+          targetTestGroupsForSave.map(tg => tg.test_group_name));
+      } else {
+        console.log('[SAVE] Order-level image - saving to all matching test groups');
+      }
+
+      for (const testGroup of targetTestGroupsForSave) {
         // Save only for analytes that are still editable and belong to this TG
         const testGroupResults = finalResults.filter((v) => testGroup.analytes.some((a) => a.name === v.parameter));
         if (testGroupResults.length === 0) continue;
@@ -2515,20 +2764,46 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
                     <td className="px-4 py-3 min-w-[200px]">
                       <div className="font-medium text-gray-900">
                         {value.parameter}
+                        {value.is_rerun && (
+                          <span className="ml-2 inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-orange-100 text-orange-800">
+                            RE-RUN
+                          </span>
+                        )}
                       </div>
+                      {value.verify_note && (
+                        <div className="mt-1 text-xs text-orange-600 bg-orange-50 px-2 py-1 rounded">
+                          {value.verify_note}
+                        </div>
+                      )}
                     </td>
 
-                    {/* ✅ Pop-out Value Input */}
+                    {/* ✅ Value Input - Dropdown if expected_normal_values, else Pop-out */}
                     <td className="px-4 py-3 min-w-[140px]">
-                      <button
-                        onClick={() => openPopoutInput(globalIndex, 'value', value.value, value.parameter)}
-                        className={`w-full px-3 py-2 border rounded-lg text-left transition-colors ${value.value && typeof value.value === 'string' && value.value.trim()
-                          ? 'border-green-300 bg-green-50 hover:bg-green-100 text-green-800'
-                          : 'border-gray-300 hover:border-blue-400 hover:bg-blue-50 text-gray-500'
-                          }`}
-                      >
-                        {value.value || 'Click to enter value...'}
-                      </button>
+                      {value.expected_normal_values && value.expected_normal_values.length > 0 ? (
+                        <select
+                          value={value.value || ""}
+                          onChange={(e) => handleManualValueChange(globalIndex, "value", e.target.value)}
+                          className={`w-full px-3 py-2 border rounded-lg transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500 ${value.value && typeof value.value === 'string' && value.value.trim()
+                            ? 'border-green-300 bg-green-50 text-green-800'
+                            : 'border-gray-300 bg-white text-gray-700'
+                            }`}
+                        >
+                          <option value="">Select value...</option>
+                          {value.expected_normal_values.map((opt: string) => (
+                            <option key={opt} value={opt}>{opt}</option>
+                          ))}
+                        </select>
+                      ) : (
+                        <button
+                          onClick={() => openPopoutInput(globalIndex, 'value', value.value, value.parameter)}
+                          className={`w-full px-3 py-2 border rounded-lg text-left transition-colors ${value.value && typeof value.value === 'string' && value.value.trim()
+                            ? 'border-green-300 bg-green-50 hover:bg-green-100 text-green-800'
+                            : 'border-gray-300 hover:border-blue-400 hover:bg-blue-50 text-gray-500'
+                            }`}
+                        >
+                          {value.value || 'Click to enter value...'}
+                        </button>
+                      )}
                     </td>
 
                     {/* ✅ Pop-out Unit Input */}
@@ -2691,7 +2966,7 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
                             {/* AI Processed Badge */}
                             {a.ai_processed && (
                               <div className="absolute -top-1 -right-1 z-10">
-                                <span 
+                                <span
                                   className="flex items-center justify-center h-5 w-5 rounded-full bg-green-500 text-white text-[10px] shadow-sm"
                                   title={`AI analyzed ${a.ai_processed_at ? new Date(a.ai_processed_at).toLocaleString() : ''}`}
                                 >
@@ -3267,13 +3542,12 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
                         </div>
                         <div className="flex flex-wrap gap-2">
                           {availableImagesForAI.map((img: any, idx: number) => (
-                            <label 
-                              key={idx} 
-                              className={`flex items-center gap-1.5 px-2 py-1 rounded text-xs cursor-pointer transition-colors ${
-                                selectedImagesForAI.has(img.id)
-                                  ? 'bg-blue-200 text-blue-900 border border-blue-400'
-                                  : 'bg-blue-50 text-blue-700 border border-blue-200 hover:bg-blue-100'
-                              }`}
+                            <label
+                              key={idx}
+                              className={`flex items-center gap-1.5 px-2 py-1 rounded text-xs cursor-pointer transition-colors ${selectedImagesForAI.has(img.id)
+                                ? 'bg-blue-200 text-blue-900 border border-blue-400'
+                                : 'bg-blue-50 text-blue-700 border border-blue-200 hover:bg-blue-100'
+                                }`}
                             >
                               <input
                                 type="checkbox"
@@ -3337,10 +3611,10 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
                                    disabled:from-gray-400 disabled:to-gray-400"
                       >
                         {isOCRProcessing ? "Analysing…" :
-                          availableImagesForAI.length > 1 
-                            ? (selectedImagesForAI.size === availableImagesForAI.length 
-                                ? "Analyze All Images" 
-                                : `Analyze ${selectedImagesForAI.size} Image${selectedImagesForAI.size !== 1 ? 's' : ''}`)
+                          availableImagesForAI.length > 1
+                            ? (selectedImagesForAI.size === availableImagesForAI.length
+                              ? "Analyze All Images"
+                              : `Analyze ${selectedImagesForAI.size} Image${selectedImagesForAI.size !== 1 ? 's' : ''}`)
                             : "Process with AI"}
                       </button>
                     </div>

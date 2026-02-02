@@ -2,7 +2,7 @@ const fetch = globalThis.fetch;
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
+  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type, x-api-key',
 };
 
 exports.handler = async (event) => {
@@ -15,14 +15,15 @@ exports.handler = async (event) => {
 
   try {
     const base = process.env.VITE_WHATSAPP_API_BASE_URL || 'https://lionfish-app-nmodi.ondigitalocean.app';
+    const apiKey = process.env.WHATSAPP_API_KEY || 'whatsapp-lims-secure-api-key-2024';
     const body = event.body ? JSON.parse(event.body) : {};
 
-    // Proxy to backend user sync
-    const upstream = await fetch(new URL('/api/whatsapp/sync-user', base), {
+    // Proxy to backend user sync - use the correct external API endpoint
+    const upstream = await fetch(new URL('/api/external/users/sync', base), {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'Authorization': event.headers.authorization || '',
+        'X-API-Key': apiKey,
       },
       body: JSON.stringify(body),
     });

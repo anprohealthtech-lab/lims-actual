@@ -377,7 +377,7 @@ IMPORTANT: Use the IMAGE to verify checkbox states. The OCR text shows what test
     console.log('  - Sending image for visual checkbox detection');
 
     const geminiResponse = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-exp:generateContent?key=${apiKey}`,
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`,
       {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -419,9 +419,19 @@ IMPORTANT: Use the IMAGE to verify checkbox states. The OCR text shows what test
     // Parse JSON from Gemini response (handle markdown code blocks)
     let extractedData
     try {
-      const jsonMatch = generatedText.match(/```json\s*([\s\S]*?)\s*```/) || 
-                       generatedText.match(/```\s*([\s\S]*?)\s*```/)
-      const jsonText = jsonMatch ? jsonMatch[1] : generatedText
+      // Improved JSON extraction: handle markdown code blocks and potential truncation
+      let jsonText = generatedText.trim();
+      
+      // Remove ```json or ``` from the start
+      if (jsonText.startsWith('```')) {
+        jsonText = jsonText.replace(/^```(json)?\s*/i, '');
+      }
+      
+      // Remove ``` from the end (if present)
+      if (jsonText.endsWith('```')) {
+        jsonText = jsonText.replace(/\s*```$/, '');
+      }
+
       extractedData = JSON.parse(jsonText)
       console.log('  ✅ JSON parsed successfully');
       console.log('  - Patient name:', extractedData.patientInfo?.name || 'not found');

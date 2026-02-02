@@ -483,7 +483,7 @@ async function callGemini(prompt: string): Promise<string> {
     throw new Error("Gemini API key not configured. Set ALLGOOGLE_KEY or GEMINI_API_KEY.");
   }
 
-  const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-exp:generateContent?key=${encodeURIComponent(GEMINI_API_KEY)}`;
+  const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${encodeURIComponent(GEMINI_API_KEY)}`;
   const body = {
     contents: [
       {
@@ -952,7 +952,7 @@ interface PersistSummary {
 }
 
 async function persistExtractedValues(params: PersistParams): Promise<PersistSummary> {
-  const resultId = await ensureResultRecord({
+  const { resultId, isProtected } = await ensureResultRecord({
     orderId: params.orderId,
     workflowInstanceId: params.workflowInstanceId,
     workflowName: params.workflowName,
@@ -966,6 +966,12 @@ async function persistExtractedValues(params: PersistParams): Promise<PersistSum
     analyteCatalog: params.analyteCatalog,
     analytesRequested: params.analytesRequested,
   });
+
+  // If result is protected (verified/approved), don't modify values
+  if (isProtected) {
+    console.log(`⚠️ Result ${resultId} is protected - skipping value updates to preserve verified data`);
+    return { resultId, valueCount: 0 };
+  }
 
   const normalizedEntries = normalizeExtractedEntries(params.extractedValues);
 
@@ -1133,7 +1139,7 @@ interface EnsureResultParams {
   analytesRequested: string[];
 }
 
-async function ensureResultRecord(params: EnsureResultParams): Promise<string> {
+async function ensureResultRecord(params: EnsureResultParams): Promise<{ resultId: string; isProtected: boolean }> {
   const existing = await findExistingResult({
     orderId: params.orderId,
     workflowInstanceId: params.workflowInstanceId,
@@ -1150,6 +1156,13 @@ async function ensureResultRecord(params: EnsureResultParams): Promise<string> {
   );
 
   if (existing?.id) {
+    // IMPORTANT: Check if result is already verified/approved - don't overwrite protected results
+    if (isResultProtected(existing)) {
+      console.log(`⚠️ Result ${existing.id} is already verified/approved (status: ${existing.status}, verification_status: ${existing.verification_status}). Skipping update to preserve integrity.`);
+      // Return existing ID but mark as protected so values won't be updated
+      return { resultId: existing.id, isProtected: true };
+    }
+
     const res = await fetch(`${SUPABASE_URL}/rest/v1/results?id=eq.${existing.id}`, {
       method: "PATCH",
       headers: {
@@ -1176,7 +1189,7 @@ async function ensureResultRecord(params: EnsureResultParams): Promise<string> {
       throw new Error(`Failed to update existing result ${existing.id}: ${await res.text()}`);
     }
 
-    return existing.id;
+    return { resultId: existing.id, isProtected: false };
   }
 
   const insertPayload = {
@@ -1220,7 +1233,7 @@ async function ensureResultRecord(params: EnsureResultParams): Promise<string> {
     throw new Error("Result record creation did not return an ID");
   }
 
-  return inserted.id as string;
+  return { resultId: inserted.id as string, isProtected: false };
 }
 
 async function findExistingResult(params: {
@@ -1248,7 +1261,8 @@ async function findExistingResult(params: {
   for (const filters of attempts) {
     const url = new URL(`${SUPABASE_URL}/rest/v1/results`);
     Object.entries(filters).forEach(([key, value]) => url.searchParams.set(key, value));
-    url.searchParams.set("select", "id,attachment_id,order_test_group_id,order_test_id,ai_extraction_metadata");
+    // Include status and verification_status to check if result is already verified
+    url.searchParams.set("select", "id,attachment_id,order_test_group_id,order_test_id,ai_extraction_metadata,status,verification_status");
     url.searchParams.set("order", "created_at.desc");
     url.searchParams.set("limit", "1");
 
@@ -1264,6 +1278,19 @@ async function findExistingResult(params: {
   }
 
   return null;
+}
+
+/**
+ * Check if a result is in a protected status (verified/approved) that shouldn't be overwritten
+ */
+function isResultProtected(result: any): boolean {
+  if (!result) return false;
+
+  const protectedStatuses = ['verified', 'approved', 'released', 'reported', 'final'];
+  const status = (result.status || '').toLowerCase();
+  const verificationStatus = (result.verification_status || '').toLowerCase();
+
+  return protectedStatuses.includes(status) || protectedStatuses.includes(verificationStatus);
 }
 
 function buildAIExtractionMetadata(

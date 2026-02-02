@@ -90,12 +90,29 @@ const Analytics: React.FC = () => {
 
   const loadData = useCallback(async () => {
     if (!labId) return;
-    
+
     setIsLoading(true);
+
+    // ✅ Apply location filtering for access control
+    const { shouldFilter, locationIds } = await database.shouldFilterByLocation();
+
+    // Validate and restrict location_id if user has limited access
+    let effectiveLocationId = filters.locationId || undefined;
+    if (shouldFilter && locationIds.length > 0) {
+      // If user selected a location, ensure it's in their allowed list
+      if (filters.locationId && !locationIds.includes(filters.locationId)) {
+        // User tried to select unauthorized location, default to first assigned
+        effectiveLocationId = locationIds[0];
+      } else if (!filters.locationId) {
+        // No selection, default to first assigned location
+        effectiveLocationId = locationIds[0];
+      }
+    }
+
     const analyticsFilters = {
       lab_id: labId,
       date_range: filters.dateRange,
-      location_id: filters.locationId || undefined,
+      location_id: effectiveLocationId,
       department: filters.department || undefined,
       account_id: filters.accountId || undefined,
     };
@@ -264,11 +281,10 @@ const Analytics: React.FC = () => {
             <button
               key={tab.id}
               onClick={() => setActiveTab(tab.id)}
-              className={`flex items-center gap-2 px-6 py-4 text-sm font-medium border-b-2 whitespace-nowrap transition-colors ${
-                activeTab === tab.id
+              className={`flex items-center gap-2 px-6 py-4 text-sm font-medium border-b-2 whitespace-nowrap transition-colors ${activeTab === tab.id
                   ? 'border-blue-600 text-blue-600 bg-blue-50/50'
                   : 'border-transparent text-gray-500 hover:text-gray-700 hover:bg-gray-50'
-              }`}
+                }`}
             >
               <tab.icon className="h-4 w-4" />
               {tab.label}
@@ -699,9 +715,8 @@ const Analytics: React.FC = () => {
                   align: 'center',
                   render: (v: any) => (
                     <span
-                      className={`inline-flex items-center justify-center w-6 h-6 rounded-full text-xs font-bold text-white ${
-                        v === 'C' ? 'bg-red-500' : v === 'H' ? 'bg-orange-500' : 'bg-yellow-500'
-                      }`}
+                      className={`inline-flex items-center justify-center w-6 h-6 rounded-full text-xs font-bold text-white ${v === 'C' ? 'bg-red-500' : v === 'H' ? 'bg-orange-500' : 'bg-yellow-500'
+                        }`}
                     >
                       {v}
                     </span>

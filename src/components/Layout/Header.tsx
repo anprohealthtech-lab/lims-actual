@@ -1,6 +1,7 @@
 import React from 'react';
 import { Menu, Bell, Search, User, LogOut, ChevronUp, ChevronDown } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
+import { NotificationBadge } from '../WhatsApp/NotificationBadge';
 
 interface HeaderProps {
   onMenuClick: () => void;
@@ -57,10 +58,8 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, isCollapsed = false, onTog
         </div>
 
         <div className="flex items-center space-x-2 md:space-x-4">
-          <button className="p-2 text-gray-400 hover:text-gray-500 relative min-w-[44px] min-h-[44px]">
-            <Bell className="h-6 w-6" />
-            <span className="absolute top-0 right-0 h-2 w-2 bg-red-500 rounded-full"></span>
-          </button>
+          {/* WhatsApp Failed Notification Badge */}
+          <NotificationBadge />
 
           <div className="flex items-center space-x-2 md:space-x-3 relative group">
             <div className="text-right hidden sm:block">

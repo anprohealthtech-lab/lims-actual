@@ -26,6 +26,7 @@ interface SimpleAnalyteEditorProps {
     is_global?: boolean;
     to_be_copied?: boolean;
     ref_range_knowledge?: any;
+    expected_normal_values?: string[];
   };
   onSave: (analyte: any) => void;
   onCancel: () => void;
@@ -39,6 +40,28 @@ export const SimpleAnalyteEditor: React.FC<SimpleAnalyteEditorProps> = ({
   const [formData, setFormData] = useState(analyte);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [labMethodOptions, setLabMethodOptions] = useState<string[]>([]);
+  const [newMethodValue, setNewMethodValue] = useState('');
+  // Separate state for expected_normal_values as newline-separated text
+  const [expectedNormalValuesText, setExpectedNormalValuesText] = useState(
+    analyte.expected_normal_values?.join('\n') || ''
+  );
+
+  React.useEffect(() => {
+    const loadLabMethodOptions = async () => {
+      try {
+        const labId = await database.getCurrentUserLabId();
+        if (!labId) return;
+        const { data } = await database.labs.getById(labId);
+        const options = Array.isArray(data?.method_options) ? data.method_options : [];
+        setLabMethodOptions(options);
+      } catch (loadError) {
+        console.error('Failed to load lab method options:', loadError);
+      }
+    };
+
+    loadLabMethodOptions();
+  }, []);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -52,6 +75,11 @@ export const SimpleAnalyteEditor: React.FC<SimpleAnalyteEditorProps> = ({
         throw new Error('Unable to determine lab context');
       }
 
+      // Parse expected_normal_values from newline-separated text
+      const expected_normal_values = expectedNormalValuesText
+        ? expectedNormalValuesText.split('\n').map(v => v.trim()).filter(Boolean)
+        : [];
+
       // Update lab_analytes table (lab-specific) instead of global analytes
       const { data, error: updateError } = await database.labAnalytes.updateLabSpecific(
         labId,
@@ -60,6 +88,7 @@ export const SimpleAnalyteEditor: React.FC<SimpleAnalyteEditorProps> = ({
           // Update actual values
           name: formData.name,
           unit: formData.unit,
+          method: formData.method,
           reference_range: formData.reference_range,
           category: formData.category,
           low_critical: formData.low_critical,
@@ -71,22 +100,58 @@ export const SimpleAnalyteEditor: React.FC<SimpleAnalyteEditorProps> = ({
           // Set lab_specific_* fields to mark as customized (prevents global sync overwrite)
           lab_specific_name: formData.name,
           lab_specific_unit: formData.unit,
+          lab_specific_method: formData.method,
           lab_specific_reference_range: formData.reference_range,
           lab_specific_interpretation_low: formData.interpretation_low,
           lab_specific_interpretation_normal: formData.interpretation_normal,
           lab_specific_interpretation_high: formData.interpretation_high,
           ref_range_knowledge: formData.ref_range_knowledge,
+          // Dropdown options for qualitative values
+          expected_normal_values: expected_normal_values,
         }
       );
 
       if (updateError) throw updateError;
 
-      onSave(formData);
+      onSave({ ...formData, expected_normal_values });
     } catch (error) {
       console.error('Failed to update analyte:', error);
       setError(error instanceof Error ? error.message : 'Failed to update analyte');
     } finally {
       setSaving(false);
+    }
+  };
+
+  const handleAddMethodOption = async () => {
+    const trimmed = newMethodValue.trim();
+    if (!trimmed) return;
+
+    if (labMethodOptions.some((option) => option.toLowerCase() === trimmed.toLowerCase())) {
+      setNewMethodValue('');
+      return;
+    }
+
+    try {
+      const labId = await database.getCurrentUserLabId();
+      if (!labId) {
+        throw new Error('Unable to determine lab context');
+      }
+
+      const nextOptions = [...labMethodOptions, trimmed];
+      const { error: updateError } = await database.labs.update(labId, {
+        method_options: nextOptions,
+      });
+
+      if (updateError) {
+        throw updateError;
+      }
+
+      setLabMethodOptions(nextOptions);
+      setFormData(prev => ({ ...prev, method: trimmed }));
+      setNewMethodValue('');
+    } catch (updateError) {
+      console.error('Failed to update lab method options:', updateError);
+      setError(updateError instanceof Error ? updateError.message : 'Failed to add method option');
     }
   };
 
@@ -254,6 +319,32 @@ export const SimpleAnalyteEditor: React.FC<SimpleAnalyteEditorProps> = ({
                 </div>
                 <p className="text-xs text-red-600 mt-1">Values requiring immediate physician notification</p>
               </div>
+
+              {/* Expected Normal Values - Dropdown Options */}
+              <div className="mt-4 pt-4 border-t border-blue-200">
+                <label className="block text-sm font-medium text-gray-700 mb-1">
+                  Expected Values (Dropdown Options)
+                </label>
+                <textarea
+                  value={expectedNormalValuesText}
+                  onChange={(e) => setExpectedNormalValuesText(e.target.value)}
+                  rows={4}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                  placeholder="Enter one value per line, e.g.:&#10;Negative&#10;Positive&#10;Reactive&#10;Non-Reactive"
+                />
+                <p className="text-xs text-gray-500 mt-1">
+                  For qualitative analytes (HIV, Blood Group, etc.). Enter one option per line. When set, users will see a dropdown instead of free text input.
+                </p>
+                {expectedNormalValuesText && (
+                  <div className="mt-2 flex flex-wrap gap-2">
+                    {expectedNormalValuesText.split('\n').filter(v => v.trim()).map((val, idx) => (
+                      <span key={idx} className="px-2 py-1 bg-blue-100 text-blue-800 rounded text-xs">
+                        {val.trim()}
+                      </span>
+                    ))}
+                  </div>
+                )}
+              </div>
             </div>
           </div>
 
@@ -310,21 +401,29 @@ export const SimpleAnalyteEditor: React.FC<SimpleAnalyteEditorProps> = ({
                   className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                 >
                   <option value="">Select Method</option>
-                  <option value="Manual">Manual</option>
-                  <option value="Automated">Automated</option>
-                  <option value="Semi-Automated">Semi-Automated</option>
-                  <option value="Spectrophotometry">Spectrophotometry</option>
-                  <option value="Flow Cytometry">Flow Cytometry</option>
-                  <option value="Immunoassay">Immunoassay</option>
-                  <option value="ELISA">ELISA</option>
-                  <option value="Chemiluminescence">Chemiluminescence</option>
-                  <option value="PCR">PCR</option>
-                  <option value="Microscopy">Microscopy</option>
-                  <option value="Culture">Culture</option>
-                  <option value="Electrophoresis">Electrophoresis</option>
-                  <option value="Chromatography">Chromatography</option>
-                  <option value="Mass Spectrometry">Mass Spectrometry</option>
+                  {labMethodOptions.map((option) => (
+                    <option key={option} value={option}>{option}</option>
+                  ))}
                 </select>
+                <div className="mt-2 flex items-center gap-2">
+                  <input
+                    type="text"
+                    value={newMethodValue}
+                    onChange={(e) => setNewMethodValue(e.target.value)}
+                    placeholder="Add new method"
+                    className="flex-1 px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                  />
+                  <button
+                    type="button"
+                    onClick={handleAddMethodOption}
+                    className="px-3 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700"
+                  >
+                    Add
+                  </button>
+                </div>
+                <p className="text-xs text-gray-500 mt-1">
+                  Methods are saved per lab and available for all analytes in this lab.
+                </p>
               </div>
 
               <div className="grid grid-cols-2 gap-4">

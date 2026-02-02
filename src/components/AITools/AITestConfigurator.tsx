@@ -180,7 +180,7 @@ export const AITestConfigurator: React.FC<AITestConfiguratorProps> = ({
           gjs_html: templateHtml,
           category: 'general',
           is_active: true,
-          is_default: true,
+          is_default: false,
           created_by: user?.id
         })
         .select()

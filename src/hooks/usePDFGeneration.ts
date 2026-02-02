@@ -55,13 +55,17 @@ export const usePDFGeneration = () => {
       if (!authData?.session) {
         throw new Error('Not authenticated');
       }
+      
+      // Get current user ID for WhatsApp integration
+      const triggeredByUserId = authData.session.user?.id;
 
       setState(prev => ({ ...prev, stage: 'Generating PDF via Edge Function...', progress: 30 }));
 
       const response = await supabase.functions.invoke('generate-pdf-letterhead', {
         body: {
           orderId,
-          isDraft: forceDraft
+          isDraft: forceDraft,
+          triggeredByUserId
         }
       });
 

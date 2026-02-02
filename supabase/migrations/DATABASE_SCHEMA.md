@@ -332,6 +332,18 @@ CREATE TABLE public.analyzer_knowledge (
   CONSTRAINT analyzer_knowledge_pkey PRIMARY KEY (id),
   CONSTRAINT analyzer_knowledge_lab_id_fkey FOREIGN KEY (lab_id) REFERENCES public.labs(id)
 );
+CREATE TABLE public.analyzer_profiles (
+  id text NOT NULL,
+  name text NOT NULL,
+  manufacturer text,
+  protocol text DEFAULT 'HL7'::text,
+  test_code_format text,
+  supported_tests ARRAY,
+  connection_settings jsonb,
+  created_at timestamp with time zone DEFAULT now(),
+  updated_at timestamp with time zone DEFAULT now(),
+  CONSTRAINT analyzer_profiles_pkey PRIMARY KEY (id)
+);
 CREATE TABLE public.analyzer_raw_messages (
   id uuid NOT NULL DEFAULT gen_random_uuid(),
   lab_id uuid NOT NULL,
@@ -454,6 +466,38 @@ CREATE TABLE public.bookings (
   CONSTRAINT bookings_created_by_fkey FOREIGN KEY (created_by) REFERENCES auth.users(id),
   CONSTRAINT bookings_account_id_fkey FOREIGN KEY (account_id) REFERENCES public.accounts(id)
 );
+CREATE TABLE public.calibration_records (
+  id uuid NOT NULL DEFAULT gen_random_uuid(),
+  lab_id uuid NOT NULL,
+  analyzer_name text NOT NULL,
+  analyzer_serial text,
+  calibration_date date NOT NULL DEFAULT CURRENT_DATE,
+  calibration_time time without time zone,
+  calibrator_lot_id uuid,
+  calibrator_lot_number text,
+  test_group_id uuid,
+  analyte_id uuid,
+  analyte_name text,
+  calibration_type text DEFAULT 'two_point'::text CHECK (calibration_type = ANY (ARRAY['blank'::text, 'one_point'::text, 'two_point'::text, 'multi_point'::text, 'full'::text])),
+  slope numeric,
+  intercept numeric,
+  correlation_r2 numeric,
+  status text NOT NULL DEFAULT 'completed'::text CHECK (status = ANY (ARRAY['pending'::text, 'completed'::text, 'failed'::text, 'expired'::text])),
+  pass_fail text CHECK (pass_fail = ANY (ARRAY['pass'::text, 'fail'::text])),
+  next_calibration_date date,
+  performed_by uuid,
+  verified_by uuid,
+  verified_at timestamp with time zone,
+  notes text,
+  created_at timestamp with time zone NOT NULL DEFAULT now(),
+  CONSTRAINT calibration_records_pkey PRIMARY KEY (id),
+  CONSTRAINT calibration_records_lab_id_fkey FOREIGN KEY (lab_id) REFERENCES public.labs(id),
+  CONSTRAINT calibration_records_calibrator_lot_id_fkey FOREIGN KEY (calibrator_lot_id) REFERENCES public.qc_lots(id),
+  CONSTRAINT calibration_records_test_group_id_fkey FOREIGN KEY (test_group_id) REFERENCES public.test_groups(id),
+  CONSTRAINT calibration_records_analyte_id_fkey FOREIGN KEY (analyte_id) REFERENCES public.analytes(id),
+  CONSTRAINT calibration_records_performed_by_fkey FOREIGN KEY (performed_by) REFERENCES public.users(id),
+  CONSTRAINT calibration_records_verified_by_fkey FOREIGN KEY (verified_by) REFERENCES public.users(id)
+);
 CREATE TABLE public.cash_register (
   id uuid NOT NULL DEFAULT gen_random_uuid(),
   lab_id uuid,
@@ -550,6 +594,49 @@ CREATE TABLE public.departments (
   updated_at timestamp with time zone DEFAULT now(),
   CONSTRAINT departments_pkey PRIMARY KEY (id)
 );
+CREATE TABLE public.doctor_package_sharing (
+  id uuid NOT NULL DEFAULT gen_random_uuid(),
+  lab_id uuid NOT NULL,
+  doctor_id uuid NOT NULL,
+  package_id uuid NOT NULL,
+  sharing_percent numeric NOT NULL CHECK (sharing_percent >= 0::numeric AND sharing_percent <= 100::numeric),
+  is_active boolean NOT NULL DEFAULT true,
+  created_at timestamp with time zone NOT NULL DEFAULT now(),
+  CONSTRAINT doctor_package_sharing_pkey PRIMARY KEY (id),
+  CONSTRAINT doctor_package_sharing_lab_id_fkey FOREIGN KEY (lab_id) REFERENCES public.labs(id),
+  CONSTRAINT doctor_package_sharing_doctor_id_fkey FOREIGN KEY (doctor_id) REFERENCES public.doctors(id),
+  CONSTRAINT doctor_package_sharing_package_id_fkey FOREIGN KEY (package_id) REFERENCES public.packages(id)
+);
+CREATE TABLE public.doctor_sharing (
+  id uuid NOT NULL DEFAULT gen_random_uuid(),
+  lab_id uuid NOT NULL,
+  doctor_id uuid NOT NULL UNIQUE,
+  sharing_type text NOT NULL DEFAULT 'percentage'::text CHECK (sharing_type = ANY (ARRAY['percentage'::text, 'test_wise'::text])),
+  default_sharing_percent numeric DEFAULT 0 CHECK (default_sharing_percent >= 0::numeric AND default_sharing_percent <= 100::numeric),
+  exclude_dr_discount boolean NOT NULL DEFAULT true,
+  share_discount_50_50 boolean NOT NULL DEFAULT false,
+  exclude_outsource_cost boolean NOT NULL DEFAULT false,
+  exclude_package_diff boolean NOT NULL DEFAULT false,
+  is_active boolean NOT NULL DEFAULT true,
+  created_at timestamp with time zone NOT NULL DEFAULT now(),
+  updated_at timestamp with time zone NOT NULL DEFAULT now(),
+  CONSTRAINT doctor_sharing_pkey PRIMARY KEY (id),
+  CONSTRAINT doctor_sharing_lab_id_fkey FOREIGN KEY (lab_id) REFERENCES public.labs(id),
+  CONSTRAINT doctor_sharing_doctor_id_fkey FOREIGN KEY (doctor_id) REFERENCES public.doctors(id)
+);
+CREATE TABLE public.doctor_test_sharing (
+  id uuid NOT NULL DEFAULT gen_random_uuid(),
+  lab_id uuid NOT NULL,
+  doctor_id uuid NOT NULL,
+  test_group_id uuid NOT NULL,
+  sharing_percent numeric NOT NULL CHECK (sharing_percent >= 0::numeric AND sharing_percent <= 100::numeric),
+  is_active boolean NOT NULL DEFAULT true,
+  created_at timestamp with time zone NOT NULL DEFAULT now(),
+  CONSTRAINT doctor_test_sharing_pkey PRIMARY KEY (id),
+  CONSTRAINT doctor_test_sharing_lab_id_fkey FOREIGN KEY (lab_id) REFERENCES public.labs(id),
+  CONSTRAINT doctor_test_sharing_doctor_id_fkey FOREIGN KEY (doctor_id) REFERENCES public.doctors(id),
+  CONSTRAINT doctor_test_sharing_test_group_id_fkey FOREIGN KEY (test_group_id) REFERENCES public.test_groups(id)
+);
 CREATE TABLE public.doctors (
   id uuid NOT NULL DEFAULT gen_random_uuid(),
   lab_id uuid NOT NULL,
@@ -586,6 +673,51 @@ CREATE TABLE public.email_logs (
   created_at timestamp with time zone DEFAULT now(),
   CONSTRAINT email_logs_pkey PRIMARY KEY (id),
   CONSTRAINT email_logs_lab_id_fkey FOREIGN KEY (lab_id) REFERENCES public.labs(id)
+);
+CREATE TABLE public.eqc_programs (
+  id uuid NOT NULL DEFAULT gen_random_uuid(),
+  lab_id uuid NOT NULL,
+  program_name text NOT NULL,
+  provider text NOT NULL,
+  enrollment_id text,
+  cycle_year integer NOT NULL,
+  cycle_name text,
+  test_group_ids ARRAY,
+  is_active boolean NOT NULL DEFAULT true,
+  created_at timestamp with time zone NOT NULL DEFAULT now(),
+  updated_at timestamp with time zone NOT NULL DEFAULT now(),
+  CONSTRAINT eqc_programs_pkey PRIMARY KEY (id),
+  CONSTRAINT eqc_programs_lab_id_fkey FOREIGN KEY (lab_id) REFERENCES public.labs(id)
+);
+CREATE TABLE public.eqc_results (
+  id uuid NOT NULL DEFAULT gen_random_uuid(),
+  eqc_program_id uuid NOT NULL,
+  survey_number text NOT NULL,
+  sample_id text NOT NULL,
+  submission_date date,
+  submitted_by uuid,
+  analyte_id uuid,
+  analyte_name text NOT NULL,
+  submitted_value numeric,
+  submitted_unit text,
+  peer_mean numeric,
+  peer_sd numeric,
+  peer_cv_percent numeric,
+  peer_n integer,
+  z_score numeric,
+  bias_percent numeric,
+  performance_grade text,
+  status text NOT NULL DEFAULT 'pending'::text CHECK (status = ANY (ARRAY['pending'::text, 'submitted'::text, 'results_received'::text, 'reviewed'::text])),
+  reviewed_by uuid,
+  reviewed_at timestamp with time zone,
+  corrective_action text,
+  created_at timestamp with time zone NOT NULL DEFAULT now(),
+  updated_at timestamp with time zone NOT NULL DEFAULT now(),
+  CONSTRAINT eqc_results_pkey PRIMARY KEY (id),
+  CONSTRAINT eqc_results_eqc_program_id_fkey FOREIGN KEY (eqc_program_id) REFERENCES public.eqc_programs(id),
+  CONSTRAINT eqc_results_submitted_by_fkey FOREIGN KEY (submitted_by) REFERENCES public.users(id),
+  CONSTRAINT eqc_results_analyte_id_fkey FOREIGN KEY (analyte_id) REFERENCES public.analytes(id),
+  CONSTRAINT eqc_results_reviewed_by_fkey FOREIGN KEY (reviewed_by) REFERENCES public.users(id)
 );
 CREATE TABLE public.external_reports (
   id uuid NOT NULL DEFAULT gen_random_uuid(),
@@ -769,6 +901,7 @@ CREATE TABLE public.invoices (
   payment_reminder_count integer DEFAULT 0,
   last_reminder_at timestamp with time zone,
   reminder_sent_by uuid,
+  discount_source text CHECK (discount_source = ANY (ARRAY['doctor'::text, 'lab'::text, 'location'::text, 'account'::text])),
   CONSTRAINT invoices_pkey PRIMARY KEY (id),
   CONSTRAINT invoices_patient_id_fkey FOREIGN KEY (patient_id) REFERENCES public.patients(id),
   CONSTRAINT invoices_order_id_fkey FOREIGN KEY (order_id) REFERENCES public.orders(id),
@@ -1110,8 +1243,9 @@ CREATE TABLE public.locations (
   is_cash_collection_center boolean,
   notes text,
   receivable_type text NOT NULL DEFAULT 'percentage'::text CHECK (receivable_type = ANY (ARRAY['percentage'::text, 'test_wise'::text, 'own_center'::text])),
-  upi_id text CHECK (upi_id IS NULL OR upi_id ~ '^[a-zA-Z0-9._-]+@[a-zA-Z0-9]+$'::text),
+  upi_id text CHECK (upi_id IS NULL OR upi_id = ''::text OR upi_id ~ '^[a-zA-Z0-9._-]+@[a-zA-Z0-9._-]+$'::text),
   bank_details jsonb,
+  is_main_lab boolean DEFAULT false,
   CONSTRAINT locations_pkey PRIMARY KEY (id),
   CONSTRAINT locations_lab_id_fkey FOREIGN KEY (lab_id) REFERENCES public.labs(id)
 );
@@ -1189,6 +1323,10 @@ CREATE TABLE public.order_tests (
   outsourced_lab_id uuid,
   source_package_id uuid,
   package_id uuid,
+  is_canceled boolean NOT NULL DEFAULT false,
+  canceled_at timestamp with time zone,
+  canceled_by uuid,
+  cancellation_reason text,
   CONSTRAINT order_tests_pkey PRIMARY KEY (id),
   CONSTRAINT order_tests_invoice_id_fkey FOREIGN KEY (invoice_id) REFERENCES public.invoices(id),
   CONSTRAINT order_tests_order_id_fkey FOREIGN KEY (order_id) REFERENCES public.orders(id),
@@ -1196,7 +1334,8 @@ CREATE TABLE public.order_tests (
   CONSTRAINT order_tests_test_group_id_fkey FOREIGN KEY (test_group_id) REFERENCES public.test_groups(id),
   CONSTRAINT order_tests_source_package_id_fkey FOREIGN KEY (source_package_id) REFERENCES public.packages(id),
   CONSTRAINT order_tests_outsourced_lab_id_fkey FOREIGN KEY (outsourced_lab_id) REFERENCES public.outsourced_labs(id),
-  CONSTRAINT order_tests_package_id_fkey FOREIGN KEY (package_id) REFERENCES public.packages(id)
+  CONSTRAINT order_tests_package_id_fkey FOREIGN KEY (package_id) REFERENCES public.packages(id),
+  CONSTRAINT order_tests_canceled_by_fkey FOREIGN KEY (canceled_by) REFERENCES public.users(id)
 );
 CREATE TABLE public.order_workflow_instances (
   id uuid NOT NULL DEFAULT gen_random_uuid(),
@@ -1277,6 +1416,8 @@ CREATE TABLE public.orders (
   sample_received_at timestamp with time zone,
   final_amount numeric,
   patient_context jsonb DEFAULT '{}'::jsonb,
+  smart_report_url text,
+  smart_report_generated_at timestamp with time zone,
   CONSTRAINT orders_pkey PRIMARY KEY (id),
   CONSTRAINT orders_sample_collector_id_fkey FOREIGN KEY (sample_collector_id) REFERENCES public.users(id),
   CONSTRAINT orders_patient_id_fkey FOREIGN KEY (patient_id) REFERENCES public.patients(id),
@@ -1475,6 +1616,25 @@ CREATE TABLE public.pdf_generation_queue (
   CONSTRAINT pdf_generation_queue_order_id_fkey FOREIGN KEY (order_id) REFERENCES public.orders(id),
   CONSTRAINT pdf_generation_queue_lab_id_fkey FOREIGN KEY (lab_id) REFERENCES public.labs(id)
 );
+CREATE TABLE public.pending_orders (
+  id uuid NOT NULL DEFAULT gen_random_uuid(),
+  lab_id uuid NOT NULL,
+  sample_barcode text NOT NULL,
+  patient_id text,
+  patient_name text,
+  date_of_birth text,
+  gender text,
+  requested_tests ARRAY NOT NULL,
+  resolved_tests jsonb,
+  target_analyzer text DEFAULT 'default'::text,
+  status text DEFAULT 'pending_mapping'::text CHECK (status = ANY (ARRAY['pending_mapping'::text, 'mapped'::text, 'sent'::text, 'acknowledged'::text, 'error'::text])),
+  ai_status text DEFAULT 'pending'::text CHECK (ai_status = ANY (ARRAY['pending'::text, 'processing'::text, 'completed'::text, 'error'::text])),
+  error_message text,
+  created_at timestamp with time zone DEFAULT now(),
+  sent_at timestamp with time zone,
+  CONSTRAINT pending_orders_pkey PRIMARY KEY (id),
+  CONSTRAINT pending_orders_lab_id_fkey FOREIGN KEY (lab_id) REFERENCES public.labs(id)
+);
 CREATE TABLE public.permissions (
   id uuid NOT NULL DEFAULT gen_random_uuid(),
   permission_name character varying NOT NULL UNIQUE,
@@ -1485,6 +1645,118 @@ CREATE TABLE public.permissions (
   created_at timestamp with time zone DEFAULT now(),
   updated_at timestamp with time zone DEFAULT now(),
   CONSTRAINT permissions_pkey PRIMARY KEY (id)
+);
+CREATE TABLE public.qc_lots (
+  id uuid NOT NULL DEFAULT gen_random_uuid(),
+  lab_id uuid NOT NULL,
+  lot_number text NOT NULL,
+  material_name text NOT NULL,
+  manufacturer text,
+  catalog_number text,
+  lot_type text NOT NULL DEFAULT 'internal_control'::text CHECK (lot_type = ANY (ARRAY['internal_control'::text, 'calibrator'::text, 'reagent'::text, 'external_control'::text])),
+  level text,
+  received_date date NOT NULL DEFAULT CURRENT_DATE,
+  expiry_date date NOT NULL,
+  opened_date date,
+  stability_days_after_opening integer,
+  storage_temperature text,
+  storage_location text,
+  is_active boolean NOT NULL DEFAULT true,
+  notes text,
+  created_at timestamp with time zone NOT NULL DEFAULT now(),
+  updated_at timestamp with time zone NOT NULL DEFAULT now(),
+  created_by uuid,
+  CONSTRAINT qc_lots_pkey PRIMARY KEY (id),
+  CONSTRAINT qc_lots_lab_id_fkey FOREIGN KEY (lab_id) REFERENCES public.labs(id),
+  CONSTRAINT qc_lots_created_by_fkey FOREIGN KEY (created_by) REFERENCES public.users(id)
+);
+CREATE TABLE public.qc_results (
+  id uuid NOT NULL DEFAULT gen_random_uuid(),
+  qc_run_id uuid NOT NULL,
+  qc_lot_id uuid NOT NULL,
+  analyte_id uuid NOT NULL,
+  test_group_id uuid,
+  observed_value numeric NOT NULL,
+  unit text,
+  target_mean numeric NOT NULL,
+  target_sd numeric NOT NULL,
+  z_score numeric DEFAULT 
+CASE
+    WHEN (target_sd <> (0)::numeric) THEN ((observed_value - target_mean) / target_sd)
+    ELSE (0)::numeric
+END,
+  deviation_percent numeric DEFAULT 
+CASE
+    WHEN (target_mean <> (0)::numeric) THEN (((observed_value - target_mean) / target_mean) * (100)::numeric)
+    ELSE (0)::numeric
+END,
+  pass_fail text NOT NULL DEFAULT 'pending'::text CHECK (pass_fail = ANY (ARRAY['pass'::text, 'fail'::text, 'warning'::text, 'pending'::text])),
+  westgard_flags ARRAY,
+  override_pass_fail text CHECK (override_pass_fail = ANY (ARRAY['pass'::text, 'fail'::text, 'warning'::text])),
+  override_reason text,
+  override_by uuid,
+  override_at timestamp with time zone,
+  workflow_instance_id uuid,
+  created_at timestamp with time zone NOT NULL DEFAULT now(),
+  CONSTRAINT qc_results_pkey PRIMARY KEY (id),
+  CONSTRAINT qc_results_qc_run_id_fkey FOREIGN KEY (qc_run_id) REFERENCES public.qc_runs(id),
+  CONSTRAINT qc_results_qc_lot_id_fkey FOREIGN KEY (qc_lot_id) REFERENCES public.qc_lots(id),
+  CONSTRAINT qc_results_analyte_id_fkey FOREIGN KEY (analyte_id) REFERENCES public.analytes(id),
+  CONSTRAINT qc_results_test_group_id_fkey FOREIGN KEY (test_group_id) REFERENCES public.test_groups(id),
+  CONSTRAINT qc_results_override_by_fkey FOREIGN KEY (override_by) REFERENCES public.users(id),
+  CONSTRAINT qc_results_workflow_instance_id_fkey FOREIGN KEY (workflow_instance_id) REFERENCES public.order_workflow_instances(id)
+);
+CREATE TABLE public.qc_runs (
+  id uuid NOT NULL DEFAULT gen_random_uuid(),
+  lab_id uuid NOT NULL,
+  run_date date NOT NULL DEFAULT CURRENT_DATE,
+  run_time time without time zone,
+  run_number integer,
+  analyzer_id uuid,
+  analyzer_name text,
+  operator_id uuid,
+  operator_name text,
+  run_type text NOT NULL DEFAULT 'routine'::text CHECK (run_type = ANY (ARRAY['routine'::text, 'calibration_verification'::text, 'new_lot'::text, 'maintenance'::text, 'troubleshooting'::text])),
+  status text NOT NULL DEFAULT 'pending'::text CHECK (status = ANY (ARRAY['pending'::text, 'in_progress'::text, 'completed'::text, 'reviewed'::text, 'rejected'::text])),
+  reviewed_by uuid,
+  reviewed_at timestamp with time zone,
+  review_notes text,
+  overall_pass boolean,
+  westgard_violations ARRAY,
+  notes text,
+  created_at timestamp with time zone NOT NULL DEFAULT now(),
+  updated_at timestamp with time zone NOT NULL DEFAULT now(),
+  CONSTRAINT qc_runs_pkey PRIMARY KEY (id),
+  CONSTRAINT qc_runs_lab_id_fkey FOREIGN KEY (lab_id) REFERENCES public.labs(id),
+  CONSTRAINT qc_runs_operator_id_fkey FOREIGN KEY (operator_id) REFERENCES public.users(id),
+  CONSTRAINT qc_runs_reviewed_by_fkey FOREIGN KEY (reviewed_by) REFERENCES public.users(id)
+);
+CREATE TABLE public.qc_target_values (
+  id uuid NOT NULL DEFAULT gen_random_uuid(),
+  qc_lot_id uuid NOT NULL,
+  analyte_id uuid NOT NULL,
+  test_group_id uuid,
+  target_mean numeric NOT NULL,
+  target_sd numeric NOT NULL,
+  target_cv_percent numeric DEFAULT 
+CASE
+    WHEN (target_mean <> (0)::numeric) THEN ((target_sd / target_mean) * (100)::numeric)
+    ELSE (0)::numeric
+END,
+  range_1sd_low numeric DEFAULT (target_mean - target_sd),
+  range_1sd_high numeric DEFAULT (target_mean + target_sd),
+  range_2sd_low numeric DEFAULT (target_mean - ((2)::numeric * target_sd)),
+  range_2sd_high numeric DEFAULT (target_mean + ((2)::numeric * target_sd)),
+  range_3sd_low numeric DEFAULT (target_mean - ((3)::numeric * target_sd)),
+  range_3sd_high numeric DEFAULT (target_mean + ((3)::numeric * target_sd)),
+  unit text,
+  source text DEFAULT 'manufacturer'::text CHECK (source = ANY (ARRAY['manufacturer'::text, 'calculated'::text, 'peer_group'::text])),
+  created_at timestamp with time zone NOT NULL DEFAULT now(),
+  updated_at timestamp with time zone NOT NULL DEFAULT now(),
+  CONSTRAINT qc_target_values_pkey PRIMARY KEY (id),
+  CONSTRAINT qc_target_values_qc_lot_id_fkey FOREIGN KEY (qc_lot_id) REFERENCES public.qc_lots(id),
+  CONSTRAINT qc_target_values_analyte_id_fkey FOREIGN KEY (analyte_id) REFERENCES public.analytes(id),
+  CONSTRAINT qc_target_values_test_group_id_fkey FOREIGN KEY (test_group_id) REFERENCES public.test_groups(id)
 );
 CREATE TABLE public.quality_control_results (
   id uuid NOT NULL DEFAULT gen_random_uuid(),
@@ -1954,6 +2226,21 @@ CREATE TABLE public.test_groups (
   CONSTRAINT test_groups_lab_id_fkey FOREIGN KEY (lab_id) REFERENCES public.labs(id),
   CONSTRAINT test_groups_default_outsourced_lab_id_fkey FOREIGN KEY (default_outsourced_lab_id) REFERENCES public.outsourced_labs(id)
 );
+CREATE TABLE public.test_mappings (
+  id uuid NOT NULL DEFAULT gen_random_uuid(),
+  lab_id uuid NOT NULL,
+  analyzer_id text NOT NULL DEFAULT 'default'::text,
+  lims_code text NOT NULL,
+  analyzer_code text NOT NULL,
+  loinc_code text,
+  test_name text NOT NULL,
+  ai_confidence double precision,
+  verified boolean DEFAULT false,
+  created_at timestamp with time zone DEFAULT now(),
+  updated_at timestamp with time zone DEFAULT now(),
+  CONSTRAINT test_mappings_pkey PRIMARY KEY (id),
+  CONSTRAINT test_mappings_lab_id_fkey FOREIGN KEY (lab_id) REFERENCES public.labs(id)
+);
 CREATE TABLE public.test_workflow_map (
   id uuid NOT NULL DEFAULT gen_random_uuid(),
   lab_id uuid NOT NULL,
@@ -2027,6 +2314,20 @@ CREATE TABLE public.users (
   CONSTRAINT users_lab_id_fkey FOREIGN KEY (lab_id) REFERENCES public.labs(id),
   CONSTRAINT users_department_id_fkey FOREIGN KEY (department_id) REFERENCES public.departments(id),
   CONSTRAINT users_role_id_fkey FOREIGN KEY (role_id) REFERENCES public.user_roles(id)
+);
+CREATE TABLE public.westgard_rules (
+  id uuid NOT NULL DEFAULT gen_random_uuid(),
+  lab_id uuid NOT NULL,
+  rule_code text NOT NULL,
+  rule_name text NOT NULL,
+  description text,
+  is_warning boolean NOT NULL DEFAULT false,
+  is_enabled boolean NOT NULL DEFAULT true,
+  priority integer NOT NULL DEFAULT 100,
+  parameters jsonb DEFAULT '{}'::jsonb,
+  created_at timestamp with time zone NOT NULL DEFAULT now(),
+  CONSTRAINT westgard_rules_pkey PRIMARY KEY (id),
+  CONSTRAINT westgard_rules_lab_id_fkey FOREIGN KEY (lab_id) REFERENCES public.labs(id)
 );
 CREATE TABLE public.whatsapp_message_templates (
   id uuid NOT NULL DEFAULT gen_random_uuid(),

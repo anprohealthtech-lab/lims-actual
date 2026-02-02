@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { X, User, Phone, Mail, MapPin, Calendar, Upload, FileText, Brain, Zap, Plus, Minus, TestTube, CheckCircle, AlertTriangle, RotateCcw, UserCheck } from 'lucide-react';
+import { X, User, Phone, Mail, MapPin, Calendar, Upload, FileText, Brain, Zap, Plus, Minus, TestTube, CheckCircle, AlertTriangle, RotateCcw, UserCheck, Heart, Droplets, ClipboardList } from 'lucide-react';
 import { QRCodeSVG } from 'qrcode.react';
 import { supabase, uploadFile, generateFilePath, database } from '../../utils/supabase';
 import { useAuth } from '../../contexts/AuthContext';
@@ -9,6 +9,7 @@ interface Patient {
   display_id?: string;
   name: string;
   age: number;
+  age_unit?: 'years' | 'months' | 'days';
   gender: string;
   phone: string;
   email?: string;
@@ -55,13 +56,13 @@ interface PatientFormProps {
   patient?: Patient;
 }
 
-const PatientForm: React.FC<PatientFormProps> = ({ 
-  onClose, 
-  onSubmit, 
+const PatientForm: React.FC<PatientFormProps> = ({
+  onClose,
+  onSubmit,
   patient
 }) => {
   const { user } = useAuth();
-  
+
   // Parse patient name if editing
   const nameParts = patient?.name.split(' ') || ['', ''];
   const firstName = nameParts[0] || '';
@@ -70,7 +71,8 @@ const PatientForm: React.FC<PatientFormProps> = ({
   const [formData, setFormData] = useState({
     firstName: firstName,
     lastName: lastName,
-    age: patient?.age.toString() || '',
+    age: patient?.age?.toString() || '',
+    age_unit: (patient?.age_unit as 'years' | 'months' | 'days') || 'years',
     gender: patient?.gender || '',
     phone: patient?.phone || '',
     email: patient?.email || '',
@@ -85,22 +87,22 @@ const PatientForm: React.FC<PatientFormProps> = ({
     medicalHistory: patient?.medical_history || '',
     referring_doctor: '',
   });
-  
+
   const [requestedTests, setRequestedTests] = useState<string[]>([]);
   const [newTestName, setNewTestName] = useState('');
-  
+
   // Test data states
   const [testGroups, setTestGroups] = useState<TestGroup[]>([]);
   const [packages, setPackages] = useState<Package[]>([]);
   const [loadingTestData, setLoadingTestData] = useState(true);
   const [showSuggestions, setShowSuggestions] = useState(false);
   const [filteredSuggestions, setFilteredSuggestions] = useState<string[]>([]);
-  
+
   // Doctors state for referring doctor dropdown
   const [doctors, setDoctors] = useState<any[]>([]);
   const [loadingDoctors, setLoadingDoctors] = useState(true);
   const [selectedDoctorId, setSelectedDoctorId] = useState<string>('');
-  
+
   // Internal file upload and OCR states
   const [uploadedFile, setUploadedFile] = useState<File | null>(null);
   const [attachmentId, setAttachmentId] = useState<string | null>(null);
@@ -108,35 +110,28 @@ const PatientForm: React.FC<PatientFormProps> = ({
   const [isOCRProcessing, setIsOCRProcessing] = useState(false);
   const [ocrResults, setOcrResults] = useState<any>(null);
   const [ocrError, setOcrError] = useState<string | null>(null);
-  
+
+  // Active section for navigation
+  const [activeSection, setActiveSection] = useState<'personal' | 'contact' | 'medical' | 'tests'>('personal');
+
   // Calculate total amount for requested tests
   const calculateTotalAmount = React.useMemo(() => {
     if (requestedTests.length === 0 || loadingTestData) return 0;
-    
+
     return requestedTests.reduce((total, testName) => {
-      // First try to find in test groups
       const testGroup = testGroups.find(tg => tg.name === testName);
-      if (testGroup) {
-        return total + testGroup.price;
-      }
-      
-      // Then try to find in packages
+      if (testGroup) return total + testGroup.price;
       const packageItem = packages.find(pkg => pkg.name === testName);
-      if (packageItem) {
-        return total + packageItem.price;
-      }
-      
-      // Default price for manually entered tests not found in database
+      if (packageItem) return total + packageItem.price;
       return total + 500;
     }, 0);
   }, [requestedTests, testGroups, packages, loadingTestData]);
-  
-  // Calculate tax (18% GST)
+
   const TAX_RATE = 0.18;
   const subtotal = calculateTotalAmount;
   const taxAmount = subtotal * TAX_RATE;
   const totalAmount = subtotal + taxAmount;
-  
+
   // Auto-fill form when OCR results are available
   React.useEffect(() => {
     if (ocrResults && ocrResults.patient_details) {
@@ -157,122 +152,78 @@ const PatientForm: React.FC<PatientFormProps> = ({
         allergies: details.allergies || prev.allergies,
         medicalHistory: details.medical_history || prev.medicalHistory,
       }));
-      
-      // Set referring doctor from OCR
+
       if (ocrResults.doctor_info && ocrResults.doctor_info.name) {
         const ocrDoctorName = ocrResults.doctor_info.name;
-        
-        // Try to find matching doctor from the loaded doctors list
-        const matchingDoctor = doctors.find((doctor: any) => 
+        const matchingDoctor = doctors.find((doctor: any) =>
           doctor.name.toLowerCase().includes(ocrDoctorName.toLowerCase()) ||
           ocrDoctorName.toLowerCase().includes(doctor.name.toLowerCase())
         );
-        
+
         if (matchingDoctor) {
-          // Select the matching doctor
           setSelectedDoctorId(matchingDoctor.id);
-          setFormData(prev => ({
-            ...prev,
-            referring_doctor: matchingDoctor.name
-          }));
+          setFormData(prev => ({ ...prev, referring_doctor: matchingDoctor.name }));
         } else {
-          // If no match found, still set the name for manual review
-          setFormData(prev => ({
-            ...prev,
-            referring_doctor: ocrDoctorName
-          }));
+          setFormData(prev => ({ ...prev, referring_doctor: ocrDoctorName }));
         }
       }
-      
-      // Set requested tests from OCR
+
       if (ocrResults.requested_tests && ocrResults.requested_tests.length > 0) {
         setRequestedTests(ocrResults.requested_tests);
       }
     }
-  }, [ocrResults]);
+  }, [ocrResults, doctors]);
 
-  // Fetch test groups and packages on component mount
+  // Fetch test groups and packages
   React.useEffect(() => {
     const fetchTestData = async () => {
       setLoadingTestData(true);
       try {
-        // Get current user's lab_id
         const lab_id = await database.getCurrentUserLabId();
         if (!lab_id) {
-          console.error('No lab context found');
           setLoadingTestData(false);
           return;
         }
 
-        // Fetch test groups (lab-scoped)
-        const { data: testGroupsData, error: testGroupsError } = await supabase
+        const { data: testGroupsData } = await supabase
           .from('test_groups')
           .select('id, name, code, category, price, is_active')
           .eq('is_active', true)
           .or(`lab_id.eq.${lab_id},lab_id.is.null`)
           .order('name');
-        
-        if (testGroupsError) {
-          console.error('Error fetching test groups:', testGroupsError);
-        } else {
-          setTestGroups(testGroupsData || []);
-        }
-        
-        // Fetch packages
-        const { data: packagesData, error: packagesError } = await supabase
+
+        if (testGroupsData) setTestGroups(testGroupsData);
+
+        const { data: packagesData } = await supabase
           .from('packages')
           .select('id, name, description, category, price, is_active')
           .eq('is_active', true)
           .order('name');
-        
-        if (packagesError) {
-          console.error('Error fetching packages:', packagesError);
-        } else {
-          setPackages(packagesData || []);
-        }
+
+        if (packagesData) setPackages(packagesData);
       } catch (error) {
         console.error('Error fetching test data:', error);
       } finally {
         setLoadingTestData(false);
       }
     };
-    
     fetchTestData();
   }, []);
 
-  // Fetch referring doctors on component mount
+  // Fetch referring doctors
   React.useEffect(() => {
     const fetchDoctors = async () => {
       setLoadingDoctors(true);
       try {
-        // Use the database.doctors API if available, otherwise fallback to direct supabase call
-        let doctorsData: any[] = [];
-        let error: any = null;
-        
-        if ((database as any).doctors) {
-          const result = await (database as any).doctors.getAll();
-          doctorsData = result.data || [];
-          error = result.error;
-        } else {
-          // Fallback to direct supabase call
-          const lab_id = await database.getCurrentUserLabId();
-          if (lab_id) {
-            const result = await supabase
-              .from('doctors')
-              .select('*')
-              .eq('lab_id', lab_id)
-              .eq('is_active', true)
-              .order('name');
-            doctorsData = result.data || [];
-            error = result.error;
-          }
-        }
-        
-        if (error) {
-          console.error('Error fetching doctors:', error);
-        } else {
-          // Filter only referring doctors for the dropdown
-          const referringDoctors = (doctorsData || []).filter((doctor: any) => doctor.is_referring_doctor);
+        const lab_id = await database.getCurrentUserLabId();
+        if (lab_id) {
+          const result = await supabase
+            .from('doctors')
+            .select('*')
+            .eq('lab_id', lab_id)
+            .eq('is_active', true)
+            .order('name');
+          const referringDoctors = (result.data || []).filter((doctor: any) => doctor.is_referring_doctor);
           setDoctors(referringDoctors);
         }
       } catch (error) {
@@ -281,25 +232,16 @@ const PatientForm: React.FC<PatientFormProps> = ({
         setLoadingDoctors(false);
       }
     };
-
     fetchDoctors();
   }, []);
 
-  // Update suggestions when newTestName changes
+  // Update suggestions
   React.useEffect(() => {
     if (newTestName.trim().length > 0) {
-      const allTestNames = [
-        ...testGroups.map(tg => tg.name),
-        ...packages.map(pkg => pkg.name)
-      ];
-      
+      const allTestNames = [...testGroups.map(tg => tg.name), ...packages.map(pkg => pkg.name)];
       const filtered = allTestNames
-        .filter(name => 
-          name.toLowerCase().includes(newTestName.toLowerCase()) &&
-          !requestedTests.includes(name)
-        )
-        .slice(0, 5); // Limit to 5 suggestions
-      
+        .filter(name => name.toLowerCase().includes(newTestName.toLowerCase()) && !requestedTests.includes(name))
+        .slice(0, 5);
       setFilteredSuggestions(filtered);
       setShowSuggestions(filtered.length > 0);
     } else {
@@ -307,6 +249,7 @@ const PatientForm: React.FC<PatientFormProps> = ({
       setFilteredSuggestions([]);
     }
   }, [newTestName, testGroups, packages, requestedTests]);
+
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     onSubmit({
@@ -314,37 +257,27 @@ const PatientForm: React.FC<PatientFormProps> = ({
       requestedTests,
       ocrResults,
       attachmentId,
-      selectedDoctorId, // Include the selected doctor ID
+      selectedDoctorId,
     });
   };
 
   const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>) => {
-    setFormData(prev => ({
-      ...prev,
-      [e.target.name]: e.target.value
-    }));
+    setFormData(prev => ({ ...prev, [e.target.name]: e.target.value }));
   };
-  
-  // Internal file upload handler
+
   const handleFileUpload = async (file: File) => {
     setIsUploading(true);
     setOcrError(null);
-    
+
     try {
-      // Get current user's lab_id
       const currentLabId = await database.getCurrentUserLabId();
-      
-      // Generate file path for patient forms
       const filePath = generateFilePath(file.name, 'temp-registration', undefined, 'patient-forms');
-      
-      // Upload to Supabase Storage
       const uploadResult = await uploadFile(file, filePath);
-      
-      // Insert attachment record
+
       const { data: attachment, error } = await supabase
         .from('attachments')
         .insert([{
-          patient_id: 'temp-registration', // Will be updated after patient creation
+          patient_id: 'temp-registration',
           lab_id: currentLabId,
           related_table: 'patients',
           related_id: 'temp-registration',
@@ -360,20 +293,11 @@ const PatientForm: React.FC<PatientFormProps> = ({
         }])
         .select()
         .single();
-      
-      if (error) {
-        throw new Error(`Failed to save attachment metadata: ${error.message}`);
-      }
-      
+
+      if (error) throw new Error(`Failed to save attachment: ${error.message}`);
+
       setAttachmentId(attachment.id);
       setUploadedFile(file);
-      
-      console.log('File uploaded successfully:', {
-        attachmentId: attachment.id,
-        filePath: uploadResult.path,
-        publicUrl: uploadResult.publicUrl
-      });
-      
     } catch (error) {
       console.error('Error uploading file:', error);
       setOcrError('Failed to upload file. Please try again.');
@@ -381,44 +305,30 @@ const PatientForm: React.FC<PatientFormProps> = ({
       setIsUploading(false);
     }
   };
-  
+
   const handleFileInputChange = (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
-    if (file) {
-      handleFileUpload(file);
-    }
+    if (file) handleFileUpload(file);
   };
-  
+
   const handleRunOCR = async () => {
     if (!attachmentId) {
       setOcrError('Please upload a file first.');
       return;
     }
-    
-    console.log('Starting OCR process with attachment ID:', attachmentId);
+
     setIsOCRProcessing(true);
     setOcrError(null);
-    
+
     try {
-      // Step 1: Call vision-ocr Edge Function
-      console.log('Calling vision-ocr Edge Function...');
       const visionResponse = await supabase.functions.invoke('vision-ocr', {
-        body: {
-          attachmentId,
-          documentType: 'test-request-form',
-          analysisType: 'text'
-        }
+        body: { attachmentId, documentType: 'test-request-form', analysisType: 'text' }
       });
-      
-      if (visionResponse.error) {
-        throw new Error(`Vision OCR failed: ${visionResponse.error.message}`);
-      }
-      
+
+      if (visionResponse.error) throw new Error(`Vision OCR failed: ${visionResponse.error.message}`);
+
       const visionData = visionResponse.data;
-      console.log('Vision OCR completed. Extracted text length:', visionData.fullText?.length || 0);
-      
-      // Step 2: Call gemini-nlp Edge Function
-      console.log('Calling gemini-nlp Edge Function...');
+
       const geminiResponse = await supabase.functions.invoke('gemini-nlp', {
         body: {
           rawText: visionData.fullText,
@@ -427,41 +337,25 @@ const PatientForm: React.FC<PatientFormProps> = ({
           documentType: 'test-request-form'
         }
       });
-      
-      if (geminiResponse.error) {
-        throw new Error(`Gemini NLP failed: ${geminiResponse.error.message}`);
-      }
-      
-      const result = geminiResponse.data;
-      console.log('Gemini NLP completed successfully. Result:', result);
-      
-      // Log the metadata for debugging
-      if (result.metadata) {
-        console.log('OCR Metadata:', {
-          method: result.metadata.ocrMethod,
-          confidence: result.metadata.ocrConfidence,
-          textLength: result.metadata.extractedTextLength,
-          rawTextPreview: result.metadata.rawOcrText
-        });
-      }
-      
-      setOcrResults(result);
-      
+
+      if (geminiResponse.error) throw new Error(`Gemini NLP failed: ${geminiResponse.error.message}`);
+
+      setOcrResults(geminiResponse.data);
     } catch (error) {
-      console.error('Error running OCR - Full details:', error);
+      console.error('Error running OCR:', error);
       setOcrError('Failed to process document. Please try again.');
     } finally {
       setIsOCRProcessing(false);
     }
   };
-  
+
   const handleClearOCR = () => {
     setUploadedFile(null);
     setAttachmentId(null);
     setOcrResults(null);
     setOcrError(null);
   };
-  
+
   const handleAddTest = () => {
     if (newTestName.trim() && !requestedTests.includes(newTestName.trim())) {
       setRequestedTests(prev => [...prev, newTestName.trim()]);
@@ -469,717 +363,591 @@ const PatientForm: React.FC<PatientFormProps> = ({
       setShowSuggestions(false);
     }
   };
-  
+
   const handleSelectSuggestion = (suggestion: string) => {
-    setNewTestName(suggestion);
     setRequestedTests(prev => [...prev, suggestion]);
     setNewTestName('');
     setShowSuggestions(false);
   };
-  
+
   const handleRemoveTest = (index: number) => {
     setRequestedTests(prev => prev.filter((_, i) => i !== index));
   };
-  
-  const handleKeyPress = (e: React.KeyboardEvent) => {
-    if (e.key === 'Enter') {
-      e.preventDefault();
-      handleAddTest();
-    } else if (e.key === 'Escape') {
-      setShowSuggestions(false);
-    }
-  };
+
+  // Section navigation items
+  const sections = [
+    { id: 'personal', label: 'Personal', icon: User },
+    { id: 'contact', label: 'Contact', icon: Phone },
+    { id: 'medical', label: 'Medical', icon: Heart },
+    ...(!patient ? [{ id: 'tests', label: 'Tests', icon: TestTube }] : []),
+  ];
 
   return (
-    <div className="fixed inset-0 bg-gray-600 bg-opacity-75 flex items-center justify-center z-50 p-4">
-      <div className="bg-white rounded-lg shadow-xl w-full max-w-4xl max-h-[90vh] overflow-y-auto">
-        <div className="flex items-center justify-between p-6 border-b border-gray-200">
-          <h2 className="text-xl font-semibold text-gray-900">
-            {patient ? 'Edit Patient' : 'Register New Patient'}
-          </h2>
-          <button
-            onClick={onClose}
-            className="text-gray-400 hover:text-gray-500 p-1 rounded"
-          >
-            <X className="h-6 w-6" />
-          </button>
+    <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-4xl max-h-[90vh] overflow-hidden flex flex-col">
+        {/* Header */}
+        <div className="bg-gradient-to-r from-blue-600 to-indigo-600 px-6 py-4">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <div className="bg-white/20 p-2 rounded-lg">
+                <User className="h-6 w-6 text-white" />
+              </div>
+              <div>
+                <h2 className="text-xl font-bold text-white">
+                  {patient ? 'Edit Patient' : 'Register New Patient'}
+                </h2>
+                <p className="text-blue-100 text-sm">
+                  {patient ? 'Update patient information' : 'Fill in the details to register a new patient'}
+                </p>
+              </div>
+            </div>
+            <button
+              onClick={onClose}
+              className="text-white/80 hover:text-white hover:bg-white/20 p-2 rounded-lg transition-all"
+            >
+              <X className="h-6 w-6" />
+            </button>
+          </div>
+
+          {/* Section Navigation */}
+          <div className="flex gap-2 mt-4">
+            {sections.map((section) => (
+              <button
+                key={section.id}
+                onClick={() => setActiveSection(section.id as any)}
+                className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all ${
+                  activeSection === section.id
+                    ? 'bg-white text-blue-600 shadow-lg'
+                    : 'bg-white/20 text-white hover:bg-white/30'
+                }`}
+              >
+                <section.icon className="h-4 w-4" />
+                {section.label}
+              </button>
+            ))}
+          </div>
         </div>
 
-        <form onSubmit={handleSubmit} className="p-6 space-y-6">
-          {/* OCR Document Upload Section - Only show for new patients */}
-          {!patient && (
-            <div className="space-y-4">
-              <h3 className="text-lg font-medium text-gray-900 flex items-center">
-                <Brain className="h-5 w-5 mr-2 text-purple-600" />
-                AI-Powered Form Filling
-              </h3>
-              
-              <div className="bg-purple-50 border border-purple-200 rounded-lg p-4">
-                <p className="text-sm text-purple-800 mb-4">
-                  Upload a test request form or prescription to automatically extract patient details and requested tests using AI.
-                </p>
-                
-                {/* File Upload */}
-                <div className="space-y-4">
-                  <div className="border-2 border-dashed border-purple-300 rounded-lg p-4 text-center hover:border-purple-400 transition-colors">
-                    {uploadedFile ? (
-                      <div className="space-y-3">
-                        <div className="flex items-center justify-center">
-                          <div className="bg-purple-100 p-3 rounded-full">
-                            <FileText className="h-8 w-8 text-purple-600" />
-                          </div>
-                        </div>
-                        <div>
-                          <div className="text-sm font-medium text-gray-900">{uploadedFile.name}</div>
-                          <div className="text-xs text-gray-500">{(uploadedFile.size / 1024 / 1024).toFixed(2)} MB</div>
-                        </div>
-                        <div className="flex items-center justify-center space-x-2">
-                          <button
-                            type="button"
-                            onClick={() => document.getElementById('file-upload')?.click()}
-                            className="text-purple-600 hover:text-purple-700 text-sm font-medium bg-purple-100 px-3 py-1 rounded"
-                          >
-                            Change File
-                          </button>
-                          <button
-                            type="button"
-                            onClick={handleClearOCR}
-                            className="text-gray-600 hover:text-gray-700 text-sm font-medium bg-gray-100 px-3 py-1 rounded"
-                          >
-                            <RotateCcw className="h-3 w-3 mr-1 inline" />
-                            Clear
-                          </button>
-                        </div>
+        <form onSubmit={handleSubmit} className="flex-1 overflow-y-auto">
+          {/* AI OCR Section - Only for new patients */}
+          {!patient && activeSection === 'personal' && (
+            <div className="p-6 bg-gradient-to-br from-purple-50 to-indigo-50 border-b border-purple-100">
+              <div className="flex items-center gap-2 mb-4">
+                <div className="bg-purple-100 p-2 rounded-lg">
+                  <Brain className="h-5 w-5 text-purple-600" />
+                </div>
+                <div>
+                  <h3 className="font-semibold text-gray-900">AI-Powered Form Filling</h3>
+                  <p className="text-sm text-gray-600">Upload a prescription or test request form to auto-fill</p>
+                </div>
+              </div>
+
+              <div className="flex gap-4 items-start">
+                <div className="flex-1">
+                  {uploadedFile ? (
+                    <div className="flex items-center gap-3 bg-white rounded-xl p-4 border border-purple-200">
+                      <div className="bg-purple-100 p-3 rounded-lg">
+                        <FileText className="h-6 w-6 text-purple-600" />
                       </div>
-                    ) : (
-                      <div className="space-y-3">
-                        <div className="flex justify-center">
-                          <div className="bg-purple-100 p-3 rounded-full">
-                            <Upload className="h-8 w-8 text-purple-600" />
-                          </div>
-                        </div>
-                        <div>
-                          <button
-                            type="button"
-                            onClick={() => document.getElementById('file-upload')?.click()}
-                            disabled={isUploading}
-                            className="flex items-center justify-center mx-auto px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 disabled:bg-purple-400 disabled:cursor-not-allowed transition-colors"
-                          >
-                            {isUploading ? (
-                              <>
-                                <div className="animate-spin rounded-full h-4 w-4 border-2 border-white border-t-transparent mr-2"></div>
-                                Uploading...
-                              </>
-                            ) : (
-                              <>
-                                <Upload className="h-4 w-4 mr-2" />
-                                Upload Test Request Form
-                              </>
-                            )}
-                          </button>
-                          <p className="text-xs text-gray-500 mt-2">
-                            Supports JPG, PNG, PDF (max 10MB)
-                          </p>
-                        </div>
+                      <div className="flex-1 min-w-0">
+                        <p className="font-medium text-gray-900 truncate">{uploadedFile.name}</p>
+                        <p className="text-sm text-gray-500">{(uploadedFile.size / 1024 / 1024).toFixed(2)} MB</p>
                       </div>
-                    )}
-                  </div>
-                  
-                  <input
-                    id="file-upload"
-                    type="file"
-                    accept="image/*,.pdf"
-                    onChange={handleFileInputChange}
-                    className="hidden"
-                  />
-                  
-                  {/* OCR Processing */}
-                  {uploadedFile && attachmentId && (
-                    <div className="space-y-3">
                       <button
                         type="button"
-                        onClick={handleRunOCR}
-                        disabled={isOCRProcessing}
-                        className="w-full flex items-center justify-center px-4 py-3 bg-gradient-to-r from-purple-600 to-blue-600 text-white rounded-lg hover:from-purple-700 hover:to-blue-700 disabled:from-gray-400 disabled:to-gray-400 disabled:cursor-not-allowed transition-all"
+                        onClick={handleClearOCR}
+                        className="text-gray-400 hover:text-red-500 p-2"
                       >
-                        {isOCRProcessing ? (
-                          <>
-                            <div className="animate-spin rounded-full h-4 w-4 border-2 border-white border-t-transparent mr-2"></div>
-                            Processing with AI...
-                          </>
-                        ) : (
-                          <>
-                            <Zap className="h-4 w-4 mr-2" />
-                            <Brain className="h-4 w-4 mr-2" />
-                            Extract Data with AI
-                          </>
-                        )}
+                        <RotateCcw className="h-5 w-5" />
                       </button>
-                      
-                      {isOCRProcessing && (
-                        <div className="bg-blue-50 border border-blue-200 rounded-lg p-3">
-                          <div className="text-sm text-blue-800 space-y-1">
-                            <div>• Google Vision AI: Extracting text from document...</div>
-                            <div>• Gemini NLP: Identifying patient details and tests...</div>
-                            <div>• Database matching: Linking to available test groups...</div>
-                            <div>• Auto-filling form fields...</div>
-                          </div>
-                        </div>
-                      )}
                     </div>
-                  )}
-                  
-                  {/* OCR Error */}
-                  {ocrError && (
-                    <div className="bg-red-50 border border-red-200 rounded-lg p-3">
-                      <div className="flex items-center">
-                        <AlertTriangle className="h-4 w-4 text-red-500 mr-2" />
-                        <span className="text-red-700 text-sm">{ocrError}</span>
-                      </div>
-                    </div>
-                  )}
-                  
-                  {/* OCR Success */}
-                  {ocrResults && (
-                    <div className="bg-green-50 border border-green-200 rounded-lg p-3">
-                      <div className="flex items-center mb-2">
-                        <CheckCircle className="h-4 w-4 text-green-500 mr-2" />
-                        <span className="text-green-700 text-sm font-medium">AI extraction completed!</span>
-                      </div>
-                      <div className="text-xs text-green-600 space-y-1">
-                        {ocrResults.patient_details && Object.keys(ocrResults.patient_details).length > 0 && (
-                          <div>✓ Patient details extracted and auto-filled</div>
-                        )}
-                        {ocrResults.requested_tests && ocrResults.requested_tests.length > 0 && (
-                          <div>✓ {ocrResults.requested_tests.length} tests identified</div>
-                        )}
-                        {ocrResults.doctor_info && ocrResults.doctor_info.name && (
-                          <div>✓ Referring doctor identified</div>
-                        )}
-                      </div>
-                    </div>
-                  )}
-                </div>
-              </div>
-            </div>
-          )}
-
-          {/* Personal Information */}
-          <div className="space-y-4">
-            <h3 className="text-lg font-medium text-gray-900 flex items-center">
-              <User className="h-5 w-5 mr-2" />
-              Personal Information
-            </h3>
-            
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">
-                  First Name *
-                </label>
-                <input
-                  type="text"
-                  name="firstName"
-                  required
-                  value={formData.firstName}
-                  onChange={handleChange}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                />
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">
-                  Last Name *
-                </label>
-                <input
-                  type="text"
-                  name="lastName"
-                  required
-                  value={formData.lastName}
-                  onChange={handleChange}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                />
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">
-                  Age *
-                </label>
-                <input
-                  type="number"
-                  name="age"
-                  required
-                  value={formData.age}
-                  onChange={handleChange}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                />
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">
-                  Gender *
-                </label>
-                <select
-                  name="gender"
-                  required
-                  value={formData.gender}
-                  onChange={handleChange}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                >
-                  <option value="">Select Gender</option>
-                  <option value="Male">Male</option>
-                  <option value="Female">Female</option>
-                  <option value="Other">Other</option>
-                </select>
-              </div>
-            </div>
-          </div>
-
-          {/* Contact Information */}
-          <div className="space-y-4">
-            <h3 className="text-lg font-medium text-gray-900 flex items-center">
-              <Phone className="h-5 w-5 mr-2" />
-              Contact Information
-            </h3>
-            
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">
-                  Phone Number *
-                </label>
-                <input
-                  type="tel"
-                  name="phone"
-                  required
-                  value={formData.phone}
-                  onChange={handleChange}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                />
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">
-                  Email
-                </label>
-                <input
-                  type="email"
-                  name="email"
-                  value={formData.email}
-                  onChange={handleChange}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                />
-              </div>
-            </div>
-          </div>
-
-          {/* Address Information */}
-          <div className="space-y-4">
-            <h3 className="text-lg font-medium text-gray-900 flex items-center">
-              <MapPin className="h-5 w-5 mr-2" />
-              Address Information
-            </h3>
-            
-            <div className="space-y-4">
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">
-                  Address
-                </label>
-                <textarea
-                  name="address"
-                  rows={2}
-                  value={formData.address}
-                  onChange={handleChange}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                />
-              </div>
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">
-                    City
-                  </label>
-                  <input
-                    type="text"
-                    name="city"
-                    value={formData.city}
-                    onChange={handleChange}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                  />
-                </div>
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">
-                    State
-                  </label>
-                  <input
-                    type="text"
-                    name="state"
-                    value={formData.state}
-                    onChange={handleChange}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                  />
-                </div>
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">
-                    PIN Code
-                  </label>
-                  <input
-                    type="text"
-                    name="pincode"
-                    value={formData.pincode}
-                    onChange={handleChange}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                  />
-                </div>
-              </div>
-            </div>
-          </div>
-
-          {/* Emergency Contact */}
-          <div className="space-y-4">
-            <h3 className="text-lg font-medium text-gray-900">Emergency Contact</h3>
-            
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">
-                  Emergency Contact Name
-                </label>
-                <input
-                  type="text"
-                  name="emergencyContact"
-                  value={formData.emergencyContact}
-                  onChange={handleChange}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                />
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">
-                  Emergency Contact Phone
-                </label>
-                <input
-                  type="tel"
-                  name="emergencyPhone"
-                  value={formData.emergencyPhone}
-                  onChange={handleChange}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                />
-              </div>
-            </div>
-          </div>
-
-          {/* Medical Information */}
-          <div className="space-y-4">
-            <h3 className="text-lg font-medium text-gray-900">Medical Information</h3>
-            
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">
-                  Blood Group
-                </label>
-                <select
-                  name="bloodGroup"
-                  value={formData.bloodGroup}
-                  onChange={handleChange}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                >
-                  <option value="">Select Blood Group</option>
-                  <option value="A+">A+</option>
-                  <option value="A-">A-</option>
-                  <option value="B+">B+</option>
-                  <option value="B-">B-</option>
-                  <option value="AB+">AB+</option>
-                  <option value="AB-">AB-</option>
-                  <option value="O+">O+</option>
-                  <option value="O-">O-</option>
-                </select>
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">
-                  Known Allergies
-                </label>
-                <input
-                  type="text"
-                  name="allergies"
-                  value={formData.allergies}
-                  onChange={handleChange}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                  placeholder="e.g., Penicillin, Shellfish"
-                />
-              </div>
-            </div>
-            
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">
-                Medical History
-              </label>
-              <textarea
-                name="medicalHistory"
-                rows={3}
-                value={formData.medicalHistory}
-                onChange={handleChange}
-                className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                placeholder="Brief medical history, current medications, etc."
-              />
-            </div>
-          </div>
-
-          {/* Referring Doctor - Only show for new patients */}
-          {!patient && (
-            <div className="space-y-4">
-              <h3 className="text-lg font-medium text-gray-900 flex items-center">
-                <UserCheck className="h-5 w-5 mr-2" />
-                Referring Doctor
-              </h3>
-              
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">
-                  Select Doctor *
-                </label>
-                {loadingDoctors ? (
-                  <div className="w-full px-3 py-2 border border-gray-300 rounded-md bg-gray-50 text-gray-500">
-                    Loading doctors...
-                  </div>
-                ) : (
-                  <select
-                    value={selectedDoctorId}
-                    onChange={(e) => {
-                      setSelectedDoctorId(e.target.value);
-                      const selectedDoctor = doctors.find(doc => doc.id === e.target.value);
-                      setFormData(prev => ({
-                        ...prev,
-                        referring_doctor: selectedDoctor ? selectedDoctor.name : ''
-                      }));
-                    }}
-                    required
-                    className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                  >
-                    <option value="">Select a referring doctor...</option>
-                    {doctors.map((doctor) => (
-                      <option key={doctor.id} value={doctor.id}>
-                        {doctor.name}
-                        {doctor.specialization && ` - ${doctor.specialization}`}
-                        {doctor.hospital && ` (${doctor.hospital})`}
-                      </option>
-                    ))}
-                  </select>
-                )}
-                
-                {/* Option to add new doctor */}
-                <div className="mt-2">
-                  <a
-                    href="/masters/doctors"
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="text-sm text-blue-600 hover:text-blue-800 flex items-center gap-1"
-                  >
-                    <UserCheck className="h-3 w-3" />
-                    Add new doctor to master list
-                  </a>
-                </div>
-              </div>
-            </div>
-          )}
-
-          {/* Requested Tests - Only show for new patients */}
-          {!patient && (
-            <div className="space-y-4">
-              <h3 className="text-lg font-medium text-gray-900 flex items-center">
-                <TestTube className="h-5 w-5 mr-2" />
-                Requested Tests
-              </h3>
-              
-              <div className="space-y-4">
-                {/* Add Test Input */}
-                <div className="relative">
-                  <div className="flex space-x-2">
-                    <div className="flex-1 relative">
+                  ) : (
+                    <label className="flex flex-col items-center justify-center w-full h-32 border-2 border-dashed border-purple-300 rounded-xl cursor-pointer bg-white hover:bg-purple-50 hover:border-purple-400 transition-all">
+                      <Upload className="h-8 w-8 text-purple-400 mb-2" />
+                      <span className="text-sm font-medium text-purple-600">
+                        {isUploading ? 'Uploading...' : 'Click to upload'}
+                      </span>
+                      <span className="text-xs text-gray-500 mt-1">JPG, PNG or PDF (max 10MB)</span>
                       <input
-                        type="text"
-                        value={newTestName}
-                        onChange={(e) => setNewTestName(e.target.value)}
-                        onKeyPress={handleKeyPress}
-                        onFocus={() => {
-                          if (filteredSuggestions.length > 0) {
-                            setShowSuggestions(true);
-                          }
-                        }}
-                        onBlur={() => {
-                          // Delay hiding suggestions to allow clicking
-                          setTimeout(() => setShowSuggestions(false), 200);
-                        }}
-                        placeholder="Enter test name or select from suggestions..."
-                        className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                        type="file"
+                        accept="image/*,.pdf"
+                        onChange={handleFileInputChange}
+                        className="hidden"
+                        disabled={isUploading}
                       />
-                      
-                      {/* Suggestions Dropdown */}
-                      {showSuggestions && filteredSuggestions.length > 0 && (
-                        <div className="absolute z-10 w-full mt-1 bg-white border border-gray-300 rounded-md shadow-lg max-h-60 overflow-y-auto">
-                          {filteredSuggestions.map((suggestion, index) => {
-                            const isTestGroup = testGroups.some(tg => tg.name === suggestion);
-                            const isPackage = packages.some(pkg => pkg.name === suggestion);
-                            const item = isTestGroup 
-                              ? testGroups.find(tg => tg.name === suggestion)
-                              : packages.find(pkg => pkg.name === suggestion);
-                            
-                            return (
-                              <div
-                                key={index}
-                                onClick={() => handleSelectSuggestion(suggestion)}
-                                className="px-4 py-3 hover:bg-blue-50 cursor-pointer border-b border-gray-100 last:border-b-0"
-                              >
-                                <div className="flex items-center justify-between">
-                                  <div className="flex-1">
-                                    <div className="text-sm font-medium text-gray-900">{suggestion}</div>
-                                    <div className="text-xs text-gray-500">
-                                      {isTestGroup ? `Test Group • ${item?.category}` : `Package • ${item?.category}`}
-                                    </div>
-                                  </div>
-                                  <div className="text-sm font-bold text-green-600">
-                                    ₹{item?.price || 0}
-                                  </div>
-                                </div>
-                              </div>
-                            );
-                          })}
-                        </div>
-                      )}
-                    </div>
-                    <button
-                      type="button"
-                      onClick={handleAddTest}
-                      disabled={!newTestName.trim()}
-                      className="flex items-center px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:bg-gray-400 disabled:cursor-not-allowed transition-colors"
-                    >
-                      <Plus className="h-4 w-4 mr-1" />
-                      Add
-                    </button>
-                  </div>
-                  
-                  {/* Loading indicator */}
-                  {loadingTestData && (
-                    <div className="text-xs text-gray-500 mt-1">
-                      Loading available tests...
-                    </div>
-                  )}
-                  
-                  {/* Available tests summary */}
-                  {!loadingTestData && (testGroups.length > 0 || packages.length > 0) && (
-                    <div className="text-xs text-gray-500 mt-1">
-                      {testGroups.length} test groups and {packages.length} packages available
-                    </div>
+                    </label>
                   )}
                 </div>
-                
-                {/* Tests List */}
-                {requestedTests.length > 0 && (
-                  <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
-                    <h4 className="font-medium text-blue-900 mb-3">
-                      Requested Tests ({requestedTests.length})
-                    </h4>
-                    <div className="space-y-2">
-                      {requestedTests.map((test, index) => (
-                        <div key={index} className="flex items-center justify-between bg-white rounded-lg p-3 border border-blue-200">
-                          <div className="flex-1">
-                            <span className="text-sm font-medium text-gray-900">{test}</span>
-                            <div className="text-xs text-gray-500">
-                              {(() => {
-                                const testGroup = testGroups.find(tg => tg.name === test);
-                                const packageItem = packages.find(pkg => pkg.name === test);
-                                if (testGroup) return `Test Group • ${testGroup.category}`;
-                                if (packageItem) return `Package • ${packageItem.category}`;
-                                return 'Manual Entry';
-                              })()}
-                            </div>
-                          </div>
-                          <div className="flex items-center space-x-3">
-                            <span className="text-sm font-bold text-green-600">
-                              ₹{(() => {
-                                const testGroup = testGroups.find(tg => tg.name === test);
-                                const packageItem = packages.find(pkg => pkg.name === test);
-                                if (testGroup) return testGroup.price;
-                                if (packageItem) return packageItem.price;
-                                return 500; // Default price for manual entries
-                              })()}
-                            </span>
-                          <button
-                            type="button"
-                            onClick={() => handleRemoveTest(index)}
-                            className="text-red-600 hover:text-red-800 p-1 rounded"
-                            title="Remove test"
-                          >
-                            <Minus className="h-4 w-4" />
-                          </button>
-                          </div>
-                        </div>
+
+                {uploadedFile && attachmentId && (
+                  <button
+                    type="button"
+                    onClick={handleRunOCR}
+                    disabled={isOCRProcessing}
+                    className="flex items-center gap-2 px-6 py-3 bg-gradient-to-r from-purple-600 to-indigo-600 text-white rounded-xl font-medium hover:from-purple-700 hover:to-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed transition-all shadow-lg shadow-purple-200"
+                  >
+                    {isOCRProcessing ? (
+                      <>
+                        <div className="animate-spin rounded-full h-5 w-5 border-2 border-white border-t-transparent" />
+                        Processing...
+                      </>
+                    ) : (
+                      <>
+                        <Zap className="h-5 w-5" />
+                        Extract Data
+                      </>
+                    )}
+                  </button>
+                )}
+              </div>
+
+              {ocrError && (
+                <div className="mt-3 flex items-center gap-2 text-red-600 bg-red-50 px-4 py-2 rounded-lg">
+                  <AlertTriangle className="h-4 w-4" />
+                  <span className="text-sm">{ocrError}</span>
+                </div>
+              )}
+
+              {ocrResults && (
+                <div className="mt-3 flex items-center gap-2 text-green-600 bg-green-50 px-4 py-2 rounded-lg">
+                  <CheckCircle className="h-4 w-4" />
+                  <span className="text-sm font-medium">Data extracted successfully! Form has been auto-filled.</span>
+                </div>
+              )}
+            </div>
+          )}
+
+          <div className="p-6 space-y-6">
+            {/* Personal Information Section */}
+            {activeSection === 'personal' && (
+              <div className="space-y-6">
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+                  <div className="space-y-2">
+                    <label className="text-sm font-medium text-gray-700">First Name *</label>
+                    <input
+                      type="text"
+                      name="firstName"
+                      required
+                      value={formData.firstName}
+                      onChange={handleChange}
+                      className="w-full px-4 py-3 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all bg-gray-50 hover:bg-white"
+                      placeholder="Enter first name"
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <label className="text-sm font-medium text-gray-700">Last Name *</label>
+                    <input
+                      type="text"
+                      name="lastName"
+                      required
+                      value={formData.lastName}
+                      onChange={handleChange}
+                      className="w-full px-4 py-3 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all bg-gray-50 hover:bg-white"
+                      placeholder="Enter last name"
+                    />
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+                  <div className="space-y-2">
+                    <label className="text-sm font-medium text-gray-700">Age *</label>
+                    <div className="flex gap-2">
+                      <input
+                        type="number"
+                        name="age"
+                        required
+                        min={0}
+                        value={formData.age}
+                        onChange={handleChange}
+                        className="flex-1 px-4 py-3 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all bg-gray-50 hover:bg-white"
+                        placeholder="Age"
+                      />
+                      <select
+                        name="age_unit"
+                        value={formData.age_unit}
+                        onChange={handleChange}
+                        className="w-28 px-3 py-3 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all bg-gray-50 hover:bg-white font-medium"
+                      >
+                        <option value="years">Years</option>
+                        <option value="months">Months</option>
+                        <option value="days">Days</option>
+                      </select>
+                    </div>
+                    <p className="text-xs text-gray-500">For infants, use days or months for accurate reference ranges</p>
+                  </div>
+                  <div className="space-y-2">
+                    <label className="text-sm font-medium text-gray-700">Gender *</label>
+                    <div className="grid grid-cols-3 gap-2">
+                      {['Male', 'Female', 'Other'].map((g) => (
+                        <button
+                          key={g}
+                          type="button"
+                          onClick={() => setFormData(prev => ({ ...prev, gender: g }))}
+                          className={`px-4 py-3 rounded-xl border-2 font-medium transition-all ${
+                            formData.gender === g
+                              ? 'border-blue-500 bg-blue-50 text-blue-700'
+                              : 'border-gray-200 bg-gray-50 text-gray-600 hover:border-gray-300 hover:bg-white'
+                          }`}
+                        >
+                          {g}
+                        </button>
                       ))}
                     </div>
-                    
-                    {/* Pricing Summary */}
-                    <div className="mt-4 pt-3 border-t border-blue-300">
-                      <div className="space-y-2 text-sm">
-                        <div className="flex justify-between">
-                          <span className="text-blue-700">Subtotal:</span>
-                          <span className="font-medium text-blue-900">₹{subtotal.toFixed(2)}</span>
-                        </div>
-                        <div className="flex justify-between">
-                          <span className="text-blue-700">Tax (18% GST):</span>
-                          <span className="font-medium text-blue-900">₹{taxAmount.toFixed(2)}</span>
-                        </div>
-                        <div className="flex justify-between font-bold text-lg border-t border-blue-300 pt-2">
-                          <span className="text-blue-900">Total Amount:</span>
-                          <span className="text-green-600">₹{totalAmount.toFixed(2)}</span>
-                        </div>
-                      </div>
-                    </div>
-                    
-                    <div className="mt-3 p-2 bg-green-100 border border-green-200 rounded text-xs text-green-800">
-                      <strong>Note:</strong> An order and unpaid invoice will be automatically created for these tests after patient registration.
-                    </div>
                   </div>
-                )}
-                
-                {requestedTests.length === 0 && (
-                  <div className="text-sm text-gray-500 italic">
-                    No tests added yet. You can add tests manually or use AI extraction from uploaded documents.
+                </div>
+
+                {/* Referring Doctor - Only for new patients */}
+                {!patient && (
+                  <div className="space-y-2">
+                    <label className="text-sm font-medium text-gray-700 flex items-center gap-2">
+                      <UserCheck className="h-4 w-4 text-gray-500" />
+                      Referring Doctor
+                    </label>
+                    <select
+                      value={selectedDoctorId}
+                      onChange={(e) => {
+                        setSelectedDoctorId(e.target.value);
+                        const selectedDoctor = doctors.find(doc => doc.id === e.target.value);
+                        setFormData(prev => ({ ...prev, referring_doctor: selectedDoctor ? selectedDoctor.name : '' }));
+                      }}
+                      className="w-full px-4 py-3 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all bg-gray-50 hover:bg-white"
+                    >
+                      <option value="">Select a referring doctor...</option>
+                      {doctors.map((doctor) => (
+                        <option key={doctor.id} value={doctor.id}>
+                          {doctor.name}{doctor.specialization && ` - ${doctor.specialization}`}
+                        </option>
+                      ))}
+                    </select>
                   </div>
                 )}
               </div>
-            </div>
-          )}
+            )}
 
-          {/* Form Actions */}
-          <div className="flex items-center justify-end space-x-4 pt-6 border-t border-gray-200">
-            {patient?.qr_code_data && patient?.color_code && (
-              <div className="flex-1 flex items-center space-x-2">
-                <div className="flex items-center">
-                  <div 
-                    className="w-4 h-4 rounded-full mr-1" 
-                    style={{ backgroundColor: patient.color_code }}
-                  ></div>
-                  <span className="text-sm text-gray-600">{patient.color_name}</span>
+            {/* Contact Information Section */}
+            {activeSection === 'contact' && (
+              <div className="space-y-6">
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+                  <div className="space-y-2">
+                    <label className="text-sm font-medium text-gray-700 flex items-center gap-2">
+                      <Phone className="h-4 w-4 text-gray-500" />
+                      Phone Number *
+                    </label>
+                    <input
+                      type="tel"
+                      name="phone"
+                      required
+                      value={formData.phone}
+                      onChange={handleChange}
+                      className="w-full px-4 py-3 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all bg-gray-50 hover:bg-white"
+                      placeholder="Enter phone number"
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <label className="text-sm font-medium text-gray-700 flex items-center gap-2">
+                      <Mail className="h-4 w-4 text-gray-500" />
+                      Email
+                    </label>
+                    <input
+                      type="email"
+                      name="email"
+                      value={formData.email}
+                      onChange={handleChange}
+                      className="w-full px-4 py-3 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all bg-gray-50 hover:bg-white"
+                      placeholder="Enter email address"
+                    />
+                  </div>
                 </div>
-                <div className="h-8 w-8">
-                  <QRCodeSVG 
-                    value={patient.qr_code_data} 
-                    size={32}
+
+                <div className="space-y-2">
+                  <label className="text-sm font-medium text-gray-700 flex items-center gap-2">
+                    <MapPin className="h-4 w-4 text-gray-500" />
+                    Address
+                  </label>
+                  <textarea
+                    name="address"
+                    rows={2}
+                    value={formData.address}
+                    onChange={handleChange}
+                    className="w-full px-4 py-3 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all bg-gray-50 hover:bg-white resize-none"
+                    placeholder="Enter street address"
+                  />
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
+                  <div className="space-y-2">
+                    <label className="text-sm font-medium text-gray-700">City</label>
+                    <input
+                      type="text"
+                      name="city"
+                      value={formData.city}
+                      onChange={handleChange}
+                      className="w-full px-4 py-3 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all bg-gray-50 hover:bg-white"
+                      placeholder="City"
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <label className="text-sm font-medium text-gray-700">State</label>
+                    <input
+                      type="text"
+                      name="state"
+                      value={formData.state}
+                      onChange={handleChange}
+                      className="w-full px-4 py-3 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all bg-gray-50 hover:bg-white"
+                      placeholder="State"
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <label className="text-sm font-medium text-gray-700">PIN Code</label>
+                    <input
+                      type="text"
+                      name="pincode"
+                      value={formData.pincode}
+                      onChange={handleChange}
+                      className="w-full px-4 py-3 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all bg-gray-50 hover:bg-white"
+                      placeholder="PIN Code"
+                    />
+                  </div>
+                </div>
+
+                <div className="border-t border-gray-200 pt-5">
+                  <h4 className="text-sm font-semibold text-gray-900 mb-4 flex items-center gap-2">
+                    <AlertTriangle className="h-4 w-4 text-orange-500" />
+                    Emergency Contact
+                  </h4>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+                    <div className="space-y-2">
+                      <label className="text-sm font-medium text-gray-700">Contact Name</label>
+                      <input
+                        type="text"
+                        name="emergencyContact"
+                        value={formData.emergencyContact}
+                        onChange={handleChange}
+                        className="w-full px-4 py-3 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all bg-gray-50 hover:bg-white"
+                        placeholder="Emergency contact name"
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <label className="text-sm font-medium text-gray-700">Contact Phone</label>
+                      <input
+                        type="tel"
+                        name="emergencyPhone"
+                        value={formData.emergencyPhone}
+                        onChange={handleChange}
+                        className="w-full px-4 py-3 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all bg-gray-50 hover:bg-white"
+                        placeholder="Emergency phone number"
+                      />
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Medical Information Section */}
+            {activeSection === 'medical' && (
+              <div className="space-y-6">
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+                  <div className="space-y-2">
+                    <label className="text-sm font-medium text-gray-700 flex items-center gap-2">
+                      <Droplets className="h-4 w-4 text-red-500" />
+                      Blood Group
+                    </label>
+                    <div className="grid grid-cols-4 gap-2">
+                      {['A+', 'A-', 'B+', 'B-', 'AB+', 'AB-', 'O+', 'O-'].map((bg) => (
+                        <button
+                          key={bg}
+                          type="button"
+                          onClick={() => setFormData(prev => ({ ...prev, bloodGroup: bg }))}
+                          className={`px-3 py-2 rounded-lg border-2 text-sm font-medium transition-all ${
+                            formData.bloodGroup === bg
+                              ? 'border-red-500 bg-red-50 text-red-700'
+                              : 'border-gray-200 bg-gray-50 text-gray-600 hover:border-gray-300 hover:bg-white'
+                          }`}
+                        >
+                          {bg}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                  <div className="space-y-2">
+                    <label className="text-sm font-medium text-gray-700 flex items-center gap-2">
+                      <AlertTriangle className="h-4 w-4 text-yellow-500" />
+                      Known Allergies
+                    </label>
+                    <input
+                      type="text"
+                      name="allergies"
+                      value={formData.allergies}
+                      onChange={handleChange}
+                      className="w-full px-4 py-3 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all bg-gray-50 hover:bg-white"
+                      placeholder="e.g., Penicillin, Shellfish"
+                    />
+                  </div>
+                </div>
+
+                <div className="space-y-2">
+                  <label className="text-sm font-medium text-gray-700 flex items-center gap-2">
+                    <ClipboardList className="h-4 w-4 text-gray-500" />
+                    Medical History
+                  </label>
+                  <textarea
+                    name="medicalHistory"
+                    rows={4}
+                    value={formData.medicalHistory}
+                    onChange={handleChange}
+                    className="w-full px-4 py-3 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all bg-gray-50 hover:bg-white resize-none"
+                    placeholder="Brief medical history, current medications, chronic conditions, etc."
                   />
                 </div>
               </div>
             )}
-            <button
-              type="button"
-              onClick={() => {
-                onClose();
-                handleClearOCR(); // Clear OCR data when closing form
-              }}
-              className="px-4 py-2 border border-gray-300 rounded-md text-gray-700 hover:bg-gray-50 transition-colors"
-            >
-              Cancel
-            </button>
-            <button
-              type="submit"
-              className="px-6 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 transition-colors"
-              title={patient ? "Update patient information" : "Register new patient and assign identification"}
-            >
-              {patient ? 'Update Patient' : (
-                requestedTests.length > 0 
-                  ? `Register Patient & Create Invoice (₹${totalAmount.toFixed(2)})` 
-                  : 'Register Patient'
+
+            {/* Tests Section - Only for new patients */}
+            {activeSection === 'tests' && !patient && (
+              <div className="space-y-6">
+                <div className="space-y-3">
+                  <label className="text-sm font-medium text-gray-700 flex items-center gap-2">
+                    <TestTube className="h-4 w-4 text-blue-500" />
+                    Add Tests
+                  </label>
+                  <div className="relative">
+                    <div className="flex gap-2">
+                      <input
+                        type="text"
+                        value={newTestName}
+                        onChange={(e) => setNewTestName(e.target.value)}
+                        onKeyPress={(e) => e.key === 'Enter' && (e.preventDefault(), handleAddTest())}
+                        placeholder="Search tests or packages..."
+                        className="flex-1 px-4 py-3 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all bg-gray-50 hover:bg-white"
+                      />
+                      <button
+                        type="button"
+                        onClick={handleAddTest}
+                        disabled={!newTestName.trim()}
+                        className="px-5 py-3 bg-blue-600 text-white rounded-xl hover:bg-blue-700 disabled:bg-gray-300 disabled:cursor-not-allowed transition-all font-medium flex items-center gap-2"
+                      >
+                        <Plus className="h-5 w-5" />
+                        Add
+                      </button>
+                    </div>
+
+                    {showSuggestions && (
+                      <div className="absolute z-10 w-full mt-2 bg-white border border-gray-200 rounded-xl shadow-xl overflow-hidden">
+                        {filteredSuggestions.map((suggestion, index) => {
+                          const isTestGroup = testGroups.some(tg => tg.name === suggestion);
+                          const item = isTestGroup
+                            ? testGroups.find(tg => tg.name === suggestion)
+                            : packages.find(pkg => pkg.name === suggestion);
+
+                          return (
+                            <div
+                              key={index}
+                              onClick={() => handleSelectSuggestion(suggestion)}
+                              className="px-4 py-3 hover:bg-blue-50 cursor-pointer border-b border-gray-100 last:border-b-0 flex items-center justify-between"
+                            >
+                              <div>
+                                <div className="font-medium text-gray-900">{suggestion}</div>
+                                <div className="text-xs text-gray-500">
+                                  {isTestGroup ? 'Test Group' : 'Package'} • {item?.category}
+                                </div>
+                              </div>
+                              <span className="font-bold text-green-600">₹{item?.price || 0}</span>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                {requestedTests.length > 0 && (
+                  <div className="bg-gradient-to-br from-blue-50 to-indigo-50 border border-blue-200 rounded-2xl p-5">
+                    <h4 className="font-semibold text-gray-900 mb-4 flex items-center gap-2">
+                      <TestTube className="h-5 w-5 text-blue-600" />
+                      Selected Tests ({requestedTests.length})
+                    </h4>
+                    <div className="space-y-2">
+                      {requestedTests.map((test, index) => {
+                        const testGroup = testGroups.find(tg => tg.name === test);
+                        const packageItem = packages.find(pkg => pkg.name === test);
+                        const price = testGroup?.price || packageItem?.price || 500;
+
+                        return (
+                          <div key={index} className="flex items-center justify-between bg-white rounded-xl p-4 border border-blue-200">
+                            <div>
+                              <span className="font-medium text-gray-900">{test}</span>
+                              <span className="text-xs text-gray-500 ml-2">
+                                {testGroup ? 'Test' : packageItem ? 'Package' : 'Manual'}
+                              </span>
+                            </div>
+                            <div className="flex items-center gap-4">
+                              <span className="font-bold text-green-600">₹{price}</span>
+                              <button
+                                type="button"
+                                onClick={() => handleRemoveTest(index)}
+                                className="text-red-500 hover:text-red-700 hover:bg-red-50 p-2 rounded-lg transition-all"
+                              >
+                                <Minus className="h-4 w-4" />
+                              </button>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+
+                    <div className="mt-5 pt-4 border-t border-blue-200 space-y-2">
+                      <div className="flex justify-between text-sm">
+                        <span className="text-gray-600">Subtotal:</span>
+                        <span className="font-medium">₹{subtotal.toFixed(2)}</span>
+                      </div>
+                      <div className="flex justify-between text-sm">
+                        <span className="text-gray-600">Tax (18% GST):</span>
+                        <span className="font-medium">₹{taxAmount.toFixed(2)}</span>
+                      </div>
+                      <div className="flex justify-between text-lg font-bold pt-2 border-t border-blue-200">
+                        <span className="text-gray-900">Total:</span>
+                        <span className="text-green-600">₹{totalAmount.toFixed(2)}</span>
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+
+          {/* Footer */}
+          <div className="border-t border-gray-200 bg-gray-50 px-6 py-4">
+            <div className="flex items-center justify-between">
+              {patient?.qr_code_data && patient?.color_code && (
+                <div className="flex items-center gap-3">
+                  <div
+                    className="w-6 h-6 rounded-full border-2 border-white shadow"
+                    style={{ backgroundColor: patient.color_code }}
+                  />
+                  <span className="text-sm text-gray-600">{patient.color_name}</span>
+                  <QRCodeSVG value={patient.qr_code_data} size={40} />
+                </div>
               )}
-            </button>
+              <div className="flex items-center gap-3 ml-auto">
+                <button
+                  type="button"
+                  onClick={() => { onClose(); handleClearOCR(); }}
+                  className="px-5 py-2.5 border border-gray-300 rounded-xl text-gray-700 hover:bg-gray-100 transition-all font-medium"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  className="px-6 py-2.5 bg-gradient-to-r from-blue-600 to-indigo-600 text-white rounded-xl hover:from-blue-700 hover:to-indigo-700 transition-all font-medium shadow-lg shadow-blue-200"
+                >
+                  {patient ? 'Update Patient' : (
+                    requestedTests.length > 0
+                      ? `Register & Create Invoice (₹${totalAmount.toFixed(2)})`
+                      : 'Register Patient'
+                  )}
+                </button>
+              </div>
+            </div>
           </div>
         </form>
       </div>

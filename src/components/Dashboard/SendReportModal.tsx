@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { supabase } from '../../utils/supabase';
+import { useAuth } from '../../contexts/AuthContext';
 import { Send, Phone, FileText, Check, X } from 'lucide-react';
 
 interface SendReportModalProps {
@@ -8,6 +9,7 @@ interface SendReportModalProps {
     doctorName: string;
     doctorPhone: string;
     clinicalSummary?: string;
+    includeClinicalSummary?: boolean; // Flag from orders table to control default checkbox state
     reportUrl?: string; // Optional if we just want to trigger generation+send, but usually we send existing URL
     onClose: () => void;
 }
@@ -18,11 +20,14 @@ export const SendReportModal: React.FC<SendReportModalProps> = ({
     doctorName,
     doctorPhone,
     clinicalSummary,
+    includeClinicalSummary: includeSummaryFlag,
     reportUrl,
     onClose
 }) => {
+    const { user } = useAuth();
     const [phone, setPhone] = useState(doctorPhone || '');
-    const [includeSummary, setIncludeSummary] = useState(!!clinicalSummary);
+    // Only show summary checkbox enabled if: 1) flag is true AND 2) summary exists
+    const [includeSummary, setIncludeSummary] = useState(includeSummaryFlag && !!clinicalSummary);
     const [summaryText, setSummaryText] = useState(clinicalSummary || '');
     const [isSending, setIsSending] = useState(false);
     const [sentSuccess, setSentSuccess] = useState(false);
@@ -44,16 +49,72 @@ export const SendReportModal: React.FC<SendReportModalProps> = ({
             // Direct call to Netlify function (as seen in generate-pdf-auto)
             const NETLIFY_SEND_REPORT_URL = 'https://app.limsapp.in/.netlify/functions/send-report-url';
 
-            // We need lab_id for whatsapp_user_id lookup, but strictly speaking 
-            // the Netlify function takes 'userId' (whatsapp_user_id).
-            // We need to fetch the LAB's whatsapp_user_id first.
+            // Smart WhatsApp Routing (matching Edge Function logic):
+            // Priority 1: Current user's whatsapp_user_id
+            // Priority 2: Lab's whatsapp_user_id (fallback)
+            
+            let whatsappUserId: string | null = null;
+            let countryCode = '+91';
 
-            const { data: order } = await supabase.from('orders').select('lab_id, labs(whatsapp_user_id, country_code)').eq('id', orderId).single();
-            const whatsappUserId = order?.labs?.whatsapp_user_id;
-            const countryCode = order?.labs?.country_code || '+91';
+            // Get order's lab_id and location_id for routing
+            const { data: order, error: orderError } = await supabase
+                .from('orders')
+                .select('lab_id, location_id')
+                .eq('id', orderId)
+                .single();
+
+            if (orderError || !order) {
+                throw new Error('Could not fetch order details');
+            }
+
+            // Priority 1: Current logged-in user's whatsapp_user_id
+            if (user?.id) {
+                const { data: currentUser } = await supabase
+                    .from('users')
+                    .select('whatsapp_user_id')
+                    .eq('id', user.id)
+                    .single();
+                
+                if (currentUser?.whatsapp_user_id) {
+                    whatsappUserId = currentUser.whatsapp_user_id;
+                    console.log('Using current user WhatsApp ID');
+                }
+            }
+
+            // Priority 2: Find any user with WhatsApp at the same lab
+            if (!whatsappUserId) {
+                const { data: labUsers } = await supabase
+                    .from('users')
+                    .select('whatsapp_user_id')
+                    .eq('lab_id', order.lab_id)
+                    .not('whatsapp_user_id', 'is', null)
+                    .limit(1);
+                
+                if (labUsers && labUsers.length > 0) {
+                    whatsappUserId = labUsers[0].whatsapp_user_id;
+                    console.log('Using lab user WhatsApp ID');
+                }
+            }
+
+            // Priority 3: Lab-level fallback
+            if (!whatsappUserId) {
+                const { data: lab } = await supabase
+                    .from('labs')
+                    .select('whatsapp_user_id, country_code')
+                    .eq('id', order.lab_id)
+                    .single();
+                
+                if (lab?.whatsapp_user_id) {
+                    whatsappUserId = lab.whatsapp_user_id;
+                    console.log('Using lab-level WhatsApp ID');
+                }
+                if (lab?.country_code) {
+                    countryCode = lab.country_code;
+                }
+            }
 
             if (!whatsappUserId) {
-                throw new Error('Lab WhatsApp integration not configured (missing User ID)');
+                throw new Error('Lab WhatsApp integration not configured. Please set up WhatsApp in Settings or contact support.');
             }
 
             // Format Phone
@@ -72,9 +133,21 @@ export const SendReportModal: React.FC<SendReportModalProps> = ({
             }
 
             // Construct Message
+            // Debug: Log clinical summary state
+            console.log('[SendReportModal] Clinical summary state:', {
+                orderId,
+                includeSummaryFlag: includeSummaryFlag,
+                includeSummaryCheckbox: includeSummary,
+                summaryTextExists: !!summaryText,
+                summaryTextLength: summaryText?.length || 0
+            });
+
             let message = `Hello Dr. ${doctorName || 'Doctor'},\n\nThe report for patient ${patientName} is ready.`;
             if (includeSummary && summaryText) {
                 message += `\n\n📋 Clinical Summary:\n${summaryText}`;
+                console.log('[SendReportModal] ✅ Clinical summary ADDED to message');
+            } else {
+                console.log('[SendReportModal] ⚠️ Clinical summary NOT added - checkbox:', includeSummary, 'text exists:', !!summaryText);
             }
             message += `\n\nPlease find the attached report.\n\nThank you.`;
 
@@ -95,7 +168,8 @@ export const SendReportModal: React.FC<SendReportModalProps> = ({
             });
 
             if (!response.ok) {
-                throw new Error(`Sending failed: ${response.statusText}`);
+                const errorText = await response.text();
+                throw new Error(`Sending failed: ${errorText || response.statusText}`);
             }
 
             // Log Success

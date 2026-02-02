@@ -12,13 +12,14 @@ import PatientDetails from '../components/Patients/PatientDetails';
 import PatientTestHistory from '../components/Patients/PatientTestHistory';
 import PatientMergeModal from '../components/Patients/PatientMergeModal';
 import ViewDuplicatesModal from '../components/Patients/ViewDuplicatesModal';
-import { database, supabase, auth } from '../utils/supabase';
+import { database, supabase, auth, formatAge } from '../utils/supabase';
 
 interface Patient {
   id: string;
   display_id?: string;
   name: string;
   age: number;
+  age_unit?: 'years' | 'months' | 'days';
   gender: string;
   phone: string;
   email?: string;
@@ -91,11 +92,40 @@ const Patients: React.FC = () => {
         return;
       }
 
-      const { data, error } = await supabase
+      // ✅ Apply location filtering for access control
+      const { shouldFilter, locationIds } = await database.shouldFilterByLocation();
+
+      // Build base query
+      let query = supabase
         .from('v_patients_with_duplicates')
         .select('*')
         .eq('lab_id', labId)
         .order('registration_date', { ascending: false });
+
+      // ✅ Apply location filter if user is restricted
+      // Note: This filters patients based on order location history
+      // Patients who have orders at the user's assigned locations will be visible
+      if (shouldFilter && locationIds.length > 0) {
+        // Get patient IDs who have orders at assigned locations
+        const { data: patientOrders } = await supabase
+          .from('orders')
+          .select('patient_id')
+          .eq('lab_id', labId)
+          .in('location_id', locationIds);
+
+        const allowedPatientIds = [...new Set((patientOrders || []).map((o: any) => o.patient_id))];
+
+        if (allowedPatientIds.length === 0) {
+          // No patients with orders at assigned locations
+          setPatients([]);
+          setLoading(false);
+          return;
+        }
+
+        query = query.in('id', allowedPatientIds);
+      }
+
+      const { data, error } = await query;
 
       if (error) throw error;
       setPatients(data || []);
@@ -125,6 +155,7 @@ const Patients: React.FC = () => {
       const patientData = {
         name: `${patientDetails.firstName} ${patientDetails.lastName}`.trim(),
         age: parseInt(patientDetails.age),
+        age_unit: patientDetails.age_unit || 'years',
         gender: patientDetails.gender,
         phone: patientDetails.phone,
         email: patientDetails.email || null,
@@ -170,6 +201,7 @@ const Patients: React.FC = () => {
       const patientData = {
         name: `${formData.firstName} ${formData.lastName}`.trim(),
         age: parseInt(formData.age),
+        age_unit: formData.age_unit || 'years',
         gender: formData.gender,
         phone: formData.phone,
         email: formData.email || null,
@@ -351,7 +383,7 @@ const Patients: React.FC = () => {
                       <div className="flex items-center gap-2 text-xs text-gray-500 mt-0.5">
                         <span className="font-mono bg-gray-100 px-1.5 py-0.5 rounded text-gray-600">{patient.display_id || 'ID: ' + patient.id.slice(0, 8)}</span>
                         <span>•</span>
-                        <span>{patient.age}y {patient.gender}</span>
+                        <span>{formatAge(patient.age, patient.age_unit)} {patient.gender}</span>
                       </div>
                     </div>
                   </td>

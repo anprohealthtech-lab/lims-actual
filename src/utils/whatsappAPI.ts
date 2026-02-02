@@ -2,8 +2,11 @@
 import { supabase, database } from './supabase';
 
 // Simple in-memory auth cache to avoid frequent /auth/v1/user calls during polling
-let _authCache: { userId: string | null; token: string | null; fetchedAt: number } = {
-  userId: null,
+// IMPORTANT: userId here is the LIMS users.id (integer), NOT the Supabase auth UUID
+// The WhatsApp backend expects the LIMS user ID that was synced via sync-user-to-whatsapp
+let _authCache: { userId: string | null; authUserId: string | null; token: string | null; fetchedAt: number } = {
+  userId: null,      // LIMS users.id (the one synced to WhatsApp backend)
+  authUserId: null,  // Supabase auth.users.id (UUID)
   token: null,
   fetchedAt: 0,
 };
@@ -62,7 +65,7 @@ const buildHeaders = async (base?: Record<string, string>): Promise<HeadersInit>
   const token = session?.access_token || null;
   if (token) headers['Authorization'] = `Bearer ${token}`;
   _authCache.token = token;
-  _authCache.userId = session?.user?.id || _authCache.userId;
+  _authCache.authUserId = session?.user?.id || _authCache.authUserId;
   _authCache.fetchedAt = now;
   return headers;
 };
@@ -120,21 +123,109 @@ export class WhatsAppAPI {
   }
 
   // Get current user's session information
+  // CRITICAL: Returns the LIMS users.id (not auth UUID) because WhatsApp backend expects
+  // the user ID that was synced via sync-user-to-whatsapp Edge Function
   static async getCurrentUserSession(): Promise<{ userId: string | null; user: any }> {
     const now = Date.now();
-    // Return cached user quickly if recent
+    // Return cached LIMS user ID quickly if recent
     if (_authCache.userId && now - _authCache.fetchedAt < 60_000) {
       return { userId: _authCache.userId, user: { id: _authCache.userId } };
     }
+    
+    // Get auth session
     const { data: { session } } = await supabase.auth.getSession();
-    const user = session?.user || null;
-    _authCache.userId = user?.id || null;
+    const authUser = session?.user || null;
     _authCache.token = session?.access_token || _authCache.token;
+    _authCache.authUserId = authUser?.id || null;
     _authCache.fetchedAt = now;
-    return {
-      userId: user?.id || null,
-      user
-    };
+    
+    if (!authUser?.id) {
+      _authCache.userId = null;
+      return { userId: null, user: null };
+    }
+    
+    // Fetch the LIMS user ID from public.users table using auth_user_id
+    try {
+      const { data: limsUser, error } = await supabase
+        .from('users')
+        .select('id')
+        .eq('auth_user_id', authUser.id)
+        .single();
+      
+      if (error || !limsUser) {
+        console.warn('[WhatsAppAPI] Could not find LIMS user for auth_user_id:', authUser.id);
+        _authCache.userId = null;
+        return { userId: null, user: authUser };
+      }
+      
+      // Cache the LIMS user ID (as string for URL compatibility)
+      _authCache.userId = String(limsUser.id);
+      console.log('[WhatsAppAPI] Resolved LIMS user ID:', _authCache.userId, 'from auth UUID:', authUser.id);
+      
+      return {
+        userId: _authCache.userId,
+        user: { ...authUser, limsId: limsUser.id }
+      };
+    } catch (err) {
+      console.error('[WhatsAppAPI] Error fetching LIMS user:', err);
+      _authCache.userId = null;
+      return { userId: null, user: authUser };
+    }
+  }
+
+  /**
+   * Get the effective WhatsApp User ID for sending messages
+   * This is the user ID selected in Settings -> Lab Settings -> WhatsApp Sender Account
+   * Stored in labs.whatsapp_user_id
+   */
+  static async getEffectiveWhatsAppUserId(): Promise<string | null> {
+    try {
+      // Get auth session
+      const { data: { session } } = await supabase.auth.getSession();
+      const authUser = session?.user;
+      
+      if (!authUser?.id) {
+        console.warn('[WhatsAppAPI] No auth user for getEffectiveWhatsAppUserId');
+        return null;
+      }
+
+      // Get current user's lab_id
+      const { data: currentUser } = await supabase
+        .from('users')
+        .select('id, lab_id')
+        .eq('auth_user_id', authUser.id)
+        .single();
+      
+      const labId = currentUser?.lab_id;
+      if (!labId) {
+        console.warn('[WhatsAppAPI] No lab_id for user');
+        return null;
+      }
+
+      // Get lab's whatsapp_user_id (this is the user ID selected in Settings)
+      const { data: lab } = await supabase
+        .from('labs')
+        .select('whatsapp_user_id')
+        .eq('id', labId)
+        .single();
+      
+      if (lab?.whatsapp_user_id) {
+        console.log('[WhatsAppAPI] Using lab whatsapp_user_id:', lab.whatsapp_user_id);
+        return lab.whatsapp_user_id;
+      }
+
+      // Fallback: Use current user's ID if lab doesn't have one set
+      if (currentUser?.id) {
+        console.log('[WhatsAppAPI] Fallback: Using current user ID:', currentUser.id);
+        return currentUser.id;
+      }
+
+      console.warn('[WhatsAppAPI] No whatsapp_user_id found');
+      return null;
+    } catch (err) {
+      console.error('[WhatsAppAPI] Error in getEffectiveWhatsAppUserId:', err);
+      return null;
+    }
   }
 
   // Force-reset a user's WhatsApp session (DELETE /api/users/:userId/whatsapp/session)
@@ -400,12 +491,14 @@ export class WhatsAppAPI {
     templateData?: Record<string, string>
   ): Promise<MessageResult> {
     try {
-      const { userId } = await this.getCurrentUserSession();
       const labId = await database.getCurrentUserLabId();
-      if (!userId || !labId) {
+      // Get the effective WhatsApp user ID (priority: current user > lab users > lab-level)
+      const whatsappUserId = await this.getEffectiveWhatsAppUserId();
+      
+      if (!whatsappUserId || !labId) {
         return {
           success: false,
-          message: 'User or lab not available'
+          message: 'WhatsApp not configured. Please sync a user in WhatsApp → User Sync or set Lab WhatsApp Sender in Settings.'
         };
       }
 
@@ -429,13 +522,11 @@ export class WhatsAppAPI {
         if (error) throw error;
         return data as MessageResult;
       } else if (WHATSAPP_API_MODE === 'netlify-functions') {
-        const { userId } = await this.getCurrentUserSession();
-        if (!userId) throw new Error('User not authenticated');
         const response = await fetch('/.netlify/functions/whatsapp-send-message', {
           method: 'POST',
           headers: await buildHeaders({ 'Content-Type': 'application/json' }),
           // Netlify function expects `phoneNumber`, not `phone`
-          body: JSON.stringify({ labId, userId, phoneNumber: plainPhone, message, templateData })
+          body: JSON.stringify({ labId, userId: whatsappUserId, phoneNumber: plainPhone, message, templateData })
         });
         const result = await response.json();
         return result;
@@ -485,10 +576,12 @@ export class WhatsAppAPI {
     testName?: string
   ): Promise<MessageResult> {
     try {
-      const { userId } = await this.getCurrentUserSession();
       const labId = await database.getCurrentUserLabId();
-      if (!userId || !labId) {
-        return { success: false, message: 'User or lab not available' };
+      // Get the effective WhatsApp user ID (priority: current user > lab users > lab-level)
+      const whatsappUserId = await this.getEffectiveWhatsAppUserId();
+      
+      if (!whatsappUserId || !labId) {
+        return { success: false, message: 'WhatsApp not configured. Please sync a user in WhatsApp → User Sync or set Lab WhatsApp Sender in Settings.' };
       }
 
       // Prefer backend to fetch from URL (avoids CORS and big downloads in browser)
@@ -505,8 +598,6 @@ export class WhatsAppAPI {
         if (!error && data) return data as MessageResult;
         // Fallback to REST URL endpoint if available
       } else if (WHATSAPP_API_MODE === 'netlify-functions') {
-        const { userId } = await this.getCurrentUserSession();
-        if (!userId) throw new Error('User not authenticated');
         const formattedPhone = this.formatPhoneNumber(phoneNumber);
         if (!this.validatePhoneNumber(phoneNumber)) {
           return { success: false, message: 'Invalid phone number format' };
@@ -522,7 +613,7 @@ export class WhatsAppAPI {
           method: 'POST',
           headers: await buildHeaders({ 'Content-Type': 'application/json' }),
           body: JSON.stringify({
-            userId,
+            userId: whatsappUserId,  // Use the effective WhatsApp user ID
             fileUrl: reportUrl,
             fileName,
             caption: captionText,
@@ -673,7 +764,8 @@ export class WhatsAppAPI {
       const buildCandidates = async (): Promise<{ url: string; protocols?: string[] }[]> => {
         const { data: sessionData } = await supabase.auth.getSession();
         const token = sessionData.session?.access_token || '';
-        const userId = sessionData.session?.user?.id || '';
+        // Get LIMS user ID (not auth UUID) for WhatsApp backend compatibility
+        const { userId } = await this.getCurrentUserSession();
         const labId = await database.getCurrentUserLabId();
 
         const toUrl = (path: string, withToken = true, withUserLab = true) => {

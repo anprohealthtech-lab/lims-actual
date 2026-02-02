@@ -28,7 +28,8 @@ export interface ResultValue {
   value: string;
   unit: string;
   reference_range: string;
-  flag: 'H' | 'L' | 'C' | null;
+  // Flag can be any string - AI handles all variations (H, L, C, high, low, critical_h, critical_l, etc.)
+  flag: string | null;
   interpretation?: string | null;
   ai_suggested_flag?: string | null;
   ai_suggested_interpretation?: string | null;
@@ -94,6 +95,45 @@ export interface ClinicalSummaryResponse {
   // Flags for saved summaries loaded from database
   _savedFromDb?: boolean;
   _generatedAt?: string;
+}
+
+/**
+ * Delta Check Issue - Individual issue identified by the delta check
+ */
+export interface DeltaCheckIssue {
+  /** Type of issue identified */
+  issue_type: 'input_error' | 'sample_issue' | 'conflicting_result' | 'unusual_change' | 'quality_concern';
+  /** Severity of the issue */
+  severity: 'critical' | 'warning' | 'info';
+  /** Which analyte(s) are affected */
+  affected_analytes: string[];
+  /** Description of the issue */
+  description: string;
+  /** Suggested action to resolve */
+  suggested_action: string;
+  /** Evidence supporting this issue */
+  evidence: string;
+}
+
+/**
+ * Delta Check Response - AI-powered quality control check
+ * Compares current results with historical data to identify potential issues
+ */
+export interface DeltaCheckResponse {
+  /** Overall confidence in the report (0-100) */
+  confidence_score: number;
+  /** Confidence level description */
+  confidence_level: 'high' | 'medium' | 'low';
+  /** Summary of the delta check */
+  summary: string;
+  /** List of issues identified */
+  issues: DeltaCheckIssue[];
+  /** Results that passed all checks */
+  validated_results: string[];
+  /** Recommendation for the verifier */
+  recommendation: 'approve' | 'review_required' | 'reject';
+  /** Detailed notes for the verifier */
+  verifier_notes: string;
 }
 
 /**
@@ -459,11 +499,45 @@ export function useAIResultIntelligence() {
     return typedResponse;
   }, [callAIFunction]);
 
+  /**
+   * Perform AI Delta Check - Quality control check for laboratory results
+   * Compares current results with historical data to identify:
+   * - Potential input errors
+   * - Sample issues (hemolysis, lipemia, etc.)
+   * - Conflicting results between related tests
+   * - Unusual changes from previous results
+   *
+   * @param testGroup - Test group context
+   * @param resultValues - Current result values with historical data
+   * @param patient - Optional patient context
+   * @param relatedTestResults - Optional results from related tests in the same order
+   */
+  const performDeltaCheck = useCallback(async (
+    testGroup: TestGroupContext,
+    resultValues: ResultValue[],
+    patient?: PatientContext,
+    relatedTestResults?: Array<{
+      test_name: string;
+      analyte_name: string;
+      value: string;
+      unit: string;
+      flag?: string | null;
+    }>
+  ): Promise<DeltaCheckResponse> => {
+    return callAIFunction<DeltaCheckResponse>({
+      action: 'delta_check',
+      test_group: testGroup,
+      result_values: resultValues,
+      patient,
+      related_test_results: relatedTestResults,
+    });
+  }, [callAIFunction]);
+
   return {
     // State
     loading: state.loading,
     error: state.error,
-    
+
     // Actions
     generateMissingInterpretations,
     generateResultValueSuggestions,
@@ -471,7 +545,8 @@ export function useAIResultIntelligence() {
     getVerifierSummary,
     getClinicalSummary,
     getPatientSummary,
-    
+    performDeltaCheck,
+
     // Clear error utility
     clearError: useCallback(() => {
       setState(prev => ({ ...prev, error: null }));

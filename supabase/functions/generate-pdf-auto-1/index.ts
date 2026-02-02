@@ -2866,7 +2866,11 @@ serve(async (req) => {
     
     const resultIds = (allResults || []).map((r: any) => r.id)
     console.log(`📋 Found ${resultIds.length} result(s) for order`)
-    
+
+    // Fetch section content for pre-defined report sections (PBS, Radiology, etc.)
+    const sectionContentFromDb = await fetchSectionContent(supabaseClient, resultIds)
+    console.log(`📝 Fetched ${Object.keys(sectionContentFromDb).length} section content(s):`, Object.keys(sectionContentFromDb))
+
     // ========================================
     // Step 7c: Get Branding Pages (Front/Back)
     // ========================================
@@ -2907,8 +2911,8 @@ serve(async (req) => {
       effectiveGroupCount
     })
 
-    // Section content map for placeholders
-    const sectionContent: Record<string, string> = {}
+    // Section content map for placeholders (populated from database above)
+    const sectionContent: Record<string, string> = { ...sectionContentFromDb }
 
     // Helper: Select appropriate template
     const selectTemplate = (ctx: any) => {

@@ -210,6 +210,55 @@ function getInterpretation(
   return undefined;
 }
 
+const mergeAnalyteWithLabOverride = (baseAnalyte?: AnalyteContext, labOverride?: any): AnalyteContext | undefined => {
+  if (!baseAnalyte && !labOverride) return undefined;
+
+  const base = baseAnalyte || (labOverride?.analytes as AnalyteContext | undefined) || undefined;
+  const resolvedName =
+    labOverride?.lab_specific_name ||
+    labOverride?.name ||
+    base?.name ||
+    '';
+
+  return {
+    id: base?.id || labOverride?.analyte_id,
+    name: resolvedName,
+    unit: labOverride?.lab_specific_unit || labOverride?.unit || base?.unit,
+    reference_range: labOverride?.lab_specific_reference_range || labOverride?.reference_range || base?.reference_range,
+    reference_range_male:
+      labOverride?.lab_specific_reference_range_male ||
+      labOverride?.reference_range_male ||
+      base?.reference_range_male,
+    reference_range_female:
+      labOverride?.lab_specific_reference_range_female ||
+      labOverride?.reference_range_female ||
+      base?.reference_range_female,
+    low_critical:
+      labOverride?.lab_specific_low_critical ||
+      labOverride?.low_critical ||
+      base?.low_critical,
+    high_critical:
+      labOverride?.lab_specific_high_critical ||
+      labOverride?.high_critical ||
+      base?.high_critical,
+    value_type: (labOverride?.value_type || base?.value_type) as ValueType,
+    expected_normal_values: labOverride?.expected_normal_values || base?.expected_normal_values,
+    flag_rules: labOverride?.flag_rules || base?.flag_rules,
+    interpretation_low:
+      labOverride?.lab_specific_interpretation_low ||
+      labOverride?.interpretation_low ||
+      base?.interpretation_low,
+    interpretation_normal:
+      labOverride?.lab_specific_interpretation_normal ||
+      labOverride?.interpretation_normal ||
+      base?.interpretation_normal,
+    interpretation_high:
+      labOverride?.lab_specific_interpretation_high ||
+      labOverride?.interpretation_high ||
+      base?.interpretation_high,
+  };
+};
+
 /**
  * Analyze a single result value and determine flag
  */
@@ -222,12 +271,20 @@ export async function analyzeResultValue(
     // If no analyte provided, try to fetch it
     let analyteData = analyte;
     if (!analyteData && resultValue.analyte_id) {
-      const { data } = await supabase
-        .from('analytes')
-        .select('*')
-        .eq('id', resultValue.analyte_id)
-        .single();
-      analyteData = data;
+      const labId = resultValue.lab_id || (await database.getCurrentUserLabId());
+      if (labId) {
+        const { data: labAnalyte } = await database.labAnalytes.getByLabAndAnalyte(labId, resultValue.analyte_id);
+        analyteData = mergeAnalyteWithLabOverride(labAnalyte?.analytes as AnalyteContext | undefined, labAnalyte) || analyteData;
+      }
+
+      if (!analyteData) {
+        const { data } = await supabase
+          .from('analytes')
+          .select('*')
+          .eq('id', resultValue.analyte_id)
+          .single();
+        analyteData = data;
+      }
     }
 
     // Get gender-specific reference range
@@ -350,6 +407,19 @@ export async function analyzeOrderResults(
       throw new Error(`Failed to fetch result values: ${rvError.message}`);
     }
 
+    const analyteIds = (resultValues || [])
+      .map((rv: any) => rv.analyte_id)
+      .filter(Boolean) as string[];
+    const labId = (resultValues || []).find((rv: any) => rv.lab_id)?.lab_id || (await database.getCurrentUserLabId());
+    const labOverridesMap: Record<string, any> = {};
+
+    if (labId && analyteIds.length > 0) {
+      const { data: labOverrides } = await database.labAnalytes.getByLabAndAnalyteIds(labId, Array.from(new Set(analyteIds)));
+      (labOverrides || []).forEach((la: any) => {
+        labOverridesMap[la.analyte_id] = la;
+      });
+    }
+
     // Analyze each result value
     for (const rv of resultValues || []) {
       try {
@@ -368,7 +438,8 @@ export async function analyzeOrderResults(
         }
 
         // Build analyte context from joined data
-        const analyteContext: AnalyteContext | undefined = rv.analytes ? {
+        const labOverride = rv.analyte_id ? labOverridesMap[rv.analyte_id] : undefined;
+        const baseAnalyte: AnalyteContext | undefined = rv.analytes ? {
           id: rv.analytes.id,
           name: rv.analytes.name,
           unit: rv.analytes.unit,
@@ -381,15 +452,17 @@ export async function analyzeOrderResults(
           expected_normal_values: rv.analytes.expected_normal_values,
           interpretation_low: rv.analytes.interpretation_low,
           interpretation_normal: rv.analytes.interpretation_normal,
-          interpretation_high: rv.analytes.interpretation_high
+          interpretation_high: rv.analytes.interpretation_high,
+          flag_rules: rv.analytes.flag_rules
         } : undefined;
+        const analyteContext = mergeAnalyteWithLabOverride(baseAnalyte, labOverride) || baseAnalyte;
 
         const result = await analyzeResultValue(
           {
             id: rv.id,
             value: rv.value,
             unit: rv.unit,
-            reference_range: rv.reference_range,
+            reference_range: analyteContext?.reference_range || rv.reference_range,
             flag: rv.flag,
             analyte_id: rv.analyte_id
           },
@@ -553,6 +626,17 @@ export async function runAIFlagAnalysis(
       const { data: resultValues } = await database.resultValues.getForOrderWithFlags(orderId);
       
       if (resultValues && resultValues.length > 0) {
+        const analyteIds = resultValues.map((rv: any) => rv.analyte_id).filter(Boolean) as string[];
+        const labId = resultValues.find((rv: any) => rv.lab_id)?.lab_id || (await database.getCurrentUserLabId());
+        const labOverridesMap: Record<string, any> = {};
+
+        if (labId && analyteIds.length > 0) {
+          const { data: labOverrides } = await database.labAnalytes.getByLabAndAnalyteIds(labId, Array.from(new Set(analyteIds)));
+          (labOverrides || []).forEach((la: any) => {
+            labOverridesMap[la.analyte_id] = la;
+          });
+        }
+
         // Only send results that need AI enhancement (null flag or null interpretation)
         const resultsNeedingAI = resultValues.filter(rv => {
           const ruleResult = analysisResult.results.find(r => r.resultValueId === rv.id);
@@ -560,7 +644,35 @@ export async function runAIFlagAnalysis(
         });
 
         // If all have flags and interpretations already, still run AI if explicitly requested
-        const toProcess = defaultOptions.useAIService === true ? resultValues : resultsNeedingAI;
+        const toProcess = (defaultOptions.useAIService === true ? resultValues : resultsNeedingAI).map(rv => {
+          const labOverride = rv.analyte_id ? labOverridesMap[rv.analyte_id] : undefined;
+          if (!labOverride) return rv;
+
+          return {
+            ...rv,
+            reference_range: labOverride.lab_specific_reference_range || labOverride.reference_range || rv.reference_range,
+            reference_range_male:
+              labOverride.lab_specific_reference_range_male || labOverride.reference_range_male || rv.reference_range_male,
+            reference_range_female:
+              labOverride.lab_specific_reference_range_female || labOverride.reference_range_female || rv.reference_range_female,
+            low_critical: labOverride.lab_specific_low_critical || labOverride.low_critical || rv.low_critical,
+            high_critical: labOverride.lab_specific_high_critical || labOverride.high_critical || rv.high_critical,
+            analytes: {
+              ...(rv.analytes || {}),
+              reference_range: labOverride.lab_specific_reference_range || labOverride.reference_range || rv.analytes?.reference_range,
+              reference_range_male:
+                labOverride.lab_specific_reference_range_male || labOverride.reference_range_male || rv.analytes?.reference_range_male,
+              reference_range_female:
+                labOverride.lab_specific_reference_range_female || labOverride.reference_range_female || rv.analytes?.reference_range_female,
+              low_critical: labOverride.lab_specific_low_critical || labOverride.low_critical || rv.analytes?.low_critical,
+              high_critical: labOverride.lab_specific_high_critical || labOverride.high_critical || rv.analytes?.high_critical,
+              expected_normal_values: labOverride.expected_normal_values || rv.analytes?.expected_normal_values,
+              value_type: labOverride.value_type || rv.analytes?.value_type,
+              flag_rules: labOverride.flag_rules || rv.analytes?.flag_rules,
+              ref_range_knowledge: labOverride.ref_range_knowledge || rv.analytes?.ref_range_knowledge,
+            }
+          };
+        });
 
         if (toProcess.length > 0) {
           

@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
-import { supabase } from '../utils/supabase';
+import { supabase, formatAge } from '../utils/supabase';
 import { 
   CheckCircle, 
   XCircle, 
@@ -535,7 +535,7 @@ export default function ResultsVerification() {
                         <div>
                           <div className="font-medium text-gray-900">{testGroup.test_name}</div>
                           <div className="text-sm text-gray-600">
-                            {testGroup.patient_name} • {testGroup.patient_code} • {testGroup.age}y {testGroup.gender}
+                            {testGroup.patient_name} • {testGroup.patient_code} • {formatAge(testGroup.age, (testGroup as any).age_unit)} {testGroup.gender}
                           </div>
                           <div className="text-xs text-gray-500">
                             Order: {testGroup.order_id} • Sample: {testGroup.sample_id}

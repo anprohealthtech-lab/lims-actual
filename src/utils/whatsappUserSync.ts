@@ -251,6 +251,43 @@ class WhatsAppUserSyncService {
         .update(updateData)
         .eq('id', userId);
 
+      // If sync was successful and we have a whatsappUserId, also update labs table if it's empty
+      if (success && whatsappUserId) {
+        try {
+          // Get user's lab_id and role
+          const { data: user } = await supabase
+            .from('users')
+            .select('lab_id, role')
+            .eq('id', userId)
+            .single();
+
+          if (user?.lab_id) {
+            // Check if lab's whatsapp_user_id is empty
+            const { data: lab } = await supabase
+              .from('labs')
+              .select('whatsapp_user_id')
+              .eq('id', user.lab_id)
+              .single();
+
+            // If lab doesn't have a whatsapp_user_id yet, set it (prioritize Admin users)
+            if (!lab?.whatsapp_user_id) {
+              await supabase
+                .from('labs')
+                .update({ 
+                  whatsapp_user_id: whatsappUserId,
+                  updated_at: new Date().toISOString()
+                })
+                .eq('id', user.lab_id);
+              
+              console.log(`✅ Auto-set labs.whatsapp_user_id to ${whatsappUserId} for lab ${user.lab_id}`);
+            }
+          }
+        } catch (labUpdateError) {
+          console.error('Failed to update lab whatsapp_user_id:', labUpdateError);
+          // Don't fail the overall sync if lab update fails
+        }
+      }
+
     } catch (error) {
       console.error('Failed to update sync status:', error);
     }

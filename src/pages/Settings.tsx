@@ -30,7 +30,8 @@ import {
   Save,
   Loader2,
   UserCheck,
-  Globe
+  Globe,
+  MessageSquare
 } from 'lucide-react';
 import { LANGUAGE_DISPLAY_NAMES, type SupportedLanguage } from '../hooks/useAIResultIntelligence';
 import { COUNTRY_CODE_OPTIONS } from '../utils/phoneFormatter';
@@ -89,6 +90,7 @@ interface LabSettings {
   registration_number: string;
   gst_number: string;
   upi_id: string;
+  whatsapp_user_id?: string | null;
   bank_details: {
     bank_name?: string;
     account_number?: string;
@@ -103,6 +105,12 @@ interface LabSettings {
   watermark_rotation: number;
   preferred_language: SupportedLanguage;
   country_code?: string;
+  result_colors?: {
+    enabled: boolean;
+    high: string;
+    low: string;
+    normal: string;
+  } | null;
 }
 
 // Define UserForm component outside of Settings
@@ -486,6 +494,7 @@ const Settings: React.FC = () => {
   const [permissions, setPermissions] = useState<Permission[]>([]);
   const [availableRoles, setAvailableRoles] = useState<any[]>([]);
   const [labSettings, setLabSettings] = useState<LabSettings | null>(null);
+  const [syncedWhatsAppUsers, setSyncedWhatsAppUsers] = useState<{id: string; name: string; whatsapp_user_id: string}[]>([]);
   const [usageStats, setUsageStats] = useState<UsageStats>({
     totalUsers: 0,
     activeUsers: 0,
@@ -542,6 +551,7 @@ const Settings: React.FC = () => {
             registration_number: labData.registration_number || '',
             gst_number: (labData as any).gst_number || '',
             upi_id: (labData as any).upi_id || '',
+            whatsapp_user_id: (labData as any).whatsapp_user_id || null,
             bank_details: (labData as any).bank_details || null,
             watermark_enabled: labData.watermark_enabled || false,
             watermark_opacity: labData.watermark_opacity || 0.15,
@@ -551,6 +561,47 @@ const Settings: React.FC = () => {
             preferred_language: labData.preferred_language || 'english',
             country_code: (labData as any).country_code || '+91',
           });
+        }
+
+        // Load ALL users for WhatsApp sender dropdown (use user.id as whatsapp_user_id)
+        const { data: allLabUsers, error: allUsersError } = await supabase
+          .from('users')
+          .select('id, name, role, user_roles(role_name)')
+          .eq('lab_id', currentLabId)
+          .eq('status', 'Active')
+          .order('name');
+        
+        console.log('[Settings] WhatsApp sender dropdown - Users for lab:', {
+          labId: currentLabId,
+          usersCount: allLabUsers?.length || 0,
+          users: allLabUsers?.map(u => ({ id: u.id, name: u.name })),
+          error: allUsersError
+        });
+        
+        if (allLabUsers && allLabUsers.length > 0) {
+          const usersForDropdown = allLabUsers.map(u => ({
+            id: u.id,
+            name: u.name || 'Unknown',
+            whatsapp_user_id: u.id  // Use same user ID
+          }));
+          setSyncedWhatsAppUsers(usersForDropdown);
+          
+          // If lab doesn't have whatsapp_user_id set, auto-set to first Admin user
+          if (!labData?.whatsapp_user_id) {
+            const adminUser = allLabUsers.find(u => 
+              (u.user_roles as any)?.role_name === 'Admin' || u.role === 'Admin'
+            );
+            if (adminUser) {
+              // Auto-update lab's whatsapp_user_id
+              await supabase
+                .from('labs')
+                .update({ whatsapp_user_id: adminUser.id })
+                .eq('id', currentLabId);
+              
+              setLabSettings(prev => ({ ...prev, whatsapp_user_id: adminUser.id }));
+              console.log(`✅ Auto-set lab whatsapp_user_id to Admin user: ${adminUser.name} (${adminUser.id})`);
+            }
+          }
         }
 
         // Load users for this lab
@@ -729,6 +780,7 @@ const Settings: React.FC = () => {
         registration_number: labSettings.registration_number,
         gst_number: labSettings.gst_number || null,
         upi_id: labSettings.upi_id || null,
+        whatsapp_user_id: labSettings.whatsapp_user_id || null,
         bank_details: labSettings.bank_details || null,
         watermark_enabled: labSettings.watermark_enabled,
         watermark_opacity: labSettings.watermark_opacity,
@@ -1440,6 +1492,29 @@ const Settings: React.FC = () => {
                       </div>
                       <div>
                         <label className="block text-sm font-medium text-gray-700 mb-1">
+                          <MessageSquare className="h-4 w-4 inline mr-1" />
+                          WhatsApp Sender Account
+                        </label>
+                        <select
+                          value={labSettings.whatsapp_user_id || ''}
+                          onChange={(e) => setLabSettings(prev => prev ? { ...prev, whatsapp_user_id: e.target.value || null } : prev)}
+                          className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                        >
+                          <option value="">-- Select User --</option>
+                          {syncedWhatsAppUsers.map(u => (
+                            <option key={u.id} value={u.whatsapp_user_id}>
+                              {u.name} ({u.whatsapp_user_id.substring(0, 8)}...)
+                            </option>
+                          ))}
+                        </select>
+                        <p className="text-xs text-gray-500 mt-1">
+                          {syncedWhatsAppUsers.length === 0 
+                            ? '⚠️ No synced users. Go to WhatsApp → User Sync to sync users first.'
+                            : 'Select which user\'s WhatsApp account to use for sending messages'}
+                        </p>
+                      </div>
+                      <div>
+                        <label className="block text-sm font-medium text-gray-700 mb-1">
                           <Phone className="h-4 w-4 inline mr-1" />
                           Phone
                         </label>
@@ -1575,6 +1650,172 @@ const Settings: React.FC = () => {
                           disabled={!labSettings.watermark_enabled}
                           className="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer disabled:opacity-50"
                         />
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Report Flag Color Settings */}
+                  <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6 lg:col-span-2">
+                    <h3 className="text-lg font-semibold text-gray-900 mb-4 flex items-center">
+                      <FileText className="h-5 w-5 mr-2 text-purple-600" />
+                      Test Result Flag Colors
+                    </h3>
+                    <p className="text-sm text-gray-600 mb-4">
+                      Customize how abnormal test results are highlighted in PDF reports. These colors apply to both values and flag text.
+                    </p>
+                    <div className="space-y-4">
+                      <div className="flex items-center mb-4">
+                        <label className="flex items-center cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={labSettings.result_colors?.enabled ?? true}
+                            onChange={(e) => setLabSettings(prev => prev ? { 
+                              ...prev, 
+                              result_colors: { 
+                                enabled: e.target.checked,
+                                high: prev.result_colors?.high || '#dc2626',
+                                low: prev.result_colors?.low || '#ea580c',
+                                normal: prev.result_colors?.normal || '#16a34a'
+                              } 
+                            } : prev)}
+                            className="h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded mr-2"
+                          />
+                          <span className="text-sm font-medium text-gray-700">Enable Flag Coloring (E-Copy version)</span>
+                        </label>
+                      </div>
+                      
+                      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                        <div>
+                          <label className="block text-sm font-medium text-gray-700 mb-2">
+                            High/Critical High Results
+                          </label>
+                          <div className="flex items-center space-x-3">
+                            <input
+                              type="color"
+                              value={labSettings.result_colors?.high || '#dc2626'}
+                              onChange={(e) => setLabSettings(prev => prev ? { 
+                                ...prev, 
+                                result_colors: { 
+                                  enabled: prev.result_colors?.enabled ?? true,
+                                  high: e.target.value,
+                                  low: prev.result_colors?.low || '#ea580c',
+                                  normal: prev.result_colors?.normal || '#16a34a'
+                                } 
+                              } : prev)}
+                              disabled={!(labSettings.result_colors?.enabled ?? true)}
+                              className="h-10 w-20 border border-gray-300 rounded cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+                            />
+                            <div>
+                              <div className="text-sm font-medium text-gray-900">
+                                {labSettings.result_colors?.high || '#dc2626'}
+                              </div>
+                              <div className="text-xs text-gray-500">Default: Red (#dc2626)</div>
+                            </div>
+                          </div>
+                          <div className="mt-2 p-2 border border-gray-200 rounded bg-gray-50">
+                            <span 
+                              className="text-sm font-bold" 
+                              style={{ color: labSettings.result_colors?.high || '#dc2626' }}
+                            >
+                              Preview: high, critical_high
+                            </span>
+                          </div>
+                          <div className="text-xs text-gray-500 mt-1">
+                            Also applies to: abnormal, critical_h, H, HH
+                          </div>
+                        </div>
+
+                        <div>
+                          <label className="block text-sm font-medium text-gray-700 mb-2">
+                            Low/Critical Low Results
+                          </label>
+                          <div className="flex items-center space-x-3">
+                            <input
+                              type="color"
+                              value={labSettings.result_colors?.low || '#ea580c'}
+                              onChange={(e) => setLabSettings(prev => prev ? { 
+                                ...prev, 
+                                result_colors: { 
+                                  enabled: prev.result_colors?.enabled ?? true,
+                                  high: prev.result_colors?.high || '#dc2626',
+                                  low: e.target.value,
+                                  normal: prev.result_colors?.normal || '#16a34a'
+                                } 
+                              } : prev)}
+                              disabled={!(labSettings.result_colors?.enabled ?? true)}
+                              className="h-10 w-20 border border-gray-300 rounded cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+                            />
+                            <div>
+                              <div className="text-sm font-medium text-gray-900">
+                                {labSettings.result_colors?.low || '#ea580c'}
+                              </div>
+                              <div className="text-xs text-gray-500">Default: Orange (#ea580c)</div>
+                            </div>
+                          </div>
+                          <div className="mt-2 p-2 border border-gray-200 rounded bg-gray-50">
+                            <span 
+                              className="text-sm font-bold" 
+                              style={{ color: labSettings.result_colors?.low || '#ea580c' }}
+                            >
+                              Preview: low, critical_low
+                            </span>
+                          </div>
+                          <div className="text-xs text-gray-500 mt-1">
+                            Also applies to: critical_l, L, LL
+                          </div>
+                        </div>
+
+                        <div>
+                          <label className="block text-sm font-medium text-gray-700 mb-2">
+                            Normal Results
+                          </label>
+                          <div className="flex items-center space-x-3">
+                            <input
+                              type="color"
+                              value={labSettings.result_colors?.normal || '#16a34a'}
+                              onChange={(e) => setLabSettings(prev => prev ? { 
+                                ...prev, 
+                                result_colors: { 
+                                  enabled: prev.result_colors?.enabled ?? true,
+                                  high: prev.result_colors?.high || '#dc2626',
+                                  low: prev.result_colors?.low || '#ea580c',
+                                  normal: e.target.value
+                                } 
+                              } : prev)}
+                              disabled={!(labSettings.result_colors?.enabled ?? true)}
+                              className="h-10 w-20 border border-gray-300 rounded cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+                            />
+                            <div>
+                              <div className="text-sm font-medium text-gray-900">
+                                {labSettings.result_colors?.normal || '#16a34a'}
+                              </div>
+                              <div className="text-xs text-gray-500">Default: Green (#16a34a)</div>
+                            </div>
+                          </div>
+                          <div className="mt-2 p-2 border border-gray-200 rounded bg-gray-50">
+                            <span 
+                              className="text-sm font-bold" 
+                              style={{ color: labSettings.result_colors?.normal || '#16a34a' }}
+                            >
+                              Preview: normal
+                            </span>
+                          </div>
+                          <div className="text-xs text-gray-500 mt-1">
+                            Also applies to: N
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="bg-blue-50 border border-blue-200 rounded-lg p-3 mt-4">
+                        <div className="space-y-1 text-xs text-blue-800">
+                          <p><strong>How it works:</strong></p>
+                          <ul className="list-disc list-inside space-y-0.5 ml-2">
+                            <li><strong>Critical values</strong> automatically use the same color as their direction (critical_high → high color, critical_low → low color)</li>
+                            <li><strong>"Abnormal" without direction</strong> uses the high color (treated as generally concerning)</li>
+                            <li><strong>E-Copy (screen)</strong>: Uses these colors for visual highlighting</li>
+                            <li><strong>Print version</strong>: Uses bold text instead of colors for grayscale printing</li>
+                          </ul>
+                        </div>
                       </div>
                     </div>
                   </div>

@@ -28,7 +28,7 @@ serve(async (req) => {
   try {
     const { question, workflow, ai_spec, context, action_type } = await req.json()
     
-    const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash-exp" })
+    const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" })
     
     // Check if this is a modification request
     const isModificationRequest = action_type === 'modify' || 

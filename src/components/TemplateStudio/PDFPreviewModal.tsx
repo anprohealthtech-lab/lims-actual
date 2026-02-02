@@ -200,6 +200,16 @@ const BASELINE_CSS = `
   text-align: right;
 }
 
+/* Method name (test methodology) */
+.method-name {
+  display: block;
+  font-size: 0.75rem;
+  font-weight: 400;
+  color: rgba(255, 255, 255, 0.85);
+  margin-top: 2px;
+  font-style: italic;
+}
+
 /* Page break helpers */
 .page-break {
   page-break-before: always;

@@ -20,7 +20,8 @@ import UserManagement from './pages/UserManagement';
 import Settings from './pages/Settings';
 import ResultVerificationConsole from './pages/ResultVerificationConsole';
 import { WorkflowManagement } from './pages/WorkflowManagement';
-import WorkflowDemo from './pages/WorkflowDemo';
+// DEPRECATED: Consolidated into WorkflowManagement with UnifiedWorkflowRunner
+// import WorkflowDemo from './pages/WorkflowDemo';
 import OrderDetail from './pages/OrderDetail';
 import WhatsApp from './pages/WhatsApp';
 import WhatsAppUserSyncManager from './components/WhatsApp/WhatsAppUserSyncManager';
@@ -46,9 +47,11 @@ import TemplateStudioCKE from './pages/TemplateStudioCKE';
 import { BrandingSettings } from './pages/BrandingSettings';
 import WorkflowConfiguratorPage from './pages/WorkflowConfiguratorPage';
 import WorkflowEvaluatorPage from './pages/WorkflowEvaluatorPage';
-import WorkflowExplainerDemo from './pages/WorkflowExplainerDemo';
+// DEPRECATED: Consolidated into WorkflowConfiguratorPage
+// import WorkflowExplainerDemo from './pages/WorkflowExplainerDemo';
 import AIPromptManager from './pages/AIPromptManager';
-import WorkflowExplainerTestPage from './pages/WorkflowExplainerTestPage';
+// DEPRECATED: Test page with hardcoded data - no longer needed
+// import WorkflowExplainerTestPage from './pages/WorkflowExplainerTestPage';
 import OptimizationDemo from './pages/OptimizationDemo';
 import OutsourcedReportsConsole from './pages/OutsourcedReportsConsole';
 import OutsourcedReportsConsoleEnhanced from './pages/OutsourcedReportsConsoleEnhanced';
@@ -60,11 +63,22 @@ import LabOnboarding from './pages/LabOnboarding';
 import VerificationPage from './pages/VerificationPage';
 import FinancialReports from './pages/FinancialReports';
 import Analytics from './pages/Analytics';
+import QualityControl from './pages/QualityControl';
 
 // ⬇️ B2B Portal
 import B2BLogin from './pages/B2BLogin';
 import B2BPortal from './pages/B2BPortal';
 import ProtectedB2BRoute from './components/Auth/ProtectedB2BRoute';
+
+// ⬇️ Doctor Sharing Portal (Admin Only)
+import DoctorSharingLogin from './pages/DoctorSharingLogin';
+import DoctorSharingLayout from './pages/DoctorSharingLayout';
+import DoctorSharingDashboard from './pages/DoctorSharingDashboard';
+import DoctorSharingSettings from './pages/DoctorSharingSettings';
+import DoctorCommissionReport from './pages/DoctorCommissionReport';
+
+// WhatsApp Hybrid System Components
+import { FailedNotificationToast } from './components/WhatsApp/FailedNotificationToast';
 
 
 const AppRoutes: React.FC = () => {
@@ -141,6 +155,29 @@ const AppRoutes: React.FC = () => {
         }
       />
 
+      {/* Doctor Sharing Portal routes (Admin Only) */}
+      <Route
+        path="/doctor-sharing"
+        element={<DoctorSharingLogin />}
+      />
+      <Route
+        path="/doctor-sharing/login"
+        element={<DoctorSharingLogin />}
+      />
+      <Route
+        path="/doctor-sharing/*"
+        element={
+          <DoctorSharingLayout>
+            <Routes>
+              <Route path="dashboard" element={<DoctorSharingDashboard />} />
+              <Route path="settings" element={<DoctorSharingSettings />} />
+              <Route path="commission" element={<DoctorCommissionReport />} />
+              <Route path="*" element={<Navigate to="/doctor-sharing/dashboard" replace />} />
+            </Routes>
+          </DoctorSharingLayout>
+        }
+      />
+
 
       {/* Protected routes */}
       <Route
@@ -173,10 +210,13 @@ const AppRoutes: React.FC = () => {
                 <Route path="/user-management" element={<UserManagement />} />
                 <Route path="/verification" element={<ResultVerificationConsole />} />
                 <Route path="/workflows" element={<WorkflowManagement />} />
-                <Route path="/workflow-demo" element={<WorkflowDemo />} />
+                <Route path="/quality-control" element={<QualityControl />} />
+                {/* DEPRECATED: Use /workflows instead */}
+                {/* <Route path="/workflow-demo" element={<WorkflowDemo />} /> */}
                 <Route path="/workflow-configurator" element={<WorkflowConfiguratorPage />} />
                 <Route path="/workflow-evaluator/:protocolId" element={<WorkflowEvaluatorPage />} />
-                <Route path="/workflow-explainer-demo" element={<WorkflowExplainerDemo />} />
+                {/* DEPRECATED: Use /workflow-configurator instead */}
+                {/* <Route path="/workflow-explainer-demo" element={<WorkflowExplainerDemo />} /> */}
                 <Route path="/optimization-demo" element={<OptimizationDemo />} />
                 <Route path="/visual-form-builder" element={<VisualFormBuilder />} />
                 <Route path="/orders/:id" element={<OrderDetail />} />
@@ -210,6 +250,8 @@ function App() {
     <AuthProvider>
       <Router>
         <AppRoutes />
+        {/* Global WhatsApp Failed Notification Toast - shows realtime alerts */}
+        <FailedNotificationToast />
       </Router>
     </AuthProvider>
   );

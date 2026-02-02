@@ -1,5 +1,5 @@
 // src/pages/WhatsApp.tsx
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '../components/ui/tabs.tsx';
 import WhatsAppDashboard from '../components/WhatsApp/WhatsAppDashboard';
 import WhatsAppMessaging from '../components/WhatsApp/WhatsAppMessaging';
@@ -7,10 +7,58 @@ import MessageHistory from '../components/WhatsApp/MessageHistory';
 import WhatsAppUserSyncManager from '../components/WhatsApp/WhatsAppUserSyncManager';
 import QueueManagement from '../components/WhatsApp/QueueManagement';
 import { MessageResult } from '../utils/whatsappAPI';
+import { useAuth } from '../contexts/AuthContext';
+import { canConnectWhatsApp, isUserSyncedToWhatsApp, syncUserToWhatsAppIfNeeded } from '../utils/permissions';
+import { AlertCircle, Loader, Lock } from 'lucide-react';
 
 const WhatsApp: React.FC = () => {
+  const { user } = useAuth();
   const [isConnected, setIsConnected] = useState(false);
   const [activeTab, setActiveTab] = useState('dashboard');
+  const [hasConnectPermission, setHasConnectPermission] = useState<boolean | null>(null);
+  const [isSynced, setIsSynced] = useState<boolean | null>(null);
+  const [syncingUser, setSyncingUser] = useState(false);
+  const [permissionLoading, setPermissionLoading] = useState(true);
+
+  // Check user permissions and sync status on mount
+  useEffect(() => {
+    const checkPermissionsAndSync = async () => {
+      if (!user?.id) {
+        setPermissionLoading(false);
+        return;
+      }
+
+      setPermissionLoading(true);
+      try {
+        // Check if user has connect_whatsapp permission
+        // Pass email as fallback since auth_user_id may not be linked
+        const canConnect = await canConnectWhatsApp(user.id, user.email);
+        setHasConnectPermission(canConnect);
+
+        if (canConnect) {
+          // Check if user is synced to WhatsApp backend
+          const synced = await isUserSyncedToWhatsApp(user.id, user.email);
+          setIsSynced(synced);
+
+          // If user has permission but isn't synced, sync them now
+          if (!synced) {
+            setSyncingUser(true);
+            const result = await syncUserToWhatsAppIfNeeded(user.id, user.email);
+            if (result.success) {
+              setIsSynced(true);
+            }
+            setSyncingUser(false);
+          }
+        }
+      } catch (error) {
+        console.error('Error checking permissions:', error);
+      } finally {
+        setPermissionLoading(false);
+      }
+    };
+
+    checkPermissionsAndSync();
+  }, [user?.id, user?.email]);
 
   const handleConnectionChange = (connected: boolean) => {
     setIsConnected(connected);
@@ -22,6 +70,59 @@ const WhatsApp: React.FC = () => {
       setActiveTab('history');
     }
   };
+
+  // Show loading state while checking permissions
+  if (permissionLoading) {
+    return (
+      <div className="flex items-center justify-center min-h-[400px]">
+        <div className="text-center">
+          <Loader className="h-8 w-8 animate-spin text-blue-600 mx-auto mb-4" />
+          <p className="text-gray-600">Checking permissions...</p>
+        </div>
+      </div>
+    );
+  }
+
+  // Show access denied if user doesn't have permission
+  if (hasConnectPermission === false) {
+    return (
+      <div className="flex items-center justify-center min-h-[400px]">
+        <div className="text-center max-w-md">
+          <div className="mx-auto w-16 h-16 bg-red-100 rounded-full flex items-center justify-center mb-4">
+            <Lock className="h-8 w-8 text-red-600" />
+          </div>
+          <h2 className="text-xl font-semibold text-gray-900 mb-2">Access Denied</h2>
+          <p className="text-gray-600 mb-4">
+            You don't have permission to connect WhatsApp. Please contact your administrator to enable WhatsApp access for your account.
+          </p>
+          <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4 text-left">
+            <div className="flex items-start space-x-2">
+              <AlertCircle className="h-5 w-5 text-yellow-600 flex-shrink-0 mt-0.5" />
+              <div className="text-sm text-yellow-800">
+                <p className="font-medium">For Administrators:</p>
+                <p className="mt-1">
+                  Go to User Management → Edit User → Enable "Connect WhatsApp" permission under WhatsApp Integration category.
+                </p>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // Show syncing state
+  if (syncingUser) {
+    return (
+      <div className="flex items-center justify-center min-h-[400px]">
+        <div className="text-center">
+          <Loader className="h-8 w-8 animate-spin text-blue-600 mx-auto mb-4" />
+          <p className="text-gray-600">Setting up WhatsApp access...</p>
+          <p className="text-sm text-gray-500 mt-2">Syncing your account to WhatsApp service</p>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-6">

@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
-import { supabase, database } from '../utils/supabase';
+import { supabase, database, formatAge } from '../utils/supabase';
 import { useMobileOptimizations } from '../utils/platformHelper';
 import { MobileFAB } from '../components/ui/MobileFAB';
 import {
@@ -112,6 +112,9 @@ interface ApprovedResult {
   final_report?: any;
   print_pdf_url?: string;
   print_pdf_generated_at?: string;
+  // Smart Report fields
+  smart_report_url?: string;
+  smart_report_generated_at?: string;
 }
 
 interface OrderGroup {
@@ -157,7 +160,7 @@ const Reports: React.FC = () => {
   // Report Studio & Send Report
   const [reportStudioOrderId, setReportStudioOrderId] = useState<string | null>(null);
   const [viewingOrder, setViewingOrder] = useState<OrderGroup | null>(null);
-  const [sendReportModalData, setSendReportModalData] = useState<{ orderId: string, patientName: string, doctorName: string, doctorPhone: string, clinicalSummary?: string, reportUrl: string } | null>(null);
+  const [sendReportModalData, setSendReportModalData] = useState<{ orderId: string, patientName: string, doctorName: string, doctorPhone: string, clinicalSummary?: string, includeClinicalSummary?: boolean, reportUrl: string } | null>(null);
 
   const handleOpenSendDoctor = async (group: OrderGroup) => {
     try {
@@ -170,26 +173,43 @@ const Reports: React.FC = () => {
         return;
       }
 
-      // Fetch latest order details for summary and phone (join with doctors table for phone)
+      // Fetch latest order details for summary, send-to-doctor flag, and phone (join with doctors table for phone)
       const { data: orderData, error } = await supabase
         .from('orders')
-        .select('doctor, ai_clinical_summary, referring_doctor:doctors(phone)')
+        .select('doctor, ai_clinical_summary, send_clinical_summary_to_doctor, referring_doctor:doctors(phone)')
         .eq('id', group.order_id)
         .single();
 
       if (error) throw error;
 
+      // Debug: Log fetched data
+      console.log('[Reports handleOpenSendDoctor] Fetched order data:', {
+        orderId: group.order_id,
+        send_clinical_summary_to_doctor: orderData.send_clinical_summary_to_doctor,
+        ai_clinical_summary_exists: !!orderData.ai_clinical_summary,
+        ai_clinical_summary_length: orderData.ai_clinical_summary?.length || 0
+      });
+
       // Extract phone from the joined doctors table
       const doctorPhone = (orderData.referring_doctor as { phone?: string } | null)?.phone || '';
 
-      setSendReportModalData({
+      const modalData = {
         orderId: group.order_id,
         patientName: group.patient_full_name,
         doctorName: orderData.doctor || 'Doctor',
         doctorPhone,
         clinicalSummary: orderData.ai_clinical_summary,
+        includeClinicalSummary: orderData.send_clinical_summary_to_doctor || false,  // Use send_to_doctor flag for WhatsApp
         reportUrl: convertToCustomDomain(reportUrl) || reportUrl
+      };
+
+      console.log('[Reports handleOpenSendDoctor] Modal data being set:', {
+        orderId: modalData.orderId,
+        includeClinicalSummary: modalData.includeClinicalSummary,
+        clinicalSummaryExists: !!modalData.clinicalSummary
       });
+
+      setSendReportModalData(modalData);
     } catch (err) {
       console.error('Error preparing send modal:', err);
       alert('Failed to load order details.');
@@ -299,13 +319,24 @@ const Reports: React.FC = () => {
           break;
       }
 
-      const { data, error } = await supabase
+      // ✅ Apply location filtering for access control
+      const { shouldFilter, locationIds } = await database.shouldFilterByLocation();
+
+      // Build query with optional location filter
+      let query = supabase
         .from('view_approved_results')
         .select('*')
         .eq('lab_id', lab_id)
         .gte('verified_at', dateRange.start.toISOString())
         .lte('verified_at', dateRange.end.toISOString())
         .order('verified_at', { ascending: false });
+
+      // Apply location filter if user is restricted
+      if (shouldFilter && locationIds.length > 0) {
+        query = query.in('location_id', locationIds);
+      }
+
+      const { data, error } = await query;
 
       if (!error && data) {
         // 1. Bulk Fetch Existing Reports
@@ -365,6 +396,27 @@ const Reports: React.FC = () => {
           }
         }
 
+        // 4. Bulk Fetch Smart Report URLs from orders table
+        const smartReportMap = new Map<string, { url: string; generated_at: string }>();
+        if (orderIds.length > 0) {
+          const { data: ordersData } = await supabase
+            .from('orders')
+            .select('id, smart_report_url, smart_report_generated_at')
+            .in('id', orderIds)
+            .not('smart_report_url', 'is', null);
+
+          if (ordersData) {
+            ordersData.forEach((order: any) => {
+              if (order.smart_report_url) {
+                smartReportMap.set(order.id, {
+                  url: order.smart_report_url,
+                  generated_at: order.smart_report_generated_at
+                });
+              }
+            });
+          }
+        }
+
         const reportMap = new Map(
           existingReports.map((r) => [r.order_id, r])
         );
@@ -374,6 +426,7 @@ const Reports: React.FC = () => {
           const report = reportMap.get(result.order_id);
           const isReady = readinessMap.get(result.order_id) || false;
           const resolvedPhone = result.phone || patientPhoneMap.get(result.patient_id) || '';
+          const smartReport = smartReportMap.get(result.order_id);
 
           return {
             ...result,
@@ -388,7 +441,10 @@ const Reports: React.FC = () => {
             final_report: report?.report_type === 'final' ? report : null,
             print_pdf_url: report?.print_pdf_url || undefined,
             print_pdf_generated_at: report?.print_pdf_generated_at || undefined,
-            phone: resolvedPhone
+            phone: resolvedPhone,
+            // Smart Report fields
+            smart_report_url: smartReport?.url,
+            smart_report_generated_at: smartReport?.generated_at
           };
         });
 
@@ -673,41 +729,45 @@ const Reports: React.FC = () => {
     }
   }, [generatePDF, loadApprovedResults]);
 
-  const handleSmartReport = async (orderId: string) => {
+  // Generate Smart Report (forceRegenerate=true bypasses cache, used for right-click regenerate)
+  const handleSmartReport = async (orderId: string, forceRegenerate = false) => {
     try {
       setSmartReportLoadingId(orderId);
 
-      // 1. Get HTML Content (Raw structure for Gamma)
-      const { data: htmlData, error: htmlError } = await supabase.functions.invoke('create-html-preview', {
-        body: { orderId }
-      });
+      // Smart Report V2 - Two-page approach:
+      // Page 1: Cover page with letterhead, lab/patient info (PDF.co)
+      // Page 2+: Clean results with AI analysis (Gamma AI)
+      // Final: Merged with PDF.co
+      console.log('🚀 Starting Smart Report V2 for order:', orderId, forceRegenerate ? '(force regenerate)' : '');
 
-      if (htmlError || !htmlData?.html) {
-        throw new Error('Failed to generate base HTML for smart report');
-      }
-
-      // 2. Call Gamma Generation
-      // We pass the raw HTML to the new edge function
-      const { data: smartData, error: smartError } = await supabase.functions.invoke('generate-smart-report', {
-        body: { html: htmlData.html }
+      const { data: smartData, error: smartError } = await supabase.functions.invoke('generate-smart-report-v2', {
+        body: { orderId, forceRegenerate }
       });
 
       if (smartError) throw smartError;
 
-      console.log('✨ Smart Report Result:', smartData);
+      console.log('✨ Smart Report V2 Result:', smartData);
 
-      // Open PDF if available
-      if (smartData?.exportUrl) {
-        window.open(smartData.exportUrl, '_blank');
+      // Open the PDF (cached or newly generated)
+      if (smartData?.pdfUrl) {
+        window.open(smartData.pdfUrl, '_blank');
+        // Refresh data if this was a new generation (not cached)
+        if (!smartData.cached) {
+          loadApprovedResults();
+        }
+      } else if (smartData?.mergedUrl) {
+        // Fallback to merged URL (temporary PDF.co URL)
+        window.open(smartData.mergedUrl, '_blank');
       } else if (smartData?.gammaUrl) {
-        // Fallback to Gamma Doc URL
+        // Last fallback to just the Gamma portion
         window.open(smartData.gammaUrl, '_blank');
+        alert('Note: Only Gamma portion generated. Cover page merge may have failed.');
       } else {
         alert('Smart report generated but no URL returned.');
       }
 
     } catch (error) {
-      console.error('Smart report failed:', error);
+      console.error('Smart report V2 failed:', error);
       alert('Failed to generate Smart Report: ' + (error instanceof Error ? error.message : 'Unknown error'));
     } finally {
       setSmartReportLoadingId(null);
@@ -746,8 +806,12 @@ const Reports: React.FC = () => {
       console.log('🚀 Triggering Letterhead PDF Generation for:', orderId);
       // alert('Starting Letterhead PDF Generation... Please wait.');
 
+      // Get current user ID for WhatsApp integration
+      const { data: { user } } = await supabase.auth.getUser();
+      const triggeredByUserId = user?.id;
+
       const { data, error } = await supabase.functions.invoke('generate-pdf-letterhead', {
-        body: { orderId: orderId }
+        body: { orderId: orderId, triggeredByUserId }
       });
 
       if (error) {
@@ -1796,7 +1860,7 @@ const Reports: React.FC = () => {
                                 {group.patient_full_name}
                               </div>
                               <div className="text-sm text-gray-600">
-                                {group.age}y • {group.gender} • ID: {group.patient_id.slice(-8)}
+                                {formatAge(group.age, (group as any).age_unit)} • {group.gender} • ID: {group.patient_id.slice(-8)}
                               </div>
                             </div>
                           </div>
@@ -1894,7 +1958,7 @@ const Reports: React.FC = () => {
                                   <Download className="w-3.5 h-3.5" />
                                   <span>Download</span>
                                 </button>
-                                
+
                                 <button
                                   className={`flex items-center px-1.5 py-1 text-xs rounded transition-colors ${(group.results[0] as ApprovedResult)?.final_report?.print_pdf_url ? 'bg-emerald-600 text-white hover:bg-emerald-700' : 'bg-gray-200 text-gray-400 cursor-not-allowed'}`}
                                   onClick={() => {
@@ -1906,7 +1970,7 @@ const Reports: React.FC = () => {
                                 >
                                   <Printer className="w-3.5 h-3.5" />
                                 </button>
-                                
+
                                 <button
                                   className="flex items-center px-1.5 py-1 text-xs bg-gray-200 text-gray-700 rounded hover:bg-gray-300 transition-colors"
                                   onClick={() => handleOpenPDFSettings(group.order_id)}
@@ -1919,9 +1983,19 @@ const Reports: React.FC = () => {
 
                                 <button
                                   className="flex items-center space-x-1 px-2 py-1 text-xs bg-gradient-to-r from-pink-500 to-rose-500 text-white rounded hover:from-pink-600 hover:to-rose-600 transition-colors"
-                                  onClick={() => handleSmartReport(group.order_id)}
+                                  onClick={() => {
+                                    const smartUrl = (group.results[0] as ApprovedResult)?.smart_report_url;
+                                    if (smartUrl) window.open(smartUrl, '_blank');
+                                    else handleSmartReport(group.order_id);
+                                  }}
+                                  onContextMenu={(e) => {
+                                    e.preventDefault();
+                                    if (window.confirm('Regenerate Smart Report? This will create a new AI-enhanced report.')) {
+                                      handleSmartReport(group.order_id, true);
+                                    }
+                                  }}
                                   disabled={smartReportLoadingId === group.order_id}
-                                  title="AI Smart Report"
+                                  title={`AI Smart Report${(group.results[0] as ApprovedResult)?.smart_report_url ? ' (cached - right-click to regenerate)' : ''}`}
                                 >
                                   {smartReportLoadingId === group.order_id ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Sparkles className="w-3.5 h-3.5" />}
                                   <span>Smart</span>
@@ -1998,7 +2072,7 @@ const Reports: React.FC = () => {
                                 {group.patient_full_name}
                               </div>
                               <div className="text-sm text-gray-600">
-                                {group.age}y • {group.gender}
+                                {formatAge(group.age, (group as any).age_unit)} • {group.gender}
                               </div>
                             </div>
                           </div>
@@ -2150,9 +2224,19 @@ const Reports: React.FC = () => {
                                   )}
                                   <button
                                     className="flex-1 flex items-center justify-center space-x-1 px-3 py-2 text-sm bg-gradient-to-r from-pink-500 to-rose-500 text-white rounded-md hover:from-pink-600 hover:to-rose-600 transition-colors shadow-sm"
-                                    onClick={() => handleSmartReport(group.order_id)}
+                                    onClick={() => {
+                                      const smartUrl = (group.results[0] as ApprovedResult)?.smart_report_url;
+                                      if (smartUrl) window.open(smartUrl, '_blank');
+                                      else handleSmartReport(group.order_id);
+                                    }}
+                                    onContextMenu={(e) => {
+                                      e.preventDefault();
+                                      if (window.confirm('Regenerate Smart Report? This will create a new AI-enhanced report.')) {
+                                        handleSmartReport(group.order_id, true);
+                                      }
+                                    }}
                                     disabled={smartReportLoadingId === group.order_id}
-                                    title="Generate Smart Report"
+                                    title={`Smart Report${(group.results[0] as ApprovedResult)?.smart_report_url ? ' (cached - right-click to regenerate)' : ''}`}
                                   >
                                     {smartReportLoadingId === group.order_id ? (
                                       <Loader2 className="w-4 h-4 animate-spin" />

@@ -106,7 +106,7 @@ Deno.serve(async (req) => {
     console.log(`📊 Found ${embeddedImages.length} images and ${waveformData.length} waveforms in analyzer data`);
     
     // Use vision model if images are present
-    const modelName = embeddedImages.length > 0 ? 'gemini-2.0-flash-exp' : 'gemini-2.0-flash-exp';
+    const modelName = embeddedImages.length > 0 ? 'gemini-2.5-flash' : 'gemini-2.5-flash';
     const model = genAI.getGenerativeModel({ model: modelName })
 
     // 4. AI Parse - Include image analysis if images present

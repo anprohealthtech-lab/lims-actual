@@ -65,8 +65,8 @@ serve(async (req) => {
       }
     `;
 
-    // 3. Call Gemini API (using gemini-2.0-flash-exp)
-    const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-exp:generateContent?key=${GEMINI_API_KEY}`;
+    // 3. Call Gemini API (using gemini-2.5-flash)
+    const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${GEMINI_API_KEY}`;
     
     const requestBody = {
       contents: [{
@@ -139,7 +139,7 @@ serve(async (req) => {
         suggested_analyte_id: null
       })),
       ai_metadata: {
-        model: "gemini-2.0-flash-exp",
+        model: "gemini-2.5-flash",
         raw_response_length: rawText.length
       }
     };

@@ -74,11 +74,19 @@ const OutsourcedTestsQueue: React.FC = () => {
     setLoading(true);
     setSelectedItems(new Set()); // Clear selection on refresh
 
+    // ✅ Apply location filtering for access control
+    const { shouldFilter, locationIds } = await database.shouldFilterByLocation();
+
     const filters: any = {};
     if (selectedLab !== 'all') filters.outsourcedLabId = selectedLab;
     // Removed activeTab filter to fetch all items for counts
     if (fromDate) filters.fromDate = fromDate;
     if (toDate) filters.toDate = toDate;
+
+    // ✅ Add location filter if user is restricted
+    if (shouldFilter && locationIds.length > 0) {
+      filters.locationIds = locationIds;
+    }
 
     const { data, error } = await database.outsourcedReports.getPendingTests(filters);
 
@@ -164,8 +172,8 @@ const OutsourcedTestsQueue: React.FC = () => {
     for (const resultId of Array.from(selectedItems)) {
       try {
         // Generate tracking barcode
-        const { data: barcodeData, error: barcodeError} = await database.outsourcedReports.generateTrackingBarcode(resultId);
-        
+        const { data: barcodeData, error: barcodeError } = await database.outsourcedReports.generateTrackingBarcode(resultId);
+
         if (barcodeError) throw barcodeError;
 
         // Update BOTH logistics status AND outsourced status
@@ -186,13 +194,13 @@ const OutsourcedTestsQueue: React.FC = () => {
 
     setDispatching(false);
     setSelectedItems(new Set());
-    
+
     if (failCount === 0) {
       alert(`Successfully dispatched ${successCount} test(s)!`);
     } else {
       alert(`Dispatched ${successCount} test(s). Failed: ${failCount}`);
     }
-    
+
     fetchQueue();
   };
 
@@ -228,13 +236,13 @@ const OutsourcedTestsQueue: React.FC = () => {
 
     setDispatching(false);
     setSelectedItems(new Set());
-    
+
     if (failCount === 0) {
       alert(`Successfully marked ${successCount} test(s) as received!`);
     } else {
       alert(`Marked ${successCount} test(s) as received. Failed: ${failCount}`);
     }
-    
+
     fetchQueue();
   };
 
@@ -373,7 +381,7 @@ const OutsourcedTestsQueue: React.FC = () => {
     const blob = new Blob([requisitionHtml], { type: 'text/html' });
     const url = URL.createObjectURL(blob);
     const printWindow = window.open(url, '_blank');
-    
+
     if (printWindow) {
       printWindow.onload = () => {
         printWindow.print();
@@ -384,17 +392,15 @@ const OutsourcedTestsQueue: React.FC = () => {
   const TabButton = ({ value, label, count }: { value: TabFilter; label: string; count: number }) => (
     <button
       onClick={() => setActiveTab(value)}
-      className={`px-4 py-2 font-medium rounded-lg transition-colors ${
-        activeTab === value
+      className={`px-4 py-2 font-medium rounded-lg transition-colors ${activeTab === value
           ? 'bg-blue-600 text-white shadow-sm'
           : 'bg-white text-gray-600 hover:bg-gray-50 border border-gray-200'
-      }`}
+        }`}
     >
       {label}
       {count > 0 && (
-        <span className={`ml-2 px-2 py-0.5 text-xs rounded-full ${
-          activeTab === value ? 'bg-blue-700 text-white' : 'bg-gray-100 text-gray-600'
-        }`}>
+        <span className={`ml-2 px-2 py-0.5 text-xs rounded-full ${activeTab === value ? 'bg-blue-700 text-white' : 'bg-gray-100 text-gray-600'
+          }`}>
           {count}
         </span>
       )}
@@ -465,7 +471,7 @@ const OutsourcedTestsQueue: React.FC = () => {
             </div>
           </div>
           <p className="text-2xl font-bold text-gray-900">
-            {queueItems.filter(i => 
+            {queueItems.filter(i =>
               i.outsourced_status === 'awaiting_report' || i.outsourced_status === 'sent'
             ).length}
           </p>
@@ -504,7 +510,7 @@ const OutsourcedTestsQueue: React.FC = () => {
             <TabButton
               value="awaiting_report"
               label="Awaiting Report"
-              count={queueItems.filter(i => 
+              count={queueItems.filter(i =>
                 i.outsourced_status === 'awaiting_report' || i.outsourced_status === 'sent'
               ).length}
             />
@@ -641,7 +647,7 @@ const OutsourcedTestsQueue: React.FC = () => {
               </button>
             </div>
           )}
-          
+
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
             {groupedOrders.map((order) => {
               const allResultIds = order.tests.map(t => t.result_id);
@@ -663,15 +669,14 @@ const OutsourcedTestsQueue: React.FC = () => {
               };
 
               return (
-                <div 
+                <div
                   key={order.orderId}
-                  className={`bg-white rounded-xl border transition-all duration-200 hover:shadow-md group relative ${
-                    allSelected 
-                      ? 'border-blue-500 ring-1 ring-blue-500 shadow-sm' 
+                  className={`bg-white rounded-xl border transition-all duration-200 hover:shadow-md group relative ${allSelected
+                      ? 'border-blue-500 ring-1 ring-blue-500 shadow-sm'
                       : someSelected
-                      ? 'border-blue-300 ring-1 ring-blue-300 shadow-sm'
-                      : 'border-gray-200 shadow-sm'
-                  }`}
+                        ? 'border-blue-300 ring-1 ring-blue-300 shadow-sm'
+                        : 'border-gray-200 shadow-sm'
+                    }`}
                 >
                   {/* Selection Checkbox (Absolute) */}
                   {(activeTab === 'pending_send' || activeTab === 'sent') && (
@@ -744,15 +749,14 @@ const OutsourcedTestsQueue: React.FC = () => {
 
                       {/* Status Badge */}
                       <div className="flex items-center gap-2 pt-2">
-                        <span className={`px-2.5 py-1 text-xs font-medium rounded-full ${
-                          order.tests[0].outsourced_status === 'pending_send' ? 'bg-yellow-100 text-yellow-800' :
-                          order.tests[0].outsourced_status === 'sent' ? 'bg-blue-100 text-blue-800' :
-                          order.tests[0].outsourced_status === 'awaiting_report' ? 'bg-purple-100 text-purple-800' :
-                          'bg-green-100 text-green-800'
-                        }`}>
+                        <span className={`px-2.5 py-1 text-xs font-medium rounded-full ${order.tests[0].outsourced_status === 'pending_send' ? 'bg-yellow-100 text-yellow-800' :
+                            order.tests[0].outsourced_status === 'sent' ? 'bg-blue-100 text-blue-800' :
+                              order.tests[0].outsourced_status === 'awaiting_report' ? 'bg-purple-100 text-purple-800' :
+                                'bg-green-100 text-green-800'
+                          }`}>
                           {order.tests[0].outsourced_status?.replace('_', ' ').toUpperCase()}
                         </span>
-                        
+
                         {order.tests[0].outsourced_logistics_status && (
                           <span className="text-xs text-gray-500 flex items-center gap-1 bg-gray-50 px-2 py-1 rounded-full border border-gray-100">
                             <Truck className="w-3 h-3" />
@@ -763,13 +767,12 @@ const OutsourcedTestsQueue: React.FC = () => {
 
                       {/* TAT Info */}
                       {order.minTat && (
-                        <div className={`flex items-center gap-2 text-xs mt-2 ${
-                          isOverdue ? 'text-red-600 font-medium' : 'text-gray-500'
-                        }`}>
+                        <div className={`flex items-center gap-2 text-xs mt-2 ${isOverdue ? 'text-red-600 font-medium' : 'text-gray-500'
+                          }`}>
                           <Clock className="w-3.5 h-3.5" />
                           <span>
-                            {isOverdue 
-                              ? `${Math.abs(daysUntilTAT)} days overdue` 
+                            {isOverdue
+                              ? `${Math.abs(daysUntilTAT)} days overdue`
                               : `${daysUntilTAT} days remaining`}
                           </span>
                           <span className="text-gray-300">|</span>

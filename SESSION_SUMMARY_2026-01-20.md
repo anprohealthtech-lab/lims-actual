@@ -227,10 +227,18 @@ Add DATABASE_VIEWS.md documentation, fix admin location filtering
 **Status**: Not blocking production deployments
 **Next Step**: Debug locally or use production for testing
 
-### 3. View Original PDF Button (PLACEHOLDER)
-**Location**: `VerificationPage.tsx` line 125
-**Current**: Shows alert "Download feature coming soon"
-**Next Step**: Implement secure public PDF link generation
+### 3. View Original PDF Feature (ACTIVE TASK - HIGH PRIORITY)
+**Location**: `VerificationPage.tsx` line 123-129
+**Current**: Shows alert "Download feature coming soon via public link generation"
+**User Request**: Implement PDF download when clicking "View Original PDF" button
+**Screenshot**: User confirmed this is needed (Jan 20, 2026)
+
+**Implementation Needed:**
+- Generate secure public/signed URL for the PDF
+- Fetch PDF URL from `orders.pdf_url` or `reports` table
+- Handle authentication/security (public access to specific report)
+- Consider Supabase Storage signed URLs (expires in X hours)
+- Alternative: Create edge function to generate temporary download link
 
 ### 4. Order Optimization - Remaining Tasks
 From `ORDER_CREATION_OPTIMIZATION.md`:

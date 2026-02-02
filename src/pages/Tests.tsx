@@ -38,7 +38,11 @@ interface Analyte {
   referenceRange?: string;
   lowCritical?: number;
   highCritical?: number;
-  interpretation?: string;
+  interpretation?: {
+    low?: string;
+    normal?: string;
+    high?: string;
+  };
   category: string;
   isActive?: boolean;
   createdDate?: string;
@@ -57,6 +61,12 @@ interface Analyte {
   description?: string;
   isCritical?: boolean;
   ref_range_knowledge?: any;
+  aiProcessingType?: string;
+  groupAiMode?: 'group_only' | 'individual' | 'both' | string;
+  aiPromptOverride?: string;
+  isGlobal?: boolean;
+  toBeCopied?: boolean;
+  expected_normal_values?: string[];
 }
 
 interface TestGroup {
@@ -303,7 +313,11 @@ const Tests: React.FC = () => {
             referenceRange: analyte.reference_range || analyte.referenceRange,
             lowCritical: analyte.low_critical,
             highCritical: analyte.high_critical,
-            interpretation: analyte.interpretation,
+            interpretation: {
+              low: analyte.interpretation_low || analyte.interpretation?.low || '',
+              normal: analyte.interpretation_normal || analyte.interpretation?.normal || '',
+              high: analyte.interpretation_high || analyte.interpretation?.high || ''
+            },
             category: analyte.category,
             isActive: analyte.is_active ?? true,
             createdDate: analyte.created_at || new Date().toISOString(),
@@ -312,7 +326,23 @@ const Tests: React.FC = () => {
             formula: analyte.formula || '',
             formulaVariables: analyte.formula_variables || [],
             formulaDescription: analyte.formula_description || '',
-            ref_range_knowledge: analyte.ref_range_knowledge
+            // Extended fields
+            normalRangeMin: analyte.normal_range_min ?? undefined,
+            normalRangeMax: analyte.normal_range_max ?? undefined,
+            interpretationLow: analyte.interpretation_low,
+            interpretationNormal: analyte.interpretation_normal,
+            interpretationHigh: analyte.interpretation_high,
+            method: analyte.method || undefined,
+            description: analyte.description || undefined,
+            isCritical: analyte.is_critical ?? false,
+            aiProcessingType: analyte.ai_processing_type || undefined,
+            groupAiMode: analyte.group_ai_mode || undefined,
+            aiPromptOverride: analyte.ai_prompt_override || undefined,
+            isGlobal: analyte.is_global ?? false,
+            toBeCopied: analyte.to_be_copied ?? false,
+            ref_range_knowledge: analyte.ref_range_knowledge,
+            // Dropdown options for qualitative values
+            expected_normal_values: analyte.expected_normal_values || []
           }));
           setAnalytes(transformedAnalytes);
         }
@@ -459,6 +489,8 @@ const Tests: React.FC = () => {
         formula: formData.formula || null,
         formula_variables: formData.formulaVariables || [],
         formula_description: formData.formulaDescription || null,
+        // Dropdown options for qualitative values
+        expected_normal_values: formData.expected_normal_values || [],
       });
 
       if (error) {
@@ -475,7 +507,11 @@ const Tests: React.FC = () => {
           referenceRange: newAnalyte.reference_range,
           lowCritical: newAnalyte.low_critical,
           highCritical: newAnalyte.high_critical,
-          interpretation: newAnalyte.interpretation_low || '',
+          interpretation: {
+            low: newAnalyte.interpretation_low || '',
+            normal: newAnalyte.interpretation_normal || '',
+            high: newAnalyte.interpretation_high || ''
+          },
           category: newAnalyte.category,
           isActive: newAnalyte.is_active,
           createdDate: newAnalyte.created_at || new Date().toISOString(),
@@ -483,14 +519,49 @@ const Tests: React.FC = () => {
           isCalculated: newAnalyte.is_calculated || false,
           formula: newAnalyte.formula || '',
           formulaVariables: newAnalyte.formula_variables || [],
-          formulaDescription: newAnalyte.formula_description || ''
+          formulaDescription: newAnalyte.formula_description || '',
+          // Extended fields
+          normalRangeMin: newAnalyte.normal_range_min ?? undefined,
+          normalRangeMax: newAnalyte.normal_range_max ?? undefined,
+          interpretationLow: newAnalyte.interpretation_low,
+          interpretationNormal: newAnalyte.interpretation_normal,
+          interpretationHigh: newAnalyte.interpretation_high,
+          method: newAnalyte.method || undefined,
+          description: newAnalyte.description || undefined,
+          isCritical: newAnalyte.is_critical ?? false,
+          aiProcessingType: newAnalyte.ai_processing_type || undefined,
+          groupAiMode: newAnalyte.group_ai_mode || undefined,
+          aiPromptOverride: newAnalyte.ai_prompt_override || undefined,
+          isGlobal: newAnalyte.is_global ?? false,
+          toBeCopied: newAnalyte.to_be_copied ?? false,
+          ref_range_knowledge: newAnalyte.ref_range_knowledge,
+          expected_normal_values: newAnalyte.expected_normal_values || []
         };
 
         setAnalytes(prev => [...prev, transformedAnalyte]);
         setShowAnalyteForm(false);
 
-        // If it's a calculated analyte, prompt to manage dependencies
-        if (newAnalyte.is_calculated && newAnalyte.formula_variables?.length > 0) {
+        // If it's a calculated analyte with source dependencies selected in form, create them automatically
+        if (newAnalyte.is_calculated && formData.sourceDependencies?.length > 0) {
+          console.log('Creating dependencies automatically:', formData.sourceDependencies);
+          try {
+            const { error: depError } = await database.analyteDependencies.setDependencies(
+              newAnalyte.id,
+              formData.sourceDependencies
+            );
+            if (depError) {
+              console.error('Error creating dependencies:', depError);
+              alert('Analyte created but failed to link dependencies. Use "Manage Dependencies" button to link them manually.');
+            } else {
+              alert('Analyte created with dependencies linked successfully!');
+            }
+          } catch (depErr) {
+            console.error('Error creating dependencies:', depErr);
+            alert('Analyte created but failed to link dependencies. Use "Manage Dependencies" button to link them manually.');
+          }
+        }
+        // If formula_variables exist but no sourceDependencies, show the dependency manager
+        else if (newAnalyte.is_calculated && newAnalyte.formula_variables?.length > 0) {
           setDependencyAnalyte(transformedAnalyte);
           setShowDependencyManager(true);
         } else {
@@ -619,7 +690,48 @@ const Tests: React.FC = () => {
     setShowTestGroupForm(true);
   };
 
-  const handleEditAnalyte = (analyte: Analyte) => {
+  const handleEditAnalyte = async (analyte: Analyte) => {
+    try {
+      const labId = await database.getCurrentUserLabId();
+      if (labId) {
+        const { data: labAnalyte } = await database.labAnalytes.getByLabAndAnalyte(labId, analyte.id);
+        if (labAnalyte) {
+          const analyteSource = Array.isArray(labAnalyte.analytes) ? labAnalyte.analytes[0] : labAnalyte.analytes;
+          const normalizeNumber = (value: any) => {
+            if (value === null || value === undefined || value === '') return undefined;
+            const parsed = typeof value === 'number' ? value : Number(value);
+            return Number.isNaN(parsed) ? undefined : parsed;
+          };
+
+          setEditingAnalyte({
+            ...analyte,
+            name: labAnalyte.name || analyte.name,
+            unit: labAnalyte.unit || analyte.unit,
+            category: labAnalyte.category || analyte.category,
+            referenceRange: labAnalyte.lab_specific_reference_range || labAnalyte.reference_range || analyte.referenceRange,
+            lowCritical: normalizeNumber(labAnalyte.low_critical) ?? analyte.lowCritical,
+            highCritical: normalizeNumber(labAnalyte.high_critical) ?? analyte.highCritical,
+            interpretation: {
+              low: labAnalyte.lab_specific_interpretation_low || labAnalyte.interpretation_low || analyte.interpretation?.low || '',
+              normal: labAnalyte.lab_specific_interpretation_normal || labAnalyte.interpretation_normal || analyte.interpretation?.normal || '',
+              high: labAnalyte.lab_specific_interpretation_high || labAnalyte.interpretation_high || analyte.interpretation?.high || ''
+            },
+            normalRangeMin: normalizeNumber(labAnalyte.normal_range_min) ?? analyte.normalRangeMin,
+            normalRangeMax: normalizeNumber(labAnalyte.normal_range_max) ?? analyte.normalRangeMax,
+            method: labAnalyte.lab_specific_method || labAnalyte.method || analyteSource?.method || analyte.method,
+            description: labAnalyte.description || analyteSource?.description || analyte.description,
+            isCritical: labAnalyte.is_critical ?? analyte.isCritical,
+            ref_range_knowledge: labAnalyte.ref_range_knowledge || analyte.ref_range_knowledge,
+            expected_normal_values: labAnalyte.expected_normal_values || analyte.expected_normal_values || []
+          });
+          setShowEditAnalyteModal(true);
+          return;
+        }
+      }
+    } catch (error) {
+      console.error('Failed to load lab analyte for edit:', error);
+    }
+
     setEditingAnalyte(analyte);
     setShowEditAnalyteModal(true);
   };
@@ -783,6 +895,24 @@ const Tests: React.FC = () => {
 
     console.log('Updating analyte with data:', formData);
     try {
+      const interpretationLow = formData.interpretation_low ?? formData.interpretation?.low ?? formData.interpretationLow ?? '';
+      const interpretationNormal = formData.interpretation_normal ?? formData.interpretation?.normal ?? formData.interpretationNormal ?? '';
+      const interpretationHigh = formData.interpretation_high ?? formData.interpretation?.high ?? formData.interpretationHigh ?? '';
+      const referenceRange = formData.reference_range ?? formData.referenceRange ?? '';
+      const lowCritical = formData.low_critical ?? formData.lowCritical ?? null;
+      const highCritical = formData.high_critical ?? formData.highCritical ?? null;
+      const normalRangeMin = formData.normal_range_min ?? formData.normalRangeMin ?? undefined;
+      const normalRangeMax = formData.normal_range_max ?? formData.normalRangeMax ?? undefined;
+      const isActive = formData.is_active ?? formData.isActive ?? true;
+      const method = formData.method ?? undefined;
+      const description = formData.description ?? undefined;
+      const isCritical = formData.is_critical ?? formData.isCritical ?? false;
+      const aiProcessingType = formData.ai_processing_type ?? formData.aiProcessingType ?? undefined;
+      const groupAiMode = formData.group_ai_mode ?? formData.groupAiMode ?? undefined;
+      const aiPromptOverride = formData.ai_prompt_override ?? formData.aiPromptOverride ?? undefined;
+      const isGlobal = formData.is_global ?? formData.isGlobal ?? false;
+      const toBeCopied = formData.to_be_copied ?? formData.toBeCopied ?? false;
+
       // Get current lab ID
       const labId = await database.getCurrentUserLabId();
       if (!labId) {
@@ -798,22 +928,26 @@ const Tests: React.FC = () => {
           // Update actual values in lab_analytes
           name: formData.name,
           unit: formData.unit,
-          reference_range: formData.referenceRange,
-          low_critical: formData.lowCritical,
-          high_critical: formData.highCritical,
-          interpretation_low: formData.interpretation?.low,
-          interpretation_normal: formData.interpretation?.normal,
-          interpretation_high: formData.interpretation?.high,
+          method: method,
+          reference_range: referenceRange,
+          low_critical: lowCritical,
+          high_critical: highCritical,
+          interpretation_low: interpretationLow,
+          interpretation_normal: interpretationNormal,
+          interpretation_high: interpretationHigh,
           category: formData.category,
-          is_active: formData.isActive,
+          is_active: isActive,
           // Set lab_specific_* fields to mark customization (prevents global sync overwrite)
           lab_specific_name: formData.name,
           lab_specific_unit: formData.unit,
-          lab_specific_reference_range: formData.referenceRange,
-          lab_specific_interpretation_low: formData.interpretation?.low,
-          lab_specific_interpretation_normal: formData.interpretation?.normal,
-          lab_specific_interpretation_high: formData.interpretation?.high,
+          lab_specific_method: method,
+          lab_specific_reference_range: referenceRange,
+          lab_specific_interpretation_low: interpretationLow,
+          lab_specific_interpretation_normal: interpretationNormal,
+          lab_specific_interpretation_high: interpretationHigh,
           ref_range_knowledge: formData.ref_range_knowledge,
+          // Dropdown options for qualitative values
+          expected_normal_values: formData.expected_normal_values || [],
         }
       );
 
@@ -828,14 +962,33 @@ const Tests: React.FC = () => {
           id: updatedAnalyte.analyte_id || editingAnalyte.id, // Use analyte_id from lab_analytes
           name: updatedAnalyte.name,
           unit: updatedAnalyte.unit,
-          referenceRange: updatedAnalyte.reference_range,
-          lowCritical: updatedAnalyte.low_critical,
-          highCritical: updatedAnalyte.high_critical,
-          interpretation: updatedAnalyte.interpretation_low || '',
+          referenceRange: updatedAnalyte.reference_range ?? referenceRange,
+          lowCritical: updatedAnalyte.low_critical ?? lowCritical,
+          highCritical: updatedAnalyte.high_critical ?? highCritical,
+          interpretation: {
+            low: updatedAnalyte.interpretation_low ?? interpretationLow,
+            normal: updatedAnalyte.interpretation_normal ?? interpretationNormal,
+            high: updatedAnalyte.interpretation_high ?? interpretationHigh
+          },
           category: updatedAnalyte.category,
-          isActive: updatedAnalyte.is_active,
+          isActive: updatedAnalyte.is_active ?? isActive,
           createdDate: updatedAnalyte.created_at || editingAnalyte.createdDate,
-          ref_range_knowledge: updatedAnalyte.ref_range_knowledge
+          // Extended fields
+          normalRangeMin: updatedAnalyte.normal_range_min ?? normalRangeMin,
+          normalRangeMax: updatedAnalyte.normal_range_max ?? normalRangeMax,
+          interpretationLow: updatedAnalyte.interpretation_low ?? interpretationLow,
+          interpretationNormal: updatedAnalyte.interpretation_normal ?? interpretationNormal,
+          interpretationHigh: updatedAnalyte.interpretation_high ?? interpretationHigh,
+          method: updatedAnalyte.method ?? method,
+          description: updatedAnalyte.description ?? description,
+          isCritical: updatedAnalyte.is_critical ?? isCritical,
+          aiProcessingType: updatedAnalyte.ai_processing_type ?? aiProcessingType,
+          groupAiMode: updatedAnalyte.group_ai_mode ?? groupAiMode,
+          aiPromptOverride: updatedAnalyte.ai_prompt_override ?? aiPromptOverride,
+          isGlobal: updatedAnalyte.is_global ?? isGlobal,
+          toBeCopied: updatedAnalyte.to_be_copied ?? toBeCopied,
+          ref_range_knowledge: updatedAnalyte.ref_range_knowledge,
+          expected_normal_values: updatedAnalyte.expected_normal_values || formData.expected_normal_values || []
         };
 
         setAnalytes(prev => prev.map(a => a.id === editingAnalyte.id ? transformedAnalyte : a));
@@ -992,7 +1145,11 @@ const Tests: React.FC = () => {
           referenceRange: analyte.reference_range || analyte.referenceRange,
           lowCritical: analyte.low_critical,
           highCritical: analyte.high_critical,
-          interpretation: analyte.interpretation,
+          interpretation: {
+            low: analyte.interpretation_low || analyte.interpretation?.low || '',
+            normal: analyte.interpretation_normal || analyte.interpretation?.normal || '',
+            high: analyte.interpretation_high || analyte.interpretation?.high || ''
+          },
           category: analyte.category,
           isActive: analyte.is_active ?? true,
           createdDate: analyte.created_at || new Date().toISOString(),
@@ -1001,14 +1158,21 @@ const Tests: React.FC = () => {
           formulaVariables: analyte.formula_variables || [],
           formulaDescription: analyte.formula_description || '',
           // Extended mapping
-          normalRangeMin: analyte.normal_range_min,
-          normalRangeMax: analyte.normal_range_max,
+          normalRangeMin: analyte.normal_range_min ?? undefined,
+          normalRangeMax: analyte.normal_range_max ?? undefined,
           interpretationLow: analyte.interpretation_low,
           interpretationNormal: analyte.interpretation_normal,
           interpretationHigh: analyte.interpretation_high,
-          method: analyte.method,
-          description: analyte.description,
-          isCritical: analyte.is_critical
+          method: analyte.method || undefined,
+          description: analyte.description || undefined,
+          isCritical: analyte.is_critical ?? false,
+          aiProcessingType: analyte.ai_processing_type || undefined,
+          groupAiMode: analyte.group_ai_mode || undefined,
+          aiPromptOverride: analyte.ai_prompt_override || undefined,
+          isGlobal: analyte.is_global ?? false,
+          toBeCopied: analyte.to_be_copied ?? false,
+          ref_range_knowledge: analyte.ref_range_knowledge,
+          expected_normal_values: analyte.expected_normal_values || []
         }));
         setAnalytes(transformedAnalytes);
       }
@@ -1688,6 +1852,12 @@ const Tests: React.FC = () => {
               onClose={handleCloseAnalyteForm}
               onSubmit={editingAnalyte ? handleUpdateAnalyte : handleAddAnalyte}
               analyte={editingAnalyte}
+              availableAnalytes={analytes.filter(a => !a.isCalculated).map(a => ({
+                id: a.id,
+                name: a.name,
+                unit: a.unit,
+                category: a.category
+              }))}
             />
           )
         }
@@ -1790,7 +1960,13 @@ const Tests: React.FC = () => {
                 method: editingAnalyte.method,
                 description: editingAnalyte.description,
                 is_active: editingAnalyte.isActive,
-                ref_range_knowledge: editingAnalyte.ref_range_knowledge
+                ref_range_knowledge: editingAnalyte.ref_range_knowledge,
+                expected_normal_values: editingAnalyte.expected_normal_values,
+                ai_processing_type: editingAnalyte.aiProcessingType,
+                ai_prompt_override: editingAnalyte.aiPromptOverride,
+                group_ai_mode: editingAnalyte.groupAiMode,
+                is_global: editingAnalyte.isGlobal,
+                to_be_copied: editingAnalyte.toBeCopied
               }}
               onSave={handleUpdateAnalyte}
               onCancel={handleCloseAnalyteModal}

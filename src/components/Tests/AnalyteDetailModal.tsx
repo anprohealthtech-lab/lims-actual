@@ -6,8 +6,8 @@ interface Analyte {
   name: string;
   unit: string;
   referenceRange: string;
-  lowCritical?: string;
-  highCritical?: string;
+  lowCritical?: string | number;
+  highCritical?: string | number;
   interpretation: {
     low: string;
     normal: string;
@@ -17,8 +17,15 @@ interface Analyte {
   isActive: boolean;
   createdDate: string;
   aiProcessingType?: string;
-  groupAiMode?: 'group_only' | 'individual' | 'both';
+  groupAiMode?: 'group_only' | 'individual' | 'both' | string;
   aiPromptOverride?: string;
+  normalRangeMin?: number;
+  normalRangeMax?: number;
+  method?: string;
+  description?: string;
+  isCritical?: boolean;
+  ref_range_knowledge?: { text_rules?: string };
+  expected_normal_values?: string[];
 }
 
 interface AnalyteDetailModalProps {
@@ -119,6 +126,14 @@ const AnalyteDetailModal: React.FC<AnalyteDetailModalProps> = ({ analyte, onClos
                   <div className="text-sm text-gray-600">Reference Range</div>
                   <div className="font-medium text-gray-900">{analyte.referenceRange}</div>
                 </div>
+                {(analyte.normalRangeMin !== undefined || analyte.normalRangeMax !== undefined) && (
+                  <div>
+                    <div className="text-sm text-gray-600">Numeric Range</div>
+                    <div className="font-medium text-gray-900">
+                      {analyte.normalRangeMin ?? '—'} - {analyte.normalRangeMax ?? '—'} {analyte.unit}
+                    </div>
+                  </div>
+                )}
                 <div>
                   <div className="text-sm text-gray-600">Low Critical</div>
                   <div className="font-medium text-gray-900">{analyte.lowCritical || 'Not specified'}</div>
@@ -127,6 +142,26 @@ const AnalyteDetailModal: React.FC<AnalyteDetailModalProps> = ({ analyte, onClos
                   <div className="text-sm text-gray-600">High Critical</div>
                   <div className="font-medium text-gray-900">{analyte.highCritical || 'Not specified'}</div>
                 </div>
+                {analyte.expected_normal_values && analyte.expected_normal_values.length > 0 && (
+                  <div>
+                    <div className="text-sm text-gray-600">Expected Values</div>
+                    <div className="flex flex-wrap gap-2 mt-1">
+                      {analyte.expected_normal_values.map((val, idx) => (
+                        <span key={idx} className="px-2 py-1 bg-blue-100 text-blue-800 rounded text-xs">
+                          {val}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                {analyte.ref_range_knowledge?.text_rules && (
+                  <div>
+                    <div className="text-sm text-gray-600">Reference Range Rules</div>
+                    <div className="font-medium text-gray-900 whitespace-pre-wrap">
+                      {analyte.ref_range_knowledge.text_rules}
+                    </div>
+                  </div>
+                )}
                 <div>
                   <div className="text-sm text-gray-600">Created Date</div>
                   <div className="font-medium text-gray-900">{new Date(analyte.createdDate).toLocaleDateString()}</div>
@@ -246,6 +281,26 @@ const AnalyteDetailModal: React.FC<AnalyteDetailModalProps> = ({ analyte, onClos
                 </div>
               </div>
             )}
+          </div>
+
+          {/* Method & Notes */}
+          <div className="bg-white border border-gray-200 rounded-lg p-6">
+            <h4 className="text-lg font-semibold text-gray-900 mb-4 flex items-center">
+              <Settings className="h-5 w-5 mr-2 text-blue-500" />
+              Method & Notes
+            </h4>
+            <div className="space-y-3">
+              <div>
+                <div className="text-sm text-gray-600">Testing Method</div>
+                <div className="font-medium text-gray-900">{analyte.method || 'Not specified'}</div>
+              </div>
+              <div>
+                <div className="text-sm text-gray-600">Description & Notes</div>
+                <div className="font-medium text-gray-900 whitespace-pre-wrap">
+                  {analyte.description || 'No additional notes'}
+                </div>
+              </div>
+            </div>
           </div>
 
           {/* Action Buttons */}

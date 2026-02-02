@@ -47,6 +47,7 @@ const AddUserModal: React.FC<AddUserModalProps> = ({ onClose, onSuccess, editUse
     role_id: editUser?.role_id || '',
     location_ids: editUser?.location_ids || [],
     is_phlebotomist: editUser?.is_phlebotomist || false,
+    extra_permissions: editUser?.permissions || [], // Additional permissions beyond role
   });
 
   // Data state
@@ -150,6 +151,19 @@ const AddUserModal: React.FC<AddUserModalProps> = ({ onClose, onSuccess, editUse
     }));
   };
 
+  // Toggle extra permissions (beyond role permissions)
+  const toggleExtraPermission = (permissionCode: string) => {
+    // Only allow toggling if it's not already granted by role
+    if (rolePermissions.includes(permissionCode)) return;
+    
+    setFormData(prev => ({
+      ...prev,
+      extra_permissions: prev.extra_permissions.includes(permissionCode)
+        ? prev.extra_permissions.filter((p: string) => p !== permissionCode)
+        : [...prev.extra_permissions, permissionCode]
+    }));
+  };
+
   const validateForm = (): string | null => {
     if (!formData.name.trim()) return 'Name is required';
     if (!formData.email.trim()) return 'Email is required';
@@ -186,11 +200,26 @@ const AddUserModal: React.FC<AddUserModalProps> = ({ onClose, onSuccess, editUse
             gender: formData.gender,
             role_id: formData.role_id,
             is_phlebotomist: formData.is_phlebotomist,
+            permissions: formData.extra_permissions, // Save extra permissions
             updated_at: new Date().toISOString()
           })
           .eq('id', editUser.id);
 
         if (updateError) throw updateError;
+
+        // If connect_whatsapp permission was added, sync user to WhatsApp backend
+        if (formData.extra_permissions.includes('connect_whatsapp') && 
+            !editUser?.permissions?.includes('connect_whatsapp')) {
+          try {
+            await supabase.functions.invoke('sync-user-to-whatsapp', {
+              body: { userId: editUser.id }
+            });
+            console.log('User synced to WhatsApp backend');
+          } catch (syncError) {
+            console.warn('WhatsApp sync failed:', syncError);
+            // Don't fail the save - sync can be retried later
+          }
+        }
 
         // Update center assignments
         await supabase.from('user_centers').delete().eq('user_id', editUser.id);
@@ -233,6 +262,7 @@ const AddUserModal: React.FC<AddUserModalProps> = ({ onClose, onSuccess, editUse
             lab_id: labId,
             auth_user_id: authData.user.id,
             is_phlebotomist: formData.is_phlebotomist,
+            permissions: formData.extra_permissions, // Save extra permissions
             status: 'Active',
             join_date: new Date().toISOString().split('T')[0],
           }])
@@ -240,6 +270,18 @@ const AddUserModal: React.FC<AddUserModalProps> = ({ onClose, onSuccess, editUse
           .single();
 
         if (userError) throw userError;
+
+        // If connect_whatsapp permission was granted, sync user to WhatsApp backend
+        if (formData.extra_permissions.includes('connect_whatsapp')) {
+          try {
+            await supabase.functions.invoke('sync-user-to-whatsapp', {
+              body: { userId: newUser.id }
+            });
+            console.log('New user synced to WhatsApp backend');
+          } catch (syncError) {
+            console.warn('WhatsApp sync failed:', syncError);
+          }
+        }
 
         // Create center assignments
         if (formData.location_ids.length > 0) {
@@ -539,7 +581,7 @@ const AddUserModal: React.FC<AddUserModalProps> = ({ onClose, onSuccess, editUse
                         {selectedRole.role_name} Permissions
                       </div>
                       <div className="text-xs text-blue-700 mt-1">
-                        The following permissions are automatically granted to this role
+                        Checked permissions are granted. Green = from role, Blue = extra permission you can toggle.
                       </div>
                     </div>
 
@@ -548,25 +590,46 @@ const AddUserModal: React.FC<AddUserModalProps> = ({ onClose, onSuccess, editUse
                         <h3 className="text-sm font-semibold text-gray-900 mb-3">{category}</h3>
                         <div className="grid grid-cols-2 gap-2">
                           {perms.map(perm => {
-                            const hasPermission = rolePermissions.includes(perm.permission_code);
+                            const fromRole = rolePermissions.includes(perm.permission_code);
+                            const fromExtra = formData.extra_permissions.includes(perm.permission_code);
+                            const hasPermission = fromRole || fromExtra;
+                            const canToggle = !fromRole; // Can only toggle if not from role
+                            
                             return (
-                              <div
+                              <label
                                 key={perm.id}
-                                className={`flex items-start p-2 rounded ${
-                                  hasPermission ? 'bg-green-50' : 'bg-gray-50'
+                                className={`flex items-start p-2 rounded cursor-pointer transition-colors ${
+                                  fromRole 
+                                    ? 'bg-green-50 cursor-not-allowed' 
+                                    : fromExtra 
+                                      ? 'bg-blue-50 hover:bg-blue-100' 
+                                      : 'bg-gray-50 hover:bg-gray-100'
                                 }`}
                               >
                                 <input
                                   type="checkbox"
                                   checked={hasPermission}
-                                  disabled
-                                  className="h-4 w-4 text-green-600 border-gray-300 rounded mt-0.5"
+                                  disabled={!canToggle}
+                                  onChange={() => canToggle && toggleExtraPermission(perm.permission_code)}
+                                  className={`h-4 w-4 border-gray-300 rounded mt-0.5 ${
+                                    fromRole 
+                                      ? 'text-green-600' 
+                                      : 'text-blue-600 focus:ring-blue-500'
+                                  }`}
                                 />
-                                <div className="ml-2">
-                                  <div className="text-xs font-medium text-gray-900">{perm.permission_name}</div>
+                                <div className="ml-2 flex-1">
+                                  <div className="flex items-center gap-1">
+                                    <span className="text-xs font-medium text-gray-900">{perm.permission_name}</span>
+                                    {fromRole && (
+                                      <span className="text-[10px] bg-green-200 text-green-800 px-1 rounded">Role</span>
+                                    )}
+                                    {fromExtra && (
+                                      <span className="text-[10px] bg-blue-200 text-blue-800 px-1 rounded">Extra</span>
+                                    )}
+                                  </div>
                                   <div className="text-xs text-gray-500">{perm.description}</div>
                                 </div>
-                              </div>
+                              </label>
                             );
                           })}
                         </div>

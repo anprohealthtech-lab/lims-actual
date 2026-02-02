@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { X, FileText, Calendar, User, TestTube, Download, Eye, Filter, Search } from 'lucide-react';
+import { formatAge } from '../../utils/supabase';
 
 interface Patient {
   id: string;
@@ -161,7 +162,7 @@ const PatientTestHistory: React.FC<PatientTestHistoryProps> = ({ patient, onClos
               </div>
               <div>
                 <div className="text-blue-600 font-medium">Age/Gender</div>
-                <div className="text-blue-900">{patient.age}y, {patient.gender}</div>
+                <div className="text-blue-900">{formatAge(patient.age, (patient as any).age_unit)}, {patient.gender}</div>
               </div>
               <div>
                 <div className="text-blue-600 font-medium">Phone</div>

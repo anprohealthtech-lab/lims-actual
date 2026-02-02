@@ -14,9 +14,12 @@ import {
   Phone,
   Shield,
   MapPin,
-  Calendar
+  Calendar,
+  Lock,
+  Loader
 } from 'lucide-react';
 import { supabase, database } from '../utils/supabase';
+import { isAdminOrManager } from '../utils/permissions';
 import AddUserMinimalModal from '../components/Users/AddUserMinimalModal';
 import EditUserModal from '../components/Users/EditUserModal';
 
@@ -51,6 +54,32 @@ const UserManagement: React.FC = () => {
   const [showEditModal, setShowEditModal] = useState(false);
   const [editingUser, setEditingUser] = useState<User | null>(null);
   const [error, setError] = useState('');
+  const [hasAccess, setHasAccess] = useState<boolean | null>(null);
+  const [checkingAccess, setCheckingAccess] = useState(true);
+
+  // Check if user has admin/manager access
+  useEffect(() => {
+    const checkAccess = async () => {
+      if (!authUser?.id) {
+        setCheckingAccess(false);
+        setHasAccess(false);
+        return;
+      }
+      
+      setCheckingAccess(true);
+      try {
+        const canAccess = await isAdminOrManager(authUser.id, authUser.email);
+        setHasAccess(canAccess);
+      } catch (err) {
+        console.error('Error checking access:', err);
+        setHasAccess(false);
+      } finally {
+        setCheckingAccess(false);
+      }
+    };
+    
+    checkAccess();
+  }, [authUser?.id, authUser?.email]);
 
   // Load users
   useEffect(() => {
@@ -184,6 +213,36 @@ const UserManagement: React.FC = () => {
   const activeUsers = users.filter(u => u.status === 'Active').length;
   const inactiveUsers = users.filter(u => u.status === 'Inactive').length;
   const phlebotomists = users.filter(u => u.is_phlebotomist).length;
+
+  // Show loading while checking access
+  if (checkingAccess) {
+    return (
+      <div className="flex items-center justify-center min-h-[400px]">
+        <div className="text-center">
+          <Loader className="h-8 w-8 animate-spin text-blue-600 mx-auto mb-4" />
+          <p className="text-gray-600">Checking permissions...</p>
+        </div>
+      </div>
+    );
+  }
+
+  // Show access denied if not admin/manager
+  if (!hasAccess) {
+    return (
+      <div className="flex items-center justify-center min-h-[400px]">
+        <div className="text-center max-w-md">
+          <div className="w-16 h-16 bg-red-100 rounded-full flex items-center justify-center mx-auto mb-4">
+            <Lock className="h-8 w-8 text-red-600" />
+          </div>
+          <h2 className="text-xl font-semibold text-gray-900 mb-2">Access Denied</h2>
+          <p className="text-gray-600">
+            You don't have permission to access User Management. 
+            This page is only available to administrators and managers.
+          </p>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-6 p-6">

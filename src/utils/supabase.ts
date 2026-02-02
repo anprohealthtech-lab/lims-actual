@@ -47,6 +47,7 @@ export interface ReportTemplateAnalyteRow {
   parameter?: string;
   value?: string;
   unit?: string;
+  method?: string;
   reference_range?: string;
   reference_range_male?: string;
   reference_range_female?: string;
@@ -415,11 +416,20 @@ export const auth = {
 let _cachedLabId: string | null = null;
 let _cachedLabIdUserId: string | null = null; // Track which user the cache is for
 
+// ============================================================================
+// User Cache - prevents repeated auth.getUser() calls
+// ============================================================================
+let _cachedUser: any = null;
+let _cachedUserTimestamp: number = 0;
+const USER_CACHE_TTL_MS = 60000; // Cache user for 60 seconds
+
 // Clear cache on auth state change
 supabase.auth.onAuthStateChange((event) => {
   if (event === 'SIGNED_OUT' || event === 'USER_UPDATED') {
     _cachedLabId = null;
     _cachedLabIdUserId = null;
+    _cachedUser = null;
+    _cachedUserTimestamp = 0;
   }
 });
 
@@ -804,6 +814,7 @@ export const database = {
       watermark_size?: string;
       watermark_rotation?: number;
       preferred_language?: string;
+      method_options?: string[];
     }): Promise<{ data: any; error: any }> => {
       try {
         const { data, error } = await supabase
@@ -2212,7 +2223,7 @@ export const database = {
         .select(
           `analyte_id,
            created_at,
-           analytes!inner ( id, name, code, unit, reference_range )`
+           analytes!inner ( id, name, code, unit, reference_range, value_type )`
         )
         .eq('test_group_id', testGroupId)
         .order('created_at', { ascending: true });
@@ -2254,7 +2265,11 @@ export const database = {
         // Generate placeholder code that matches backend RPC pattern:
         // Use analyte.code if available, otherwise sanitize the parameter name
         // Pattern: ANALYTE_[CODE]_VALUE (uppercase, alphanumeric only)
-        const analyteCode = baseAnalyte.code
+        const valueType = (baseAnalyte.value_type || 'numeric').toString();
+        const isDescriptive = ['qualitative', 'semi_quantitative', 'descriptive'].includes(
+          valueType.toLowerCase()
+        );
+        const analyteCode = (!isDescriptive && baseAnalyte.code)
           ? baseAnalyte.code.replace(/[^A-Za-z0-9]+/g, '').toUpperCase()
           : label.replace(/[^A-Za-z0-9]+/g, '').toUpperCase();
 
@@ -2270,6 +2285,7 @@ export const database = {
           placeholderBase,
           unit: labOverride.lab_specific_unit || labOverride.unit || baseAnalyte.unit || null,
           referenceRange: labOverride.lab_specific_reference_range || labOverride.reference_range || baseAnalyte.reference_range || null,
+          valueType,
         };
       });
 
@@ -3005,6 +3021,17 @@ export const database = {
 
       return { data: enrichedData, error };
     },
+    getByOrderAndTestGroup: async (orderId: string, testGroupId: string) => {
+      const { data, error } = await supabase
+        .from('results')
+        .select('*')
+        .eq('order_id', orderId)
+        .eq('test_group_id', testGroupId)
+        .order('entered_date', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      return { data, error };
+    },
     create: async (resultData: any) => {
       const { values, ...rest } = resultData; // Separate values array
       const { data: result, error } = await supabase
@@ -3269,6 +3296,18 @@ export const database = {
   },
 
   resultValues: {
+    createMany: async (values: any[]): Promise<{ data: any; error: any }> => {
+      if (!values || values.length === 0) {
+        return { data: [], error: null };
+      }
+
+      const { data, error } = await supabase
+        .from('result_values')
+        .insert(values)
+        .select();
+
+      return { data, error };
+    },
     updateVerificationStatus: async (resultValueIds: string[], status: 'approved' | 'rejected' | 'pending', note?: string): Promise<{ data: any; error: any }> => {
       try {
         // Get current user
@@ -3546,6 +3585,7 @@ export const database = {
           .from('result_values')
           .select(`
             id,
+            lab_id,
             parameter,
             value,
             unit,
@@ -3577,6 +3617,8 @@ export const database = {
               high_critical,
               value_type,
               expected_normal_values,
+              ref_range_knowledge,
+              flag_rules,
               interpretation_low,
               interpretation_normal,
               interpretation_high
@@ -3822,6 +3864,20 @@ export const database = {
         .maybeSingle();
       
       return { data, error };
+    },
+
+    // Get ALL invoices for an order (for orders with multiple invoices due to added tests)
+    getAllByOrderId: async (orderId: string) => {
+      const { data, error } = await supabase
+        .from('invoices')
+        .select(`
+          *,
+          invoice_items(*)
+        `)
+        .eq('order_id', orderId)
+        .order('invoice_date', { ascending: false });
+      
+      return { data: data || [], error };
     },
 
     // Delivery tracking methods for invoices
@@ -4469,7 +4525,6 @@ export const database = {
         const { data, error } = await supabase
           .from('analytes')
           .select('*')
-          .eq('is_active', true)
           .order('name');
         return { data, error };
       }
@@ -4480,11 +4535,17 @@ export const database = {
         .select(`
           is_active,
           visible,
+          category,
+          low_critical,
+          high_critical,
+          method,
+          lab_specific_method,
           ref_range_knowledge,
           lab_specific_reference_range,
           lab_specific_interpretation_low,
           lab_specific_interpretation_normal,
           lab_specific_interpretation_high,
+          expected_normal_values,
           analytes(*)
         `)
         .eq('lab_id', labId)
@@ -4501,10 +4562,32 @@ export const database = {
             // item.analytes may be an array or object, handle accordingly
             const analyteObj = Array.isArray(item.analytes) ? item.analytes[0] : item.analytes;
             if (analyteObj) {
+              // Parse expected_normal_values from lab_analytes (may be string or array)
+              let expectedNormalValues = analyteObj.expected_normal_values || [];
+              if (item.expected_normal_values) {
+                // Lab-specific override takes priority
+                if (typeof item.expected_normal_values === 'string') {
+                  try {
+                    expectedNormalValues = JSON.parse(item.expected_normal_values);
+                  } catch {
+                    expectedNormalValues = [];
+                  }
+                } else if (Array.isArray(item.expected_normal_values)) {
+                  expectedNormalValues = item.expected_normal_values;
+                }
+              }
+              
               return {
                 ...analyteObj,
                 is_active: item.is_active,
                 visible: item.visible,
+                // Prioritize lab-specific category if it exists, otherwise use global
+                category: item.category || analyteObj.category || 'General',
+                // Prioritize lab-specific critical values if present
+                low_critical: item.low_critical ?? analyteObj.low_critical,
+                high_critical: item.high_critical ?? analyteObj.high_critical,
+                // Prioritize lab-specific method if present
+                method: item.lab_specific_method || item.method || analyteObj.method,
                 // Prioritize lab-specific values if they exist, otherwise use global
                 referenceRange: item.lab_specific_reference_range || analyteObj.reference_range,
                 interpretation: {
@@ -4513,6 +4596,7 @@ export const database = {
                   high: item.lab_specific_interpretation_high || analyteObj.interpretation_high,
                 },
                 ref_range_knowledge: item.ref_range_knowledge || analyteObj.ref_range_knowledge,
+                expected_normal_values: expectedNormalValues,
               };
             }
             return null;
@@ -5035,12 +5119,30 @@ export const database = {
       return { data, error };
     },
 
+    // Get multiple lab-specific analytes by analyte IDs
+    getByLabAndAnalyteIds: async (labId: string, analyteIds: string[]) => {
+      if (!labId || !analyteIds.length) {
+        return { data: [], error: null };
+      }
+
+      const { data, error } = await supabase
+        .from('lab_analytes')
+        .select(`
+          *,
+          analytes(*)
+        `)
+        .eq('lab_id', labId)
+        .in('analyte_id', analyteIds);
+      return { data: data || [], error };
+    },
+
     // Update lab-specific analyte settings
     updateLabSpecific: async (labId: string, analyteId: string, updates: {
       is_active?: boolean;
       visible?: boolean;
       name?: string;
       unit?: string;
+      method?: string;
       reference_range?: string;
       reference_range_male?: string;
       reference_range_female?: string;
@@ -5052,6 +5154,7 @@ export const database = {
       category?: string;
       lab_specific_name?: string;
       lab_specific_unit?: string;
+      lab_specific_method?: string;
       lab_specific_reference_range?: string;
       lab_specific_reference_range_male?: string;
       lab_specific_reference_range_female?: string;
@@ -5255,6 +5358,15 @@ export const database = {
         .eq('lab_id', lab_id)
         .eq('is_active', true)
         .order('name');
+      return { data, error };
+    },
+
+    getById: async (testGroupId: string) => {
+      const { data, error } = await supabase
+        .from('test_groups')
+        .select('id, name, category, code, lab_id')
+        .eq('id', testGroupId)
+        .single();
       return { data, error };
     },
 
@@ -5767,6 +5879,8 @@ export const database = {
       predefined_options?: string[];
       is_required?: boolean;
       is_editable?: boolean;
+      allow_images?: boolean;
+      allow_technician_entry?: boolean;
       placeholder_key?: string;
     }) => {
       const lab_id = await database.getCurrentUserLabId();
@@ -5791,6 +5905,8 @@ export const database = {
       predefined_options: string[];
       is_required: boolean;
       is_editable: boolean;
+      allow_images: boolean;
+      allow_technician_entry: boolean;
       placeholder_key: string;
     }>) => {
       const { data, error } = await supabase
@@ -5832,6 +5948,8 @@ export const database = {
             section_name,
             default_content,
             predefined_options,
+            allow_images,
+            allow_technician_entry,
             placeholder_key,
             display_order
           )
@@ -5850,6 +5968,7 @@ export const database = {
       selected_options?: number[];
       custom_text?: string;
       final_content: string;
+      image_urls?: string[];
     }) => {
       const { data, error } = await supabase
         .from('result_section_content')
@@ -5869,6 +5988,7 @@ export const database = {
       selected_options?: number[];
       custom_text?: string;
       final_content?: string;
+      image_urls?: string[];
     }) => {
       const { data, error } = await supabase
         .from('result_section_content')
@@ -5892,6 +6012,7 @@ export const database = {
       selected_options?: any[];
       custom_text?: string;
       final_content: string;
+      image_urls?: string[];
     }, userId: string) => {
       const { data, error } = await supabase
         .from('result_section_content')
@@ -5915,6 +6036,7 @@ export const database = {
         .from('result_section_content')
         .select(`
           final_content,
+          image_urls,
           lab_template_sections!inner(
             placeholder_key
           )
@@ -5924,12 +6046,35 @@ export const database = {
       
       if (error || !data) return { data: null, error };
 
-      // Build map of placeholder_key -> final_content
+      const buildSectionHtml = (content: string | null | undefined, imageUrls?: string[] | null) => {
+        const trimmedContent = typeof content === 'string' ? content.trim() : '';
+        const formattedText = trimmedContent
+          ? `<div class="section-content">${trimmedContent.replace(/\r\n/g, '\n').replace(/\n/g, '<br/>')}</div>`
+          : '';
+
+        const urls = Array.isArray(imageUrls) ? imageUrls.filter(Boolean) : [];
+        const imageHtml = urls.length > 0
+          ? `<div class="section-images">${urls
+              .map((url) => {
+                const separator = url.includes('?') ? '&' : '?';
+                return `<img src="${url}${separator}tr=w-1200,q-85,sharpen-5" class="report-section-image" />`;
+              })
+              .join('')}
+            </div>`
+          : '';
+
+        return `${formattedText}${imageHtml}`.trim();
+      };
+
+      // Build map of placeholder_key -> final_content html
       const sectionMap: Record<string, string> = {};
       for (const item of data) {
         const key = (item.lab_template_sections as any)?.placeholder_key;
-        if (key && item.final_content) {
-          sectionMap[key] = item.final_content;
+        if (key) {
+          const html = buildSectionHtml(item.final_content, item.image_urls as string[] | null);
+          if (html) {
+            sectionMap[key] = html;
+          }
         }
       }
       return { data: sectionMap, error: null };
@@ -5986,6 +6131,7 @@ export const database = {
         selected_options: [],
         custom_text: '',
         final_content: section.default_content || '',
+        image_urls: [],
         edited_by: userId,
         edited_at: new Date().toISOString()
       }));
@@ -6815,6 +6961,15 @@ export const attachments = {
       .eq('related_table', relatedTable)
       .eq('related_id', relatedId)
       .order('created_at', { ascending: false });
+    return { data, error };
+  },
+
+  getById: async (attachmentId: string) => {
+    const { data, error } = await supabase
+      .from('attachments')
+      .select('id, imagekit_url, processed_url, file_url, processing_status')
+      .eq('id', attachmentId)
+      .single();
     return { data, error };
   },
 
@@ -8896,6 +9051,7 @@ const brandingSignatureAPI = {
       status?: string;
       fromDate?: string;
       toDate?: string;
+      locationIds?: string[]; // ✅ Add location filter parameter
     }) => {
       const labId = await database.getCurrentUserLabId();
       if (!labId) {
@@ -8921,7 +9077,8 @@ const brandingSignatureAPI = {
             order_number,
             patient_id,
             patient_name,
-            order_date
+            order_date,
+            location_id
           ),
           outsourced_labs(name)
         `)
@@ -8952,7 +9109,12 @@ const brandingSignatureAPI = {
         // Add one day to include the entire end date
         const endDate = new Date(filters.toDate);
         endDate.setDate(endDate.getDate() + 1);
-        query = query.lt('created_at', endDate.toISOString());
+        query =query.lt('created_at', endDate.toISOString());
+      }
+
+      // ✅ Add location filtering
+      if (filters?.locationIds && filters.locationIds.length > 0) {
+        query = query.in('orders.location_id', filters.locationIds);
       }
 
       query = query.order('created_at', { ascending: false });
@@ -10353,10 +10515,14 @@ const pdfQueue = {
       console.log('🚀 Triggering server-side PDF generation for order:', orderId);
       onProgress?.('Starting server-side PDF generation...', 5);
       
+      // Get current user ID for WhatsApp integration
+      const { data: { user } } = await supabase.auth.getUser();
+      const triggeredByUserId = user?.id;
+      
       // Call edge function - it handles everything server-side:
       // Context fetch → Template rendering → PDF.co generation → Storage upload
       const { data, error } = await supabase.functions.invoke('generate-pdf-letterhead', {
-        body: { orderId }
+        body: { orderId, triggeredByUserId }
       });
 
       if (error) {
@@ -12176,6 +12342,12 @@ const analytics = {
         .lte('date', filters.date_range.to.toISOString().split('T')[0]);
     }
 
+    if (filters.location_id) {
+      query = query.eq('location_id', filters.location_id);
+    } else {
+      query = query.is('location_id', null);
+    }
+
     const { data, error } = await query.order('date', { ascending: false });
     return { data, error };
   },
@@ -12244,6 +12416,12 @@ const analytics = {
         .lte('date', filters.date_range.to.toISOString().split('T')[0]);
     }
 
+    if (filters.location_id) {
+      query = query.eq('location_id', filters.location_id);
+    } else {
+      query = query.is('location_id', null);
+    }
+
     if (filters.department) {
       query = query.eq('department', filters.department);
     }
@@ -12267,6 +12445,12 @@ const analytics = {
         .lte('date', filters.date_range.to.toISOString().split('T')[0]);
     }
 
+    if (filters.location_id) {
+      query = query.eq('location_id', filters.location_id);
+    } else {
+      query = query.is('location_id', null);
+    }
+
     const { data, error } = await query.order('count', { ascending: false });
     return { data, error };
   },
@@ -12275,12 +12459,18 @@ const analytics = {
    * Get top tests by volume and revenue
    */
   async getTestPopularity(filters: AnalyticsFilters, limit = 10): Promise<{ data: TestPopularity[] | null; error: any }> {
-    const { data, error } = await supabase
+    let query = supabase
       .from('v_analytics_test_popularity')
       .select('*')
-      .eq('lab_id', filters.lab_id)
-      .lte('rank_by_volume', limit);
+      .eq('lab_id', filters.lab_id);
 
+    if (filters.location_id) {
+      query = query.eq('location_id', filters.location_id);
+    } else {
+      query = query.is('location_id', null);
+    }
+
+    const { data, error } = await query.lte('rank_by_volume', limit);
     return { data, error };
   },
 
@@ -12297,6 +12487,12 @@ const analytics = {
       query = query
         .gte('date', filters.date_range.from.toISOString().split('T')[0])
         .lte('date', filters.date_range.to.toISOString().split('T')[0]);
+    }
+
+    if (filters.location_id) {
+      query = query.eq('location_id', filters.location_id);
+    } else {
+      query = query.is('location_id', null);
     }
 
     if (filters.department) {
@@ -12345,6 +12541,12 @@ const analytics = {
         .lte('date', filters.date_range.to.toISOString().split('T')[0]);
     }
 
+    if (filters.location_id) {
+      query = query.eq('location_id', filters.location_id);
+    } else {
+      query = query.is('location_id', null);
+    }
+
     if (filters.account_id) {
       query = query.eq('account_id', filters.account_id);
     }
@@ -12368,6 +12570,12 @@ const analytics = {
         .lte('date', filters.date_range.to.toISOString().split('T')[0]);
     }
 
+    if (filters.location_id) {
+      query = query.eq('location_id', filters.location_id);
+    } else {
+      query = query.is('location_id', null);
+    }
+
     const { data, error } = await query.order('revenue', { ascending: false });
     return { data, error };
   },
@@ -12380,6 +12588,10 @@ const analytics = {
       .from('v_analytics_critical_alerts')
       .select('*')
       .eq('lab_id', filters.lab_id);
+
+    if (filters.location_id) {
+      query = query.eq('location_id', filters.location_id);
+    }
 
     const { data, error } = await query
       .order('flag', { ascending: true }) // C first, then H, then L
@@ -12404,6 +12616,12 @@ const analytics = {
         .lte('date', filters.date_range.to.toISOString().split('T')[0]);
     }
 
+    if (filters.location_id) {
+      query = query.eq('location_id', filters.location_id);
+    } else {
+      query = query.is('location_id', null);
+    }
+
     const { data, error } = await query.order('patient_count', { ascending: false });
     return { data, error };
   },
@@ -12423,6 +12641,12 @@ const analytics = {
         .lte('date', filters.date_range.to.toISOString().split('T')[0]);
     }
 
+    if (filters.location_id) {
+      query = query.eq('location_id', filters.location_id);
+    } else {
+      query = query.is('location_id', null);
+    }
+
     const { data, error } = await query.order('hour', { ascending: true });
     return { data, error };
   },
@@ -12440,6 +12664,12 @@ const analytics = {
       query = query
         .gte('date', filters.date_range.from.toISOString().split('T')[0])
         .lte('date', filters.date_range.to.toISOString().split('T')[0]);
+    }
+
+    if (filters.location_id) {
+      query = query.eq('location_id', filters.location_id);
+    } else {
+      query = query.is('location_id', null);
     }
 
     const { data, error } = await query.order('total_amount', { ascending: false });
@@ -12477,4 +12707,50 @@ Object.assign(database, {
   pricingHelper,
   analytics,
 });
+
+/**
+ * Format patient age with correct unit abbreviation
+ * @param age - The age value
+ * @param age_unit - The unit: 'years' | 'months' | 'days' (defaults to 'years')
+ * @returns Formatted string like "9y", "6m", "15d"
+ */
+export const formatAge = (age: number | string | null | undefined, age_unit?: string | null): string => {
+  if (age === null || age === undefined || age === '') return 'N/A';
+
+  const unitMap: Record<string, string> = {
+    years: 'y',
+    months: 'm',
+    days: 'd',
+  };
+
+  const unit = age_unit || 'years';
+  const abbrev = unitMap[unit] || 'y';
+
+  return `${age}${abbrev}`;
+};
+
+/**
+ * Format patient age with full unit name
+ * @param age - The age value
+ * @param age_unit - The unit: 'years' | 'months' | 'days' (defaults to 'years')
+ * @returns Formatted string like "9 years", "6 months", "15 days"
+ */
+export const formatAgeFull = (age: number | string | null | undefined, age_unit?: string | null): string => {
+  if (age === null || age === undefined || age === '') return 'N/A';
+
+  const unit = age_unit || 'years';
+  const numAge = typeof age === 'string' ? parseInt(age, 10) : age;
+
+  // Handle singular/plural
+  if (numAge === 1) {
+    const singularMap: Record<string, string> = {
+      years: 'year',
+      months: 'month',
+      days: 'day',
+    };
+    return `${numAge} ${singularMap[unit] || 'year'}`;
+  }
+
+  return `${age} ${unit}`;
+};
 

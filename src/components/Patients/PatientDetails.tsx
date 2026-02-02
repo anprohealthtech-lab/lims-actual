@@ -2,7 +2,7 @@ import React from 'react';
 import { useState, useEffect } from 'react';
 import { X, User, Phone, Mail, MapPin, Droplet, FileText, QrCode, Palette, Printer, Edit, Plus, Upload, ExternalLink, Calendar } from 'lucide-react';
 import { QRCodeCanvas } from 'qrcode.react';
-import { database, supabase } from '../../utils/supabase';
+import { database, supabase, formatAge } from '../../utils/supabase';
 import ExternalReportUploadModal from './ExternalReportUploadModal';
 
 interface Patient {
@@ -665,7 +665,7 @@ const PatientDetails: React.FC<PatientDetailsProps> = ({
                               <h3>${patient.name}</h3>
                               ${patient.display_id ? `<p class="sample-id">Sample ID: ${patient.display_id}</p>` : ''}
                               <p>ID: ${patient.id}</p>
-                              <p>${patient.age}y, ${patient.gender}</p>
+                              <p>${patient.age}${(patient as any).age_unit === 'months' ? 'm' : (patient as any).age_unit === 'days' ? 'd' : 'y'}, ${patient.gender}</p>
                             </div>
                             <div id="qrcode"></div>
                             <div class="color-indicator">${patient.color_name}</div>

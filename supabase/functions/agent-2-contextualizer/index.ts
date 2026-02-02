@@ -82,14 +82,13 @@ serve(async (req) => {
     // Fetch lab information
     const { data: lab } = await supabaseClient
       .from('labs')
-      .select('name, settings')
+      .select('name')
       .eq('id', lab_id)
       .single()
 
     if (lab) {
       labContext = {
-        lab_name: lab.name,
-        lab_settings: lab.settings
+        lab_name: lab.name
       }
     }
 
@@ -151,7 +150,7 @@ Return ONLY valid JSON matching the ContextualizerResponse interface.`
 
     // Call Gemini API
     const geminiResponse = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-exp:generateContent?key=${geminiApiKey}`,
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${geminiApiKey}`,
       {
         method: 'POST',
         headers: {
@@ -262,100 +261,215 @@ Return ONLY valid JSON matching the ContextualizerResponse interface.`
 })
 
 function getContextualizationPrompt(): string {
-  return `You are an AI agent responsible for contextualizing and finalizing laboratory workflow drafts. Your task is to integrate lab-specific context, test group information, and available analytes to create production-ready workflows.
+  return `You are an AI agent responsible for contextualizing laboratory workflows for NABL/ISO 15189:2022 compliance. Your task is to finalize workflows with proper order context integration, QC target values, and analyte mappings.
 
-OUTPUT FORMAT:
+=== ORDER CONTEXT INTEGRATION ===
+
+The workflow will receive these pre-populated fields from the order system. Map workflow fields to use these exact names:
+
+AUTO-POPULATED CONTEXT (mark as readOnly: true or use HTML display):
+| Workflow Field | Context Source | Description |
+|----------------|----------------|-------------|
+| sampleId | order.sample_id | Sample identifier |
+| patientId | order.patient_id | Patient UUID |
+| patientName | order.patient_name | Full name |
+| patientAge | patient.age | Age in years |
+| patientGender | patient.gender | Male/Female/Other |
+| collectionDate | order.sample_collected_at (date part) | YYYY-MM-DD |
+| collectionTime | order.sample_collected_at (time part) | HH:MM |
+| collectorName | order.sample_collected_by | Phlebotomist |
+| orderId | order.id | Order UUID |
+| testGroupId | order_test.test_group_id | Test UUID |
+| testName | test_group.name | Test display name |
+| testCode | test_group.code | Test code |
+| labId | order.lab_id | Lab UUID |
+| labName | lab.name | Lab name |
+| technicianId | current_user.id | Logged-in user |
+| technicianName | current_user.full_name | User name |
+| workingDate | NOW() | Today YYYY-MM-DD |
+| workingTime | NOW() | Current HH:MM |
+
+=== OUTPUT FORMAT ===
 {
   "technician_flow_final": {
-    "title": "string",
-    "description": "string",
-    "pages": [
-      {
-        "name": "string", 
+    "ui": {
+      "engine": "surveyjs",
+      "template": {
         "title": "string",
-        "elements": [
-          {
-            "type": "html|text|radiogroup|checkbox|dropdown|rating|matrix|file",
-            "name": "string",
-            "title": "string",
-            "isRequired": boolean,
-            "choices": ["option1", "option2"],
-            "validators": [
-              {
-                "type": "numeric|regex|expression",
-                "text": "validation error message"
-              }
-            ]
-          }
-        ]
+        "description": "string",
+        "pages": [...]
       }
-    ]
+    },
+    "meta": {
+      "owner": "lab_name",
+      "title": "Test Name - Lab Workflow",
+      "context_fields": {
+        "auto_populated": ["sampleId", "patientId", "patientName", "collectionDate", ...],
+        "technician_entry": ["iqcLevel1", "iqcLevel2", "resultValue", ...]
+      },
+      "qc_requirements": {
+        "requires_iqc": true,
+        "iqc_levels": 2,
+        "westgard_rules_enabled": true
+      },
+      "nabl_compliant": true
+    },
+    "rules": {
+      "mode": "ADVANCED",
+      "steps": [...]
+    }
   },
   "ai_spec_final": {
     "steps": [
       {
-        "step_type": "extract_values|validate_range|calculate_result|flag_abnormal|map_to_analyte",
-        "description": "string",
+        "step_type": "validate_qc",
+        "description": "Validate IQC results against target values",
         "parameters": {
-          "target_analyte_id": "uuid_if_mapping_to_existing",
-          "target_fields": ["field1", "field2"],
-          "validation_rules": ["numeric", "range_check"],
+          "qc_lot_table": "qc_lots",
+          "qc_targets_table": "qc_target_values",
+          "westgard_rules": ["1_2s", "1_3s", "2_2s", "R_4s"],
+          "fields": {
+            "iqcLevel1": {"level": "low", "analyte_id": "uuid"},
+            "iqcLevel2": {"level": "normal", "analyte_id": "uuid"}
+          }
+        }
+      },
+      {
+        "step_type": "extract_values",
+        "description": "Extract test results",
+        "parameters": {
+          "target_fields": ["resultValue"],
+          "validation_rules": ["numeric"]
+        }
+      },
+      {
+        "step_type": "validate_range",
+        "description": "Check against reference ranges",
+        "parameters": {
+          "target_fields": ["resultValue"],
           "reference_ranges": {"analyte_name": "range"},
-          "calculations": "formula if applicable",
-          "units": "mg/dL, mmol/L, etc."
+          "age_gender_specific": true
+        }
+      },
+      {
+        "step_type": "flag_critical",
+        "description": "Flag critical values",
+        "parameters": {
+          "critical_low": "value",
+          "critical_high": "value",
+          "notification_required": true
+        }
+      },
+      {
+        "step_type": "map_to_analyte",
+        "description": "Map to analyte for result storage",
+        "parameters": {
+          "field": "resultValue",
+          "target_analyte_id": "uuid",
+          "units": "unit"
         }
       }
     ]
   },
+  "qc_integration": {
+    "iqc_lot_fields": {
+      "iqcLotNumber": "qc_lots.lot_number",
+      "iqcExpiryDate": "qc_lots.expiry_date"
+    },
+    "iqc_target_mapping": {
+      "iqcLevel1": {
+        "analyte_id": "uuid",
+        "level": "low",
+        "target_mean": "from qc_target_values",
+        "target_sd": "from qc_target_values"
+      },
+      "iqcLevel2": {
+        "analyte_id": "uuid",
+        "level": "normal",
+        "target_mean": "from qc_target_values",
+        "target_sd": "from qc_target_values"
+      }
+    },
+    "auto_westgard_evaluation": true,
+    "record_to_qc_results": true
+  },
   "version_metadata": {
     "version_hint": "1.0.0",
     "test_code": "string",
-    "display_name": "string", 
-    "analyte_names": ["analyte1", "analyte2"],
+    "display_name": "string",
+    "analyte_names": ["analyte1"],
+    "analyte_ids": ["uuid1"],
     "created_by": "contextualizer_agent",
     "contextualization_timestamp": "ISO_timestamp"
   },
   "final_validation": {
-    "needs_attention": [
-      {
-        "description": "string",
-        "severity": "info|warning|error"
-      }
-    ]
+    "needs_attention": [...],
+    "accreditation_ready": true,
+    "missing_requirements": []
   }
 }
 
-CONTEXTUALIZATION REQUIREMENTS:
+=== CONTEXTUALIZATION TASKS ===
 
-1. ANALYTE MAPPING:
-   - Map workflow result fields to existing lab analytes where possible
-   - Use analyte IDs for direct mapping
-   - Ensure units and reference ranges align
-   - Flag unmapped results for manual review
+1. FIELD NAME STANDARDIZATION:
+   - Rename draft field names to match context field names
+   - Example: "patient_id" → "patientId", "sample_id" → "sampleId"
+   - Mark context fields with "readOnly": true or display as HTML
 
-2. LAB CUSTOMIZATION:
-   - Incorporate lab-specific settings and preferences
-   - Adjust workflow steps for lab equipment and procedures  
-   - Apply lab's quality control requirements
-   - Use lab's standard terminology and formats
+2. ANALYTE MAPPING:
+   - Map each result field to an existing analyte from available_analytes
+   - Use the exact analyte_id for database storage
+   - Include unit and reference_range from analyte config
+   - For age/gender-specific ranges, add conditional logic
 
-3. VALIDATION ENHANCEMENT:
-   - Add appropriate input validation to form elements
-   - Include range checks based on analyte reference ranges
-   - Add calculated fields where test requires computations
-   - Flag critical values that need immediate attention
+3. QC INTEGRATION:
+   - Link QC fields to qc_lots and qc_target_values tables
+   - Configure Westgard rule parameters
+   - Set up automatic qc_results recording
+   - Include lot tracking (lot number, expiry)
 
-4. WORKFLOW OPTIMIZATION:
-   - Ensure logical flow between pages/steps
-   - Add conditional navigation where appropriate
-   - Include progress indicators and help text
-   - Optimize for mobile/tablet use in lab environments
+4. CRITICAL VALUES:
+   - Extract critical high/low from analyte or test group config
+   - Add critical value notification step
+   - Include "whom notified" field if critical
 
-5. QUALITY ASSURANCE:
-   - Validate all required fields are present
-   - Check for consistency between technician workflow and AI spec
-   - Ensure all analytes can be processed by the AI specification
-   - Flag any ambiguities or missing information
+5. VALIDATION RULES:
+   - Add numeric validators for all result fields
+   - Add date validators for date fields
+   - Add required validators for NABL-mandatory fields
 
-Focus on creating production-ready workflows that integrate seamlessly with the existing lab's processes and analyte configurations.`
+6. AUDIT TRAIL:
+   - Ensure technicianId and technicianName captured
+   - Ensure timestamps for key steps
+   - Include verification checkboxes
+
+=== NABL MANDATORY CHECKS ===
+
+Verify these are present (flag as error if missing):
+□ Sample identification verification step
+□ IQC verification before patient testing
+□ IQC lot number and expiry tracking
+□ At least 2 levels of IQC
+□ Result entry with numeric validation
+□ Reference range display
+□ Critical value protocol (if applicable)
+□ Technician identification
+□ Verification/authorization step
+
+=== QUALITY CONTROL DATABASE INTEGRATION ===
+
+QC fields should integrate with:
+- qc_lots: Lot tracking (lot_number, expiry_date, material_name)
+- qc_target_values: Target mean/SD per lot per analyte
+- qc_runs: Daily QC run tracking
+- qc_results: Individual QC measurements with Westgard evaluation
+- westgard_rules: Lab's configured rules
+
+When QC is submitted:
+1. Create/update qc_run record
+2. Insert qc_results for each level
+3. Trigger Westgard evaluation
+4. Block patient testing if QC fails
+
+Focus on creating production-ready workflows that pass NABL audit and integrate with the existing database schema for QC and results tracking.`
 }

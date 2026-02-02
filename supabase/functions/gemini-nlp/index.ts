@@ -312,8 +312,58 @@ Deno.serve(async (req) => {
         
       } else {
         // Default processing - lab results
-        // Match extracted parameters to database analytes
-        const enhancedParameters = await matchParametersToAnalytes(jsonResponse);
+        // Initial matching for Gemini extraction
+        let enhancedParameters = await matchParametersToAnalytes(jsonResponse);
+        
+        // Optional: Validate and enhance with Claude Haiku 4.5 for OCR reports
+        let validationApplied = false;
+        if ((aiProcessingType === 'ocr_report' || documentType) && rawText && rawText.length > 10) {
+          const anthropicKey = Deno.env.get('ANTHROPIC_API_KEY');
+          if (anthropicKey) {
+            try {
+              console.log('Applying Claude Haiku 4.5 validation and enhancement...');
+              const validatedParams = await validateAndEnhanceWithClaude(
+                enhancedParameters,
+                rawText,
+                focusAnalyteNames,
+                anthropicKey
+              );
+              if (validatedParams && validatedParams.length > 0) {
+                enhancedParameters = validatedParams;
+                validationApplied = true;
+                console.log(`Validation complete. Parameters after validation: ${enhancedParameters.length}`);
+                
+                // Re-run fuzzy matching on ALL parameters after Claude validation
+                // This ensures newly added parameters and renamed ones get matched
+                console.log('Re-running fuzzy matching on validated parameters...');
+                enhancedParameters = await matchParametersToAnalytes(enhancedParameters);
+                console.log(`After re-matching: ${enhancedParameters.filter(p => p.matched).length}/${enhancedParameters.length} matched`);
+              }
+            } catch (validationError) {
+              console.warn('Claude validation failed, using original extraction:', validationError.message);
+            }
+          }
+        }
+        
+        // ✅ STRICT FILTER: If focusAnalyteNames is specified, ONLY return those analytes
+        // This is a safety net in case Gemini/Claude still return extra parameters
+        if (focusAnalyteNames.length > 0) {
+          const beforeCount = enhancedParameters.length;
+          enhancedParameters = enhancedParameters.filter((param: any) => {
+            const paramName = (param.parameter || '').toLowerCase();
+            // Check if param matches any focus analyte (case-insensitive, partial match)
+            return focusAnalyteNames.some(focus => {
+              const focusLower = focus.toLowerCase();
+              return paramName.includes(focusLower) || 
+                     focusLower.includes(paramName) ||
+                     paramName === focusLower;
+            });
+          });
+          const afterCount = enhancedParameters.length;
+          if (beforeCount !== afterCount) {
+            console.log(`Strict filter applied: ${beforeCount} → ${afterCount} parameters (removed ${beforeCount - afterCount} non-matching)`);
+          }
+        }
         
         const responseWithMetadata = {
           extractedParameters: enhancedParameters,
@@ -321,12 +371,15 @@ Deno.serve(async (req) => {
             documentType: documentType || aiProcessingType,
             aiProcessingType: aiProcessingType || null,
             customPromptUsed: !!aiPromptOverride,
-            processingMethod: 'Supabase Edge Functions + Gemini NLP',
+            processingMethod: validationApplied 
+              ? 'Supabase Edge Functions + Gemini NLP + Claude Validation' 
+              : 'Supabase Edge Functions + Gemini NLP',
             ocrConfidence: visionResults?.confidence || 0.95,
             extractedTextLength: rawText?.length || 0,
             processingTimestamp: new Date().toISOString(),
             matchedParameters: enhancedParameters.filter(p => p.matched).length,
             totalParameters: enhancedParameters.length,
+            validationApplied: validationApplied,
             analyteFocusNames: focusAnalyteNames,
             analyteExtractionTargets: extractionTargets,
             orderId: requestOrderId,
@@ -472,15 +525,22 @@ type AnalytesToExtract = string[] | string | null | undefined;
  */
 const PROMPT_TEMPLATES = {
   base: "You are a medical lab assistant AI. Return only a valid JSON object, no additional text.",
-  
+
   formats: {
-    labResult: `[{"parameter": "Name", "value": "Value", "unit": "Unit", "reference_range": "Range", "flag": "Normal/High/Low"}]`,
+    labResult: `[{"parameter": "Name", "value": "15.1", "unit": "g/dL", "reference_range": "12.0-17.5", "flag": "Normal"}]`,
     testCard: `{"testType": "Test Card", "testResult": "Result", "details": {}, "confidenceLevel": 95, "interpretation": "Analysis"}`,
     patientForm: `{"patient_details": {"first_name": "", "last_name": "", "age": 0, "gender": "", "phone": "", "email": ""}, "requested_tests": [], "doctor_info": {"name": ""}}`
   },
-  
+
   instructions: {
-    ocr: "Extract lab parameters focusing on: parameter names, numeric values, units, reference ranges, flags (H/L/Normal/Abnormal)",
+    ocr: `Extract lab parameters with these STRICT rules:
+- parameter: The test/analyte name (e.g., "WBC", "RBC", "HGB", "Hemoglobin")
+- value: ONLY the numeric value WITHOUT any unit or multiplier (e.g., "7.4" NOT "7.4 x10^3/uL", "15.1" NOT "15.1 g/dL")
+- unit: The complete unit INCLUDING any multiplier (e.g., "x10^3/µL", "g/dL", "x10^6/µL", "%", "fL")
+- reference_range: The normal range (e.g., "4.5-11.0", "12.0-17.5")
+- flag: "Normal", "High", "Low", or "Abnormal" based on value vs reference range
+
+CRITICAL: The "value" field must contain ONLY the numeric portion. Never include units, multipliers (x10^3, x10^6), or any text in the value field.`,
     vision: "Analyze for diagnostic results focusing on: control/test lines, color changes, overall test validity",
     form: "Extract patient details and requested tests from form"
   }
@@ -499,6 +559,11 @@ CRITICAL INSTRUCTIONS:
 4. Start your response directly with { and end with }
 5. Ensure all JSON is properly formatted and parseable
 
+VALUE EXTRACTION RULES:
+- "value" must contain ONLY the numeric portion (e.g., "7.4" NOT "7.4 x10^3/uL")
+- "unit" must contain the complete unit INCLUDING multipliers (e.g., "x10^3/µL", "g/dL")
+- Never combine numeric values with units in the value field
+
 `;
 
   // If analyte names are provided, instruct Gemini to use them as keys
@@ -510,15 +575,15 @@ ${analyteNames.map((name, idx) => `${idx + 1}. "${name}"`).join('\n')}
 
 Your JSON should have this structure:
 {
-  "${analyteNames[0]}": "extracted value",
-  "${analyteNames[1]}": "extracted value",
+  "${analyteNames[0]}": "extracted value (numeric only)",
+  "${analyteNames[1]}": "extracted value (numeric only)",
   ...
 }
 
 `;
   }
-  
-  return jsonEnforcement + customPrompt + '\n\nRemember: Return ONLY the JSON object with the exact parameter names specified above.';
+
+  return jsonEnforcement + customPrompt + '\n\nRemember: Return ONLY the JSON object with the exact parameter names specified above. Values must be numeric only.';
 }
 
 /**
@@ -526,9 +591,27 @@ Your JSON should have this structure:
  */
 function generatePrompt(type: string, subtype: string, data: string): string {
   const { base, formats, instructions } = PROMPT_TEMPLATES;
-  
+
   if (type === 'ocr') {
-    return `${base}\n\nFrom this ${subtype} text, ${instructions.ocr}\n\nExpected format: ${formats.labResult}\n\nText: ${data}`;
+    return `${base}
+
+From this ${subtype} text, ${instructions.ocr}
+
+EXAMPLE - If OCR text shows:
+  WBC
+  7.4
+  x10^3/UL
+  4.5-11.0
+
+Return:
+  {"parameter": "WBC", "value": "7.4", "unit": "x10^3/µL", "reference_range": "4.5-11.0", "flag": "Normal"}
+
+Notice: value is "7.4" (numeric only), unit is "x10^3/µL" (includes multiplier)
+
+Expected format: ${formats.labResult}
+
+Text to extract from:
+${data}`;
   }
   
   if (type === 'vision') {
@@ -590,7 +673,7 @@ Focus on:
  */
 async function callGemini(prompt: string, geminiApiKey: string, imageData?: string): Promise<any> {
   // Use updated Gemini models and API endpoint
-  const model = imageData ? 'gemini-2.0-flash-exp' : 'gemini-2.0-flash-exp';
+  const model = imageData ? 'gemini-2.5-flash' : 'gemini-2.5-flash';
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${geminiApiKey}`;
 
   let requestBody;
@@ -803,6 +886,144 @@ async function matchParametersToAnalytes(extractedParameters: any): Promise<any[
 
     const analytes = await analytesResponse.json();
 
+    // Common medical abbreviations mapping
+    // Includes standard analyzer codes (WBC, RBC, HGB, etc.) used by hematology analyzers
+    const abbreviationMap: Record<string, string[]> = {
+      // CBC - Complete Blood Count core parameters
+      'wbc': ['white blood cell', 'white blood cell count', 'leukocyte', 'leukocyte count', 'total wbc', 'twbc'],
+      'rbc': ['red blood cell', 'red blood cell count', 'erythrocyte', 'erythrocyte count', 'total rbc', 'trbc'],
+      'hgb': ['hemoglobin', 'haemoglobin', 'hb', 'hgb'],
+      'hct': ['hematocrit', 'haematocrit', 'packed cell volume', 'pcv'],
+      'plt': ['platelet', 'platelet count', 'thrombocyte', 'thrombocyte count', 'platelets'],
+      'mcv': ['mean corpuscular volume', 'mean cell volume'],
+      'mch': ['mean corpuscular hemoglobin', 'mean cell hemoglobin'],
+      'mchc': ['mean corpuscular hemoglobin concentration', 'mean cell hemoglobin concentration'],
+      'rdw': ['red cell distribution width', 'red blood cell distribution width', 'rdw-cv'],
+      'rdw-cv': ['red cell distribution width cv', 'rdw cv', 'red cell distribution width coefficient of variation'],
+      'rdw-sd': ['red cell distribution width sd', 'rdw sd', 'red cell distribution width standard deviation'],
+      'mpv': ['mean platelet volume'],
+      'pdw': ['platelet distribution width'],
+      'pct': ['plateletcrit', 'platelet crit', 'thrombocrit'],
+      // Granulocytes (3-part diff analyzers use GR)
+      'gr': ['granulocyte', 'granulocytes', 'granulocyte count', 'gran', 'gran%'],
+      'gr%': ['granulocyte', 'granulocytes', 'granulocyte %', 'granulocyte percentage', 'gran%'],
+      'gr#': ['granulocyte', 'granulocytes', 'absolute granulocyte', 'absolute granulocyte count'],
+      // Neutrophils - all variations (5-part diff)
+      'neu': ['neutrophil', 'neutrophils', 'neutrophil count', 'neut'],
+      'neux': ['neutrophil', 'neutrophils', 'neutrophil count', 'neutrophil %', 'neutrophil percentage'],
+      'neu%': ['neutrophil', 'neutrophils', 'neutrophil %', 'neutrophil percentage', 'neutrophil percent'],
+      'neu#': ['neutrophil', 'neutrophils', 'absolute neutrophil', 'absolute neutrophil count', 'neutrophil count', 'anc'],
+      // Lymphocytes - all variations (LY is common on analyzers)
+      'ly': ['lymphocyte', 'lymphocytes', 'lymphocyte count', 'lym'],
+      'lym': ['lymphocyte', 'lymphocytes', 'lymphocyte count', 'ly'],
+      'ly%': ['lymphocyte', 'lymphocytes', 'lymphocyte %', 'lymphocyte percentage', 'lym%'],
+      'lym%': ['lymphocyte', 'lymphocytes', 'lymphocyte %', 'lymphocyte percentage', 'lymphocyte percent'],
+      'ly#': ['lymphocyte', 'lymphocytes', 'absolute lymphocyte', 'absolute lymphocyte count', 'lym#'],
+      'lym#': ['lymphocyte', 'lymphocytes', 'absolute lymphocyte', 'absolute lymphocyte count', 'lymphocyte count'],
+      // Monocytes - all variations (MO is common on analyzers)
+      'mo': ['monocyte', 'monocytes', 'monocyte count', 'mon'],
+      'mon': ['monocyte', 'monocytes', 'monocyte count', 'mo'],
+      'mo%': ['monocyte', 'monocytes', 'monocyte %', 'monocyte percentage', 'mon%'],
+      'monx': ['monocyte', 'monocytes', 'monocyte count', 'monocyte %', 'monocyte percentage'],
+      'mon%': ['monocyte', 'monocytes', 'monocyte %', 'monocyte percentage', 'monocyte percent'],
+      'mo#': ['monocyte', 'monocytes', 'absolute monocyte', 'absolute monocyte count', 'mon#'],
+      'mon#': ['monocyte', 'monocytes', 'absolute monocyte', 'absolute monocyte count', 'monocyte count'],
+      // Eosinophils - all variations
+      'eos': ['eosinophil', 'eosinophils', 'eosinophil count', 'eo'],
+      'eo': ['eosinophil', 'eosinophils', 'eosinophil count', 'eos'],
+      'e05': ['eosinophil', 'eosinophils', 'eosinophil count', 'eosinophil %', 'eosinophil percentage'],
+      'eos%': ['eosinophil', 'eosinophils', 'eosinophil %', 'eosinophil percentage', 'eosinophil percent'],
+      'eos#': ['eosinophil', 'eosinophils', 'absolute eosinophil', 'absolute eosinophil count', 'eosinophil count', 'aec'],
+      // Basophils - all variations
+      'bas': ['basophil', 'basophils', 'basophil count', 'ba'],
+      'ba': ['basophil', 'basophils', 'basophil count', 'bas'],
+      'bas%': ['basophil', 'basophils', 'basophil %', 'basophil percentage', 'basophil percent'],
+      'bas#': ['basophil', 'basophils', 'absolute basophil', 'absolute basophil count', 'basophil count'],
+      // Chemistry
+      'glu': ['glucose', 'blood glucose', 'blood sugar'],
+      'bun': ['blood urea nitrogen', 'urea nitrogen'],
+      'cr': ['creatinine', 'serum creatinine'],
+      'na': ['sodium', 'serum sodium'],
+      'k': ['potassium', 'serum potassium'],
+      'cl': ['chloride', 'serum chloride'],
+      'ca': ['calcium', 'serum calcium'],
+      'mg': ['magnesium', 'serum magnesium'],
+      'alt': ['alanine aminotransferase', 'sgpt', 'alanine transaminase'],
+      'ast': ['aspartate aminotransferase', 'sgot', 'aspartate transaminase'],
+      'alp': ['alkaline phosphatase'],
+      'tbil': ['total bilirubin', 'bilirubin total'],
+      'dbil': ['direct bilirubin', 'bilirubin direct'],
+      'tp': ['total protein', 'serum protein'],
+      'alb': ['albumin', 'serum albumin'],
+      'tsh': ['thyroid stimulating hormone', 'thyrotropin'],
+      't3': ['triiodothyronine', 'total t3'],
+      't4': ['thyroxine', 'total t4'],
+      'ft3': ['free triiodothyronine', 'free t3'],
+      'ft4': ['free thyroxine', 'free t4'],
+      'psa': ['prostate specific antigen'],
+      'hba1c': ['hemoglobin a1c', 'glycated hemoglobin', 'glycosylated hemoglobin'],
+      'ldl': ['low density lipoprotein', 'ldl cholesterol'],
+      'hdl': ['high density lipoprotein', 'hdl cholesterol'],
+      'vldl': ['very low density lipoprotein', 'vldl cholesterol'],
+      'tg': ['triglyceride', 'triglycerides'],
+      'chol': ['cholesterol', 'total cholesterol'],
+      'esr': ['erythrocyte sedimentation rate', 'sed rate'],
+      'crp': ['c-reactive protein'],
+      'pt': ['prothrombin time'],
+      'inr': ['international normalized ratio'],
+      'aptt': ['activated partial thromboplastin time', 'ptt'],
+    };
+
+    // Helper function to find best match
+    const findBestMatch = (paramName: string, analytes: any[]): any => {
+      const normalizedParam = paramName.toLowerCase().trim();
+      
+      // 1. Exact match (case-insensitive)
+      let match = analytes.find((a: any) => 
+        a.name.toLowerCase().trim() === normalizedParam
+      );
+      if (match) return match;
+      
+      // 2. Check abbreviation map
+      const possibleFullNames = abbreviationMap[normalizedParam] || [];
+      for (const fullName of possibleFullNames) {
+        match = analytes.find((a: any) => 
+          a.name.toLowerCase().includes(fullName.toLowerCase())
+        );
+        if (match) return match;
+      }
+      
+      // 3. Reverse lookup - check if param is in any analyte's abbreviation list
+      for (const [abbrev, fullNames] of Object.entries(abbreviationMap)) {
+        if (fullNames.some(fn => normalizedParam.includes(fn.toLowerCase()))) {
+          match = analytes.find((a: any) => 
+            a.name.toLowerCase().includes(abbrev) || 
+            fullNames.some(fn => a.name.toLowerCase().includes(fn.toLowerCase()))
+          );
+          if (match) return match;
+        }
+      }
+      
+      // 4. Partial match - param contains analyte name or vice versa
+      match = analytes.find((a: any) => {
+        const analyteName = a.name.toLowerCase().trim();
+        return analyteName.includes(normalizedParam) || normalizedParam.includes(analyteName);
+      });
+      if (match) return match;
+      
+      // 5. Word-based fuzzy match (check if key words match)
+      const paramWords = normalizedParam.split(/\s+/).filter(w => w.length > 2);
+      if (paramWords.length > 0) {
+        match = analytes.find((a: any) => {
+          const analyteWords = a.name.toLowerCase().split(/\s+/).filter((w: string) => w.length > 2);
+          return paramWords.some(pw => analyteWords.some((aw: string) => aw.includes(pw) || pw.includes(aw)));
+        });
+        if (match) return match;
+      }
+      
+      return null;
+    };
+
     // Match each extracted parameter to analytes
     const enhancedParameters = extractedParameters.map(param => {
       // Parse value to extract flag if present in value string
@@ -818,9 +1039,7 @@ async function matchParametersToAnalytes(extractedParameters: any): Promise<any[
         }
       }
       
-      const matchedAnalyte = analytes.find((analyte: any) => 
-        analyte.name.toLowerCase().trim() === param.parameter.toLowerCase().trim()
-      );
+      const matchedAnalyte = findBestMatch(param.parameter, analytes);
 
       if (matchedAnalyte) {
         return {
@@ -829,6 +1048,7 @@ async function matchParametersToAnalytes(extractedParameters: any): Promise<any[
           flag: extractedFlag,
           analyte_id: matchedAnalyte.id,
           matched: true,
+          matched_to: matchedAnalyte.name, // Track what it matched to
           reference_range: param.reference_range || matchedAnalyte.reference_range,
           unit: param.unit || matchedAnalyte.unit
         };
@@ -943,17 +1163,164 @@ function applyAnalyteFocus(
 
   const focusInstructions: string[] = [];
 
+  // STRICT filtering - only extract the specified analytes
   if (focusAnalytes.length > 0) {
     focusInstructions.push(
-      `Focus exclusively on these analytes for interpretation: ${focusAnalytes.join(', ')}`,
+      `CRITICAL: ONLY extract results for these specific analytes (IGNORE ALL OTHERS): ${focusAnalytes.join(', ')}`,
+    );
+    focusInstructions.push(
+      `If a parameter in the image/text is NOT in the above list, DO NOT include it in your response.`,
     );
   }
 
   if (extractionTargets.length > 0) {
     focusInstructions.push(
-      `Only return structured output for these analytes: ${extractionTargets.join(', ')}`,
+      `STRICT: Return structured output ONLY for these analytes: ${extractionTargets.join(', ')}`,
     );
   }
 
+  // Add common CBC code mappings to help AI understand abbreviations
+  focusInstructions.push(`
+COMMON ANALYZER CODES (use these to match parameters):
+- WBC = White Blood Cell Count (Leukocyte)
+- RBC = Red Blood Cell Count (Erythrocyte)
+- HGB/Hb = Hemoglobin
+- HCT/PCV = Hematocrit
+- MCV = Mean Corpuscular Volume
+- MCH = Mean Corpuscular Hemoglobin
+- MCHC = Mean Corpuscular Hemoglobin Concentration
+- PLT = Platelet Count
+- RDW = Red Cell Distribution Width
+- MPV = Mean Platelet Volume
+- PDW = Platelet Distribution Width
+- PCT = Plateletcrit
+- LY/LYM = Lymphocyte
+- MO/MON = Monocyte
+- GR/GRAN = Granulocyte (3-part diff)
+- NEU = Neutrophil (5-part diff)
+- EOS/EO = Eosinophil
+- BAS/BA = Basophil
+`);
+
   return `${basePrompt}\n\n${focusInstructions.join('\n')}`;
+}
+
+/**
+ * Validate and enhance extracted parameters using Claude 3.5 Haiku
+ * This function:
+ * 1. Validates medical accuracy of extracted parameters
+ * 2. Finds missing parameters from the original OCR text
+ * 3. Corrects obvious errors in units, values, or flags
+ */
+async function validateAndEnhanceWithClaude(
+  extractedParams: any[],
+  originalOcrText: string,
+  focusAnalytes: string[],
+  anthropicKey: string
+): Promise<any[]> {
+  // Truncate OCR text if too long (keep first 3000 chars to stay within token limits)
+  const truncatedOcr = originalOcrText.length > 3000 
+    ? originalOcrText.substring(0, 3000) + '...[truncated]'
+    : originalOcrText;
+
+  // Determine if we should strictly filter to focus analytes
+  const strictFilter = focusAnalytes.length > 0;
+
+  const validationPrompt = `You are a medical laboratory validation AI. Your task is to validate and enhance extracted lab parameters.
+
+EXTRACTED PARAMETERS (from initial AI extraction):
+${JSON.stringify(extractedParams, null, 2)}
+
+ORIGINAL OCR TEXT:
+${truncatedOcr}
+
+${strictFilter ? `
+⚠️ STRICT FILTER MODE - VERY IMPORTANT ⚠️
+You MUST ONLY return parameters from this list: ${focusAnalytes.join(', ')}
+DO NOT add any parameters that are NOT in the above list, even if they appear in the OCR text.
+If a parameter is not in the allowed list, REMOVE it from the output.
+` : ''}
+
+VALIDATION TASKS:
+1. **Medical Validation**: Check if values, units, and reference ranges are medically plausible
+${strictFilter ? '2. **Filter Check**: REMOVE any parameters NOT in the allowed list above' : '2. **Missing Parameters**: Find any parameters in the OCR text that were not extracted'}
+3. **Error Correction**: Fix obvious errors in:
+   - Units (e.g., "x10^3/µL" vs "x10^3/uL")
+   - Values (ensure numeric only, no units mixed in)
+   - Flags (Normal/High/Low based on reference range)
+   - Reference ranges (proper format like "4.5-11.0")
+
+RULES:
+${strictFilter ? '- ONLY include parameters that match the allowed list above\n- REMOVE any parameter not in the allowed list\n' : '- Keep all correctly extracted parameters\n- Add any missing parameters found in OCR text\n'}- Fix errors but preserve the original structure
+- Return ONLY valid JSON array with this exact format:
+[{
+  "parameter": "string",
+  "value": "string (numeric only)",
+  "unit": "string",
+  "reference_range": "string",
+  "flag": "Normal|High|Low|Abnormal",
+  "matched": boolean,
+  "analyte_id": "string or null",
+  "validation_notes": "string (optional, only if corrected)"
+}]
+
+Return the complete validated array. Do not include explanatory text.`;
+
+  try {
+    const response = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'x-api-key': anthropicKey,
+        'anthropic-version': '2023-06-01',
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({
+        model: 'claude-haiku-4-5-20251001',
+        max_tokens: 10000,
+        temperature: 0.3,
+        messages: [{ role: 'user', content: validationPrompt }]
+      })
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`Anthropic API error: ${response.status} - ${errorText}`);
+    }
+
+    const data = await response.json();
+    
+    if (!data.content?.[0]?.text) {
+      throw new Error('Invalid response from Claude');
+    }
+
+    let responseText = data.content[0].text.trim();
+    
+    // Clean markdown if present
+    if (responseText.startsWith('```json')) {
+      responseText = responseText.replace(/^```json\s*/, '').replace(/\s*```$/, '');
+    } else if (responseText.startsWith('```')) {
+      responseText = responseText.replace(/^```\s*/, '').replace(/\s*```$/, '');
+    }
+
+    // Find JSON array
+    const jsonStart = responseText.indexOf('[');
+    const jsonEnd = responseText.lastIndexOf(']');
+    if (jsonStart !== -1 && jsonEnd !== -1) {
+      responseText = responseText.substring(jsonStart, jsonEnd + 1);
+    }
+
+    const validatedParams = JSON.parse(responseText);
+    
+    if (!Array.isArray(validatedParams)) {
+      throw new Error('Claude did not return an array');
+    }
+
+    console.log(`Claude validation: ${extractedParams.length} → ${validatedParams.length} parameters`);
+    
+    return validatedParams;
+
+  } catch (error) {
+    console.error('Claude validation error:', error);
+    throw error;
+  }
 }

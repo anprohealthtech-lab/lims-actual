@@ -19,7 +19,7 @@ import {
   Clock as ClockIcon,
   DollarSign
 } from 'lucide-react';
-import { database, supabase } from '../../utils/supabase';
+import { database, supabase, formatAge } from '../../utils/supabase';
 import { SampleTypeIndicator } from '../Common/SampleTypeIndicator';
 import { getLabCurrency } from '../../utils/currency';
 import {
@@ -472,10 +472,11 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
   const [newPatient, setNewPatient] = useState<{
     name: string;
     age: string;
+    age_unit: 'years' | 'months' | 'days';
     gender: string;
     phone: string;
     email: string;
-  }>({ name: '', age: '', gender: 'Male', phone: '', email: '' });
+  }>({ name: '', age: '', age_unit: 'years', gender: 'Male', phone: '', email: '' });
 
   // Pre-fill from Booking Data
   useEffect(() => {
@@ -1283,11 +1284,30 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
             console.error('Failed to update order billing status:', orderUpdateResult.error);
           }
 
-          // Create invoice items (depends on invoice.id)
-          // Need to fetch outsourced costs for each item
+          // ✅ FIX: Fetch the actual order_tests to get their IDs for proper invoice linking
+          // This prevents duplicate billing when CreateInvoiceModal is opened later
+          const { data: orderTestsData } = await supabase
+            .from('order_tests')
+            .select('id, test_name, test_group_id, price, outsourced_lab_id')
+            .eq('order_id', orderId);
+
+          // Create a map of test_group_id/test_name to order_test record for matching
+          const orderTestsMap = new Map<string, any>();
+          (orderTestsData || []).forEach(ot => {
+            // Map by test_group_id first (more reliable), then by name as fallback
+            if (ot.test_group_id) {
+              orderTestsMap.set(ot.test_group_id, ot);
+            }
+            orderTestsMap.set(ot.test_name, ot);
+          });
+
+          // Create invoice items with proper order_test_id linkage
           const invoiceItemsData = await Promise.all(selectedTestDetails.map(async t => {
             const { price, labReceivable } = resolvePrice(t.id, t.price);
             const outsourcedLabId = testOutsourcingConfig[t.id] === 'inhouse' ? null : testOutsourcingConfig[t.id] || null;
+            
+            // Find matching order_test record
+            const orderTest = orderTestsMap.get(t.id) || orderTestsMap.get(t.name);
             
             // Fetch outsourced cost if applicable
             let outsourcedCost: number | null = null;
@@ -1298,6 +1318,7 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
             
             return {
               invoice_id: invoice.id,
+              order_test_id: orderTest?.id || null, // ✅ Link to actual order_test record
               test_name: t.name,
               price: price,
               quantity: 1,
@@ -1322,6 +1343,33 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
                 return res;
               })()
             );
+
+            // ✅ FIX: Mark order_tests as billed to prevent duplicate invoicing
+            // Collect all order_test_ids that were billed
+            const billedOrderTestIds = invoiceItemsData
+              .filter(item => item.order_test_id)
+              .map(item => item.order_test_id);
+
+            if (billedOrderTestIds.length > 0) {
+              parallelOps.push(
+                (async () => {
+                  const { error: updateError } = await supabase
+                    .from('order_tests')
+                    .update({ 
+                      is_billed: true, 
+                      invoice_id: invoice.id,
+                      billed_at: new Date().toISOString()
+                    })
+                    .in('id', billedOrderTestIds);
+                  
+                  if (updateError) {
+                    console.error('Error marking order_tests as billed:', updateError);
+                  } else {
+                    console.log(`✅ Marked ${billedOrderTestIds.length} order_tests as billed`);
+                  }
+                })()
+              );
+            }
           }
 
           if (amountPaid > 0 && invoice) {
@@ -1612,7 +1660,7 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
                             >
                               <div className="font-semibold text-gray-900 text-sm">{p.name}</div>
                               <div className="text-xs text-gray-600 mt-0.5">
-                                {(p.age ?? '-') + 'y'}, {p.gender ?? '-'} • {p.phone ?? '-'} • ID: {p.id.slice(-8)}
+                                {formatAge(p.age, p.age_unit)}, {p.gender ?? '-'} • {p.phone ?? '-'} • ID: {p.id.slice(-8)}
                               </div>
                             </button>
                           ))}
@@ -1640,7 +1688,7 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
                   <div className="text-sm">
                     <div className="font-medium text-blue-900">{selectedPatient.name}</div>
                     <div className="text-blue-700">
-                      {(selectedPatient.age ?? '-') + 'y'}, {selectedPatient.gender ?? '-'}
+                      {formatAge(selectedPatient.age, selectedPatient.age_unit)}, {selectedPatient.gender ?? '-'}
                     </div>
                     {selectedPatient.phone && (
                       <div className="text-blue-700">Phone: {selectedPatient.phone}</div>
@@ -2422,6 +2470,7 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
                   const payload: any = {
                     name: newPatient.name.trim(),
                     age: parseInt(newPatient.age, 10),
+                    age_unit: newPatient.age_unit,
                     gender: newPatient.gender,
                     phone: newPatient.phone.trim(),
                     email: newPatient.email?.trim() || null,
@@ -2453,7 +2502,7 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
                     setPatients((prev) => [...prev, data]);
                     setSelectedPatient(data);
                     setShowNewPatientModal(false);
-                    setNewPatient({ name: '', age: '', gender: 'Male', phone: '', email: '' });
+                    setNewPatient({ name: '', age: '', age_unit: 'years', gender: 'Male', phone: '', email: '' });
                   }
                 } catch (err) {
                   console.error(err);
@@ -2477,14 +2526,26 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
                 </div>
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1">Age *</label>
-                  <input
-                    type="number"
-                    min={0}
-                    required
-                    value={newPatient.age}
-                    onChange={(e) => setNewPatient((p) => ({ ...p, age: e.target.value }))}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm"
-                  />
+                  <div className="flex gap-2">
+                    <input
+                      type="number"
+                      min={0}
+                      required
+                      value={newPatient.age}
+                      onChange={(e) => setNewPatient((p) => ({ ...p, age: e.target.value }))}
+                      className="flex-1 px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm"
+                      placeholder="Age"
+                    />
+                    <select
+                      value={newPatient.age_unit}
+                      onChange={(e) => setNewPatient((p) => ({ ...p, age_unit: e.target.value as 'years' | 'months' | 'days' }))}
+                      className="w-24 px-2 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm bg-gray-50"
+                    >
+                      <option value="years">Years</option>
+                      <option value="months">Months</option>
+                      <option value="days">Days</option>
+                    </select>
+                  </div>
                 </div>
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1">Gender *</label>

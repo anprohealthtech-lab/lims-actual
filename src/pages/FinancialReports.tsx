@@ -102,8 +102,34 @@ const FinancialReports: React.FC = () => {
       const labId = await database.getCurrentUserLabId();
       if (!labId) throw new Error('No lab context');
 
-      // Get invoice items with outsourced lab info
-      const { data, error: fetchError } = await supabase
+      // ✅ Apply location filtering for access control
+      const { shouldFilter, locationIds } = await database.shouldFilterByLocation();
+
+      // Get allowed invoice IDs if user is location-restricted
+      let allowedInvoiceIds: string[] | null = null;
+
+      if (shouldFilter && locationIds.length > 0) {
+        const { data: invoices } = await supabase
+          .from('invoices')
+          .select('id, order:orders!inner(location_id)')
+          .eq('lab_id', labId)
+          .in('order.location_id', locationIds)
+          .gte('invoice_date', dateFrom)
+          .lte('invoice_date', dateTo);
+
+        allowedInvoiceIds = (invoices || []).map((inv: any) => inv.id);
+
+        if (allowedInvoiceIds.length === 0) {
+          // No invoices for assigned locations
+          setOutsourcedData([]);
+          setOutsourcedTotals({ revenue: 0, cost: 0, margin: 0 });
+          setLoading(false);
+          return;
+        }
+      }
+
+      // Build query for invoice items
+      let query = supabase
         .from('invoice_items')
         .select(`
           id,
@@ -118,6 +144,13 @@ const FinancialReports: React.FC = () => {
         .not('outsourced_lab_id', 'is', null)
         .gte('invoice.invoice_date', dateFrom)
         .lte('invoice.invoice_date', dateTo);
+
+      // Apply location filter via invoice IDs
+      if (allowedInvoiceIds) {
+        query = query.in('invoice_id', allowedInvoiceIds);
+      }
+
+      const { data, error: fetchError } = await query;
 
       if (fetchError) throw fetchError;
 
@@ -174,15 +207,15 @@ const FinancialReports: React.FC = () => {
       // Calculate margins
       const summaries = Array.from(labMap.values()).map(lab => {
         lab.total_margin = lab.total_revenue - lab.total_cost;
-        lab.margin_percent = lab.total_revenue > 0 
-          ? (lab.total_margin / lab.total_revenue) * 100 
+        lab.margin_percent = lab.total_revenue > 0
+          ? (lab.total_margin / lab.total_revenue) * 100
           : 0;
 
         lab.tests = lab.tests.map(test => ({
           ...test,
           margin: test.total_revenue - test.total_cost,
-          margin_percent: test.total_revenue > 0 
-            ? ((test.total_revenue - test.total_cost) / test.total_revenue) * 100 
+          margin_percent: test.total_revenue > 0
+            ? ((test.total_revenue - test.total_cost) / test.total_revenue) * 100
             : 0
         }));
 
@@ -214,6 +247,9 @@ const FinancialReports: React.FC = () => {
       const labId = await database.getCurrentUserLabId();
       if (!labId) throw new Error('No lab context');
 
+      // ✅ Apply location filtering for access control
+      const { shouldFilter, locationIds } = await database.shouldFilterByLocation();
+
       // Get invoice items with location info
       // Note: Must use explicit FK hint for locations due to multiple relationships
       const { data, error: fetchError } = await supabase
@@ -241,16 +277,25 @@ const FinancialReports: React.FC = () => {
 
       if (fetchError) throw fetchError;
 
-      // Group by location
+      // ✅ Filter by location in memory (complex join structure)
+      let filteredData = data || [];
+      if (shouldFilter && locationIds.length > 0) {
+        filteredData = filteredData.filter((item: any) => {
+          const locationId = item.invoice?.order?.location?.id;
+          return locationId && locationIds.includes(locationId);
+        });
+      }
+
+      // Group by location using filtered data
       const locationMap = new Map<string, LocationReceivableItem>();
 
-      (data || []).forEach((item: any) => {
+      filteredData.forEach((item: any) => {
         const location = item.invoice?.order?.location;
         if (!location) return;
 
         const locationId = location.id;
         const revenue = item.price || 0;
-        
+
         // Use stored location_receivable - it should be populated at order creation time
         // Only fall back if truly missing (for old data before this fix)
         let receivable = item.location_receivable;
@@ -286,7 +331,7 @@ const FinancialReports: React.FC = () => {
         loc.total_revenue += revenue;
         loc.total_receivable += receivable;
         loc.collection_fee = loc.total_revenue - loc.total_receivable;
-        
+
         // Add detail item
         loc.items.push({
           invoice_id: item.invoice?.id || '',
@@ -371,7 +416,7 @@ const FinancialReports: React.FC = () => {
 
   const exportToCSV = () => {
     let csv = '';
-    const filename = activeTab === 'outsourced' 
+    const filename = activeTab === 'outsourced'
       ? `outsourced_costs_${dateFrom}_to_${dateTo}.csv`
       : `location_receivables_${dateFrom}_to_${dateTo}.csv`;
 
@@ -412,22 +457,20 @@ const FinancialReports: React.FC = () => {
       <div className="flex border-b border-gray-200 mb-6">
         <button
           onClick={() => setActiveTab('outsourced')}
-          className={`px-6 py-3 text-sm font-medium border-b-2 transition-colors ${
-            activeTab === 'outsourced'
-              ? 'border-blue-600 text-blue-600'
-              : 'border-transparent text-gray-500 hover:text-gray-700'
-          }`}
+          className={`px-6 py-3 text-sm font-medium border-b-2 transition-colors ${activeTab === 'outsourced'
+            ? 'border-blue-600 text-blue-600'
+            : 'border-transparent text-gray-500 hover:text-gray-700'
+            }`}
         >
           <Building2 className="w-4 h-4 inline mr-2" />
           Outsourced Costs
         </button>
         <button
           onClick={() => setActiveTab('receivables')}
-          className={`px-6 py-3 text-sm font-medium border-b-2 transition-colors ${
-            activeTab === 'receivables'
-              ? 'border-blue-600 text-blue-600'
-              : 'border-transparent text-gray-500 hover:text-gray-700'
-          }`}
+          className={`px-6 py-3 text-sm font-medium border-b-2 transition-colors ${activeTab === 'receivables'
+            ? 'border-blue-600 text-blue-600'
+            : 'border-transparent text-gray-500 hover:text-gray-700'
+            }`}
         >
           <MapPin className="w-4 h-4 inline mr-2" />
           Location Receivables
@@ -698,7 +741,7 @@ const FinancialReports: React.FC = () => {
                 <div className="text-right">Lab Receivable</div>
                 <div className="text-right">Collection Fee</div>
               </div>
-              
+
               {/* Location Rows */}
               {receivablesData.map(loc => (
                 <div key={loc.location_id}>
@@ -723,15 +766,14 @@ const FinancialReports: React.FC = () => {
                       )}
                     </div>
                     <div className="text-center">
-                      <span className={`inline-flex px-2 py-1 text-xs font-medium rounded ${
-                        loc.receivable_type === 'own_center' 
-                          ? 'bg-green-100 text-green-800'
-                          : loc.receivable_type === 'test_wise'
+                      <span className={`inline-flex px-2 py-1 text-xs font-medium rounded ${loc.receivable_type === 'own_center'
+                        ? 'bg-green-100 text-green-800'
+                        : loc.receivable_type === 'test_wise'
                           ? 'bg-purple-100 text-purple-800'
                           : 'bg-orange-100 text-orange-800'
-                      }`}>
-                        {loc.receivable_type === 'own_center' ? 'Own Center' : 
-                         loc.receivable_type === 'test_wise' ? 'Test-wise' : 'Percentage'}
+                        }`}>
+                        {loc.receivable_type === 'own_center' ? 'Own Center' :
+                          loc.receivable_type === 'test_wise' ? 'Test-wise' : 'Percentage'}
                       </span>
                     </div>
                     <div className="text-center text-gray-600">{loc.order_count}</div>
@@ -739,7 +781,7 @@ const FinancialReports: React.FC = () => {
                     <div className="text-right text-blue-600 font-medium">₹{loc.total_receivable.toLocaleString()}</div>
                     <div className="text-right text-orange-600">₹{loc.collection_fee.toLocaleString()}</div>
                   </button>
-                  
+
                   {/* Expanded Details */}
                   {expandedLocations.has(loc.location_id) && (
                     <div className="bg-gray-50 px-6 py-3 border-t border-gray-200">
@@ -786,7 +828,7 @@ const FinancialReports: React.FC = () => {
                   )}
                 </div>
               ))}
-              
+
               {/* Totals Row */}
               <div className="bg-gray-100 px-6 py-4 grid grid-cols-7 gap-4 font-semibold">
                 <div className="col-span-2 text-gray-900">Total</div>

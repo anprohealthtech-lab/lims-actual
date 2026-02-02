@@ -26,7 +26,7 @@ serve(async (req) => {
     }
     
     const model = genAI.getGenerativeModel({ 
-      model: aiStep.model || "gemini-2.0-flash-exp",
+      model: aiStep.model || "gemini-2.5-flash",
       generationConfig: {
         responseMimeType: "application/json",
         temperature: aiStep.temperature || 0.1,
@@ -75,7 +75,7 @@ serve(async (req) => {
           order_id,
           lab_id,
           images_analyzed: images.length,
-          ai_model: aiStep.model || "gemini-2.0-flash-exp",
+          ai_model: aiStep.model || "gemini-2.5-flash",
           timestamp: new Date().toISOString()
         }
       }),

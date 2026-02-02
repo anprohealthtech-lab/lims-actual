@@ -31,6 +31,7 @@ import {
   TrendingUp,
   Truck,
   BarChart3,
+  Shield,
 } from 'lucide-react';
 
 interface SidebarProps {
@@ -76,6 +77,9 @@ const navigation = [
 
   // Sample Transit (Intra-Lab)
   { name: 'Sample Transit', href: '/sample-transit', icon: Truck, category: 'transit' },
+
+  // Quality Control - AI-First QC Module
+  { name: 'Quality Control', href: '/quality-control', icon: Shield, category: 'qc' },
 
   // AI Workflow Management
   { name: 'Workflow Management', href: '/workflows', icon: Workflow, category: 'workflows' },
@@ -267,6 +271,37 @@ const Sidebar: React.FC<SidebarProps> = ({ isOpen, onToggle, isMobile = false, i
                     onClick={handleNavClick}
                   >
                     <item.icon className={`h-5 w-5 ${isCollapsed ? '' : 'mr-3'} ${isActive ? 'text-sky-700' : 'text-gray-400'}`} />
+                    {!isCollapsed && item.name}
+                  </Link>
+                );
+              })}
+            </div>
+
+            {/* Quality Control - AI-First QC Module */}
+            <div className="mb-6">
+              {!isCollapsed && (
+                <h3 className="px-4 text-xs font-semibold text-gray-500 uppercase tracking-wider mb-3">
+                  🛡️ Quality Control
+                </h3>
+              )}
+              {navigation.filter(item => item.category === 'qc').map((item) => {
+                const isActive = location.pathname === item.href;
+                return (
+                  <Link
+                    key={item.name}
+                    to={item.href}
+                    className={`
+                    flex items-center rounded-lg text-sm font-medium transition-colors duration-200 mb-1
+                    border-l-4 border-l-emerald-500
+                    ${isCollapsed ? 'justify-center px-2 py-3' : 'px-4 py-3'}
+                    ${isActive
+                        ? 'bg-emerald-50 text-emerald-700 border-l-emerald-700'
+                        : 'text-gray-600 hover:bg-emerald-50 hover:text-emerald-700 border-l-transparent hover:border-l-emerald-300'
+                      }
+                  `}
+                    onClick={handleNavClick}
+                  >
+                    <item.icon className={`h-5 w-5 ${isCollapsed ? '' : 'mr-3'} ${isActive ? 'text-emerald-700' : 'text-gray-400'}`} />
                     {!isCollapsed && item.name}
                   </Link>
                 );

@@ -281,6 +281,61 @@ export const toggleOrderSummaryInReport = async (
   }
 };
 
+/**
+ * Save clinical summary options (both PDF inclusion and send-to-doctor flags)
+ * This handles both checkboxes in the Clinical Summary modal
+ */
+export const saveClinicalSummaryOptions = async (
+  orderId: string,
+  options: {
+    includeInReport: boolean;
+    sendToDoctor: boolean;
+  }
+): Promise<{ success: boolean; error?: string }> => {
+  try {
+    // Get existing trend_graph_data for backward compatibility
+    const { data: orderData, error: fetchError } = await supabase
+      .from('orders')
+      .select('trend_graph_data')
+      .eq('id', orderId)
+      .single();
+
+    if (fetchError) {
+      console.error('Error fetching order data:', fetchError);
+      return { success: false, error: fetchError.message };
+    }
+
+    // Merge with existing data
+    const existingData = (orderData?.trend_graph_data || {}) as Record<string, any>;
+    const updatedData = {
+      ...existingData,
+      include_summary_in_report: options.includeInReport,
+      send_summary_to_doctor: options.sendToDoctor,
+    };
+
+    // Update both dedicated columns AND trend_graph_data
+    const { error: updateError } = await supabase
+      .from('orders')
+      .update({ 
+        include_clinical_summary_in_report: options.includeInReport,
+        send_clinical_summary_to_doctor: options.sendToDoctor,
+        trend_graph_data: updatedData 
+      })
+      .eq('id', orderId);
+
+    if (updateError) {
+      console.error('Error updating clinical summary options:', updateError);
+      return { success: false, error: updateError.message };
+    }
+
+    console.log(`✅ Order ${orderId}: include_in_report=${options.includeInReport}, send_to_doctor=${options.sendToDoctor}`);
+    return { success: true };
+  } catch (error) {
+    console.error('Error saving clinical summary options:', error);
+    return { success: false, error: error instanceof Error ? error.message : 'Unknown error' };
+  }
+};
+
 // ============ HTML Generation for PDF ============
 
 /**

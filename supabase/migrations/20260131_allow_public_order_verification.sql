@@ -1,0 +1,3 @@
+-- Migration: DO NOT USE - Use Edge Function instead for secure verification
+-- This file is kept for reference only
+-- Use the verify-report Edge Function instead of exposing orders table to public

@@ -6,18 +6,22 @@
  */
 
 import React, { useState, useEffect, useCallback } from 'react';
-import { 
-  Plus, 
-  Edit2, 
-  Trash2, 
-  X, 
-  FileText, 
+import {
+  Plus,
+  Edit2,
+  Trash2,
+  X,
+  FileText,
   CheckSquare,
   AlertCircle,
   Loader2,
-  GripVertical
+  GripVertical,
+  Sparkles,
+  Send,
+  Lightbulb
 } from 'lucide-react';
 import { database } from '../../utils/supabase';
+import { generateSectionContent, getQuickPromptsForSection } from '../../utils/aiSectionService';
 
 // Types
 interface TemplateSection {
@@ -32,6 +36,8 @@ interface TemplateSection {
   predefined_options: string[];
   is_required: boolean;
   is_editable: boolean;
+  allow_images?: boolean;
+  allow_technician_entry?: boolean;
   placeholder_key?: string;
   created_at: string;
   test_groups?: { id: string; name: string };
@@ -62,7 +68,7 @@ const ManageReportSections: React.FC = () => {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
-  
+
   // Form state
   const [showForm, setShowForm] = useState(false);
   const [editingSection, setEditingSection] = useState<TemplateSection | null>(null);
@@ -75,8 +81,16 @@ const ManageReportSections: React.FC = () => {
     predefined_options: [''],
     is_required: false,
     is_editable: true,
+    allow_images: false,
+    allow_technician_entry: false,
     placeholder_key: ''
   });
+
+  // AI Assistant state
+  const [showAIPanel, setShowAIPanel] = useState(false);
+  const [aiPrompt, setAIPrompt] = useState('');
+  const [aiLoading, setAILoading] = useState(false);
+  const [aiError, setAIError] = useState<string | null>(null);
 
   // Filter state
   const [filterTestGroup, setFilterTestGroup] = useState<string>('');
@@ -116,9 +130,90 @@ const ManageReportSections: React.FC = () => {
       predefined_options: [''],
       is_required: false,
       is_editable: true,
+      allow_images: false,
+      allow_technician_entry: false,
       placeholder_key: ''
     });
     setEditingSection(null);
+    setShowAIPanel(false);
+    setAIPrompt('');
+    setAIError(null);
+  };
+
+  // Handle AI generation
+  const handleAIGenerate = async () => {
+    if (!aiPrompt.trim()) {
+      setAIError('Please enter instructions for the AI');
+      return;
+    }
+
+    const selectedTestGroup = testGroups.find(tg => tg.id === formData.test_group_id);
+
+    setAILoading(true);
+    setAIError(null);
+
+    try {
+      const result = await generateSectionContent({
+        sectionType: formData.section_type,
+        sectionName: formData.section_name || `${selectedTestGroup?.name || 'Unknown'} ${SECTION_TYPES.find(t => t.value === formData.section_type)?.label || 'Section'}`,
+        testGroupName: selectedTestGroup?.name,
+        userPrompt: aiPrompt,
+        existingOptions: formData.predefined_options.filter(o => o.trim())
+      });
+
+      if (result.error) {
+        setAIError(result.error);
+        return;
+      }
+
+      if (result.data) {
+        // Update form with AI-generated content
+        setFormData(prev => ({
+          ...prev,
+          section_name: result.data!.sectionHeading || prev.section_name,
+          default_content: result.data!.generatedContent || prev.default_content,
+          predefined_options: result.data!.suggestedOptions?.length
+            ? result.data!.suggestedOptions
+            : prev.predefined_options
+        }));
+
+        setSuccess('AI generated section content successfully!');
+        setTimeout(() => setSuccess(null), 3000);
+      }
+    } catch (err: any) {
+      setAIError(err.message || 'Failed to generate content');
+    } finally {
+      setAILoading(false);
+    }
+  };
+
+  // Get quick prompts based on section type and test group
+  const getQuickPrompts = () => {
+    const selectedTestGroup = testGroups.find(tg => tg.id === formData.test_group_id);
+    const testName = selectedTestGroup?.name?.toLowerCase() || '';
+
+    // Combine section type prompts with test-specific hints
+    const basePrompts = getQuickPromptsForSection(formData.section_type);
+
+    if (testName.includes('peripheral') || testName.includes('smear') || testName.includes('pbs')) {
+      return [
+        'Generate normal PBS findings template',
+        'Create findings for iron deficiency anemia',
+        'Generate PBS findings for leukemia workup',
+        ...basePrompts.slice(0, 2)
+      ];
+    }
+
+    if (testName.includes('urine') || testName.includes('urinalysis')) {
+      return [
+        'Generate normal urinalysis findings',
+        'Create findings for UTI',
+        'Generate findings for kidney disease workup',
+        ...basePrompts.slice(0, 2)
+      ];
+    }
+
+    return basePrompts;
   };
 
   // Open form for editing
@@ -133,6 +228,8 @@ const ManageReportSections: React.FC = () => {
       predefined_options: section.predefined_options?.length > 0 ? section.predefined_options : [''],
       is_required: section.is_required,
       is_editable: section.is_editable,
+      allow_images: section.allow_images ?? false,
+      allow_technician_entry: section.allow_technician_entry ?? false,
       placeholder_key: section.placeholder_key || ''
     });
     setShowForm(true);
@@ -165,6 +262,8 @@ const ManageReportSections: React.FC = () => {
         predefined_options: cleanedOptions,
         is_required: formData.is_required,
         is_editable: formData.is_editable,
+        allow_images: formData.allow_images,
+        allow_technician_entry: formData.allow_technician_entry,
         placeholder_key: formData.placeholder_key.trim() || formData.section_type
       };
 
@@ -339,14 +438,24 @@ const ManageReportSections: React.FC = () => {
                                 Required
                               </span>
                             )}
+                            {section.allow_technician_entry && (
+                              <span className="px-2 py-0.5 text-xs bg-amber-100 text-amber-700 rounded-full">
+                                Technician Entry
+                              </span>
+                            )}
+                            {section.allow_images && (
+                              <span className="px-2 py-0.5 text-xs bg-purple-100 text-purple-700 rounded-full">
+                                Images
+                              </span>
+                            )}
                           </div>
-                          
+
                           {section.default_content && (
                             <p className="text-sm text-gray-600 mt-1">
                               Default: {section.default_content.substring(0, 100)}...
                             </p>
                           )}
-                          
+
                           {section.predefined_options?.length > 0 && (
                             <div className="mt-2">
                               <span className="text-xs text-gray-500">
@@ -366,12 +475,12 @@ const ManageReportSections: React.FC = () => {
                               </div>
                             </div>
                           )}
-                          
+
                           <div className="mt-2 text-xs text-gray-400">
                             Placeholder: <code className="bg-gray-100 px-1 rounded">{'{{section:' + (section.placeholder_key || section.section_type) + '}}'}</code>
                           </div>
                         </div>
-                        
+
                         <div className="flex items-center space-x-2">
                           <button
                             onClick={() => handleEdit(section)}
@@ -427,6 +536,98 @@ const ManageReportSections: React.FC = () => {
                 </select>
               </div>
 
+              {/* AI Assistant Toggle - only show when test group is selected */}
+              {formData.test_group_id && (
+                <div className="border rounded-lg overflow-hidden bg-gradient-to-r from-purple-50 to-indigo-50">
+                  <button
+                    type="button"
+                    onClick={() => setShowAIPanel(!showAIPanel)}
+                    className="w-full px-4 py-3 flex items-center justify-between hover:bg-purple-100/50 transition-colors"
+                  >
+                    <div className="flex items-center gap-2">
+                      <Sparkles className="w-5 h-5 text-purple-600" />
+                      <span className="font-medium text-purple-800">AI Assistant</span>
+                      <span className="text-xs text-purple-600 bg-purple-100 px-2 py-0.5 rounded-full">
+                        Generate Content
+                      </span>
+                    </div>
+                    <span className="text-purple-600 text-sm">
+                      {showAIPanel ? '▲ Hide' : '▼ Expand'}
+                    </span>
+                  </button>
+
+                  {showAIPanel && (
+                    <div className="p-4 border-t border-purple-200 space-y-3">
+                      {/* Quick Prompts */}
+                      <div>
+                        <div className="flex items-center gap-2 mb-2">
+                          <Lightbulb className="w-4 h-4 text-amber-500" />
+                          <span className="text-sm font-medium text-gray-700">Quick Prompts</span>
+                        </div>
+                        <div className="flex flex-wrap gap-1">
+                          {getQuickPrompts().map((prompt, idx) => (
+                            <button
+                              key={idx}
+                              type="button"
+                              onClick={() => setAIPrompt(prompt)}
+                              className="text-xs px-2 py-1 bg-white border border-purple-200 rounded-full hover:bg-purple-100 text-purple-700 transition-colors"
+                            >
+                              {prompt}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+
+                      {/* Custom Prompt Input */}
+                      <div>
+                        <label className="block text-sm font-medium text-gray-700 mb-1">
+                          Your Instructions
+                        </label>
+                        <textarea
+                          value={aiPrompt}
+                          onChange={(e) => setAIPrompt(e.target.value)}
+                          className="w-full px-3 py-2 border border-purple-200 rounded-lg focus:ring-2 focus:ring-purple-500 text-sm"
+                          rows={3}
+                          placeholder="Describe what you want in this section... e.g., 'Generate a Peripheral Smear findings template with normal values and common abnormal findings options'"
+                        />
+                      </div>
+
+                      {/* AI Error */}
+                      {aiError && (
+                        <div className="p-2 bg-red-50 border border-red-200 rounded-lg text-red-700 text-sm flex items-center gap-2">
+                          <AlertCircle className="w-4 h-4" />
+                          {aiError}
+                        </div>
+                      )}
+
+                      {/* Generate Button */}
+                      <button
+                        type="button"
+                        onClick={handleAIGenerate}
+                        disabled={aiLoading || !aiPrompt.trim()}
+                        className="w-full flex items-center justify-center gap-2 px-4 py-2 bg-gradient-to-r from-purple-600 to-indigo-600 text-white rounded-lg hover:from-purple-700 hover:to-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed transition-all"
+                      >
+                        {aiLoading ? (
+                          <>
+                            <Loader2 className="w-4 h-4 animate-spin" />
+                            Generating...
+                          </>
+                        ) : (
+                          <>
+                            <Send className="w-4 h-4" />
+                            Generate Section Content
+                          </>
+                        )}
+                      </button>
+
+                      <p className="text-xs text-gray-500 text-center">
+                        AI will generate Section Name, Default Content, and Predefined Options
+                      </p>
+                    </div>
+                  )}
+                </div>
+              )}
+
               {/* Section Type & Name */}
               <div className="grid grid-cols-2 gap-4">
                 <div>
@@ -435,8 +636,8 @@ const ManageReportSections: React.FC = () => {
                   </label>
                   <select
                     value={formData.section_type}
-                    onChange={(e) => setFormData(prev => ({ 
-                      ...prev, 
+                    onChange={(e) => setFormData(prev => ({
+                      ...prev,
                       section_type: e.target.value,
                       placeholder_key: e.target.value
                     }))}
@@ -564,6 +765,24 @@ const ManageReportSections: React.FC = () => {
                     className="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
                   />
                   <span className="text-sm text-gray-700">Editable by doctor</span>
+                </label>
+                <label className="flex items-center space-x-2">
+                  <input
+                    type="checkbox"
+                    checked={formData.allow_technician_entry}
+                    onChange={(e) => setFormData(prev => ({ ...prev, allow_technician_entry: e.target.checked }))}
+                    className="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                  />
+                  <span className="text-sm text-gray-700">Editable by technician</span>
+                </label>
+                <label className="flex items-center space-x-2">
+                  <input
+                    type="checkbox"
+                    checked={formData.allow_images}
+                    onChange={(e) => setFormData(prev => ({ ...prev, allow_images: e.target.checked }))}
+                    className="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                  />
+                  <span className="text-sm text-gray-700">Allow images</span>
                 </label>
               </div>
 

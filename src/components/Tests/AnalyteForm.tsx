@@ -1,10 +1,22 @@
-import React, { useState } from 'react';
-import { X, Beaker, AlertTriangle, Settings, Brain, Calculator } from 'lucide-react';
+import React, { useState, useMemo, useRef, useEffect } from 'react';
+import { X, Beaker, AlertTriangle, Settings, Brain, Calculator, Search, Plus, Trash2, ChevronDown } from 'lucide-react';
+
+interface SourceAnalyte {
+  id: string;
+  name: string;
+  unit: string;
+  category?: string;
+}
+
+interface SelectedSourceAnalyte extends SourceAnalyte {
+  variableName: string; // User-customizable slug for formula
+}
 
 interface AnalyteFormProps {
   onClose: () => void;
   onSubmit: (data: any) => void;
   analyte?: Analyte | null;
+  availableAnalytes?: SourceAnalyte[]; // List of analytes for formula picker
 }
 
 interface Analyte {
@@ -31,9 +43,11 @@ interface Analyte {
   formula?: string;
   formulaVariables?: string[];
   formulaDescription?: string;
+  // Dropdown options for qualitative values
+  expected_normal_values?: string[];
 }
 
-const AnalyteForm: React.FC<AnalyteFormProps> = ({ onClose, onSubmit, analyte }) => {
+const AnalyteForm: React.FC<AnalyteFormProps> = ({ onClose, onSubmit, analyte, availableAnalytes = [] }) => {
   const [formData, setFormData] = useState({
     name: analyte?.name || '',
     unit: analyte?.unit || '',
@@ -54,7 +68,147 @@ const AnalyteForm: React.FC<AnalyteFormProps> = ({ onClose, onSubmit, analyte })
     formula: analyte?.formula || '',
     formulaVariables: analyte?.formulaVariables?.join(', ') || '',
     formulaDescription: analyte?.formulaDescription || '',
+    // Dropdown options for qualitative values
+    expectedNormalValues: analyte?.expected_normal_values?.join('\n') || '',
   });
+
+  // State for source analyte picker (calculated parameters)
+  const [selectedSources, setSelectedSources] = useState<SelectedSourceAnalyte[]>([]);
+  const [sourceSearchTerm, setSourceSearchTerm] = useState('');
+  const [showSourcePicker, setShowSourcePicker] = useState(false);
+  const formulaInputRef = useRef<HTMLInputElement>(null);
+  const sourcePickerRef = useRef<HTMLDivElement>(null);
+
+  // Generate a variable slug from analyte name
+  const generateVariableSlug = (name: string): string => {
+    // Common abbreviations
+    const abbreviations: Record<string, string> = {
+      'total cholesterol': 'TC',
+      'hdl cholesterol': 'HDL',
+      'ldl cholesterol': 'LDL',
+      'triglycerides': 'TG',
+      'hemoglobin': 'HGB',
+      'hematocrit': 'HCT',
+      'red blood cell': 'RBC',
+      'white blood cell': 'WBC',
+      'platelet': 'PLT',
+      'mean corpuscular volume': 'MCV',
+      'mean corpuscular hemoglobin': 'MCH',
+      'albumin': 'ALB',
+      'globulin': 'GLOB',
+      'total protein': 'TP',
+      'creatinine': 'CREAT',
+      'blood urea nitrogen': 'BUN',
+      'urea': 'UREA',
+      'glucose': 'GLU',
+      'calcium': 'CA',
+      'sodium': 'NA',
+      'potassium': 'K',
+      'chloride': 'CL',
+    };
+
+    const lowerName = name.toLowerCase();
+
+    // Check for common abbreviations
+    for (const [fullName, abbrev] of Object.entries(abbreviations)) {
+      if (lowerName.includes(fullName)) {
+        return abbrev;
+      }
+    }
+
+    // Generate slug: remove special chars, convert to uppercase, take first 3-4 chars of each word
+    const words = name.replace(/[^a-zA-Z0-9\s]/g, '').split(/\s+/);
+    if (words.length === 1) {
+      return words[0].substring(0, 4).toUpperCase();
+    }
+    return words.map(w => w.substring(0, 3)).join('').toUpperCase().substring(0, 6);
+  };
+
+  // Filter available analytes for picker
+  const filteredSourceAnalytes = useMemo(() => {
+    const filtered = availableAnalytes.filter(a => {
+      // Exclude current analyte if editing
+      if (analyte?.id && a.id === analyte.id) return false;
+      // Exclude already selected
+      if (selectedSources.some(s => s.id === a.id)) return false;
+      // Apply search filter
+      if (sourceSearchTerm) {
+        const search = sourceSearchTerm.toLowerCase();
+        return a.name.toLowerCase().includes(search) ||
+               a.category?.toLowerCase().includes(search);
+      }
+      return true;
+    });
+    return filtered.slice(0, 15); // Limit to 15 results
+  }, [availableAnalytes, selectedSources, sourceSearchTerm, analyte?.id]);
+
+  // Close picker when clicking outside
+  useEffect(() => {
+    const handleClickOutside = (e: MouseEvent) => {
+      if (sourcePickerRef.current && !sourcePickerRef.current.contains(e.target as Node)) {
+        setShowSourcePicker(false);
+      }
+    };
+    if (showSourcePicker) {
+      document.addEventListener('mousedown', handleClickOutside);
+    }
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, [showSourcePicker]);
+
+  // Sync formulaVariables with selectedSources
+  useEffect(() => {
+    if (selectedSources.length > 0) {
+      const variableNames = selectedSources.map(s => s.variableName).join(', ');
+      setFormData(prev => ({ ...prev, formulaVariables: variableNames }));
+    }
+  }, [selectedSources]);
+
+  // Add source analyte to selection
+  const handleAddSource = (source: SourceAnalyte) => {
+    const variableName = generateVariableSlug(source.name);
+    // Ensure unique variable name
+    let uniqueName = variableName;
+    let counter = 1;
+    while (selectedSources.some(s => s.variableName === uniqueName)) {
+      uniqueName = `${variableName}${counter}`;
+      counter++;
+    }
+    setSelectedSources(prev => [...prev, { ...source, variableName: uniqueName }]);
+    setSourceSearchTerm('');
+    setShowSourcePicker(false);
+  };
+
+  // Remove source analyte
+  const handleRemoveSource = (id: string) => {
+    setSelectedSources(prev => prev.filter(s => s.id !== id));
+  };
+
+  // Update variable name for a source
+  const handleUpdateVariableName = (id: string, newName: string) => {
+    setSelectedSources(prev => prev.map(s =>
+      s.id === id ? { ...s, variableName: newName.toUpperCase().replace(/[^A-Z0-9_]/g, '') } : s
+    ));
+  };
+
+  // Insert variable into formula at cursor position
+  const handleInsertVariable = (variableName: string) => {
+    if (formulaInputRef.current) {
+      const input = formulaInputRef.current;
+      const start = input.selectionStart || 0;
+      const end = input.selectionEnd || 0;
+      const currentFormula = formData.formula;
+      const newFormula = currentFormula.substring(0, start) + variableName + currentFormula.substring(end);
+      setFormData(prev => ({ ...prev, formula: newFormula }));
+      // Restore focus and cursor position
+      setTimeout(() => {
+        input.focus();
+        input.setSelectionRange(start + variableName.length, start + variableName.length);
+      }, 0);
+    } else {
+      // Just append if no ref
+      setFormData(prev => ({ ...prev, formula: prev.formula + variableName }));
+    }
+  };
 
   const categories = [
     'Hematology',
@@ -82,6 +236,22 @@ const AnalyteForm: React.FC<AnalyteFormProps> = ({ onClose, onSubmit, analyte })
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
+
+    // Use selected sources if available, otherwise parse from text
+    const formulaVariables = selectedSources.length > 0
+      ? selectedSources.map(s => s.variableName)
+      : formData.formulaVariables
+        ? formData.formulaVariables.split(',').map(v => v.trim()).filter(Boolean)
+        : [];
+
+    // Build source dependencies for immediate linking (if analytes were selected)
+    const sourceDependencies = selectedSources.length > 0
+      ? selectedSources.map(s => ({
+          source_analyte_id: s.id,
+          variable_name: s.variableName
+        }))
+      : [];
+
     onSubmit({
       ...formData,
       interpretation: {
@@ -90,9 +260,13 @@ const AnalyteForm: React.FC<AnalyteFormProps> = ({ onClose, onSubmit, analyte })
         high: formData.interpretationHigh,
       },
       ref_range_knowledge: { text_rules: formData.refRangeKnowledgeText },
-      // Parse formula variables from comma-separated string
-      formulaVariables: formData.formulaVariables
-        ? formData.formulaVariables.split(',').map(v => v.trim()).filter(Boolean)
+      // Formula variables from either selection or text input
+      formulaVariables,
+      // Include source dependencies for immediate creation
+      sourceDependencies,
+      // Parse expected normal values from newline-separated string
+      expected_normal_values: formData.expectedNormalValues
+        ? formData.expectedNormalValues.split('\n').map(v => v.trim()).filter(Boolean)
         : [],
     });
   };
@@ -189,6 +363,33 @@ const AnalyteForm: React.FC<AnalyteFormProps> = ({ onClose, onSubmit, analyte })
                   className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                 />
               </div>
+            </div>
+
+            {/* Expected Normal Values - Dropdown Options */}
+            <div className="mt-4">
+              <label className="block text-sm font-medium text-gray-700 mb-1">
+                Expected Values (Dropdown Options)
+              </label>
+              <textarea
+                name="expectedNormalValues"
+                rows={4}
+                value={formData.expectedNormalValues}
+                onChange={handleChange}
+                placeholder="Enter one value per line, e.g.:&#10;Negative&#10;Positive&#10;Reactive&#10;Non-Reactive"
+                className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+              />
+              <p className="text-xs text-gray-500 mt-1">
+                For qualitative analytes (HIV, Blood Group, etc.). Enter one option per line. When set, users will see a dropdown instead of free text input.
+              </p>
+              {formData.expectedNormalValues && (
+                <div className="mt-2 flex flex-wrap gap-2">
+                  {formData.expectedNormalValues.split('\n').filter(v => v.trim()).map((val, idx) => (
+                    <span key={idx} className="px-2 py-1 bg-blue-100 text-blue-800 rounded text-xs">
+                      {val.trim()}
+                    </span>
+                  ))}
+                </div>
+              )}
             </div>
           </div>
 
@@ -316,11 +517,161 @@ const AnalyteForm: React.FC<AnalyteFormProps> = ({ onClose, onSubmit, analyte })
               </h3>
 
               <div className="space-y-4">
+                {/* Step 1: Select Source Analytes */}
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">
+                    Step 1: Select Source Analytes *
+                  </label>
+                  <p className="text-xs text-gray-500 mb-2">
+                    Choose the analytes whose values will be used in the formula
+                  </p>
+
+                  {/* Selected Sources */}
+                  {selectedSources.length > 0 && (
+                    <div className="mb-3 space-y-2">
+                      {selectedSources.map(source => (
+                        <div
+                          key={source.id}
+                          className="flex items-center gap-2 bg-white border border-amber-200 rounded-lg p-2"
+                        >
+                          <div className="flex-1 min-w-0">
+                            <div className="text-sm font-medium text-gray-900 truncate">
+                              {source.name}
+                            </div>
+                            <div className="text-xs text-gray-500">{source.unit} • {source.category}</div>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <span className="text-xs text-gray-500">Variable:</span>
+                            <input
+                              type="text"
+                              value={source.variableName}
+                              onChange={(e) => handleUpdateVariableName(source.id, e.target.value)}
+                              className="w-20 px-2 py-1 text-xs font-mono border border-gray-300 rounded focus:outline-none focus:ring-1 focus:ring-amber-500 uppercase"
+                              placeholder="VAR"
+                            />
+                            <button
+                              type="button"
+                              onClick={() => handleInsertVariable(source.variableName)}
+                              className="px-2 py-1 text-xs bg-amber-600 text-white rounded hover:bg-amber-700"
+                              title="Insert into formula"
+                            >
+                              + Insert
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleRemoveSource(source.id)}
+                              className="p-1 text-red-600 hover:text-red-800"
+                              title="Remove"
+                            >
+                              <Trash2 className="h-4 w-4" />
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  {/* Add Source Analyte Picker */}
+                  <div className="relative" ref={sourcePickerRef}>
+                    <div
+                      className="flex items-center gap-2 px-3 py-2 border border-gray-300 rounded-md bg-white cursor-pointer hover:border-amber-400"
+                      onClick={() => setShowSourcePicker(!showSourcePicker)}
+                    >
+                      <Plus className="h-4 w-4 text-amber-600" />
+                      <span className="text-sm text-gray-600">Add source analyte...</span>
+                      <ChevronDown className="h-4 w-4 text-gray-400 ml-auto" />
+                    </div>
+
+                    {showSourcePicker && (
+                      <div className="absolute z-10 mt-1 w-full bg-white border border-gray-200 rounded-lg shadow-lg max-h-64 overflow-hidden">
+                        <div className="p-2 border-b border-gray-100">
+                          <div className="relative">
+                            <Search className="absolute left-2 top-1/2 transform -translate-y-1/2 h-4 w-4 text-gray-400" />
+                            <input
+                              type="text"
+                              value={sourceSearchTerm}
+                              onChange={(e) => setSourceSearchTerm(e.target.value)}
+                              placeholder="Search analytes..."
+                              className="w-full pl-8 pr-3 py-1.5 text-sm border border-gray-300 rounded focus:outline-none focus:ring-1 focus:ring-amber-500"
+                              autoFocus
+                            />
+                          </div>
+                        </div>
+                        <div className="max-h-48 overflow-y-auto">
+                          {availableAnalytes.length === 0 ? (
+                            <div className="p-3 text-sm text-gray-500 text-center">
+                              No analytes available. Save this form first, then manage dependencies.
+                            </div>
+                          ) : filteredSourceAnalytes.length === 0 ? (
+                            <div className="p-3 text-sm text-gray-500 text-center">
+                              No matching analytes found
+                            </div>
+                          ) : (
+                            filteredSourceAnalytes.map(a => (
+                              <div
+                                key={a.id}
+                                className="px-3 py-2 hover:bg-amber-50 cursor-pointer flex items-center justify-between"
+                                onClick={() => handleAddSource(a)}
+                              >
+                                <div>
+                                  <div className="text-sm font-medium text-gray-900">{a.name}</div>
+                                  <div className="text-xs text-gray-500">{a.unit} • {a.category}</div>
+                                </div>
+                                <span className="text-xs text-amber-600 font-mono">
+                                  {generateVariableSlug(a.name)}
+                                </span>
+                              </div>
+                            ))
+                          )}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Manual variable input fallback */}
+                  {availableAnalytes.length === 0 && (
+                    <div className="mt-2">
+                      <input
+                        type="text"
+                        name="formulaVariables"
+                        value={formData.formulaVariables}
+                        onChange={handleChange}
+                        placeholder="e.g., TC, HDL, TG (comma-separated)"
+                        className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-amber-500 focus:border-transparent text-sm"
+                      />
+                      <p className="text-xs text-gray-500 mt-1">
+                        Enter variable names manually. After saving, use "Manage Dependencies" to link them.
+                      </p>
+                    </div>
+                  )}
+                </div>
+
+                {/* Step 2: Build Formula */}
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1">
-                    Formula *
+                    Step 2: Build Formula *
                   </label>
+
+                  {/* Quick Insert Buttons */}
+                  {selectedSources.length > 0 && (
+                    <div className="flex flex-wrap gap-1 mb-2">
+                      {selectedSources.map(s => (
+                        <button
+                          key={s.id}
+                          type="button"
+                          onClick={() => handleInsertVariable(s.variableName)}
+                          className="px-2 py-1 text-xs font-mono bg-amber-100 text-amber-800 rounded hover:bg-amber-200 border border-amber-300"
+                          title={`Insert ${s.name}`}
+                        >
+                          {s.variableName}
+                        </button>
+                      ))}
+                      <span className="text-xs text-gray-400 self-center ml-2">Click to insert</span>
+                    </div>
+                  )}
+
                   <input
+                    ref={formulaInputRef}
                     type="text"
                     name="formula"
                     value={formData.formula}
@@ -330,25 +681,7 @@ const AnalyteForm: React.FC<AnalyteFormProps> = ({ onClose, onSubmit, analyte })
                     className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-amber-500 focus:border-transparent font-mono"
                   />
                   <p className="text-xs text-gray-500 mt-1">
-                    Use variable names that match source analytes. Supports: +, -, *, /, parentheses, sqrt(), pow(), abs(), round()
-                  </p>
-                </div>
-
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">
-                    Variable Names (comma-separated) *
-                  </label>
-                  <input
-                    type="text"
-                    name="formulaVariables"
-                    value={formData.formulaVariables}
-                    onChange={handleChange}
-                    placeholder="e.g., TC, HDL, TG"
-                    required={formData.isCalculated}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-amber-500 focus:border-transparent"
-                  />
-                  <p className="text-xs text-gray-500 mt-1">
-                    These variables must be linked to source analytes in the Dependencies section (after saving)
+                    Operators: + - * / ( ) | Functions: sqrt(), pow(), abs(), round()
                   </p>
                 </div>
 
@@ -372,7 +705,17 @@ const AnalyteForm: React.FC<AnalyteFormProps> = ({ onClose, onSubmit, analyte })
                   <div className="text-sm text-amber-800 font-mono bg-amber-100 p-2 rounded">
                     {formData.formula || '(No formula entered)'}
                   </div>
-                  {formData.formulaVariables && (
+                  {selectedSources.length > 0 && (
+                    <div className="mt-2 space-y-1">
+                      <div className="text-xs text-amber-700 font-medium">Variable Mappings:</div>
+                      {selectedSources.map(s => (
+                        <div key={s.id} className="text-xs text-amber-600 pl-2">
+                          {s.variableName} → {s.name} ({s.unit})
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  {selectedSources.length === 0 && formData.formulaVariables && (
                     <div className="mt-2 text-xs text-amber-700">
                       <strong>Variables:</strong> {formData.formulaVariables.split(',').map(v => v.trim()).filter(Boolean).join(', ') || 'None'}
                     </div>

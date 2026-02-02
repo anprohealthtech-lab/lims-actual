@@ -1,9 +1,11 @@
 import React, { useState, useEffect } from 'react';
-import { Plus, Settings, Trash2, AlertCircle, Edit, Workflow, TestTube, Loader2, CheckCircle } from 'lucide-react';
+import { Plus, Settings, Trash2, AlertCircle, Edit, Workflow, TestTube, Loader2, CheckCircle, Play, Search, Sparkles } from 'lucide-react';
 import { FlowManager } from '../components/Workflow/FlowManager';
 import VisualWorkflowManager from '../components/Workflow/VisualWorkflowManager';
+import UnifiedWorkflowRunner from '../components/Workflow/UnifiedWorkflowRunner';
+import AIWorkflowGenerator from '../components/Workflow/AIWorkflowGenerator';
 import { useAuth } from '../contexts/AuthContext';
-import { database } from '../utils/supabase';
+import { database, supabase } from '../utils/supabase';
 
 interface WorkflowManagementProps {
   className?: string;
@@ -44,7 +46,7 @@ export const WorkflowManagement: React.FC<WorkflowManagementProps> = ({
   className = ''
 }) => {
   const { user } = useAuth();
-  const [activeTab, setActiveTab] = useState<'mappings' | 'builder' | 'visual-builder'>('mappings');
+  const [activeTab, setActiveTab] = useState<'mappings' | 'ai-generate' | 'builder' | 'visual-builder' | 'execute'>('mappings');
   const [labId, setLabId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -74,6 +76,13 @@ export const WorkflowManagement: React.FC<WorkflowManagementProps> = ({
     analyteIds: ['analyte-1', 'analyte-2'],
     labId: ''
   });
+
+  // State for workflow execution tab
+  const [execOrders, setExecOrders] = useState<any[]>([]);
+  const [execSelectedOrder, setExecSelectedOrder] = useState<any>(null);
+  const [execSelectedWorkflow, setExecSelectedWorkflow] = useState<any>(null);
+  const [execSearchTerm, setExecSearchTerm] = useState('');
+  const [execLoadingOrders, setExecLoadingOrders] = useState(false);
 
   useEffect(() => {
     if (user) {
@@ -239,23 +248,97 @@ export const WorkflowManagement: React.FC<WorkflowManagementProps> = ({
   const tabs = [
     {
       id: 'mappings',
-      name: 'Test Group Mappings',
+      name: 'Mappings',
       icon: Settings,
       description: 'Configure workflow mappings for test groups'
     },
     {
+      id: 'ai-generate',
+      name: 'AI Generate',
+      icon: Sparkles,
+      description: 'One-click NABL workflow generation',
+      highlight: true
+    },
+    {
+      id: 'execute',
+      name: 'Execute',
+      icon: Play,
+      description: 'Run workflows with automatic order context'
+    },
+    {
       id: 'builder',
-      name: 'AI Workflow Builder',
+      name: 'Manual Builder',
       icon: Workflow,
       description: 'Create and configure new workflows'
     },
     {
       id: 'visual-builder',
-      name: 'Visual Form Builder',
+      name: 'Visual Builder',
       icon: Edit,
       description: 'Create workflows with visual form builder'
     }
   ];
+
+  // Load orders when execute tab is active
+  useEffect(() => {
+    if (activeTab === 'execute' && labId) {
+      loadOrdersForExecution();
+    }
+  }, [activeTab, labId]);
+
+  const loadOrdersForExecution = async () => {
+    setExecLoadingOrders(true);
+    try {
+      const { data, error } = await supabase
+        .from('orders')
+        .select(`
+          id,
+          sample_id,
+          patient_name,
+          order_date,
+          status,
+          patient_id,
+          patients (name, age, gender),
+          order_tests (
+            id,
+            test_group_id,
+            test_groups (id, name, code)
+          )
+        `)
+        .eq('lab_id', labId)
+        .in('status', ['Sample Collection', 'Processing', 'In Progress'])
+        .order('created_at', { ascending: false })
+        .limit(50);
+
+      if (error) throw error;
+      setExecOrders(data || []);
+    } catch (err) {
+      console.error('Error loading orders:', err);
+    } finally {
+      setExecLoadingOrders(false);
+    }
+  };
+
+  const getWorkflowForTestGroup = (testGroupId: string) => {
+    const mapping = mappings.find(m =>
+      m.test_group_id === testGroupId && m.is_active && m.is_default
+    );
+    if (mapping) {
+      const workflow = workflows.find(w => w.id === mapping.workflow_version_id);
+      return { mapping, workflow };
+    }
+    return null;
+  };
+
+  const filteredExecOrders = execOrders.filter(order => {
+    if (!execSearchTerm) return true;
+    const search = execSearchTerm.toLowerCase();
+    return (
+      order.sample_id?.toLowerCase().includes(search) ||
+      order.patient_name?.toLowerCase().includes(search) ||
+      order.id.toLowerCase().includes(search)
+    );
+  });
 
   if (!labId) {
     return (
@@ -331,22 +414,33 @@ export const WorkflowManagement: React.FC<WorkflowManagementProps> = ({
             {tabs.map((tab) => {
               const Icon = tab.icon;
               const isActive = activeTab === tab.id;
+              const isHighlight = (tab as any).highlight;
 
               return (
                 <button
                   key={tab.id}
                   onClick={() => setActiveTab(tab.id as any)}
-                  className={`py-4 px-4 border-b-2 font-medium text-sm whitespace-nowrap ${isActive
-                      ? 'border-blue-500 text-blue-600'
-                      : 'border-transparent text-gray-500 hover:text-gray-700'
-                    }`}
+                  className={`py-4 px-4 border-b-2 font-medium text-sm whitespace-nowrap transition-colors ${
+                    isActive
+                      ? isHighlight
+                        ? 'border-purple-500 text-purple-600'
+                        : 'border-blue-500 text-blue-600'
+                      : isHighlight
+                        ? 'border-transparent text-purple-500 hover:text-purple-700 hover:bg-purple-50'
+                        : 'border-transparent text-gray-500 hover:text-gray-700'
+                  }`}
                 >
                   <div className="flex items-center space-x-2">
-                    <Icon className="h-4 w-4" />
+                    <Icon className={`h-4 w-4 ${isHighlight && !isActive ? 'animate-pulse' : ''}`} />
                     <span>{tab.name}</span>
                     {tab.id === 'mappings' && (
                       <span className="bg-gray-100 text-gray-600 px-2 py-0.5 rounded-full text-xs">
                         {mappings.length}
+                      </span>
+                    )}
+                    {isHighlight && !isActive && (
+                      <span className="bg-gradient-to-r from-purple-500 to-indigo-500 text-white px-2 py-0.5 rounded-full text-xs font-semibold">
+                        NEW
                       </span>
                     )}
                   </div>
@@ -458,10 +552,24 @@ export const WorkflowManagement: React.FC<WorkflowManagementProps> = ({
             </div>
           )}
 
+          {activeTab === 'ai-generate' && labId && (
+            <AIWorkflowGenerator
+              labId={labId}
+              onWorkflowGenerated={(result) => {
+                // Success state is now displayed in the component
+                // Don't reload here as it causes the component to remount and lose state
+              }}
+              onReset={() => {
+                // Reload workflow data when user clicks "Generate Another"
+                loadWorkflowData();
+              }}
+            />
+          )}
+
           {activeTab === 'builder' && (
             <div>
               <div className="mb-6">
-                <h3 className="text-lg font-semibold text-gray-900 mb-2">AI Workflow Builder</h3>
+                <h3 className="text-lg font-semibold text-gray-900 mb-2">Manual Workflow Builder</h3>
                 <p className="text-gray-600">
                   Create new workflows for test groups that don't have workflow configurations yet.
                   Select a test group to start building its workflow.
@@ -546,6 +654,189 @@ export const WorkflowManagement: React.FC<WorkflowManagementProps> = ({
 
               <div className="bg-white rounded-lg border border-gray-200">
                 <VisualWorkflowManager />
+              </div>
+            </div>
+          )}
+
+          {activeTab === 'execute' && (
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+              {/* Order Selection Panel */}
+              <div className="lg:col-span-1 space-y-4">
+                <div className="bg-white rounded-lg border border-gray-200 p-4">
+                  <h3 className="text-lg font-semibold text-gray-900 mb-3">Select Order</h3>
+
+                  {/* Search */}
+                  <div className="relative mb-4">
+                    <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-gray-400" />
+                    <input
+                      type="text"
+                      placeholder="Search by sample ID or patient..."
+                      value={execSearchTerm}
+                      onChange={(e) => setExecSearchTerm(e.target.value)}
+                      className="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                    />
+                  </div>
+
+                  {/* Order List */}
+                  {execLoadingOrders ? (
+                    <div className="flex items-center justify-center py-8">
+                      <Loader2 className="h-6 w-6 animate-spin text-gray-400" />
+                    </div>
+                  ) : filteredExecOrders.length === 0 ? (
+                    <div className="text-center py-8 text-gray-500">
+                      <AlertCircle className="h-8 w-8 mx-auto mb-2 text-gray-400" />
+                      <p>No orders available for workflow execution</p>
+                    </div>
+                  ) : (
+                    <div className="space-y-2 max-h-96 overflow-y-auto">
+                      {filteredExecOrders.map((order) => {
+                        const testGroup = order.order_tests?.[0]?.test_groups;
+                        const hasWorkflow = testGroup ? !!getWorkflowForTestGroup(testGroup.id) : false;
+
+                        return (
+                          <button
+                            key={order.id}
+                            onClick={() => {
+                              setExecSelectedOrder(order);
+                              if (testGroup) {
+                                const wf = getWorkflowForTestGroup(testGroup.id);
+                                setExecSelectedWorkflow(wf);
+                              } else {
+                                setExecSelectedWorkflow(null);
+                              }
+                            }}
+                            className={`w-full text-left p-3 rounded-lg border transition-colors ${
+                              execSelectedOrder?.id === order.id
+                                ? 'border-blue-500 bg-blue-50'
+                                : 'border-gray-200 hover:border-gray-300 hover:bg-gray-50'
+                            }`}
+                          >
+                            <div className="flex items-center justify-between">
+                              <div>
+                                <div className="font-medium text-gray-900">
+                                  {order.sample_id || order.id.slice(0, 8)}
+                                </div>
+                                <div className="text-sm text-gray-600">
+                                  {order.patient_name || (order.patients as any)?.name}
+                                </div>
+                                {testGroup && (
+                                  <div className="text-xs text-gray-500 mt-1">
+                                    {testGroup.name}
+                                  </div>
+                                )}
+                              </div>
+                              <div className="flex flex-col items-end gap-1">
+                                <span className={`px-2 py-0.5 text-xs rounded-full ${
+                                  order.status === 'Sample Collection'
+                                    ? 'bg-yellow-100 text-yellow-800'
+                                    : 'bg-blue-100 text-blue-800'
+                                }`}>
+                                  {order.status}
+                                </span>
+                                {hasWorkflow && (
+                                  <span className="text-xs text-green-600 flex items-center">
+                                    <Workflow className="h-3 w-3 mr-1" />
+                                    Has Workflow
+                                  </span>
+                                )}
+                              </div>
+                            </div>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  )}
+
+                  <button
+                    onClick={loadOrdersForExecution}
+                    className="mt-4 w-full text-sm text-blue-600 hover:text-blue-800"
+                  >
+                    Refresh Orders
+                  </button>
+                </div>
+
+                {/* Selected Order Info */}
+                {execSelectedOrder && (
+                  <div className="bg-green-50 border border-green-200 rounded-lg p-4">
+                    <h4 className="font-medium text-green-900 mb-2">Selected Order</h4>
+                    <div className="text-sm text-green-800 space-y-1">
+                      <p><strong>Sample:</strong> {execSelectedOrder.sample_id || 'N/A'}</p>
+                      <p><strong>Patient:</strong> {execSelectedOrder.patient_name}</p>
+                      <p><strong>Test:</strong> {execSelectedOrder.order_tests?.[0]?.test_groups?.name || 'N/A'}</p>
+                      {execSelectedWorkflow ? (
+                        <p className="flex items-center text-green-700">
+                          <CheckCircle className="h-4 w-4 mr-1" />
+                          Workflow configured
+                        </p>
+                      ) : (
+                        <p className="flex items-center text-amber-700">
+                          <AlertCircle className="h-4 w-4 mr-1" />
+                          No workflow mapped
+                        </p>
+                      )}
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* Workflow Execution Panel */}
+              <div className="lg:col-span-2">
+                {!execSelectedOrder ? (
+                  <div className="bg-white rounded-lg border border-gray-200 p-12 text-center">
+                    <Play className="h-16 w-16 mx-auto text-gray-300 mb-4" />
+                    <h3 className="text-lg font-medium text-gray-900 mb-2">Select an Order</h3>
+                    <p className="text-gray-600">
+                      Choose an order from the left panel to execute its workflow.
+                      The system will automatically pre-populate order context.
+                    </p>
+                    <div className="mt-6 p-4 bg-blue-50 rounded-lg text-left">
+                      <h4 className="font-medium text-blue-900 mb-2">Auto-Context Features:</h4>
+                      <ul className="text-sm text-blue-800 space-y-1">
+                        <li>• Sample ID automatically filled</li>
+                        <li>• Patient info pre-populated</li>
+                        <li>• Collection date/time from order</li>
+                        <li>• Test group analytes loaded</li>
+                        <li>• Technician info from current user</li>
+                      </ul>
+                    </div>
+                  </div>
+                ) : !execSelectedWorkflow ? (
+                  <div className="bg-amber-50 border border-amber-200 rounded-lg p-8 text-center">
+                    <AlertCircle className="h-12 w-12 mx-auto text-amber-400 mb-4" />
+                    <h3 className="text-lg font-medium text-amber-900 mb-2">No Workflow Configured</h3>
+                    <p className="text-amber-700 mb-4">
+                      This test group does not have a workflow mapping.
+                      Please configure a workflow in the "Test Group Mappings" tab first.
+                    </p>
+                    <button
+                      onClick={() => setActiveTab('mappings')}
+                      className="px-4 py-2 bg-amber-600 text-white rounded-md hover:bg-amber-700"
+                    >
+                      Go to Mappings
+                    </button>
+                  </div>
+                ) : (
+                  <UnifiedWorkflowRunner
+                    workflowDefinition={execSelectedWorkflow.workflow?.definition}
+                    orderId={execSelectedOrder.id}
+                    testGroupId={execSelectedOrder.order_tests?.[0]?.test_group_id}
+                    workflowVersionId={execSelectedWorkflow.mapping?.workflow_version_id}
+                    features={{
+                      autoContext: true,
+                      fileUploads: true,
+                      aiAnalysis: true,
+                      readOnlyContext: true,
+                      showContextIndicator: true
+                    }}
+                    onComplete={(results) => {
+                      console.log('Workflow completed:', results);
+                      // Optionally refresh or navigate
+                    }}
+                    onContextLoaded={(context) => {
+                      console.log('Context loaded:', context);
+                    }}
+                  />
+                )}
               </div>
             </div>
           )}

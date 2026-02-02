@@ -24,6 +24,8 @@ export interface TemplateSection {
   predefined_options: string[]; // Array of selectable sentences
   is_required: boolean;
   is_editable: boolean;
+  allow_images?: boolean;
+  allow_technician_entry?: boolean;
   placeholder_key?: string; // For template injection: {{section:findings}}
 }
 
@@ -34,6 +36,7 @@ export interface SectionContent {
   selected_options: number[]; // Indices of selected predefined options
   custom_text: string;
   final_content: string;
+  image_urls?: string[];
   is_finalized: boolean;
   edited_by?: string;
   edited_at?: string;
@@ -141,6 +144,7 @@ export function useReportSections(options: UseReportSectionsOptions): UseReportS
         selected_options: c.selected_options || [],
         custom_text: c.custom_text || '',
         final_content: c.final_content || '',
+        image_urls: c.image_urls || [],
         is_finalized: c.is_finalized || false,
         edited_by: c.edited_by,
         edited_at: c.edited_at,
@@ -212,12 +216,17 @@ export function useReportSections(options: UseReportSectionsOptions): UseReportS
       .filter(idx => idx >= 0 && idx < section.predefined_options.length)
       .map(idx => section.predefined_options[idx]);
 
-    const parts = [...selectedTexts];
-    if (content.custom_text?.trim()) {
-      parts.push(content.custom_text.trim());
+    const trimmedCustom = content.custom_text?.trim();
+    const formattedSelected = selectedTexts.length > 1
+      ? selectedTexts.map(text => `• ${text}`)
+      : selectedTexts;
+
+    const parts = [...formattedSelected];
+    if (trimmedCustom) {
+      parts.push(trimmedCustom);
     }
 
-    return parts.join(' ');
+    return parts.join('\n');
   }, [sections, sectionContents]);
 
   /**
@@ -237,6 +246,7 @@ export function useReportSections(options: UseReportSectionsOptions): UseReportS
           selected_options: [],
           custom_text: '',
           final_content: '',
+          image_urls: [],
           is_finalized: false,
           ...updates
         }];
@@ -289,7 +299,8 @@ export function useReportSections(options: UseReportSectionsOptions): UseReportS
         section_id: sectionId,
         selected_options: content.selected_options,
         custom_text: content.custom_text,
-        final_content: finalContent
+        final_content: finalContent,
+        image_urls: content.image_urls || []
       }, userId);
 
       if (saveError) throw saveError;

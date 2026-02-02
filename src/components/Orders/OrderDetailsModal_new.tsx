@@ -161,6 +161,7 @@ interface ExtractedValue {
   unit: string;
   reference: string;
   flag?: string;
+  expected_normal_values?: string[];
 }
 
 interface Order {
@@ -366,7 +367,8 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
         value: '',
         unit: analyte.unit || '',
         reference: analyte.reference_range || '',
-        flag: undefined
+        flag: undefined,
+        expected_normal_values: analyte.expected_normal_values || []
       })));
 
       // After setting analytes, load existing results if any
@@ -428,7 +430,9 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
               reference_range,
               ai_processing_type,
               ai_prompt_override,
-              group_ai_mode
+              group_ai_mode,
+              expected_normal_values,
+              value_type
             )
           )
         `)
@@ -717,6 +721,8 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
         // Merge extracted values into manual values for display
         setManualValues(prevManualValues => {
           const updatedValues = [...prevManualValues];
+          const addedParameters: ExtractedValue[] = [];
+
           extractedParams.forEach((extracted: any) => {
             // Try matching by analyte_id first (most accurate), then fall back to parameter name
             const index = updatedValues.findIndex(val => {
@@ -727,13 +733,32 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
             });
 
             if (index !== -1) {
+              // Update existing parameter
               updatedValues[index] = {
                 ...updatedValues[index],
                 value: extracted.value,
                 flag: extracted.flag
               };
+            } else {
+              // Parameter not in original test group - add it dynamically
+              console.log(`Adding new parameter from AI: ${extracted.parameter}`);
+              addedParameters.push({
+                analyte_id: extracted.analyte_id,
+                parameter: extracted.parameter,
+                value: extracted.value,
+                unit: extracted.unit,
+                reference: extracted.reference,
+                flag: extracted.flag
+              });
             }
           });
+
+          // Append newly discovered parameters at the end
+          if (addedParameters.length > 0) {
+            console.log(`Added ${addedParameters.length} new parameters from AI extraction`);
+            return [...updatedValues, ...addedParameters];
+          }
+
           return updatedValues;
         });
 
@@ -1654,13 +1679,26 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
                             {value.parameter}
                           </td>
                           <td className="px-4 py-3">
-                            <input
-                              type="text"
-                              value={value.value}
-                              onChange={(e) => handleManualValueChange(index, 'value', e.target.value)}
-                              className="w-full px-2 py-1 border border-gray-300 rounded focus:outline-none focus:ring-1 focus:ring-blue-500"
-                              placeholder="Enter value"
-                            />
+                            {value.expected_normal_values && value.expected_normal_values.length > 0 ? (
+                              <select
+                                value={value.value}
+                                onChange={(e) => handleManualValueChange(index, 'value', e.target.value)}
+                                className="w-full px-2 py-1 border border-gray-300 rounded focus:outline-none focus:ring-1 focus:ring-blue-500"
+                              >
+                                <option value="">Select value...</option>
+                                {value.expected_normal_values.map((opt, optIdx) => (
+                                  <option key={optIdx} value={opt}>{opt}</option>
+                                ))}
+                              </select>
+                            ) : (
+                              <input
+                                type="text"
+                                value={value.value}
+                                onChange={(e) => handleManualValueChange(index, 'value', e.target.value)}
+                                className="w-full px-2 py-1 border border-gray-300 rounded focus:outline-none focus:ring-1 focus:ring-blue-500"
+                                placeholder="Enter value"
+                              />
+                            )}
                           </td>
                           <td className="px-4 py-3">
                             <input

@@ -589,4 +589,28 @@
 .section-content i {
   font-style: italic;
 }
-  
+
+/* ---------- Method Name (test methodology display) ---------- */
+
+.method-name {
+  display: block;
+  font-size: 0.75rem;
+  font-weight: 400;
+  color: rgba(255, 255, 255, 0.85);
+  margin-top: 2px;
+  font-style: italic;
+}
+
+/* For method name in non-header contexts */
+.limsv2-report .method-name-inline {
+  font-size: 0.8rem;
+  color: var(--report-muted-color);
+  font-style: italic;
+  font-weight: 400;
+}
+
+/* Method name within section headers (white bg variant) */
+.section-header .method-name,
+tr.section-header .method-name {
+  color: rgba(255, 255, 255, 0.85);
+}

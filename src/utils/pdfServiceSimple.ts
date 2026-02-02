@@ -332,11 +332,18 @@ export const renderTemplateToHtml = (
   const baseContext = buildDefaultTemplateContext();
   const derivedContext = buildContextFromReportTemplate(context);
   const placeholderValues = context.placeholderValues ?? {};
+  const sectionContent = context.sectionContent ?? {};
+  const safeSectionContent = Object.fromEntries(
+    Object.entries(sectionContent)
+      .filter(([, value]) => value !== undefined && value !== null)
+      .map(([key, value]) => [key, new nunjucks.runtime.SafeString(String(value))])
+  );
   
   const renderContext = {
     ...baseContext,
     ...derivedContext,
     ...placeholderValues,
+    ...safeSectionContent,
     ...(overrides || {}),
   };
 

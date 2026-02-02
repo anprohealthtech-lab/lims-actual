@@ -12,10 +12,12 @@ import {
   ClipboardList,
   Clock,
   Edit,
+  Expand,
   Eye,
   FileImage,
   FileText,
   Loader2,
+  Minimize,
   RefreshCcw,
   RefreshCw,
   Save,
@@ -38,13 +40,16 @@ import {
   type VerifierSummaryResponse,
   type PatientSummaryResponse,
   type SupportedLanguage,
+  type DeltaCheckResponse,
   LANGUAGE_DISPLAY_NAMES
 } from "../hooks/useAIResultIntelligence";
 import { supabase, database, aiAnalysis } from "../utils/supabase";
 import { runAIFlagAnalysis, analyzeAndSaveFlag } from "../utils/aiFlagAnalysis";
-import { generateAndSaveTrendCharts, saveClinicalSummary, toggleOrderSummaryInReport } from "../utils/reportExtrasService";
+import { generateAndSaveTrendCharts, saveClinicalSummary, toggleOrderSummaryInReport, saveClinicalSummaryOptions } from "../utils/reportExtrasService";
 import TrendGraphPanel from "../components/Results/TrendGraphPanel";
 import PatientSummaryModal from "../components/Results/PatientSummaryModal";
+import SectionEditor from "../components/Results/SectionEditor";
+import WorkflowExecutionPanel from "../components/Workflow/WorkflowExecutionPanel";
 
 interface PanelRow {
   order_id: string;
@@ -133,6 +138,7 @@ const OrderVerificationView: React.FC<OrderVerificationViewProps> = ({ onBackToP
   const [attachmentViewMode, setAttachmentViewMode] = useState<AttachmentViewMode>("test");
   const [selectedOrders, setSelectedOrders] = useState<Set<string>>(new Set());
   const [bulkProcessing, setBulkProcessing] = useState(false);
+  const [showAllAnalytesLoading, setShowAllAnalytesLoading] = useState<Record<string, boolean>>({});
   const [showAttachmentSelector, setShowAttachmentSelector] = useState(false);
   const [selectedOrderForAttachments, setSelectedOrderForAttachments] = useState<string | null>(null);
   const [includeTrendsInReport, setIncludeTrendsInReport] = useState<Record<string, boolean>>({});
@@ -150,6 +156,10 @@ const OrderVerificationView: React.FC<OrderVerificationViewProps> = ({ onBackToP
   const [aiSummaryTarget, setAiSummaryTarget] = useState<{ type: "verifier" | "clinical"; resultId?: string; orderId?: string } | null>(null);
   const [showInterpretationsModal, setShowInterpretationsModal] = useState(false);
   const [interpretationsTargetResultId, setInterpretationsTargetResultId] = useState<string | null>(null);
+  // AI Delta Check state - quality control comparing current vs historical values
+  const [aiDeltaCheckResults, setAiDeltaCheckResults] = useState<Record<string, DeltaCheckResponse>>({});
+  const [showDeltaCheckModal, setShowDeltaCheckModal] = useState(false);
+  const [deltaCheckTargetResultId, setDeltaCheckTargetResultId] = useState<string | null>(null);
   // Track clinical summary options per order
   const [sendSummaryToDoctor, setSendSummaryToDoctor] = useState<Record<string, boolean>>({});
   // Loading state for clinical summary generation per order
@@ -548,6 +558,23 @@ const OrderVerificationView: React.FC<OrderVerificationViewProps> = ({ onBackToP
     setBulkProcessing(false);
   };
 
+  const showAllAnalytesForOrder = async (order: OrderGroup) => {
+    setShowAllAnalytesLoading(prev => ({ ...prev, [order.orderId]: true }));
+    try {
+      setOpenOrders(prev => ({ ...prev, [order.orderId]: true }));
+      setOpenPanels(prev => {
+        const next = { ...prev };
+        order.panels.forEach(panel => {
+          next[panel.result_id] = true;
+        });
+        return next;
+      });
+      await Promise.all(order.panels.map(panel => ensureAnalytesLoaded(panel.result_id)));
+    } finally {
+      setShowAllAnalytesLoading(prev => ({ ...prev, [order.orderId]: false }));
+    }
+  };
+
   // Run AI Flag Analysis for an entire order
   const runOrderAIFlagAnalysis = async (orderId: string) => {
     setBusyFor(`ai-flag-${orderId}`, true);
@@ -874,7 +901,8 @@ const OrderVerificationView: React.FC<OrderVerificationViewProps> = ({ onBackToP
             value: a.value || "",
             unit: a.unit,
             reference_range: a.reference_range,
-            flag: (a.flag as "H" | "L" | "C" | null) || null,
+            // Pass the raw flag value to AI - it handles all variations (H, L, C, critical_h, critical_l, etc.)
+            flag: a.flag || null,
             interpretation: a.verify_note,
             // Include historical values if available
             historical_values: a.analyte_id ? historicalData[a.analyte_id] : undefined
@@ -987,6 +1015,90 @@ const OrderVerificationView: React.FC<OrderVerificationViewProps> = ({ onBackToP
     }
   };
 
+  // AI Delta Check handler - compares current values with historical data
+  const handleDeltaCheck = async (panel: PanelRow, analytes: Analyte[]) => {
+    try {
+      // First fetch historical results for this patient
+      const patientId = panel.patient_id;
+
+      // Get in-house historical results
+      const { data: historicalData } = await supabase
+        .from('result_values')
+        .select(`
+          id, analyte_id, parameter, value, unit, reference_range, flag, created_at,
+          results!inner(order_id, created_at, orders!inner(patient_id))
+        `)
+        .eq('results.orders.patient_id', patientId)
+        .neq('result_id', panel.result_id)
+        .order('created_at', { ascending: false })
+        .limit(50);
+
+      // Get external/outsourced historical results
+      const { data: externalData } = await supabase
+        .from('external_report_values')
+        .select(`
+          id, analyte_name, value, unit, reference_range, flag, created_at,
+          external_reports!inner(patient_id)
+        `)
+        .eq('external_reports.patient_id', patientId)
+        .order('created_at', { ascending: false })
+        .limit(50);
+
+      // Build related test results array for AI
+      const relatedTestResults = [
+        ...(historicalData || []).map((h: any) => ({
+          test_date: h.results?.created_at || h.created_at,
+          source: 'in-house' as const,
+          analytes: [{
+            name: h.parameter,
+            value: h.value,
+            unit: h.unit,
+            reference_range: h.reference_range,
+            flag: h.flag
+          }]
+        })),
+        ...(externalData || []).map((e: any) => ({
+          test_date: e.created_at,
+          source: 'external' as const,
+          analytes: [{
+            name: e.analyte_name,
+            value: e.value,
+            unit: e.unit,
+            reference_range: e.reference_range,
+            flag: e.flag
+          }]
+        }))
+      ];
+
+      // Build current result values
+      const resultValues = analytes.map(a => ({
+        id: a.id,
+        analyte_name: a.parameter,
+        value: a.value || '',
+        unit: a.unit,
+        reference_range: a.reference_range,
+        flag: a.flag
+      }));
+
+      // Call Delta Check AI function
+      const deltaCheckResult = await aiIntelligence.performDeltaCheck(
+        { id: panel.test_group_id || '', name: panel.test_group_name || '', code: '' },
+        resultValues,
+        { id: patientId, name: panel.patient_name },
+        relatedTestResults
+      );
+
+      if (deltaCheckResult) {
+        setAiDeltaCheckResults(prev => ({ ...prev, [panel.result_id]: deltaCheckResult }));
+        setDeltaCheckTargetResultId(panel.result_id);
+        setShowDeltaCheckModal(true);
+      }
+    } catch (error) {
+      console.error('AI Delta Check failed:', error);
+      alert('Failed to run Delta Check. Please try again.');
+    }
+  };
+
   // Handler to save clinical summary to reports table
   const handleSaveClinicalSummary = async (orderId: string, summary: ClinicalSummaryResponse) => {
     // Format the summary as a readable text for the report
@@ -1004,8 +1116,27 @@ ${summary.urgent_findings && summary.urgent_findings.length > 0 ? `**Urgent Find
 ${summary.urgent_findings.map(f => `• ${f}`).join('\n')}` : ''}
     `.trim();
 
+    // Save to reports table (for PDF generation)
     const { error } = await aiAnalysis.saveDoctorSummary(orderId, summaryText);
     if (error) throw error;
+
+    // ALSO save to orders table (for WhatsApp messages)
+    // This is needed because WhatsApp code reads from orders.ai_clinical_summary
+    const { data: { user } } = await supabase.auth.getUser();
+    const { error: orderError } = await supabase
+      .from('orders')
+      .update({
+        ai_clinical_summary: summaryText,
+        ai_clinical_summary_generated_at: new Date().toISOString(),
+        ai_clinical_summary_generated_by: user?.id || null
+      })
+      .eq('id', orderId);
+    
+    if (orderError) {
+      console.error('Failed to save clinical summary to orders table:', orderError);
+    } else {
+      console.log(`✅ Clinical summary saved to orders.ai_clinical_summary for order ${orderId}`);
+    }
   };
 
   // Handle include in report option - persist to database
@@ -1043,6 +1174,10 @@ ${summary.urgent_findings.map(f => `• ${f}`).join('\n')}` : ''}
 
   const AttachmentViewer: React.FC<{ orderId: string }> = ({ orderId }) => {
     const attachments = attachmentsByOrder[orderId] || [];
+    const [expandedAttachments, setExpandedAttachments] = useState<Set<string>>(new Set());
+    const [previewContent, setPreviewContent] = useState<Record<string, string>>({});
+    const [previewLoading, setPreviewLoading] = useState<Record<string, boolean>>({});
+
     if (!attachments.length) {
       return (
         <div className="text-sm text-gray-500 bg-gray-50 p-3 rounded-lg border border-gray-200">
@@ -1060,34 +1195,139 @@ ${summary.urgent_findings.map(f => `• ${f}`).join('\n')}` : ''}
     const shouldShowTestOnly = attachmentViewMode === "test";
     const toRender = shouldShowTestOnly ? testAttachments : attachments;
 
+    const isPreviewable = (att: any) => {
+      const fileType = att.file_type || '';
+      const filename = att.original_filename?.toLowerCase() || '';
+      return fileType === 'text/plain' ||
+        fileType === 'application/json' ||
+        fileType?.startsWith('image/') ||
+        filename.endsWith('.txt') ||
+        filename.endsWith('.json') ||
+        filename.endsWith('.csv') ||
+        filename.endsWith('.png') ||
+        filename.endsWith('.jpg') ||
+        filename.endsWith('.jpeg') ||
+        filename.endsWith('.gif') ||
+        filename.endsWith('.bmp');
+    };
+
+    const isImage = (att: any) => {
+      const fileType = att.file_type || '';
+      const filename = att.original_filename?.toLowerCase() || '';
+      return fileType?.startsWith('image/') || filename.match(/\.(png|jpg|jpeg|gif|bmp)$/);
+    };
+
+    const handleExpand = async (att: any) => {
+      const isExpanded = expandedAttachments.has(att.id);
+      
+      if (!isExpanded && isPreviewable(att) && !previewContent[att.id] && !isImage(att)) {
+        setPreviewLoading(prev => ({ ...prev, [att.id]: true }));
+        try {
+          const response = await fetch(att.file_url);
+          const text = await response.text();
+          setPreviewContent(prev => ({ ...prev, [att.id]: text }));
+        } catch (error) {
+          console.error('Failed to load preview:', error);
+          setPreviewContent(prev => ({ ...prev, [att.id]: 'Failed to load preview' }));
+        } finally {
+          setPreviewLoading(prev => ({ ...prev, [att.id]: false }));
+        }
+      }
+      
+      setExpandedAttachments(prev => {
+        const next = new Set(prev);
+        if (isExpanded) {
+          next.delete(att.id);
+        } else {
+          next.add(att.id);
+        }
+        return next;
+      });
+    };
+
     return (
       <div className="space-y-2">
-        {toRender.map(att => (
-          <div key={att.id} className="border rounded bg-white/50">
-            <div className="flex items-center justify-between p-2">
-              <div className="flex items-center space-x-2">
-                <FileText className={`h-4 w-4 ${att.level === "test" ? "text-blue-600" : "text-gray-500"}`} />
-                <div>
-                  <p className="text-sm font-medium">{att.original_filename}</p>
-                  <p className="text-xs text-gray-500">
-                    {att.level === "test" ? "Test" : "Order"} level • {new Date(att.created_at).toLocaleDateString()}
-                  </p>
+        {toRender.map(att => {
+          const expanded = expandedAttachments.has(att.id);
+          const levelColor = att.level === "test" ? "text-blue-600" : "text-gray-600";
+          const levelBgColor = att.level === "test" ? "bg-blue-50" : "bg-gray-50";
+          const borderColor = att.level === "test" ? "border-blue-200" : "border-gray-200";
+
+          return (
+            <div key={att.id} className={`border rounded-lg ${levelBgColor} ${borderColor}`}>
+              <div className="flex items-center justify-between p-3">
+                <div className="flex items-center space-x-2 flex-1">
+                  <FileText className={`h-4 w-4 ${levelColor}`} />
+                  <div className="flex-1">
+                    <p className="text-sm font-medium text-gray-900">{att.original_filename}</p>
+                    <p className={`text-xs ${levelColor}`}>
+                      {att.level === "test" ? "Test" : "Order"} Level • {new Date(att.created_at).toLocaleDateString()}
+                    </p>
+                  </div>
+                </div>
+                <div className="flex items-center space-x-2">
+                  {isPreviewable(att) && (
+                    <button
+                      onClick={() => handleExpand(att)}
+                      className={`p-1.5 rounded ${levelColor} hover:bg-white/50 transition-colors`}
+                      title={expanded ? "Collapse preview" : "Expand preview"}
+                    >
+                      {expanded ? <Minimize className="h-4 w-4" /> : <Expand className="h-4 w-4" />}
+                    </button>
+                  )}
+                  <a
+                    href={att.file_url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className={`p-1.5 rounded ${levelColor} hover:bg-white/50 transition-colors`}
+                    title="Open in new tab"
+                  >
+                    <Eye className="h-4 w-4" />
+                  </a>
                 </div>
               </div>
-              <a
-                href={att.file_url}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="text-blue-600 hover:text-blue-800"
-              >
-                <Eye className="h-4 w-4" />
-              </a>
+
+              {/* Inline Preview */}
+              {expanded && (
+                <div className="border-t p-4 bg-white/70">
+                  {previewLoading[att.id] ? (
+                    <div className="flex items-center justify-center py-8">
+                      <RefreshCcw className="h-5 w-5 animate-spin mr-2 text-gray-500" />
+                      <span className="text-sm text-gray-600">Loading preview...</span>
+                    </div>
+                  ) : isImage(att) ? (
+                    <div className="max-h-96 overflow-y-auto border rounded bg-white p-2">
+                      <img
+                        src={att.file_url}
+                        alt={att.original_filename}
+                        className="max-w-full h-auto rounded mx-auto"
+                        style={{ maxHeight: '400px' }}
+                      />
+                    </div>
+                  ) : previewContent[att.id] ? (
+                    <div className="max-h-96 overflow-y-auto border rounded bg-white">
+                      <pre className="text-sm bg-gray-50 p-4 whitespace-pre-wrap break-words font-mono leading-relaxed">
+                        {previewContent[att.id].length > 2000 
+                          ? `${previewContent[att.id].substring(0, 2000)}...\n\n[Preview truncated - full content available in new tab]` 
+                          : previewContent[att.id]}
+                      </pre>
+                    </div>
+                  ) : (
+                    <div className="text-sm text-gray-500 py-6 text-center">
+                      Preview not available for this file type
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
-          </div>
-        ))}
+          );
+        })}
         {shouldShowTestOnly && !testAttachments.length && orderAttachments.length > 0 && (
           <div className="text-xs text-amber-600 bg-amber-50 p-3 rounded-lg border border-amber-200">
-            Switch to "All" view to see {orderAttachments.length} order-level attachment{orderAttachments.length > 1 ? "s" : ""}
+            <div className="flex items-center space-x-2">
+              <AlertTriangle className="h-4 w-4" />
+              <span>Switch to "All" view to see {orderAttachments.length} order-level attachment{orderAttachments.length > 1 ? "s" : ""}</span>
+            </div>
           </div>
         )}
       </div>
@@ -1168,27 +1408,27 @@ ${summary.urgent_findings.map(f => `• ${f}`).join('\n')}` : ''}
   return (
     <div className="bg-gradient-to-br from-gray-50 to-blue-50 min-h-screen">
       <div className="bg-white shadow-sm border-b">
-        <div className="max-w-7xl mx-auto px-6 py-8">
-          <div className="flex flex-col lg:flex-row items-start lg:items-center justify-between gap-6">
+        <div className="max-w-7xl mx-auto px-6 py-4">
+          <div className="flex flex-col lg:flex-row items-start lg:items-center justify-between gap-4">
             <div>
-              <h1 className="text-4xl font-bold text-gray-900 mb-2">Order Verification Console</h1>
-              <p className="text-lg text-gray-600">Review and approve results grouped by order with AI assistance</p>
-              <div className="flex items-center space-x-4 mt-3">
+              <h1 className="text-2xl lg:text-3xl font-bold text-gray-900">Order Verification Console</h1>
+              <p className="text-sm lg:text-base text-gray-600">Review and approve results grouped by order with AI assistance</p>
+              <div className="flex items-center space-x-3 mt-2">
                 <button
                   onClick={() => setDateRange(0)}
-                  className="px-3 py-1.5 text-sm rounded-full border border-gray-200 text-gray-600 hover:border-blue-400"
+                  className="px-2.5 py-1 text-xs rounded-full border border-gray-200 text-gray-600 hover:border-blue-400"
                 >
                   Today
                 </button>
                 <button
                   onClick={() => setDateRange(7)}
-                  className="px-3 py-1.5 text-sm rounded-full border border-gray-200 text-gray-600 hover:border-blue-400"
+                  className="px-2.5 py-1 text-xs rounded-full border border-gray-200 text-gray-600 hover:border-blue-400"
                 >
                   7 days
                 </button>
                 <button
                   onClick={() => setDateRange(30)}
-                  className="px-3 py-1.5 text-sm rounded-full border border-gray-200 text-gray-600 hover:border-blue-400"
+                  className="px-2.5 py-1 text-xs rounded-full border border-gray-200 text-gray-600 hover:border-blue-400"
                 >
                   30 days
                 </button>
@@ -1198,7 +1438,7 @@ ${summary.urgent_findings.map(f => `• ${f}`).join('\n')}` : ''}
             <div className="flex flex-wrap items-center gap-3">
               <button
                 onClick={loadPanels}
-                className="inline-flex items-center px-5 py-2.5 bg-white border-2 border-gray-200 rounded-xl hover:border-gray-400"
+                className="inline-flex items-center px-3.5 py-2 bg-white border-2 border-gray-200 rounded-lg hover:border-gray-400 text-sm"
               >
                 <RefreshCcw className={`h-5 w-5 mr-2 ${loading ? "animate-spin text-blue-600" : "text-gray-600"}`} />
                 Refresh
@@ -1206,7 +1446,7 @@ ${summary.urgent_findings.map(f => `• ${f}`).join('\n')}` : ''}
               {onBackToPanel && (
                 <button
                   onClick={onBackToPanel}
-                  className="inline-flex items-center px-5 py-2.5 bg-blue-600 text-white rounded-xl hover:bg-blue-700"
+                  className="inline-flex items-center px-3.5 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 text-sm"
                 >
                   Return to Panel View
                 </button>
@@ -1215,7 +1455,7 @@ ${summary.urgent_findings.map(f => `• ${f}`).join('\n')}` : ''}
                 <button
                   onClick={bulkApproveOrders}
                   disabled={bulkProcessing}
-                  className="inline-flex items-center px-5 py-2.5 bg-green-600 text-white rounded-xl hover:bg-green-700 disabled:opacity-50"
+                  className="inline-flex items-center px-3.5 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 disabled:opacity-50 text-sm"
                 >
                   {bulkProcessing ? <Loader2 className="h-5 w-5 mr-2 animate-spin" /> : <CheckCircle2 className="h-5 w-5 mr-2" />}
                   Approve Selected
@@ -1226,27 +1466,27 @@ ${summary.urgent_findings.map(f => `• ${f}`).join('\n')}` : ''}
         </div>
       </div>
 
-      <div className="max-w-7xl mx-auto px-6 py-8 space-y-8">
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
-          <div className="bg-gradient-to-br from-blue-50 to-indigo-100 rounded-xl p-6">
-            <div className="text-3xl font-bold text-blue-600">{stats.totalOrders}</div>
-            <div className="text-sm text-blue-700">Total Orders</div>
+      <div className="max-w-7xl mx-auto px-6 py-6 space-y-6">
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+          <div className="bg-gradient-to-br from-blue-50 to-indigo-100 rounded-xl p-4">
+            <div className="text-2xl font-bold text-blue-600">{stats.totalOrders}</div>
+            <div className="text-xs text-blue-700">Total Orders</div>
           </div>
-          <div className="bg-gradient-to-br from-green-50 to-emerald-100 rounded-xl p-6">
-            <div className="text-3xl font-bold text-green-600">{stats.readyOrders}</div>
-            <div className="text-sm text-green-700">Fully Verified</div>
+          <div className="bg-gradient-to-br from-green-50 to-emerald-100 rounded-xl p-4">
+            <div className="text-2xl font-bold text-green-600">{stats.readyOrders}</div>
+            <div className="text-xs text-green-700">Fully Verified</div>
           </div>
-          <div className="bg-gradient-to-br from-amber-50 to-orange-100 rounded-xl p-6">
-            <div className="text-3xl font-bold text-amber-600">{stats.partialOrders}</div>
-            <div className="text-sm text-amber-700">Partially Verified</div>
+          <div className="bg-gradient-to-br from-amber-50 to-orange-100 rounded-xl p-4">
+            <div className="text-2xl font-bold text-amber-600">{stats.partialOrders}</div>
+            <div className="text-xs text-amber-700">Partially Verified</div>
           </div>
-          <div className="bg-gradient-to-br from-red-50 to-rose-100 rounded-xl p-6">
-            <div className="text-3xl font-bold text-red-600">{stats.pendingOrders}</div>
-            <div className="text-sm text-red-700">Pending Review</div>
+          <div className="bg-gradient-to-br from-red-50 to-rose-100 rounded-xl p-4">
+            <div className="text-2xl font-bold text-red-600">{stats.pendingOrders}</div>
+            <div className="text-xs text-red-700">Pending Review</div>
           </div>
         </div>
 
-        <div className="bg-white rounded-2xl shadow-sm border border-gray-200 p-6 space-y-4">
+        <div className="bg-white rounded-2xl shadow-sm border border-gray-200 p-4 space-y-3">
           <div className="flex flex-col lg:flex-row gap-4">
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 flex-1">
               <label className="flex flex-col text-sm text-gray-600">
@@ -1255,7 +1495,7 @@ ${summary.urgent_findings.map(f => `• ${f}`).join('\n')}` : ''}
                   type="date"
                   value={from}
                   onChange={e => setFrom(e.target.value)}
-                  className="mt-1 px-4 py-3 border-2 border-gray-200 rounded-xl"
+                  className="mt-1 px-3 py-2 border-2 border-gray-200 rounded-xl text-sm"
                 />
               </label>
               <label className="flex flex-col text-sm text-gray-600">
@@ -1264,7 +1504,7 @@ ${summary.urgent_findings.map(f => `• ${f}`).join('\n')}` : ''}
                   type="date"
                   value={to}
                   onChange={e => setTo(e.target.value)}
-                  className="mt-1 px-4 py-3 border-2 border-gray-200 rounded-xl"
+                  className="mt-1 px-3 py-2 border-2 border-gray-200 rounded-xl text-sm"
                 />
               </label>
             </div>
@@ -1274,7 +1514,7 @@ ${summary.urgent_findings.map(f => `• ${f}`).join('\n')}` : ''}
                 value={q}
                 onChange={e => setQ(e.target.value)}
                 placeholder="Search patients, tests, or order IDs..."
-                className="w-full pl-12 pr-4 py-4 text-lg border-2 border-gray-200 rounded-xl"
+                className="w-full pl-12 pr-4 py-2.5 text-sm border-2 border-gray-200 rounded-xl"
               />
             </div>
             <div className="flex items-center space-x-3">
@@ -1282,7 +1522,7 @@ ${summary.urgent_findings.map(f => `• ${f}`).join('\n')}` : ''}
                 <button
                   key={filter}
                   onClick={() => setStateFilter(filter)}
-                  className={`px-3 py-2 rounded-xl border-2 text-sm font-semibold ${stateFilter === filter ? "border-blue-500 text-blue-600" : "border-transparent text-gray-500"}`}
+                  className={`px-3 py-1.5 rounded-xl border-2 text-xs font-semibold ${stateFilter === filter ? "border-blue-500 text-blue-600" : "border-transparent text-gray-500"}`}
                 >
                   {filter.charAt(0).toUpperCase() + filter.slice(1)}
                 </button>
@@ -1405,6 +1645,13 @@ ${summary.urgent_findings.map(f => `• ${f}`).join('\n')}` : ''}
                             {openOrders[order.orderId] ? "Hide Panels" : "Show Panels"}
                           </button>
                           <button
+                            onClick={() => showAllAnalytesForOrder(order)}
+                            disabled={showAllAnalytesLoading[order.orderId]}
+                            className="px-4 py-2 rounded-xl border border-gray-200 hover:bg-gray-50 disabled:opacity-50"
+                          >
+                            {showAllAnalytesLoading[order.orderId] ? "Loading Analytes..." : "Show All Analytes"}
+                          </button>
+                          <button
                             onClick={() => {
                               setSelectedOrderForAttachments(order.orderId);
                               setShowAttachmentSelector(true);
@@ -1438,19 +1685,7 @@ ${summary.urgent_findings.map(f => `• ${f}`).join('\n')}` : ''}
                             )}
                             {generatingPatientSummary[order.orderId] ? 'Generating...' : 'Patient Summary'}
                           </button>
-                          <button
-                            onClick={() => runOrderAIFlagAnalysis(order.orderId)}
-                            disabled={busy[`ai-flag-${order.orderId}`]}
-                            className={`inline-flex items-center px-4 py-2 rounded-xl bg-gradient-to-r from-violet-600 to-purple-600 text-white transition-all duration-200 ${busy[`ai-flag-${order.orderId}`] ? 'opacity-75 cursor-wait' : 'hover:from-violet-700 hover:to-purple-700 active:scale-95'}`}
-                            title="Run AI to analyze and determine flags for all results"
-                          >
-                            {busy[`ai-flag-${order.orderId}`] ? (
-                              <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                            ) : (
-                              <Zap className="h-4 w-4 mr-2" />
-                            )}
-                            {busy[`ai-flag-${order.orderId}`] ? 'Analyzing...' : 'AI Flags'}
-                          </button>
+                          {/* AI Flags button hidden - flag analysis now done in backend automatically */}
                           <button
                             onClick={() => approveEntireOrder(order)}
                             disabled={bulkProcessing}
@@ -1488,24 +1723,15 @@ ${summary.urgent_findings.map(f => `• ${f}`).join('\n')}` : ''}
                                     onClick={async () => {
                                       await ensureAnalytesLoaded(panel.result_id);
                                       const analytesData = rowsByResult[panel.result_id] || [];
-                                      await handleInterpretations(panel, analytesData);
+                                      await handleDeltaCheck(panel, analytesData);
                                     }}
                                     disabled={aiIntelligence.loading}
                                     className="inline-flex items-center px-4 py-2 rounded-xl bg-gradient-to-r from-amber-500 to-orange-500 text-white disabled:opacity-50"
+                                    title="AI Delta Check - Compare current values with historical data to detect potential errors"
                                   >
-                                    {aiIntelligence.loading ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <Zap className="h-4 w-4 mr-2" />} AI Interpretations
+                                    {aiIntelligence.loading ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <Zap className="h-4 w-4 mr-2" />} AI Delta Check
                                   </button>
-                                  <button
-                                    onClick={async () => {
-                                      await ensureAnalytesLoaded(panel.result_id);
-                                      const analytesData = rowsByResult[panel.result_id] || [];
-                                      await handleVerifierSummary(panel, analytesData);
-                                    }}
-                                    disabled={aiIntelligence.loading}
-                                    className="inline-flex items-center px-4 py-2 rounded-xl bg-gradient-to-r from-purple-600 to-indigo-600 text-white disabled:opacity-50"
-                                  >
-                                    {aiIntelligence.loading ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <Sparkles className="h-4 w-4 mr-2" />} AI Summary
-                                  </button>
+                                  {/* AI Summary button hidden - analysis now done in backend automatically */}
                                   <button
                                     onClick={async () => {
                                       await ensureAnalytesLoaded(panel.result_id);
@@ -1536,12 +1762,27 @@ ${summary.urgent_findings.map(f => `• ${f}`).join('\n')}` : ''}
                                       </tr>
                                     </thead>
                                     <tbody className="divide-y divide-gray-100">
-                                      {analytes.map(analyte => (
-                                        <tr key={analyte.id} className="hover:bg-blue-50">
+                                      {analytes.map(analyte => {
+                                        const isRerunRequest = analyte.verify_note && analyte.verify_note.toUpperCase().includes("RE-RUN");
+                                        return (
+                                        <tr key={analyte.id} className={`hover:bg-blue-50 ${isRerunRequest ? 'bg-orange-50' : ''}`}>
                                           <td className="px-4 py-4">
-                                            <div className="font-semibold text-gray-900">{analyte.parameter}</div>
+                                            <div className="flex items-center gap-2">
+                                              <div className="font-semibold text-gray-900">{analyte.parameter}</div>
+                                              {isRerunRequest && (
+                                                <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-orange-100 text-orange-800 border border-orange-200">
+                                                  <RefreshCw className="h-3 w-3 mr-1" />
+                                                  RE-RUN
+                                                </span>
+                                              )}
+                                            </div>
+                                            {isRerunRequest && analyte.verify_note && (
+                                              <div className="mt-1 text-xs text-orange-600 bg-orange-50 px-2 py-1 rounded border border-orange-200">
+                                                {analyte.verify_note}
+                                              </div>
+                                            )}
                                             <button
-                                              className="inline-flex items-center text-blue-600 hover:text-blue-800 text-xs"
+                                              className="inline-flex items-center text-blue-600 hover:text-blue-800 text-xs mt-1"
                                               onClick={() => loadTrendData(order.patientId, analyte.parameter)}
                                               disabled={loadingTrend && selectedAnalyteTrend?.parameter === analyte.parameter}
                                             >
@@ -1592,6 +1833,69 @@ ${summary.urgent_findings.map(f => `• ${f}`).join('\n')}` : ''}
                                               <span className="inline-flex items-center px-3 py-1.5 rounded-full bg-green-100 text-green-700 text-xs font-semibold">
                                                 <CheckCircle2 className="h-4 w-4 mr-1" /> Approved
                                               </span>
+                                            ) : analyte.verify_status === "rejected" ? (
+                                              <div className="flex flex-col space-y-2">
+                                                <span className="inline-flex items-center px-3 py-1.5 rounded-lg text-sm font-semibold bg-gradient-to-r from-red-600 to-rose-600 text-white">
+                                                  <XCircle className="h-4 w-4 mr-1" /> Rejected
+                                                </span>
+                                                {analyte.verify_note && (
+                                                  <div className="text-xs text-gray-500 italic bg-gray-50 p-2 rounded border">
+                                                    Note: {analyte.verify_note}
+                                                  </div>
+                                                )}
+                                                <div className="flex items-center space-x-2">
+                                                  <button
+                                                    disabled={busy[analyte.id]}
+                                                    onClick={() => approveAnalyte(analyte.id)}
+                                                    className="inline-flex items-center px-2.5 py-1.5 rounded-lg text-xs font-semibold bg-gradient-to-r from-green-100 to-emerald-100 text-green-700 hover:from-green-200 hover:to-emerald-200 transition-all duration-200 shadow-sm disabled:opacity-50"
+                                                    title="Approve this analyte"
+                                                  >
+                                                    <CheckCircle2 className="h-3.5 w-3.5 mr-1" />
+                                                    Approve
+                                                  </button>
+                                                  <button
+                                                    disabled={busy[analyte.id]}
+                                                    onClick={async () => {
+                                                      const note = prompt("Add a note for re-run request:", "Please re-run this test") ?? null;
+                                                      if (!note?.trim()) {
+                                                        alert("Note is required to send for re-run");
+                                                        return;
+                                                      }
+                                                      setBusyFor(analyte.id, true);
+                                                      const { error } = await supabase
+                                                        .from("result_values")
+                                                        .update({
+                                                          verify_status: "pending",
+                                                          verify_note: `RE-RUN REQUESTED: ${note}`,
+                                                          verified_at: null,
+                                                          verified_by: null,
+                                                        })
+                                                        .eq("id", analyte.id);
+                                                      setBusyFor(analyte.id, false);
+                                                      if (!error) {
+                                                        setRowsByResult(prev => {
+                                                          const next = { ...prev };
+                                                          Object.keys(next).forEach(resultId => {
+                                                            next[resultId] = next[resultId].map(a =>
+                                                              a.id === analyte.id
+                                                                ? { ...a, verify_status: "pending", verify_note: `RE-RUN REQUESTED: ${note}`, verified_at: null }
+                                                                : a
+                                                            );
+                                                          });
+                                                          return next;
+                                                        });
+                                                        await loadPanels();
+                                                        alert("Analyte sent back for re-run");
+                                                      }
+                                                    }}
+                                                    className="inline-flex items-center px-2.5 py-1.5 rounded-lg text-xs font-semibold bg-gradient-to-r from-orange-100 to-amber-100 text-orange-700 hover:from-orange-200 hover:to-amber-200 transition-all duration-200 shadow-sm disabled:opacity-50"
+                                                    title="Send back to result entry for re-run"
+                                                  >
+                                                    <RefreshCw className="h-3.5 w-3.5 mr-1" />
+                                                    Send for Re-run
+                                                  </button>
+                                                </div>
+                                              </div>
                                             ) : (
                                               <div className="flex items-center space-x-2">
                                                 <button
@@ -1612,9 +1916,36 @@ ${summary.urgent_findings.map(f => `• ${f}`).join('\n')}` : ''}
                                             )}
                                           </td>
                                         </tr>
-                                      ))}
+                                      );})}
                                     </tbody>
                                   </table>
+                                </div>
+
+                                {/* Report Sections Editor (PBS/Radiology findings, impressions, etc.) */}
+                                {panel.test_group_id && (
+                                  <div className="mt-6">
+                                    <SectionEditor
+                                      resultId={panel.result_id}
+                                      testGroupId={panel.test_group_id}
+                                      showAIAssistant={false}
+                                      onSave={() => {
+                                        console.log('Section content saved for result:', panel.result_id);
+                                      }}
+                                    />
+                                  </div>
+                                )}
+
+                                {/* Workflow Execution Panel - Shows workflow history and document generation */}
+                                <div className="mt-6">
+                                  <WorkflowExecutionPanel
+                                    orderId={panel.order_id}
+                                    testGroupId={panel.test_group_id || undefined}
+                                    resultId={panel.result_id}
+                                    showDocumentButton={true}
+                                    onGenerateDocument={(instanceId) => {
+                                      console.log('Generate document for workflow instance:', instanceId);
+                                    }}
+                                  />
                                 </div>
                               </div>
                             )}
@@ -1731,6 +2062,17 @@ ${summary.urgent_findings.map(f => `• ${f}`).join('\n')}` : ''}
           onClose={() => {
             setShowInterpretationsModal(false);
             setInterpretationsTargetResultId(null);
+          }}
+        />
+      )}
+
+      {/* AI Delta Check Modal */}
+      {showDeltaCheckModal && deltaCheckTargetResultId && aiDeltaCheckResults[deltaCheckTargetResultId] && (
+        <AIDeltaCheckModal
+          deltaCheck={aiDeltaCheckResults[deltaCheckTargetResultId]}
+          onClose={() => {
+            setShowDeltaCheckModal(false);
+            setDeltaCheckTargetResultId(null);
           }}
         />
       )}
@@ -1866,6 +2208,7 @@ const AISummaryModal: React.FC<AISummaryModalProps> = ({ target, summaries, onCl
   const [sendToDoctor, setSendToDoctor] = useState(false);
   const [isEditing, setIsEditing] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [loadingOptions, setLoadingOptions] = useState(true);
 
   const isVerifier = target.type === "verifier";
   const originalSummary = isVerifier
@@ -1875,6 +2218,32 @@ const AISummaryModal: React.FC<AISummaryModalProps> = ({ target, summaries, onCl
     : target.orderId
       ? summaries.clinical[target.orderId]
       : null;
+
+  // Load saved options from database when modal opens
+  React.useEffect(() => {
+    const loadSavedOptions = async () => {
+      if (!isVerifier && target.orderId) {
+        try {
+          const { data, error } = await supabase
+            .from('orders')
+            .select('include_clinical_summary_in_report, send_clinical_summary_to_doctor')
+            .eq('id', target.orderId)
+            .single();
+          
+          if (!error && data) {
+            setIncludeInReport(data.include_clinical_summary_in_report || false);
+            setSendToDoctor(data.send_clinical_summary_to_doctor || false);
+            console.log('✅ Loaded saved options:', data);
+          }
+        } catch (err) {
+          console.error('Error loading saved options:', err);
+        }
+      }
+      setLoadingOptions(false);
+    };
+    
+    loadSavedOptions();
+  }, [target.orderId, isVerifier]);
 
   // Editable state for clinical summary
   const [editedSummary, setEditedSummary] = useState<ClinicalSummaryResponse | null>(
@@ -1920,10 +2289,22 @@ const AISummaryModal: React.FC<AISummaryModalProps> = ({ target, summaries, onCl
           console.log('✅ Clinical summary saved to database');
         }
 
-        // Notify parent about report inclusion preference
+        // Save BOTH options (include in PDF and send to doctor) using the new function
+        const result = await saveClinicalSummaryOptions(target.orderId, {
+          includeInReport,
+          sendToDoctor
+        });
+        
+        if (!result.success) {
+          console.error('Failed to save options:', result.error);
+        } else {
+          console.log(`✅ Options saved: includeInReport=${includeInReport}, sendToDoctor=${sendToDoctor}`);
+        }
+
+        // Notify parent about report inclusion preference (for UI state)
         onIncludeInReport?.(target.orderId, includeInReport);
 
-        // Handle send to doctor
+        // Handle send to doctor callback
         if (sendToDoctor && onSendToDoctor) {
           onSendToDoctor(target.orderId, summary as ClinicalSummaryResponse);
         }
@@ -2253,7 +2634,8 @@ const AISummaryModal: React.FC<AISummaryModalProps> = ({ target, summaries, onCl
                     type="checkbox"
                     checked={includeInReport}
                     onChange={(e) => setIncludeInReport(e.target.checked)}
-                    className="w-4 h-4 text-blue-600 rounded focus:ring-blue-500"
+                    disabled={loadingOptions}
+                    className="w-4 h-4 text-blue-600 rounded focus:ring-blue-500 disabled:opacity-50"
                   />
                   <span className="text-sm text-gray-700">Include in final PDF report</span>
                 </label>
@@ -2263,7 +2645,8 @@ const AISummaryModal: React.FC<AISummaryModalProps> = ({ target, summaries, onCl
                     type="checkbox"
                     checked={sendToDoctor}
                     onChange={(e) => setSendToDoctor(e.target.checked)}
-                    className="w-4 h-4 text-purple-600 rounded focus:ring-purple-500"
+                    disabled={loadingOptions}
+                    className="w-4 h-4 text-purple-600 rounded focus:ring-purple-500 disabled:opacity-50"
                   />
                   <span className="text-sm text-gray-700">Send summary with report to doctor</span>
                 </label>
@@ -2451,6 +2834,172 @@ const AIInterpretationsModal: React.FC<AIInterpretationsModalProps> = ({ interpr
               {saving ? <Loader2 className="h-5 w-5 mr-2 animate-spin" /> : <CheckCircle2 className="h-5 w-5 mr-2" />} Save to Lab
             </button>
           </div>
+        </div>
+      </div>
+    </div>,
+    document.body
+  );
+};
+
+/* ----------------- AI Delta Check Modal Component ----------------- */
+interface AIDeltaCheckModalProps {
+  deltaCheck: DeltaCheckResponse;
+  onClose: () => void;
+}
+
+const AIDeltaCheckModal: React.FC<AIDeltaCheckModalProps> = ({ deltaCheck, onClose }) => {
+  const getConfidenceColor = (level: string) => {
+    switch (level) {
+      case 'high': return 'from-green-500 to-emerald-500';
+      case 'medium': return 'from-yellow-500 to-amber-500';
+      case 'low': return 'from-red-500 to-rose-500';
+      default: return 'from-gray-500 to-slate-500';
+    }
+  };
+
+  const getRecommendationColor = (rec: string) => {
+    switch (rec) {
+      case 'approve': return 'bg-green-100 text-green-800 border-green-200';
+      case 'review_required': return 'bg-yellow-100 text-yellow-800 border-yellow-200';
+      case 'reject': return 'bg-red-100 text-red-800 border-red-200';
+      default: return 'bg-gray-100 text-gray-800 border-gray-200';
+    }
+  };
+
+  const getSeverityColor = (severity: string) => {
+    switch (severity) {
+      case 'critical': return 'bg-red-100 text-red-800 border-red-300';
+      case 'high': return 'bg-orange-100 text-orange-800 border-orange-300';
+      case 'medium': return 'bg-yellow-100 text-yellow-800 border-yellow-300';
+      case 'low': return 'bg-blue-100 text-blue-800 border-blue-300';
+      default: return 'bg-gray-100 text-gray-800 border-gray-300';
+    }
+  };
+
+  return ReactDOM.createPortal(
+    <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+      <div className="bg-white rounded-2xl shadow-2xl max-w-4xl w-full max-h-[90vh] overflow-hidden">
+        {/* Header */}
+        <div className="bg-gradient-to-r from-amber-500 to-orange-500 px-6 py-4 flex items-center justify-between">
+          <div className="flex items-center space-x-3">
+            <ShieldCheck className="h-6 w-6 text-white" />
+            <h3 className="text-xl font-bold text-white">AI Delta Check Results</h3>
+            <span className={`px-3 py-1 rounded-full text-sm font-semibold bg-gradient-to-r ${getConfidenceColor(deltaCheck.confidence_level)} text-white`}>
+              {deltaCheck.confidence_score}% Confidence
+            </span>
+          </div>
+          <button
+            onClick={onClose}
+            className="text-white hover:bg-white hover:bg-opacity-20 rounded-full p-2 transition-colors"
+          >
+            <X className="h-5 w-5" />
+          </button>
+        </div>
+
+        {/* Content */}
+        <div className="p-6 overflow-y-auto max-h-[calc(90vh-160px)] space-y-6">
+          {/* Summary Section */}
+          <div className="bg-gradient-to-r from-gray-50 to-slate-50 rounded-xl p-4 border border-gray-200">
+            <div className="flex items-start gap-4">
+              <div className={`flex-shrink-0 p-3 rounded-full ${deltaCheck.confidence_level === 'high' ? 'bg-green-100' : deltaCheck.confidence_level === 'medium' ? 'bg-yellow-100' : 'bg-red-100'}`}>
+                {deltaCheck.confidence_level === 'high' ? (
+                  <CheckCircle2 className="h-6 w-6 text-green-600" />
+                ) : deltaCheck.confidence_level === 'medium' ? (
+                  <AlertTriangle className="h-6 w-6 text-yellow-600" />
+                ) : (
+                  <AlertCircle className="h-6 w-6 text-red-600" />
+                )}
+              </div>
+              <div className="flex-1">
+                <p className="text-gray-700">{deltaCheck.summary}</p>
+                <div className="mt-2">
+                  <span className={`inline-flex items-center px-3 py-1 rounded-full text-sm font-semibold border ${getRecommendationColor(deltaCheck.recommendation)}`}>
+                    Recommendation: {deltaCheck.recommendation.replace('_', ' ').toUpperCase()}
+                  </span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* Issues Section */}
+          {deltaCheck.issues.length > 0 && (
+            <div className="space-y-3">
+              <h4 className="text-lg font-semibold text-gray-900 flex items-center gap-2">
+                <AlertCircle className="h-5 w-5 text-red-500" />
+                Issues Identified ({deltaCheck.issues.length})
+              </h4>
+              <div className="space-y-3">
+                {deltaCheck.issues.map((issue, idx) => (
+                  <div key={idx} className={`rounded-xl p-4 border ${getSeverityColor(issue.severity)}`}>
+                    <div className="flex items-start justify-between">
+                      <div className="flex-1">
+                        <div className="flex items-center gap-2 mb-1">
+                          <span className="font-semibold">{issue.analyte_name}</span>
+                          <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${getSeverityColor(issue.severity)}`}>
+                            {issue.severity.toUpperCase()}
+                          </span>
+                          <span className="text-xs px-2 py-0.5 rounded-full bg-gray-200 text-gray-700">
+                            {issue.issue_type.replace(/_/g, ' ')}
+                          </span>
+                        </div>
+                        <p className="text-sm text-gray-700">{issue.description}</p>
+                        {issue.current_value && issue.expected_range && (
+                          <p className="text-xs text-gray-500 mt-1">
+                            Current: <span className="font-mono">{issue.current_value}</span> | Expected: <span className="font-mono">{issue.expected_range}</span>
+                          </p>
+                        )}
+                        {issue.suggested_action && (
+                          <p className="text-sm text-blue-700 mt-2 flex items-center gap-1">
+                            <Zap className="h-3 w-3" /> Suggested: {issue.suggested_action}
+                          </p>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Validated Results Section */}
+          {deltaCheck.validated_results.length > 0 && (
+            <div className="space-y-3">
+              <h4 className="text-lg font-semibold text-gray-900 flex items-center gap-2">
+                <CheckCircle2 className="h-5 w-5 text-green-500" />
+                Validated Results ({deltaCheck.validated_results.length})
+              </h4>
+              <div className="flex flex-wrap gap-2">
+                {deltaCheck.validated_results.map((result, idx) => (
+                  <span key={idx} className="inline-flex items-center px-3 py-1.5 rounded-lg bg-green-50 text-green-800 text-sm border border-green-200">
+                    <CheckCircle2 className="h-4 w-4 mr-1.5" />
+                    {result}
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Verifier Notes Section */}
+          {deltaCheck.verifier_notes && (
+            <div className="bg-blue-50 rounded-xl p-4 border border-blue-200">
+              <h4 className="text-sm font-semibold text-blue-900 mb-2 flex items-center gap-2">
+                <FileText className="h-4 w-4" />
+                Notes for Verifier
+              </h4>
+              <p className="text-sm text-blue-800 whitespace-pre-wrap">{deltaCheck.verifier_notes}</p>
+            </div>
+          )}
+        </div>
+
+        {/* Footer */}
+        <div className="border-t bg-gray-50 px-6 py-4 flex items-center justify-between">
+          <p className="text-sm text-gray-600">Review the delta check results before proceeding with verification.</p>
+          <button
+            onClick={onClose}
+            className="px-6 py-2 bg-gradient-to-r from-gray-600 to-slate-600 text-white rounded-lg hover:from-gray-700 hover:to-slate-700 transition-colors"
+          >
+            Close
+          </button>
         </div>
       </div>
     </div>,

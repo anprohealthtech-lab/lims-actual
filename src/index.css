@@ -5,6 +5,22 @@
 @tailwind components;
 @tailwind utilities;
 
+/* WhatsApp Toast Animation */
+@keyframes slide-in {
+  from {
+    transform: translateX(100%);
+    opacity: 0;
+  }
+  to {
+    transform: translateX(0);
+    opacity: 1;
+  }
+}
+
+.animate-slide-in {
+  animation: slide-in 0.3s ease-out;
+}
+
 /* Safe area insets for mobile devices (Android notches, iOS safe areas) */
 :root {
   --safe-area-inset-top: env(safe-area-inset-top, 0px);

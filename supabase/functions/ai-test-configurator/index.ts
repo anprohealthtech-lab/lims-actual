@@ -79,56 +79,62 @@ LAB CONTEXT: ${labContext || `User: ${user.email}, Lab: ${userData?.lab_id || 'D
 
 Return ONLY valid JSON with no additional text.`
 
-    // Call Gemini API
-    const geminiApiKey = Deno.env.get('ALLGOOGLE_KEY')
-    if (!geminiApiKey) {
-      throw new Error('Gemini API key not configured')
+    // Call Anthropic API (switched from Gemini)
+    const anthropicApiKey = Deno.env.get('ANTHROPIC_API_KEY')
+    if (!anthropicApiKey) {
+      throw new Error('ANTHROPIC_API_KEY not configured')
     }
 
-    const geminiResponse = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-exp:generateContent?key=${geminiApiKey}`,
+    // Prepare prompt
+    const messages = [
+      { role: 'user', content: fullPrompt }
+    ]
+
+    const aiResponse = await fetch(
+      'https://api.anthropic.com/v1/messages',
       {
         method: 'POST',
         headers: {
-          'Content-Type': 'application/json',
+          'x-api-key': anthropicApiKey,
+          'anthropic-version': '2023-06-01',
+          'content-type': 'application/json',
         },
         body: JSON.stringify({
-          contents: [
-            {
-              parts: [
-                {
-                  text: fullPrompt
-                }
-              ]
-            }
-          ],
-          generationConfig: {
-            temperature: 0.7,
-            maxOutputTokens: 2048,
-            responseMimeType: "application/json"
-          }
+          model: 'claude-haiku-4-5-20251001',
+          max_tokens: 15000,
+          messages: messages,
+          temperature: 0.7
         })
       }
     )
 
-    if (!geminiResponse.ok) {
-      const errorText = await geminiResponse.text()
-      throw new Error(`Gemini API error: ${errorText}`)
+    if (!aiResponse.ok) {
+      const errorText = await aiResponse.text()
+      throw new Error(`Anthropic API error: ${errorText}`)
     }
 
-    const geminiData = await geminiResponse.json()
+    const aiData = await aiResponse.json()
     
-    if (!geminiData.candidates?.[0]?.content?.parts?.[0]?.text) {
-      throw new Error('Invalid response format from Gemini API')
+    if (!aiData.content?.[0]?.text) {
+      throw new Error('Invalid response format from Anthropic API')
     }
 
-    const responseText = geminiData.candidates[0].content.parts[0].text
+    const responseText = aiData.content[0].text
     let parsedResponse
 
     try {
-      parsedResponse = JSON.parse(responseText)
+      // Find JSON blob if wrapped in markdown
+      const jsonStart = responseText.indexOf('{')
+      const jsonEnd = responseText.lastIndexOf('}')
+      const jsonStr = (jsonStart !== -1 && jsonEnd !== -1) 
+        ? responseText.substring(jsonStart, jsonEnd + 1)
+        : responseText
+
+      parsedResponse = JSON.parse(jsonStr)
     } catch (parseError) {
-      throw new Error(`Failed to parse AI response: ${parseError}`)
+      console.error('Failed to parse AI response. Raw text:', responseText)
+      const snippet = responseText.length > 200 ? responseText.slice(responseText.length - 200) : responseText
+      throw new Error(`Failed to parse AI response: ${parseError}. End of response: "...${snippet}"`)
     }
 
     // Log usage for analytics (optional)

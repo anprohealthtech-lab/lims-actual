@@ -119,7 +119,64 @@ interface PatientSummaryRequest {
   patient?: PatientContext;
 }
 
-type AIRequest = GenerateInterpretationsRequest | VerifierSummaryRequest | ClinicalSummaryRequest | AnalyzeResultValuesRequest | PatientSummaryRequest;
+/**
+ * Delta Check Request - AI-powered quality control check
+ * Compares current results with historical data to identify:
+ * - Potential input errors
+ * - Sample issues
+ * - Conflicting results (e.g., high bilirubin but normal HBsAg)
+ * - Unusual changes from previous results
+ */
+interface DeltaCheckRequest {
+  action: 'delta_check';
+  test_group: TestGroupContext;
+  result_values: ResultValue[];
+  patient?: PatientContext;
+  /** Related test results from the same order for cross-test validation */
+  related_test_results?: Array<{
+    test_name: string;
+    analyte_name: string;
+    value: string;
+    unit: string;
+    flag?: string | null;
+  }>;
+}
+
+/** Delta Check Issue - Individual issue identified by the delta check */
+interface DeltaCheckIssue {
+  /** Type of issue identified */
+  issue_type: 'input_error' | 'sample_issue' | 'conflicting_result' | 'unusual_change' | 'quality_concern';
+  /** Severity of the issue */
+  severity: 'critical' | 'warning' | 'info';
+  /** Which analyte(s) are affected */
+  affected_analytes: string[];
+  /** Description of the issue */
+  description: string;
+  /** Suggested action to resolve */
+  suggested_action: string;
+  /** Evidence supporting this issue */
+  evidence: string;
+}
+
+/** Delta Check Response */
+interface DeltaCheckResponse {
+  /** Overall confidence in the report (0-100) */
+  confidence_score: number;
+  /** Confidence level description */
+  confidence_level: 'high' | 'medium' | 'low';
+  /** Summary of the delta check */
+  summary: string;
+  /** List of issues identified */
+  issues: DeltaCheckIssue[];
+  /** Results that passed all checks */
+  validated_results: string[];
+  /** Recommendation for the verifier */
+  recommendation: 'approve' | 'review_required' | 'reject';
+  /** Detailed notes for the verifier */
+  verifier_notes: string;
+}
+
+type AIRequest = GenerateInterpretationsRequest | VerifierSummaryRequest | ClinicalSummaryRequest | AnalyzeResultValuesRequest | PatientSummaryRequest | DeltaCheckRequest;
 
 /**
  * Helper function to determine if a flag indicates abnormality
@@ -128,8 +185,14 @@ type AIRequest = GenerateInterpretationsRequest | VerifierSummaryRequest | Clini
 function isAbnormalFlag(flag: string | null | undefined): boolean {
   if (!flag) return false;
   const normalizedFlag = flag.toLowerCase().trim();
-  // These indicate abnormal results
-  const abnormalFlags = ['h', 'l', 'c', 'high', 'low', 'critical', 'abnormal', 'critical_high', 'critical_low'];
+  // These indicate abnormal results - include all variations
+  const abnormalFlags = [
+    'h', 'l', 'c', 
+    'high', 'low', 'critical', 'abnormal',
+    'critical_high', 'critical_low',  // Full form
+    'critical_h', 'critical_l',       // Short form (used in our system!)
+    'h*', 'l*', 'c*'                  // Star variations
+  ];
   return abnormalFlags.includes(normalizedFlag);
 }
 
@@ -197,8 +260,23 @@ Return ONLY the JSON object, no additional text.`;
 function buildVerifierSummaryPrompt(request: VerifierSummaryRequest): string {
   const { test_group, result_values, patient } = request;
   
-  const flaggedResults = result_values.filter(r => r.flag);
-  const criticalResults = result_values.filter(r => r.flag === 'C');
+  // Use helper function for consistency
+  const flaggedResults = result_values.filter(r => isAbnormalFlag(r.flag));
+  const criticalResults = result_values.filter(r => {
+    const flagLower = (r.flag || '').toLowerCase();
+    return flagLower === 'c' || flagLower === 'critical' || flagLower === 'critical_h' || flagLower === 'critical_l' || flagLower === 'critical_high' || flagLower === 'critical_low';
+  });
+  
+  // Helper to get flag display text
+  const getFlagDisplay = (flag: string | null | undefined): string => {
+    if (!flag) return '';
+    const flagLower = flag.toLowerCase();
+    if (flagLower === 'h' || flagLower === 'high' || flagLower === 'critical_h') return ' [HIGH]';
+    if (flagLower === 'l' || flagLower === 'low' || flagLower === 'critical_l') return ' [LOW]';
+    if (flagLower === 'c' || flagLower === 'critical' || flagLower === 'critical_high' || flagLower === 'critical_low') return ' [CRITICAL]';
+    if (isAbnormalFlag(flag)) return ` [${flag.toUpperCase()}]`;
+    return '';
+  };
   
   return `You are a senior clinical laboratory scientist reviewing test results before approval.
 
@@ -209,7 +287,7 @@ ${patient?.gender ? `Patient Gender: ${patient.gender}` : ''}
 ${patient?.clinical_notes ? `Clinical Notes: ${patient.clinical_notes}` : ''}
 
 Results to Review:
-${result_values.map(r => `- ${r.analyte_name}: ${r.value} ${r.unit} (Ref: ${r.reference_range})${r.flag ? ` [${r.flag === 'H' ? 'HIGH' : r.flag === 'L' ? 'LOW' : 'CRITICAL'}]` : ''}`).join('\n')}
+${result_values.map(r => `- ${r.analyte_name}: ${r.value} ${r.unit} (Ref: ${r.reference_range})${getFlagDisplay(r.flag)}`).join('\n')}
 
 Summary Statistics:
 - Total analytes: ${result_values.length}
@@ -241,13 +319,17 @@ Return ONLY the JSON object, no additional text.`;
  */
 function buildClinicalSummaryPrompt(request: ClinicalSummaryRequest): string {
   const { test_groups, patient } = request;
-  
-  const allResults = test_groups.flatMap(tg => 
+
+  const allResults = test_groups.flatMap(tg =>
     tg.result_values.map(r => ({ ...r, test_group: tg.name }))
   );
-  const abnormalResults = allResults.filter(r => r.flag);
+
+  // CRITICAL: Use helper functions to determine abnormal vs normal
+  // The flag field is the source of truth - trust it!
+  const abnormalResults = allResults.filter(r => isAbnormalFlag(r.flag));
+  const normalResults = allResults.filter(r => isNormalFlag(r.flag));
   const resultsWithHistory = allResults.filter(r => r.historical_values && r.historical_values.length > 0);
-  
+
   // Helper to format historical data for a result
   const formatHistory = (r: ResultValue): string => {
     if (!r.historical_values || r.historical_values.length === 0) return '';
@@ -267,14 +349,36 @@ function buildClinicalSummaryPrompt(request: ClinicalSummaryRequest): string {
   const testResultsSection = test_groups.map(tg => {
     const testName = `**${tg.name}** (${tg.category})`;
     const results = tg.result_values.map(r => {
-      const flag = r.flag ? ` [${r.flag === 'H' ? '↑' : r.flag === 'L' ? '↓' : '⚠️'}]` : '';
-      return `  - ${r.analyte_name}: ${r.value} ${r.unit}${flag}${formatHistory(r)}`;
+      // Use helper function to determine if this result is abnormal
+      const abnormal = isAbnormalFlag(r.flag);
+      const flagLower = (r.flag || '').toString().toLowerCase();
+      
+      // Determine flag display text - handle all variations including critical_h and critical_l
+      let flagDisplay = ' [NORMAL]';
+      if (abnormal) {
+        if (flagLower === 'h' || flagLower === 'high' || flagLower === 'critical_h') {
+          flagDisplay = ' [HIGH ↑]';
+        } else if (flagLower === 'l' || flagLower === 'low' || flagLower === 'critical_l') {
+          flagDisplay = ' [LOW ↓]';
+        } else if (flagLower === 'c' || flagLower === 'critical' || flagLower === 'critical_high' || flagLower === 'critical_low') {
+          flagDisplay = ' [CRITICAL ⚠️]';
+        } else {
+          flagDisplay = ` [ABNORMAL - ${r.flag}]`;
+        }
+      }
+      
+      return `  - ${r.analyte_name}: ${r.value} ${r.unit} (Ref: ${r.reference_range})${flagDisplay}${formatHistory(r)}`;
     }).join('\n');
     return `${testName}\n${results}`;
   }).join('\n\n');
 
+  // Pre-compute the list of actually abnormal findings to include in prompt
+  const abnormalFindingsForPrompt = abnormalResults.length > 0
+    ? `\n\n⚠️ ACTUAL ABNORMAL FINDINGS (only these ${abnormalResults.length} results are abnormal based on flags):\n${abnormalResults.map(r => `- ${r.analyte_name}: ${r.value} ${r.unit} (Ref: ${r.reference_range}) [FLAG: ${r.flag}]`).join('\n')}`
+    : '\n\n✅ ALL RESULTS ARE NORMAL - No abnormal findings based on flags.';
+
   const historyNote = resultsWithHistory.length > 0 ? `
-IMPORTANT: Historical data is available for ${resultsWithHistory.length} parameter(s). 
+IMPORTANT: Historical data is available for ${resultsWithHistory.length} parameter(s).
 Analyze these trends to identify:
 - Improving or worsening patterns
 - Sudden changes that may indicate acute conditions
@@ -284,10 +388,36 @@ Analyze these trends to identify:
 
   return `You are a clinical pathologist generating a comprehensive summary report for a referring physician.
 
+═══════════════════════════════════════════════════════════════════
+🚨 CRITICAL INSTRUCTION - READ CAREFULLY 🚨
+═══════════════════════════════════════════════════════════════════
+
+The "flag" field in the input data is the AUTHORITATIVE SOURCE OF TRUTH for determining abnormality.
+- If flag = "normal", "N", or null/empty → The result is NORMAL. Do NOT mark it as abnormal.
+- If flag = "H", "high" → The result is HIGH/ABNORMAL.
+- If flag = "L", "low" → The result is LOW/ABNORMAL.
+- If flag = "C", "critical" → The result is CRITICAL.
+
+DO NOT re-evaluate or second-guess the flag values!
+DO NOT compare values against reference ranges yourself!
+TRUST the flag field completely - it has been validated by the laboratory system.
+
+If a value appears close to the reference range limits but is flagged as NORMAL, it IS normal.
+Only report results as abnormal in your findings if they have an abnormal flag (H/L/C/high/low/critical).
+
+═══════════════════════════════════════════════════════════════════
+
 ${patientInfo}
 
-Test Results by Group (current values with historical trends):
+Test Results by Group (current values with reference ranges and flags):
 ${testResultsSection}
+${abnormalFindingsForPrompt}
+
+Summary Statistics (BASED ON FLAGS):
+- Total results: ${allResults.length}
+- NORMAL results (flag = normal/N/null): ${normalResults.length}
+- ABNORMAL results (flag = H/L/C): ${abnormalResults.length}
+- Results with historical data: ${resultsWithHistory.length}
 ${historyNote}
 Generate a clinical summary suitable for the referring doctor that includes:
 1. Brief interpretation of results (suitable for non-laboratory clinicians)
@@ -425,9 +555,21 @@ function buildPatientSummaryPrompt(request: PatientSummaryRequest): string {
       // Use helper function to determine if this result is abnormal
       const abnormal = isAbnormalFlag(r.flag);
       const flagLower = (r.flag || '').toString().toLowerCase();
-      const flagDisplay = abnormal
-        ? ` [${flagLower === 'h' || flagLower === 'high' ? 'HIGH ↑ ABNORMAL' : flagLower === 'l' || flagLower === 'low' ? 'LOW ↓ ABNORMAL' : flagLower === 'c' || flagLower === 'critical' || flagLower === 'critical_high' || flagLower === 'critical_low' ? 'CRITICAL ⚠️' : 'ABNORMAL'}]`
-        : ' [NORMAL ✓]';
+      
+      // Determine flag display text - handle all variations
+      let flagDisplay = ' [NORMAL ✓]';
+      if (abnormal) {
+        if (flagLower === 'h' || flagLower === 'high' || flagLower === 'critical_h') {
+          flagDisplay = ' [HIGH ↑ ABNORMAL]';
+        } else if (flagLower === 'l' || flagLower === 'low' || flagLower === 'critical_l') {
+          flagDisplay = ' [LOW ↓ ABNORMAL]';
+        } else if (flagLower === 'c' || flagLower === 'critical' || flagLower === 'critical_high' || flagLower === 'critical_low') {
+          flagDisplay = ' [CRITICAL ⚠️]';
+        } else {
+          flagDisplay = ` [ABNORMAL - ${r.flag}]`;
+        }
+      }
+      
       return `  - ${r.analyte_name}: ${r.value} ${r.unit} (Ref: ${r.reference_range})${flagDisplay}${formatHistory(r)}`;
     }).join('\n');
     return `${testName}\n${results}`;
@@ -566,6 +708,120 @@ Respond with a JSON object (all text content in ${targetLanguage} except medical
 
 FINAL REMINDER: Only put results in "abnormal_findings" if their flag indicates abnormality (H/L/C/high/low/critical).
 If all results are flagged as "normal" or have no flag, return an EMPTY abnormal_findings array: []
+
+Return ONLY the JSON object, no additional text.`;
+}
+
+
+/**
+ * Build Delta Check prompt - AI-powered quality control
+ * Analyzes results for potential errors, sample issues, and conflicting values
+ */
+function buildDeltaCheckPrompt(request: DeltaCheckRequest): string {
+  const { test_group, result_values, patient, related_test_results } = request;
+
+  // Format historical data for each result
+  const formatHistory = (r: ResultValue): string => {
+    if (!r.historical_values || r.historical_values.length === 0) return 'No historical data';
+    const history = r.historical_values
+      .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())
+      .slice(0, 5)
+      .map(h => `${h.date}: ${h.value}${h.flag ? ` [${h.flag}]` : ''} (${h.source}${h.lab_name ? ` - ${h.lab_name}` : ''})`);
+    return history.join(' → ');
+  };
+
+  // Calculate delta percentages for numeric values
+  const calculateDelta = (current: string, historical: ResultValue['historical_values']): string => {
+    if (!historical || historical.length === 0) return 'N/A';
+    const currentNum = parseFloat(current);
+    const lastValue = parseFloat(historical[0].value);
+    if (isNaN(currentNum) || isNaN(lastValue) || lastValue === 0) return 'N/A';
+    const deltaPercent = ((currentNum - lastValue) / lastValue * 100).toFixed(1);
+    return `${deltaPercent}%`;
+  };
+
+  const patientInfo = [
+    patient?.age ? `Age: ${patient.age} years` : '',
+    patient?.gender ? `Gender: ${patient.gender}` : '',
+    patient?.clinical_notes ? `Clinical Notes: ${patient.clinical_notes}` : ''
+  ].filter(Boolean).join('\n');
+
+  const resultsSection = result_values.map((r, i) => {
+    const delta = r.historical_values ? calculateDelta(r.value, r.historical_values) : 'N/A';
+    return `
+${i + 1}. ${r.analyte_name}
+   Current Value: ${r.value} ${r.unit} ${r.flag ? `[${r.flag}]` : ''}
+   Reference Range: ${r.reference_range}
+   Historical: ${formatHistory(r)}
+   Delta from last: ${delta}`;
+  }).join('\n');
+
+  const relatedTestsSection = related_test_results && related_test_results.length > 0
+    ? `\nRelated Tests from Same Order (for cross-validation):
+${related_test_results.map(r => `  - ${r.test_name} > ${r.analyte_name}: ${r.value} ${r.unit}${r.flag ? ` [${r.flag}]` : ''}`).join('\n')}`
+    : '';
+
+  return `You are a senior clinical laboratory quality control specialist performing a DELTA CHECK on laboratory results.
+
+DELTA CHECK PURPOSE:
+A delta check compares current patient results with their historical values and related tests to identify:
+1. POTENTIAL INPUT ERRORS - Unlikely changes that suggest data entry mistakes
+2. SAMPLE ISSUES - Results suggesting sample contamination, hemolysis, lipemia, or wrong patient sample
+3. CONFLICTING RESULTS - Inconsistent findings between related tests (e.g., high bilirubin with normal liver enzymes)
+4. UNUSUAL CHANGES - Dramatic shifts from historical values that need verification
+5. QUALITY CONCERNS - Any other issues affecting result reliability
+
+Test Group: ${test_group.test_group_name} (${test_group.test_group_code})
+Category: ${test_group.category || 'General'}
+${patientInfo}
+
+CURRENT RESULTS WITH HISTORICAL DATA:
+${resultsSection}
+${relatedTestsSection}
+
+DELTA CHECK RULES:
+1. For numeric values, flag changes > 50% from last value as unusual (unless clinically expected)
+2. Check for physiologically impossible values
+3. Identify results that contradict each other (e.g., high total protein but low albumin AND low globulin)
+4. Flag critical values that appeared suddenly without prior warning
+5. Look for patterns suggesting sample issues:
+   - Hemolysis: falsely elevated K+, LDH, AST
+   - Lipemia: interferes with many tests
+   - Icterus: affects creatinine, some enzymes
+6. Cross-validate related tests:
+   - Liver: AST, ALT, ALP, GGT, Bilirubin should correlate
+   - Kidney: Urea, Creatinine, eGFR should correlate
+   - Hematology: RBC, Hb, Hct should correlate
+   - Lipids: Total cholesterol ≈ HDL + LDL + (TG/5)
+
+CONFIDENCE SCORING:
+- 90-100: All results pass delta checks, correlations are good, no concerns
+- 70-89: Minor issues or missing historical data, but generally acceptable
+- 50-69: Moderate concerns requiring review before approval
+- 0-49: Significant issues, results should not be released without investigation
+
+Respond with a JSON object:
+{
+  "confidence_score": 85,
+  "confidence_level": "high|medium|low",
+  "summary": "Brief 1-2 sentence summary of delta check findings...",
+  "issues": [
+    {
+      "issue_type": "input_error|sample_issue|conflicting_result|unusual_change|quality_concern",
+      "severity": "critical|warning|info",
+      "affected_analytes": ["Analyte1", "Analyte2"],
+      "description": "Clear description of the issue...",
+      "suggested_action": "What the technician should do...",
+      "evidence": "Data supporting this concern..."
+    }
+  ],
+  "validated_results": ["List of analytes that passed all checks"],
+  "recommendation": "approve|review_required|reject",
+  "verifier_notes": "Detailed notes for the verifier including any patterns noticed, correlations checked, and reasoning for the confidence score..."
+}
+
+If no issues are found, return an empty issues array and high confidence.
+Be thorough but avoid false positives - only flag genuine concerns.
 
 Return ONLY the JSON object, no additional text.`;
 }
@@ -728,6 +984,17 @@ async function handler(req: Request): Promise<Response> {
           );
         }
         prompt = buildPatientSummaryPrompt(body as PatientSummaryRequest);
+        result = await callGemini(prompt, apiKey);
+        break;
+
+      case 'delta_check':
+        if (!body.test_group || !body.result_values) {
+          return new Response(
+            JSON.stringify({ error: 'test_group and result_values are required for delta_check' }),
+            { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+          );
+        }
+        prompt = buildDeltaCheckPrompt(body as DeltaCheckRequest);
         result = await callGemini(prompt, apiKey);
         break;
 

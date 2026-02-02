@@ -154,8 +154,8 @@ serve(async (req) => {
             'content-type': 'application/json'
         },
         body: JSON.stringify({
-            model: 'claude-3-5-haiku-latest', // or specifically claude-3-5-haiku-20241022
-            max_tokens: 2000,
+            model: 'claude-haiku-4-5-20251001',
+            max_tokens: 15000,
             messages: [{ role: 'user', content: prompt }]
         })
     });

@@ -16,7 +16,7 @@
  */
 
 import { jsPDF } from 'jspdf';
-import { supabase, database } from './supabase';
+import { supabase, database, formatAge } from './supabase';
 import type { ReportTemplateAnalyteRow } from './supabase';
 import { getReportExtrasForOrder, type ReportExtras } from './reportExtrasService';
 
@@ -466,7 +466,7 @@ export const generateViewerPDF = async (
     doc.setFont('helvetica', 'bold');
     doc.text('Age/Sex:', col1X, infoY + 5);
     doc.setFont('helvetica', 'normal');
-    doc.text(`${data.patient.age}y / ${data.patient.gender}`, col1X + 18, infoY + 5);
+    doc.text(`${formatAge(data.patient.age, (data.patient as any).age_unit)} / ${data.patient.gender}`, col1X + 18, infoY + 5);
     
     doc.setFont('helvetica', 'bold');
     doc.text('Patient ID:', col1X, infoY + 10);

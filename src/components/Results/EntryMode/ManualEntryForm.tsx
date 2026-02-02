@@ -1,8 +1,9 @@
 import React, { useState, useEffect } from 'react';
 import { Save, CheckCircle } from 'lucide-react';
-import { supabase } from '../../../utils/supabase';
+import { database, supabase } from '../../../utils/supabase';
 import { useAuth } from '../../../contexts/AuthContext';
 import { calculateFlagsForResults } from '../../../utils/flagCalculation';
+import SectionEditor from '../SectionEditor';
 
 interface ManualEntryFormProps {
   order: {
@@ -35,6 +36,9 @@ const ManualEntryForm: React.FC<ManualEntryFormProps> = ({ order, testGroup, onS
   const [formData, setFormData] = useState<Record<string, AnalyteData>>({});
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [sectionResultId, setSectionResultId] = useState<string | null>(null);
+  const [hasTechnicianSections, setHasTechnicianSections] = useState(false);
+  const [sectionLoading, setSectionLoading] = useState(false);
 
   // Helper to determine if analyte expects categorical values
   const getCategoricalOptions = (analyte: any): string[] | null => {
@@ -173,6 +177,73 @@ const ManualEntryForm: React.FC<ManualEntryFormProps> = ({ order, testGroup, onS
     }
   }, [analytes]);
 
+  const ensureResultRecord = async () => {
+    const { data: existing, error: existingError } = await database.results.getByOrderAndTestGroup(
+      order.id,
+      testGroup.id
+    );
+
+    if (existingError) {
+      throw existingError;
+    }
+
+    if (existing) {
+      return existing;
+    }
+
+    const { data: created, error: createError } = await database.results.create({
+      order_id: order.id,
+      patient_id: order.patient_id,
+      patient_name: order.patient_name,
+      test_name: testGroup.name,
+      status: 'pending_verification',
+      entered_by: user?.user_metadata?.full_name || user?.email || 'Unknown User',
+      entered_date: new Date().toISOString().split('T')[0],
+      test_group_id: testGroup.id,
+      lab_id: order.lab_id,
+    });
+
+    if (createError) {
+      throw createError;
+    }
+
+    return created;
+  };
+
+  useEffect(() => {
+    let isActive = true;
+
+    const loadTechnicianSections = async () => {
+      setSectionLoading(true);
+      try {
+        const { data: sections, error } = await database.templateSections.getByTestGroup(testGroup.id);
+        if (error) throw error;
+
+        const hasTech = (sections || []).some((section: any) => section.allow_technician_entry);
+        if (!isActive) return;
+
+        setHasTechnicianSections(hasTech);
+
+        if (hasTech) {
+          const resultRecord = await ensureResultRecord();
+          if (isActive && resultRecord?.id) {
+            setSectionResultId(resultRecord.id);
+          }
+        }
+      } catch (err) {
+        console.error('Failed to load technician sections:', err);
+      } finally {
+        if (isActive) setSectionLoading(false);
+      }
+    };
+
+    loadTechnicianSections();
+
+    return () => {
+      isActive = false;
+    };
+  }, [order.id, testGroup.id]);
+
   const handleAnalyteChange = (analyteId: string, data: Partial<AnalyteData>) => {
     setFormData(prev => ({
       ...prev,
@@ -243,38 +314,18 @@ const ManualEntryForm: React.FC<ManualEntryFormProps> = ({ order, testGroup, onS
       const resultsWithFlags = calculateFlagsForResults(resultsToSubmit);
 
       // Create or update result record
-      let resultId = null;
-      
-      // Check if a result record already exists
-      const { data: existingResult } = await supabase
-        .from('results')
-        .select('id')
-        .eq('order_id', order.id)
-        .eq('test_group_id', testGroup.id)
-        .single();
+      let resultId = sectionResultId;
 
-      if (existingResult) {
-        resultId = existingResult.id;
-      } else {
-        // Create new result record
-        const { data: newResult, error: resultError } = await supabase
-          .from('results')
-          .insert({
-            order_id: order.id,
-            patient_id: order.patient_id,
-            patient_name: order.patient_name,
-            test_name: testGroup.name,
-            status: 'pending_verification',
-            entered_by: user?.email || 'Unknown User',
-            entered_date: new Date().toISOString().split('T')[0],
-            test_group_id: testGroup.id,
-            lab_id: order.lab_id
-          })
-          .select()
-          .single();
+      if (!resultId) {
+        const resultRecord = await ensureResultRecord();
+        resultId = resultRecord?.id || null;
+        if (resultId) {
+          setSectionResultId(resultId);
+        }
+      }
 
-        if (resultError) throw resultError;
-        resultId = newResult.id;
+      if (!resultId) {
+        throw new Error('Failed to create or find result record');
       }
 
       // Insert result values
@@ -287,9 +338,7 @@ const ManualEntryForm: React.FC<ManualEntryFormProps> = ({ order, testGroup, onS
         verify_status: 'pending'
       }));
 
-      const { error: valuesError } = await supabase
-        .from('result_values')
-        .insert(resultValuesData);
+      const { error: valuesError } = await database.resultValues.createMany(resultValuesData);
 
       if (valuesError) throw valuesError;
 
@@ -396,6 +445,23 @@ const ManualEntryForm: React.FC<ManualEntryFormProps> = ({ order, testGroup, onS
           );
         })}
       </div>
+
+      {sectionLoading && (
+        <div className="flex items-center text-sm text-gray-500">
+          <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-blue-600 mr-2"></div>
+          Loading report sections...
+        </div>
+      )}
+
+      {hasTechnicianSections && sectionResultId && (
+        <div className="mt-6">
+          <SectionEditor
+            resultId={sectionResultId}
+            testGroupId={testGroup.id}
+            editorRole="technician"
+          />
+        </div>
+      )}
 
       {hasEditableResults && (
         <div className="flex justify-end space-x-3">

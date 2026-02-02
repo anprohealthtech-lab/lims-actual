@@ -1,17 +1,17 @@
 // Supabase Edge Function: Sync User to WhatsApp Backend
-// Syncs admin user creation to external WhatsApp backend database
+// Syncs admin user creation to external WhatsApp backend via HTTP API
 // Triggered after user creation in create-lab-with-admin or can be called manually
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.38.4'
-import postgres from 'https://deno.land/x/postgresjs@v3.4.4/mod.js'
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 }
 
-// WhatsApp backend Neon database connection
-const WHATSAPP_DB_URL = 'postgresql://neondb_owner:npg_HclN2sBL5OIF@ep-solitary-salad-a1alphes-pooler.ap-southeast-1.aws.neon.tech/neondb?sslmode=require'
+// WhatsApp backend API endpoint
+const WHATSAPP_API_BASE = Deno.env.get('WHATSAPP_API_BASE_URL') || 'https://lionfish-app-nmodi.ondigitalocean.app'
+const WHATSAPP_API_KEY = Deno.env.get('WHATSAPP_API_KEY') || 'whatsapp-lims-secure-api-key-2024'
 
 Deno.serve(async (req: Request) => {
   // Handle CORS preflight
@@ -33,15 +33,40 @@ Deno.serve(async (req: Request) => {
 
     console.log('📲 Syncing user to WhatsApp backend:', userId)
 
-    // Fetch user and lab data
-    const { data: user, error: userError } = await supabaseClient
+    // Fetch user and lab data from Supabase
+    // userId can be either users.id (UUID) or auth_user_id (UUID)
+    // We'll try users.id first, then fall back to auth_user_id
+    let user
+    let userError
+    
+    // First try: Look up by users.id (primary key)
+    const resultById = await supabaseClient
       .from('users')
       .select('id, name, email, phone, role, lab_id')
       .eq('id', userId)
-      .single()
+      .maybeSingle()
+    
+    if (resultById.data) {
+      user = resultById.data
+      userError = null
+      console.log('✅ Found user by id:', user.id)
+    } else {
+      // Second try: Look up by auth_user_id
+      const resultByAuth = await supabaseClient
+        .from('users')
+        .select('id, name, email, phone, role, lab_id')
+        .eq('auth_user_id', userId)
+        .maybeSingle()
+      
+      user = resultByAuth.data
+      userError = resultByAuth.error
+      if (user) {
+        console.log('✅ Found user by auth_user_id:', user.id)
+      }
+    }
 
     if (userError || !user) {
-      throw new Error(`User not found: ${userError?.message}`)
+      throw new Error(`User not found: ${userError?.message || 'No matching user'}`)
     }
 
     const effectiveLabId = labId || user.lab_id
@@ -58,114 +83,98 @@ Deno.serve(async (req: Request) => {
 
     console.log('✅ Fetched user and lab data')
 
-    // Connect to WhatsApp backend database
-    const sql = postgres(WHATSAPP_DB_URL, {
-      ssl: 'require',
+    // Generate unique username: use email (most unique) or name with id suffix
+    // WhatsApp backend requires unique usernames
+    const baseUsername = user.email?.split('@')[0] || user.name?.replace(/\s+/g, '_') || 'user'
+    const uniqueUsername = `${baseUsername}_${user.id.substring(0, 8)}`
+
+    // Prepare user data for WhatsApp backend API
+    const whatsappUserPayload = {
+      id: user.id,
+      email: user.email,
+      username: uniqueUsername,
+      clinic_name: lab?.name || 'Lab',
+      contact_whatsapp: user.phone || lab?.phone || '',
+      role: user.role?.toLowerCase() || 'receptionist',
+      is_active: true,
+      whatsapp_enabled: true,
+    }
+
+    console.log('📤 Sending to WhatsApp API:', JSON.stringify(whatsappUserPayload))
+
+    // Call WhatsApp backend HTTP API
+    const apiResponse = await fetch(`${WHATSAPP_API_BASE}/api/external/users/sync`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-API-Key': WHATSAPP_API_KEY,
+      },
+      body: JSON.stringify(whatsappUserPayload),
     })
 
-    try {
-      // Hash password (using bcrypt-compatible hashing)
-      // For now, we'll use a default password since we don't have the actual password
-      const defaultPassword = 'Welcome@123'
-      const passwordHash = await hashPassword(defaultPassword)
+    const responseText = await apiResponse.text()
+    console.log('📥 WhatsApp API response:', apiResponse.status, responseText)
 
-      // Prepare user data for WhatsApp backend
-      const whatsappUser = {
-        id: user.id, // Use Supabase user ID
-        auth_id: user.id, // Same as ID
-        username: user.name || user.email,
-        password_hash: passwordHash,
-        name: user.name || user.email,
-        role: user.role?.toLowerCase() || 'receptionist',
-        clinic_name: lab?.name || 'Lab',
-        clinic_address: lab ? `${lab.address || ''}, ${lab.city || ''}, ${lab.state || ''}`.trim() : '',
-        gmb_link: '', // Not available in our system
-        logo: null,
-        primary_color: '#4852e5',
-        secondary_color: '#E5E7EB',
-        contact_phone: user.phone || lab?.phone || '',
-        contact_email: user.email,
-        contact_whatsapp: user.phone || lab?.phone || '',
-        languages: { en: { name: '', address: '' } },
-        default_language: 'en',
-        enabled_features: ['dashboard', 'appointments', 'reviews', 'sequences', 'creatives'],
-        profile_types: [],
-        google_sheet_id: null,
-        google_apps_script_url: null,
-        blueticks_api_key: null,
-        whatsapp_integration_available: true,
-        max_sessions: 2,
-        session_preferences: null,
-        bundle_message_count: 3,
-      }
-
-      // Check if user already exists in WhatsApp backend
-      const existingUser = await sql`
-        SELECT id FROM users WHERE id = ${user.id}
-      `
-
-      if (existingUser.length > 0) {
-        // Update existing user
-        await sql`
-          UPDATE users SET
-            username = ${whatsappUser.username},
-            name = ${whatsappUser.name},
-            role = ${whatsappUser.role},
-            clinic_name = ${whatsappUser.clinic_name},
-            clinic_address = ${whatsappUser.clinic_address},
-            contact_phone = ${whatsappUser.contact_phone},
-            contact_email = ${whatsappUser.contact_email},
-            contact_whatsapp = ${whatsappUser.contact_whatsapp},
-            updated_at = NOW()
-          WHERE id = ${user.id}
-        `
-        console.log('✅ Updated existing user in WhatsApp backend')
-      } else {
-        // Insert new user
-        await sql`
-          INSERT INTO users (
-            id, auth_id, username, password_hash, name, role,
-            clinic_name, clinic_address, gmb_link, logo,
-            primary_color, secondary_color, contact_phone, contact_email,
-            contact_whatsapp, languages, default_language, enabled_features,
-            profile_types, google_sheet_id, google_apps_script_url,
-            blueticks_api_key, whatsapp_integration_available, max_sessions,
-            session_preferences, bundle_message_count, created_at, updated_at
-          ) VALUES (
-            ${whatsappUser.id}, ${whatsappUser.auth_id}, ${whatsappUser.username},
-            ${whatsappUser.password_hash}, ${whatsappUser.name}, ${whatsappUser.role},
-            ${whatsappUser.clinic_name}, ${whatsappUser.clinic_address},
-            ${whatsappUser.gmb_link}, ${whatsappUser.logo}, ${whatsappUser.primary_color},
-            ${whatsappUser.secondary_color}, ${whatsappUser.contact_phone},
-            ${whatsappUser.contact_email}, ${whatsappUser.contact_whatsapp},
-            ${JSON.stringify(whatsappUser.languages)}, ${whatsappUser.default_language},
-            ${JSON.stringify(whatsappUser.enabled_features)}, ${JSON.stringify(whatsappUser.profile_types)},
-            ${whatsappUser.google_sheet_id}, ${whatsappUser.google_apps_script_url},
-            ${whatsappUser.blueticks_api_key}, ${whatsappUser.whatsapp_integration_available},
-            ${whatsappUser.max_sessions}, ${whatsappUser.session_preferences},
-            ${whatsappUser.bundle_message_count}, NOW(), NOW()
-          )
-        `
-        console.log('✅ Inserted new user into WhatsApp backend')
-      }
-
-      await sql.end()
-
-      return new Response(
-        JSON.stringify({
-          success: true,
-          message: 'User synced to WhatsApp backend',
-          userId: user.id,
-        }),
-        { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-      )
-    } catch (dbError) {
-      console.error('❌ WhatsApp backend database error:', dbError)
-      await sql.end()
-      throw dbError
+    if (!apiResponse.ok) {
+      throw new Error(`WhatsApp API error: ${apiResponse.status} - ${responseText}`)
     }
+
+    let responseData
+    try {
+      responseData = JSON.parse(responseText)
+    } catch {
+      responseData = { message: responseText }
+    }
+
+    // Update user sync status in Supabase
+    const { error: updateError } = await supabaseClient
+      .from('users')
+      .update({
+        whatsapp_sync_status: 'synced',
+        whatsapp_last_sync: new Date().toISOString(),
+        whatsapp_sync_error: null,
+      })
+      .eq('id', userId)
+
+    if (updateError) {
+      console.warn('⚠️ Failed to update sync status:', updateError.message)
+    }
+
+    console.log('✅ User synced to WhatsApp backend successfully')
+
+    return new Response(
+      JSON.stringify({
+        success: true,
+        message: 'User synced to WhatsApp backend',
+        userId: user.id,
+        whatsappResponse: responseData,
+      }),
+      { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+    )
+
   } catch (error) {
     console.error('❌ Sync error:', error)
+
+    // Try to update sync status with error
+    try {
+      const supabaseUrl = Deno.env.get('SUPABASE_URL')!
+      const supabaseKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
+      const supabaseClient = createClient(supabaseUrl, supabaseKey)
+      
+      const body = await req.clone().json().catch(() => ({}))
+      if (body.userId) {
+        await supabaseClient
+          .from('users')
+          .update({
+            whatsapp_sync_status: 'failed',
+            whatsapp_sync_error: String(error),
+          })
+          .eq('id', body.userId)
+      }
+    } catch {
+      // Ignore status update errors
+    }
+
     return new Response(
       JSON.stringify({
         success: false,
@@ -176,16 +185,3 @@ Deno.serve(async (req: Request) => {
     )
   }
 })
-
-// Simple password hashing (bcrypt-compatible)
-async function hashPassword(password: string): Promise<string> {
-  // Using Web Crypto API for hashing
-  // Note: This is a simplified version. For production, use proper bcrypt
-  const encoder = new TextEncoder()
-  const data = encoder.encode(password)
-  const hashBuffer = await crypto.subtle.digest('SHA-256', data)
-  const hashArray = Array.from(new Uint8Array(hashBuffer))
-  const hashHex = hashArray.map(b => b.toString(16).padStart(2, '0')).join('')
-  // Return in bcrypt-like format (this is simplified - real bcrypt has salt and rounds)
-  return `$2a$06$${hashHex.substring(0, 53)}`
-}

@@ -2,10 +2,10 @@
 import React, { useEffect, useMemo, useState } from "react";
 import {
   Plus, Search, Clock as ClockIcon, CheckCircle, AlertTriangle,
-  Eye, User, Calendar, TestTube, ChevronDown, ChevronUp, TrendingUp, ToggleLeft, ToggleRight, X
+  Eye, User, Calendar, TestTube, ChevronDown, ChevronUp, TrendingUp, ToggleLeft, ToggleRight, X, RefreshCcw
 } from "lucide-react";
 import { useAuth } from "../contexts/AuthContext";
-import { database, supabase } from "../utils/supabase";
+import { database, supabase, formatAge } from "../utils/supabase";
 import OrderForm from "../components/Orders/OrderForm";
 import OrderDetailsModal from "../components/Orders/OrderDetailsModal";
 import EnhancedOrdersPage from "../components/Orders/EnhancedOrdersPage";
@@ -159,8 +159,77 @@ const Orders: React.FC = () => {
   // dashboard counters
   const [summary, setSummary] = useState({ allDone: 0, mostlyDone: 0, pending: 0, awaitingApproval: 0 });
 
+  // RE-RUN requests tracking
+  const [rerunRequests, setRerunRequests] = useState<{ order_id: string; count: number; analytes: string[] }[]>([]);
+  const [totalRerunCount, setTotalRerunCount] = useState(0);
+
+  // Create a map of order_id to rerun info for quick lookup
+  const rerunByOrder = useMemo(() => {
+    const map = new Map<string, { count: number; analytes: string[] }>();
+    rerunRequests.forEach(r => map.set(r.order_id, { count: r.count, analytes: r.analytes }));
+    return map;
+  }, [rerunRequests]);
+
+  // Fetch RE-RUN requests
+  const fetchRerunRequests = async () => {
+    const lab_id = await database.getCurrentUserLabId();
+    if (!lab_id) return;
+
+    // Fetch result_values with RE-RUN in verify_note, pending status
+    const { data, error } = await supabase
+      .from('result_values')
+      .select(`
+        id,
+        analyte_name,
+        verify_note,
+        results!inner (
+          id,
+          order_id,
+          orders!inner (
+            id,
+            lab_id,
+            status
+          )
+        )
+      `)
+      .eq('verify_status', 'pending')
+      .ilike('verify_note', '%RE-RUN%')
+      .eq('results.orders.lab_id', lab_id)
+      .neq('results.orders.status', 'Completed')
+      .neq('results.orders.status', 'Delivered');
+
+    if (error) {
+      console.error('Error fetching re-run requests:', error);
+      return;
+    }
+
+    // Group by order_id
+    const byOrder = new Map<string, { count: number; analytes: string[] }>();
+    (data || []).forEach((rv: any) => {
+      const orderId = rv.results?.order_id;
+      if (orderId) {
+        const existing = byOrder.get(orderId) || { count: 0, analytes: [] };
+        existing.count++;
+        if (rv.analyte_name && !existing.analytes.includes(rv.analyte_name)) {
+          existing.analytes.push(rv.analyte_name);
+        }
+        byOrder.set(orderId, existing);
+      }
+    });
+
+    const requests = Array.from(byOrder.entries()).map(([order_id, info]) => ({
+      order_id,
+      count: info.count,
+      analytes: info.analytes
+    }));
+
+    setRerunRequests(requests);
+    setTotalRerunCount(data?.length || 0);
+  };
+
   useEffect(() => {
     fetchOrders();
+    fetchRerunRequests();
   }, []);
 
   // Get user's lab_id for realtime filtering
@@ -787,14 +856,20 @@ const Orders: React.FC = () => {
 
       console.log('Order created successfully:', order);
 
-      // Update any pending TRF attachments to link to this order
+      // Update any pending TRF attachments to link to this order - ONLY for current user + lab + recent uploads
       const PENDING_ORDER_UUID = '00000000-0000-0000-0000-000000000000';
+      const { data: currentUser } = await supabase.auth.getUser();
+      const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+      
       const { error: updateError } = await supabase
         .from('attachments')
-        .update({ related_id: order.id })
+        .update({ related_id: order.id, order_id: order.id })
         .eq('related_table', 'orders')
         .eq('related_id', PENDING_ORDER_UUID)
-        .eq('description', 'Test Request Form for order creation');
+        .eq('description', 'Test Request Form for order creation')
+        .eq('uploaded_by', currentUser?.user?.id) // Only current user's uploads
+        .eq('lab_id', labId) // Only current lab
+        .gte('upload_timestamp', oneHourAgo); // Only recent uploads (within 1 hour)
 
       if (updateError) {
         console.warn('Failed to update TRF attachment:', updateError);
@@ -1105,7 +1180,7 @@ const Orders: React.FC = () => {
 
       {/* Overview cards */}
       {/* Overview cards - Compact Mobile Grid */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-3 md:gap-4">
+      <div className="grid grid-cols-2 md:grid-cols-5 gap-3 md:gap-4">
         <div className="bg-green-50 border border-green-200 rounded-lg p-3 md:p-4 relative overflow-hidden">
           <div className="relative z-10">
             <div className="text-xl md:text-2xl font-bold text-green-900">{filteredSummary.allDone}</div>
@@ -1133,6 +1208,23 @@ const Orders: React.FC = () => {
             <div className="text-xs md:text-sm text-orange-700 font-medium">Approval</div>
           </div>
           <AlertTriangle className="absolute right-2 bottom-2 h-8 w-8 text-orange-500/20 md:static md:h-5 md:w-5 md:text-white md:bg-orange-500 md:p-1 md:rounded-lg md:opacity-100" />
+        </div>
+        {/* RE-RUN Requests Card */}
+        <div className={`border rounded-lg p-3 md:p-4 relative overflow-hidden ${totalRerunCount > 0 ? 'bg-red-50 border-red-300 ring-2 ring-red-400 ring-opacity-50' : 'bg-gray-50 border-gray-200'}`}>
+          <div className="relative z-10">
+            <div className={`text-xl md:text-2xl font-bold ${totalRerunCount > 0 ? 'text-red-900 animate-pulse' : 'text-gray-600'}`}>
+              {totalRerunCount}
+            </div>
+            <div className={`text-xs md:text-sm font-medium ${totalRerunCount > 0 ? 'text-red-700' : 'text-gray-500'}`}>
+              RE-RUN Requests
+            </div>
+            {totalRerunCount > 0 && (
+              <div className="text-xs text-red-600 mt-1">
+                {rerunRequests.length} order{rerunRequests.length !== 1 ? 's' : ''}
+              </div>
+            )}
+          </div>
+          <RefreshCcw className={`absolute right-2 bottom-2 h-8 w-8 md:static md:h-5 md:w-5 md:p-1 md:rounded-lg md:opacity-100 ${totalRerunCount > 0 ? 'text-red-500/20 md:text-white md:bg-red-500 animate-spin-slow' : 'text-gray-400/20 md:text-white md:bg-gray-400'}`} />
         </div>
       </div>
 
@@ -1194,13 +1286,20 @@ const Orders: React.FC = () => {
                                   {o.patient?.name || o.patient_name}
                                 </div>
                                 <div className="text-xs md:text-base text-gray-700">
-                                  {(o.patient?.age || "N/A") + "y"} • {o.patient?.gender || "N/A"} • ID: {o.patient_id}
+                                  {formatAge(o.patient?.age, (o.patient as any)?.age_unit)} • {o.patient?.gender || "N/A"} • ID: {o.patient_id}
                                 </div>
                               </div>
                             </div>
                           </div>
 
                           <div className="flex items-center gap-1 md:gap-2" onClick={(e) => e.stopPropagation()}>
+                            {/* RE-RUN Request Badge */}
+                            {rerunByOrder.has(o.id) && (
+                              <span className="inline-flex items-center px-2 py-0.5 md:px-2.5 md:py-1 rounded-lg text-xs md:text-sm font-bold border bg-red-100 text-red-800 border-red-300 whitespace-nowrap animate-pulse">
+                                <RefreshCcw className="h-3 w-3 md:h-3.5 md:w-3.5 mr-1" />
+                                RE-RUN ({rerunByOrder.get(o.id)?.count})
+                              </span>
+                            )}
                             <span className="inline-flex items-center px-2 py-0.5 md:px-3 md:py-1.5 rounded-lg text-xs md:text-sm font-bold border bg-blue-100 text-blue-800 border-blue-200 whitespace-nowrap">
                               {o.status === "In Progress" ? "In Process" : o.status}
                             </span>

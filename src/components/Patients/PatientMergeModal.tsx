@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { X, Users, AlertTriangle, CheckCircle, Loader2, ArrowRight } from 'lucide-react';
-import { supabase } from '../../utils/supabase';
+import { supabase, formatAge } from '../../utils/supabase';
 
 interface Patient {
   id: string;
@@ -158,7 +158,7 @@ const PatientMergeModal: React.FC<PatientMergeModalProps> = ({
                   <h5 className="text-lg font-bold text-gray-900">{masterPatient.name}</h5>
                   <div className="mt-2 space-y-1 text-sm text-gray-600">
                     <p><span className="font-medium">ID:</span> {masterPatient.display_id || masterPatient.id.slice(0, 8)}</p>
-                    <p><span className="font-medium">Age/Gender:</span> {masterPatient.age}y / {masterPatient.gender}</p>
+                    <p><span className="font-medium">Age/Gender:</span> {formatAge(masterPatient.age, (masterPatient as any).age_unit)} / {masterPatient.gender}</p>
                     <p><span className="font-medium">Phone:</span> {masterPatient.phone}</p>
                     {masterPatient.email && <p><span className="font-medium">Email:</span> {masterPatient.email}</p>}
                     <p><span className="font-medium">Address:</span> {masterPatient.address}</p>
@@ -221,7 +221,7 @@ const PatientMergeModal: React.FC<PatientMergeModalProps> = ({
                       <h5 className="text-lg font-bold text-gray-900">{patient.name}</h5>
                       <div className="mt-2 grid grid-cols-2 gap-x-4 gap-y-1 text-sm text-gray-600">
                         <p><span className="font-medium">ID:</span> {patient.display_id || patient.id.slice(0, 8)}</p>
-                        <p><span className="font-medium">Age/Gender:</span> {patient.age}y / {patient.gender}</p>
+                        <p><span className="font-medium">Age/Gender:</span> {formatAge(patient.age, (patient as any).age_unit)} / {patient.gender}</p>
                         <p><span className="font-medium">Phone:</span> {patient.phone}</p>
                         {patient.email && <p><span className="font-medium">Email:</span> {patient.email}</p>}
                         <p className="col-span-2"><span className="font-medium">Address:</span> {patient.address}</p>

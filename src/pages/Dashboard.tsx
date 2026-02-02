@@ -29,7 +29,7 @@ import {
   X,
 } from "lucide-react";
 import { useAuth } from "../contexts/AuthContext";
-import { supabase, database } from "../utils/supabase";
+import { supabase, database, formatAge } from "../utils/supabase";
 import { useMobileOptimizations } from "../utils/platformHelper";
 import { MobileFAB } from "../components/ui/MobileFAB";
 import OrderForm from "../components/Orders/OrderForm";
@@ -260,7 +260,7 @@ const Dashboard: React.FC = () => {
 
   // State for payment modal
   const [showPaymentModal, setShowPaymentModal] = useState(false);
-  const [paymentInvoiceId, setPaymentInvoiceId] = useState<string | null>(null);
+  const [paymentOrderId, setPaymentOrderId] = useState<string | null>(null);
 
   // PDF Generation
   // const { generatePDF } = usePDFGeneration(); // Currently unused
@@ -313,8 +313,8 @@ id, patient_id, patient_name, status, priority, order_date, expected_date, total
   order_number, sample_id, color_code, color_name, sample_collected_at, sample_collected_by,
   billing_status, is_billed, referring_doctor_id,
   location_id, transit_status, collected_at_location_id,
-  patients(name, age, gender, phone, email),
-  order_tests(id, test_group_id, test_name, outsourced_lab_id, package_id, outsourced_labs(name), test_groups(sample_type, sample_color)),
+  patients(name, age, age_unit, gender, phone, email),
+  order_tests(id, test_group_id, test_name, outsourced_lab_id, package_id, is_billed, invoice_id, is_canceled, outsourced_labs(name), test_groups(sample_type, sample_color)),
   doctors(phone, email),
   locations!orders_location_id_fkey(id, name, type),
   accounts(name, billing_mode)
@@ -362,17 +362,40 @@ id, patient_id, patient_name, status, priority, order_date, expected_date, total
       byOrder.set((r as any).order_id, arr);
     });
 
-    // 3) Fetch invoices and payments for each order
+    // 3) Fetch ALL invoices and payments for each order (supports multiple invoices when tests are added)
     const invoicePromises = orderIds.map(async (orderId) => {
-      const { data: invoice } = await database.invoices.getByOrderId(orderId);
-      if (!invoice) return { orderId, invoice: null, payments: [], paidAmount: 0, deliveryStatus: {} };
+      const { data: invoices } = await database.invoices.getAllByOrderId(orderId);
+      if (!invoices || invoices.length === 0) {
+        return { orderId, invoices: [], primaryInvoice: null, totalInvoiced: 0, paidAmount: 0, deliveryStatus: {} };
+      }
 
-      const { data: payments } = await database.payments.getByInvoiceId(invoice.id);
-      const paidAmount = (payments || []).reduce((sum: number, p: any) => sum + (p.amount || 0), 0);
+      // Aggregate totals across all invoices
+      let totalInvoiced = 0;
+      let totalPaid = 0;
+      let totalRefunded = 0;
 
-      const { data: deliveryStatus } = await database.invoices.getDeliveryStatus(invoice.id);
+      for (const inv of invoices) {
+        totalInvoiced += Number(inv.total_after_discount || inv.total || inv.subtotal || 0);
+        totalRefunded += Number(inv.total_refunded_amount || 0);
+        
+        // Get payments for each invoice
+        const { data: payments } = await database.payments.getByInvoiceId(inv.id);
+        totalPaid += (payments || []).reduce((sum: number, p: any) => sum + (p.amount || 0), 0);
+      }
 
-      return { orderId, invoice, payments: payments || [], paidAmount, deliveryStatus: deliveryStatus || {} };
+      // Use the most recent invoice for delivery status tracking
+      const primaryInvoice = invoices[0];
+      const { data: deliveryStatus } = await database.invoices.getDeliveryStatus(primaryInvoice.id);
+
+      return { 
+        orderId, 
+        invoices,
+        primaryInvoice,
+        totalInvoiced,
+        totalRefunded,
+        paidAmount: totalPaid, 
+        deliveryStatus: deliveryStatus || {} 
+      };
     });
 
     const invoiceData = await Promise.all(invoicePromises);
@@ -467,9 +490,10 @@ id, patient_id, patient_name, status, priority, order_date, expected_date, total
         order_date: o.order_date,
         expected_date: dynamicExpectedDate,
         total_amount: o.final_amount || o.total_amount,
-        final_amount: !invoiceInfo?.invoice
-          ? (o.final_amount || o.total_amount || 0)
-          : ((invoiceInfo.invoice.total_after_discount ?? invoiceInfo.invoice.total ?? invoiceInfo.invoice.total_amount ?? 0) + Math.max(0, (o.final_amount || o.total_amount || 0) - (invoiceInfo.invoice.subtotal ?? o.final_amount ?? o.total_amount ?? 0))),
+        // Use totalInvoiced from aggregated invoices, fallback to order amount
+        final_amount: invoiceInfo?.totalInvoiced 
+          ? Math.max(invoiceInfo.totalInvoiced, o.final_amount || o.total_amount || 0)
+          : (o.final_amount || o.total_amount || 0),
         doctor: o.doctor,
         doctor_phone,
         doctor_email,
@@ -481,46 +505,52 @@ id, patient_id, patient_name, status, priority, order_date, expected_date, total
         sample_collected_at: o.sample_collected_at,
         sample_collected_by: o.sample_collected_by,
 
-        billing_status: (invoiceInfo?.invoice && ((o.final_amount || o.total_amount || 0) - (invoiceInfo.invoice.subtotal || 0)) > 1) ? 'partial' : o.billing_status,
+        // Billing status: "partial" if totalInvoiced < order amount, else use DB status
+        billing_status: (() => {
+          if (!invoiceInfo?.invoices?.length) return o.billing_status;
+          const orderAmount = o.final_amount || o.total_amount || 0;
+          const invoicedAmount = invoiceInfo.totalInvoiced || 0;
+          // If invoiced amount is significantly less than order amount, it's partial
+          return (orderAmount - invoicedAmount) > 1 ? 'partial' : o.billing_status;
+        })(),
         is_billed: o.is_billed,
-        invoice_id: invoiceInfo?.invoice?.id || null,
+        // Use primary invoice ID for actions (most recent)
+        invoice_id: invoiceInfo?.primaryInvoice?.id || null,
+        // Aggregated paid amount across all invoices
         paid_amount: invoiceInfo?.paidAmount || 0,
-        due_amount: !invoiceInfo?.invoice
-          ? Math.max(0, (o.final_amount || o.total_amount || 0) - (invoiceInfo?.paidAmount || 0))
-          : (() => {
-            const invTotal = invoiceInfo.invoice.total_after_discount ?? invoiceInfo.invoice.total ?? invoiceInfo.invoice.total_amount ?? 0;
-            const paid = invoiceInfo.paidAmount || 0;
-            const refunded = invoiceInfo.invoice.total_refunded_amount || 0;
-            // Net due = total - paid - refunded (refund reduces what's owed)
-            const invDue = Math.max(0, invTotal - paid - refunded);
-
-            const orderTotal = o.final_amount || o.total_amount || 0;
-            const invSubtotal = invoiceInfo.invoice.subtotal ?? orderTotal;
-            const unbilled = Math.max(0, orderTotal - invSubtotal);
-
-            // If unbilled amount is explained by discount, ignore it
-            const discount = invoiceInfo.invoice.discount_amount || invoiceInfo.invoice.discount || 0;
-            if (unbilled > 0 && Math.abs(unbilled - discount) < 2) { // 2.0 tolerance
-              return invDue;
-            }
-
-            return invDue + unbilled;
-          })(),
-        payment_status: !invoiceInfo?.invoice
-          ? "unpaid"
-          : (() => {
-            const invTotal = invoiceInfo.invoice.total_after_discount ?? invoiceInfo.invoice.total ?? invoiceInfo.invoice.total_amount ?? 0;
-            const invSub = invoiceInfo.invoice.subtotal ?? o.final_amount ?? o.total_amount ?? 0;
-            const ordTotal = o.final_amount || o.total_amount || 0;
-            const unbilled = Math.max(0, ordTotal - invSub);
-            const effTotal = invTotal + unbilled;
-            const paid = invoiceInfo.paidAmount || 0;
-            const refunded = invoiceInfo.invoice.total_refunded_amount || 0;
-            // Net amount owed after refund
-            const netOwed = Math.max(0, effTotal - refunded);
-            // Allow small float diff (1.0)
-            return paid > 0 && paid >= (netOwed - 1) ? "paid" : paid > 0 ? "partial" : "unpaid";
-          })(),
+        // Due amount = order total - total paid across all invoices
+        due_amount: (() => {
+          const orderAmount = o.final_amount || o.total_amount || 0;
+          const invoicedAmount = invoiceInfo?.totalInvoiced || 0;
+          const paidAmount = invoiceInfo?.paidAmount || 0;
+          const refundedAmount = invoiceInfo?.totalRefunded || 0;
+          
+          // If no invoices, due = order amount
+          if (!invoiceInfo?.invoices?.length) {
+            return Math.max(0, orderAmount - paidAmount);
+          }
+          
+          // If partially invoiced, due = max(order, invoiced) - paid - refunded
+          const effectiveTotal = Math.max(orderAmount, invoicedAmount);
+          return Math.max(0, effectiveTotal - paidAmount - refundedAmount);
+        })(),
+        // Payment status based on aggregated amounts
+        payment_status: (() => {
+          if (!invoiceInfo?.invoices?.length) return "unpaid";
+          
+          const orderAmount = o.final_amount || o.total_amount || 0;
+          const invoicedAmount = invoiceInfo.totalInvoiced || 0;
+          const paidAmount = invoiceInfo.paidAmount || 0;
+          const refundedAmount = invoiceInfo.totalRefunded || 0;
+          
+          const effectiveTotal = Math.max(orderAmount, invoicedAmount);
+          const netOwed = Math.max(0, effectiveTotal - refundedAmount);
+          
+          // Allow small float diff (1.0)
+          if (paidAmount > 0 && paidAmount >= (netOwed - 1)) return "paid";
+          if (paidAmount > 0) return "partial";
+          return "unpaid";
+        })() as "unpaid" | "partial" | "paid",
 
         patient: {
           name: o.patients?.name,
@@ -537,6 +567,9 @@ id, patient_id, patient_name, status, priority, order_date, expected_date, total
           outsourced_labs: t.outsourced_labs,
           sample_type: t.test_groups?.sample_type,
           sample_color: t.test_groups?.sample_color,
+          is_billed: t.is_billed,
+          invoice_id: t.invoice_id,
+          is_canceled: t.is_canceled,
         })),
 
         // B2B account (ADDITION)
@@ -627,14 +660,20 @@ id, patient_id, patient_name, status, priority, order_date, expected_date, total
         throw orderError;
       }
 
-      // Update pending TRF attachments
+      // Update pending TRF attachments - ONLY for current user + lab + recent uploads
       const PENDING_ORDER_UUID = "00000000-0000-0000-0000-000000000000";
+      const { data: currentUser } = await supabase.auth.getUser();
+      const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+      
       const { error: updateError } = await supabase
         .from("attachments")
-        .update({ related_id: order.id })
+        .update({ related_id: order.id, order_id: order.id })
         .eq("related_table", "orders")
         .eq("related_id", PENDING_ORDER_UUID)
-        .eq("description", "Test Request Form for order creation");
+        .eq("description", "Test Request Form for order creation")
+        .eq("uploaded_by", currentUser?.user?.id) // Only current user's uploads
+        .eq("lab_id", labId) // Only current lab
+        .gte("upload_timestamp", oneHourAgo); // Only recent uploads (within 1 hour)
 
       if (updateError) console.warn("Failed to update TRF attachment:", updateError);
 
@@ -730,12 +769,20 @@ id,
 
   const handleRecordPayment = async (orderId: string) => {
     try {
-      const { data: invoice, error } = await database.invoices.getByOrderId(orderId);
-      if (error || !invoice) {
-        alert("No invoice found for this order. Please create an invoice first.");
+      // Check if invoice exists for this order
+      const { data: invoices, error } = await database.invoices.getAllByOrderId(orderId);
+      if (error || !invoices || invoices.length === 0) {
+        // No invoice exists - ask user if they want to create one first
+        const createFirst = window.confirm(
+          "No invoice found for this order.\n\nWould you like to create an invoice first?\n\nClick OK to create invoice, Cancel to go back."
+        );
+        if (createFirst) {
+          handleCreateInvoice(orderId);
+        }
         return;
       }
-      setPaymentInvoiceId(invoice.id);
+      // Pass orderId to PaymentCapture - it will fetch all invoices
+      setPaymentOrderId(orderId);
       setShowPaymentModal(true);
     } catch (error) {
       console.error("Error fetching invoice for order:", error);
@@ -827,14 +874,30 @@ id,
 
       // If final report exists, send with PDF and clinical summary
       if (report && report.report_type === "final" && report.pdf_url) {
-        const { data: orderData } = await supabase
+        const { data: orderData, error: orderFetchError } = await supabase
           .from("orders")
-          .select("ai_clinical_summary, include_clinical_summary_in_report")
+          .select("ai_clinical_summary, send_clinical_summary_to_doctor")
           .eq("id", order.id)
           .single();
 
-        const includeClinicalSummary = orderData?.include_clinical_summary_in_report || false;
+        // Debug: Log clinical summary data
+        console.log('[Dashboard InformDoctor] Order data fetch:', {
+          orderId: order.id,
+          orderFetchError,
+          send_clinical_summary_to_doctor: orderData?.send_clinical_summary_to_doctor,
+          ai_clinical_summary_exists: !!orderData?.ai_clinical_summary,
+          ai_clinical_summary_length: orderData?.ai_clinical_summary?.length || 0
+        });
+
+        // Use send_clinical_summary_to_doctor flag for WhatsApp messages
+        const includeClinicalSummary = orderData?.send_clinical_summary_to_doctor || false;
         const clinicalSummary = orderData?.ai_clinical_summary || "";
+
+        console.log('[Dashboard InformDoctor] Clinical summary decision:', {
+          includeClinicalSummary,
+          hasClinicalSummary: !!clinicalSummary,
+          willIncludeInMessage: includeClinicalSummary && !!clinicalSummary
+        });
 
         let message = `Hello ${order.doctor || "Doctor"}, \n\nThe final report for patient ${order.patient_name}(Order #${order.id.slice(
           -6
@@ -843,6 +906,9 @@ id,
 
         if (includeClinicalSummary && clinicalSummary) {
           message += `\n\n📋 Clinical Summary: \n${clinicalSummary} `;
+          console.log('[Dashboard InformDoctor] ✅ Clinical summary ADDED to message');
+        } else {
+          console.log('[Dashboard InformDoctor] ⚠️ Clinical summary NOT added - flag:', includeClinicalSummary, 'summary exists:', !!clinicalSummary);
         }
 
         message += `\n\nPlease find the attached report.\n\nThank you.`;
@@ -1126,32 +1192,42 @@ id,
     try {
       setIsSendingInvoice(order.id);
 
-      const { data: invoice, error: invoiceError } = await database.invoices.getByOrderId(order.id);
-      if (invoiceError || !invoice) {
+      // Fetch ALL invoices for this order (supports multiple invoices when tests added after billing)
+      const { data: invoices, error: invoiceError } = await database.invoices.getAllByOrderId(order.id);
+      if (invoiceError || !invoices || invoices.length === 0) {
         alert("Invoice not found. Please create an invoice first.");
         setIsSendingInvoice(null);
         return;
       }
 
-      let pdfUrl = invoice.pdf_url;
-      if (!pdfUrl) {
-        alert("Generating invoice PDF...");
+      // Calculate totals across all invoices
+      const totalInvoiced = invoices.reduce((sum, inv) => sum + (inv.total_after_discount || inv.total || 0), 0);
+      const totalPaid = invoices.reduce((sum, inv) => sum + (inv.paid_amount || 0), 0);
+      const totalBalance = totalInvoiced - totalPaid;
 
-        const { data: templates } = await database.invoiceTemplates.getAll();
-        const defaultTemplate = templates?.find((t: any) => t.is_default) || templates?.[0];
+      // Generate PDFs for all invoices that don't have one
+      const { data: templates } = await database.invoiceTemplates.getAll();
+      const defaultTemplate = templates?.find((t: any) => t.is_default) || templates?.[0];
 
-        if (!defaultTemplate) {
-          alert("No invoice template found. Please configure templates in Settings.");
-          setIsSendingInvoice(null);
-          return;
-        }
+      if (!defaultTemplate) {
+        alert("No invoice template found. Please configure templates in Settings.");
+        setIsSendingInvoice(null);
+        return;
+      }
 
-        pdfUrl = await generateInvoicePDF(invoice.id, defaultTemplate.id);
+      // Ensure all invoices have PDFs
+      const pdfUrls: string[] = [];
+      for (const invoice of invoices) {
+        let pdfUrl = invoice.pdf_url;
         if (!pdfUrl) {
-          alert("Failed to generate invoice PDF.");
-          setIsSendingInvoice(null);
-          return;
+          pdfUrl = await generateInvoicePDF(invoice.id, defaultTemplate.id);
+          if (!pdfUrl) {
+            alert(`Failed to generate PDF for invoice ${invoice.invoice_number || invoice.id.slice(0, 8)}`);
+            setIsSendingInvoice(null);
+            return;
+          }
         }
+        pdfUrls.push(pdfUrl);
       }
 
       let phone = order.patient_phone || "";
@@ -1183,42 +1259,78 @@ id,
         return;
       }
 
+      // Build message with all invoices info
+      const invoiceListText = invoices.length > 1
+        ? `\n\nInvoices (${invoices.length}):\n${invoices.map(inv => 
+            `• ${inv.invoice_number || inv.id.slice(0, 8)}: ₹${(inv.total_after_discount || inv.total || 0).toLocaleString()}`
+          ).join('\n')}\n`
+        : '';
+
+      const pdfLinksText = invoices.length > 1
+        ? pdfUrls.map((url, i) => `${invoices[i].invoice_number || invoices[i].id.slice(0, 8)}: ${url}`).join('\n\n')
+        : pdfUrls[0];
+
       const baseMessage =
-        `Dear ${order.patient_name}, \n\nYour invoice is ready.\n\n` +
-        `Total Amount: ₹${invoice.total.toLocaleString()} \n` +
-        (invoice.paid_amount > 0
-          ? `Paid: ₹${invoice.paid_amount.toLocaleString()} \nBalance Due: ₹${(invoice.total - invoice.paid_amount).toLocaleString()} \n\n`
+        `Dear ${order.patient_name}, \n\n` +
+        `Your invoice${invoices.length > 1 ? 's are' : ' is'} ready.` +
+        invoiceListText +
+        `\nTotal Amount: ₹${totalInvoiced.toLocaleString()} \n` +
+        (totalPaid > 0
+          ? `Paid: ₹${totalPaid.toLocaleString()} \nBalance Due: ₹${totalBalance.toLocaleString()} \n\n`
           : "\n") +
         `Thank you for choosing our services!`;
 
       const messageWithLink =
-        `Dear ${order.patient_name}, \n\nYour invoice is ready.Please find the invoice PDF here: \n\n${pdfUrl} \n\n` +
-        `Total Amount: ₹${invoice.total.toLocaleString()} \n` +
-        (invoice.paid_amount > 0
-          ? `Paid: ₹${invoice.paid_amount.toLocaleString()} \nBalance Due: ₹${(invoice.total - invoice.paid_amount).toLocaleString()} \n\n`
+        `Dear ${order.patient_name}, \n\n` +
+        `Your invoice${invoices.length > 1 ? 's are' : ' is'} ready. Please find the invoice PDF${invoices.length > 1 ? 's' : ''} here: \n\n${pdfLinksText} \n` +
+        invoiceListText +
+        `\nTotal Amount: ₹${totalInvoiced.toLocaleString()} \n` +
+        (totalPaid > 0
+          ? `Paid: ₹${totalPaid.toLocaleString()} \nBalance Due: ₹${totalBalance.toLocaleString()} \n\n`
           : "\n") +
         `Thank you for choosing our services!`;
 
-      // Try backend API first
+      // Try backend API first - send primary invoice PDF
       try {
         const connection = await WhatsAppAPI.getConnectionStatus();
         if (!connection.isConnected) throw new Error("WhatsApp not connected");
 
-        const result = await WhatsAppAPI.sendReportFromUrl(phone, pdfUrl, baseMessage, order.patient_name, "Invoice");
+        // Send first invoice PDF with full message
+        const result = await WhatsAppAPI.sendReportFromUrl(phone, pdfUrls[0], baseMessage, order.patient_name, "Invoice");
 
         if (result.success) {
-          try {
-            await database.invoices.recordWhatsAppSend(invoice.id, {
-              to: phone,
-              caption: baseMessage,
-              sentBy: user?.id || "",
-              sentVia: "api",
-            });
-          } catch (recordError) {
-            console.error("Failed to record invoice WhatsApp send:", recordError);
+          // Record WhatsApp send for all invoices
+          for (const invoice of invoices) {
+            try {
+              await database.invoices.recordWhatsAppSend(invoice.id, {
+                to: phone,
+                caption: baseMessage,
+                sentBy: user?.id || "",
+                sentVia: "api",
+              });
+            } catch (recordError) {
+              console.error("Failed to record invoice WhatsApp send:", recordError);
+            }
           }
 
-          alert("Invoice sent via WhatsApp successfully!");
+          // If multiple invoices, send additional PDFs
+          if (pdfUrls.length > 1) {
+            for (let i = 1; i < pdfUrls.length; i++) {
+              try {
+                await WhatsAppAPI.sendReportFromUrl(
+                  phone, 
+                  pdfUrls[i], 
+                  `Invoice ${invoices[i].invoice_number || invoices[i].id.slice(0, 8)}`,
+                  order.patient_name,
+                  "Invoice"
+                );
+              } catch (err) {
+                console.error(`Failed to send additional invoice ${i}:`, err);
+              }
+            }
+          }
+
+          alert(`Invoice${invoices.length > 1 ? 's' : ''} sent via WhatsApp successfully!`);
           fetchOrders();
           setIsSendingInvoice(null);
           return;
@@ -1230,15 +1342,18 @@ id,
       // Fallback to manual WhatsApp link
       const { success: manualSuccess } = await openWhatsAppManually(phone, messageWithLink);
       if (manualSuccess) {
-        try {
-          await database.invoices.recordWhatsAppSend(invoice.id, {
-            to: phone,
-            caption: messageWithLink,
-            sentBy: user?.id || "",
-            sentVia: "manual_link",
-          });
-        } catch (recordError) {
-          console.error("Failed to record invoice WhatsApp send:", recordError);
+        // Record WhatsApp send for all invoices
+        for (const invoice of invoices) {
+          try {
+            await database.invoices.recordWhatsAppSend(invoice.id, {
+              to: phone,
+              caption: messageWithLink,
+              sentBy: user?.id || "",
+              sentVia: "manual_link",
+            });
+          } catch (recordError) {
+            console.error("Failed to record invoice WhatsApp send:", recordError);
+          }
         }
 
         alert("WhatsApp opened. Please send the message manually.");
@@ -1688,7 +1803,7 @@ id,
                               <User className="h-4 w-4 text-blue-600 shrink-0" />
                               <span className="font-medium text-gray-900 truncate">{o.patient?.name || o.patient_name}</span>
                               <span className="text-sm text-gray-600 truncate">
-                                {(o.patient?.age || "N/A") + "y"} • {o.patient?.gender || "N/A"}
+                                {formatAge(o.patient?.age, (o.patient as any)?.age_unit)} • {o.patient?.gender || "N/A"}
                               </span>
 
                               {o.account_name && (
@@ -1798,7 +1913,7 @@ id,
                                 <div className="min-w-0 flex-1">
                                   <div className="text-lg sm:text-xl font-bold text-gray-900 truncate">{o.patient?.name || o.patient_name}</div>
                                   <div className="text-sm text-gray-600 truncate">
-                                    {(o.patient?.age || "N/A") + "y"} • {o.patient?.gender || "N/A"}
+                                    {formatAge(o.patient?.age, (o.patient as any)?.age_unit)} • {o.patient?.gender || "N/A"}
                                   </div>
                                   <div className="mt-1">
                                     <span className="text-xs text-gray-500 font-mono bg-gray-50 px-2 py-0.5 rounded border">
@@ -2168,13 +2283,19 @@ id,
                                   </>
                                 )}
 
-                                {o.billing_status === "billed" && (
+                                {/* Always show Pay button - will prompt to create invoice if needed */}
+                                {(o.due_amount || 0) > 0 && o.account_billing_mode !== 'monthly' && (
                                   <button
                                     onClick={async (e) => {
                                       e.stopPropagation();
                                       await handleRecordPayment(o.id);
                                     }}
-                                    className="inline-flex items-center px-3 py-1.5 text-sm font-medium bg-purple-600 text-white rounded-lg hover:bg-purple-700 transition-colors"
+                                    className={`inline-flex items-center px-3 py-1.5 text-sm font-medium rounded-lg transition-colors ${
+                                      o.billing_status === 'billed' || o.billing_status === 'partial'
+                                        ? 'bg-purple-600 text-white hover:bg-purple-700'
+                                        : 'bg-purple-100 text-purple-700 hover:bg-purple-200 border border-purple-300'
+                                    }`}
+                                    title={o.billing_status !== 'billed' && o.billing_status !== 'partial' ? 'Will create invoice first' : 'Record payment'}
                                   >
                                     <CreditCard className="h-4 w-4 mr-1.5" />
                                     Pay
@@ -2384,16 +2505,16 @@ id,
       }
 
       {
-        showPaymentModal && paymentInvoiceId && (
+        showPaymentModal && paymentOrderId && (
           <PaymentCapture
-            invoiceId={paymentInvoiceId}
+            orderId={paymentOrderId}
             onClose={() => {
               setShowPaymentModal(false);
-              setPaymentInvoiceId(null);
+              setPaymentOrderId(null);
             }}
             onSuccess={() => {
               setShowPaymentModal(false);
-              setPaymentInvoiceId(null);
+              setPaymentOrderId(null);
               // Small delay to ensure DB propagation
               setTimeout(() => fetchOrders(), 500);
             }}

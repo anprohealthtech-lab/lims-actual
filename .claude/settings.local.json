@@ -4,7 +4,8 @@
       "Bash(npx tsc:*)",
       "Bash(npm run build:*)",
       "Bash(grep:*)",
-      "Bash(dir:*)"
+      "Bash(dir:*)",
+      "Bash(find:*)"
     ]
   }
 }

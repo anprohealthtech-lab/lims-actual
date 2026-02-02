@@ -1,4 +1,5 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState, Fragment } from 'react';
+import { Combobox, Transition } from '@headlessui/react';
 
 import {
   CheckCircle2,
@@ -13,6 +14,16 @@ import {
   Wand2,
   ChevronLeft,
   ChevronRight,
+  ChevronDown,
+  MoreVertical,
+  Settings,
+  Layers,
+  X,
+  Image,
+  Type,
+  ZoomIn,
+  ZoomOut,
+  Maximize2,
 } from 'lucide-react';
 
 import TemplateAIConsole from '../components/TemplateStudio/TemplateAIConsole';
@@ -155,9 +166,10 @@ const parseVariantMap = (value: unknown): Record<string, string> => {
 
 const CKEDITOR_VERSION = '47.1.0';
 const CKEDITOR_SCRIPT_URL = `https://cdn.ckeditor.com/ckeditor5/${CKEDITOR_VERSION}/ckeditor5.umd.js`;
-const CKEDITOR_PREMIUM_SCRIPT_URL = `https://cdn.ckeditor.com/ckeditor5-premium-features/${CKEDITOR_VERSION}/ckeditor5-premium-features.umd.js`;
+// Premium features removed - not needed and causing errors
+// const CKEDITOR_PREMIUM_SCRIPT_URL = `https://cdn.ckeditor.com/ckeditor5-premium-features/${CKEDITOR_VERSION}/ckeditor5-premium-features.umd.js`;
 const CKEDITOR_CSS_URL = `https://cdn.ckeditor.com/ckeditor5/${CKEDITOR_VERSION}/ckeditor5.css`;
-const CKEDITOR_PREMIUM_CSS_URL = `https://cdn.ckeditor.com/ckeditor5-premium-features/${CKEDITOR_VERSION}/ckeditor5-premium-features.css`;
+// const CKEDITOR_PREMIUM_CSS_URL = `https://cdn.ckeditor.com/ckeditor5-premium-features/${CKEDITOR_VERSION}/ckeditor5-premium-features.css`;
 
 const resourcePromises: Record<string, Promise<void> | undefined> = {};
 
@@ -219,9 +231,8 @@ const ensureScript = (src: string) => {
 const loadCkeditorResources = async () => {
   await Promise.all([
     ensureStylesheet(CKEDITOR_CSS_URL),
-    ensureStylesheet(CKEDITOR_PREMIUM_CSS_URL),
     ensureScript(CKEDITOR_SCRIPT_URL),
-    ensureScript(CKEDITOR_PREMIUM_SCRIPT_URL),
+    // Premium features removed - not essential and causing errors
   ]);
 };
 
@@ -288,6 +299,7 @@ const buildPremiumEditorConfig = (
     RemoveFormat,
     SelectAll,
     ShowBlocks,
+    SourceEditing,
     SpecialCharacters,
     SpecialCharactersEssentials,
     Table,
@@ -326,7 +338,7 @@ const buildPremiumEditorConfig = (
     'selectAll',
     '|',
     ...(aiEnabled ? ['aiCommands', 'aiAssistant', '|'] : []),
-    'sourceEditingEnhanced',
+    'sourceEditing',
     'showBlocks',
     '|',
     'heading',
@@ -420,13 +432,14 @@ const buildPremiumEditorConfig = (
     Mention,
     PageBreak,
     Paragraph,
-    PasteFromOffice,
-    PasteFromOfficeEnhanced,
+    PasteFromOffice, // Free version
+    // PasteFromOfficeEnhanced, // PREMIUM - removed
     PictureEditing,
     RemoveFormat,
     SelectAll,
     ShowBlocks,
-    SourceEditingEnhanced,
+    SourceEditing, // Free version for HTML source editing
+    // SourceEditingEnhanced, // PREMIUM - removed - use SourceEditing instead
     SpecialCharacters,
     SpecialCharactersEssentials,
     Table,
@@ -441,6 +454,8 @@ const buildPremiumEditorConfig = (
   ];
 
   // Add premium plugins (conditionally if they exist from the bundle)
+  if (PasteFromOfficeEnhanced) plugins.push(PasteFromOfficeEnhanced);
+  if (SourceEditingEnhanced) plugins.push(SourceEditingEnhanced);
   if (Pagination) plugins.push(Pagination);
   if (TableOfContents) plugins.push(TableOfContents);
   if (MergeFields) plugins.push(MergeFields);
@@ -462,7 +477,7 @@ const buildPremiumEditorConfig = (
       ? ['aiAssistant', '|', 'bold', 'italic', 'subscript', 'superscript', 'alignment', '|', 'link', 'insertImage', '|', 'bulletedList', 'numberedList']
       : ['bold', 'italic', 'subscript', 'superscript', 'alignment', '|', 'link', 'insertImage', '|', 'bulletedList', 'numberedList'],
     initialData: options.initialData || '',
-    licenseKey: options.licenseKey || '',
+    licenseKey: options.licenseKey || '', // Use premium license from env
     placeholder: 'Type or paste your content here!',
     htmlSupport: {
       allow: [
@@ -794,10 +809,18 @@ const TemplateStudioCKE: React.FC = () => {
   );
   const [auditSuccessMessage, setAuditSuccessMessage] = useState<string | null>(null);
   const [auditRevertSnapshot, setAuditRevertSnapshot] = useState<{ html: string; css: string } | null>(null);
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(true); // Default to collapsed for focus mode
   const [toolbarCollapsed, setToolbarCollapsed] = useState(false);
   const [templateSearchQuery, setTemplateSearchQuery] = useState('');
+  const [testGroupQuery, setTestGroupQuery] = useState('');
   const [isReportUploadOpen, setIsReportUploadOpen] = useState(false);
+
+  // Dropdown menu states for grouped actions
+  const [showToolsMenu, setShowToolsMenu] = useState(false);
+  const [showAIMenu, setShowAIMenu] = useState(false);
+  const [showMoreMenu, setShowMoreMenu] = useState(false);
+  const [settingsPanelOpen, setSettingsPanelOpen] = useState(false);
+  const [zoomLevel, setZoomLevel] = useState(100);
 
   const PATIENT_PLACEHOLDER_OPTIONS: PlaceholderOption[] = useMemo(
     () => [
@@ -868,6 +891,13 @@ const TemplateStudioCKE: React.FC = () => {
     [LAB_META_PLACEHOLDER_OPTIONS, PATIENT_PLACEHOLDER_OPTIONS, SECTION_PLACEHOLDER_OPTIONS, SIGNATORY_PLACEHOLDER_OPTIONS]
   );
 
+  const filteredTestGroups = useMemo(() => {
+    if (testGroupQuery === '') return testGroups;
+    return testGroups.filter((group) =>
+      group.name.toLowerCase().replace(/\s+/g, '').includes(testGroupQuery.toLowerCase().replace(/\s+/g, ''))
+    );
+  }, [testGroups, testGroupQuery]);
+
   const editorContainerRef = useRef<HTMLDivElement | null>(null);
   const editorInstanceRef = useRef<any>(null);
   const htmlRef = useRef(htmlContent);
@@ -922,16 +952,16 @@ const TemplateStudioCKE: React.FC = () => {
         };
 
         const CKEDITOR = globalObject.CKEDITOR;
-        const premiumFeatures = globalObject.CKEDITOR_PREMIUM_FEATURES;
+        const premiumFeatures = globalObject.CKEDITOR_PREMIUM_FEATURES || {}; // Optional - use empty object if not available
 
-        if (!CKEDITOR?.ClassicEditor || !premiumFeatures) {
-          throw new Error('CKEditor premium bundle is not available on window.');
+        if (!CKEDITOR?.ClassicEditor) {
+          throw new Error('CKEditor is not available on window.');
         }
 
         const editorConfig = buildPremiumEditorConfig(
           {
             initialData: htmlRef.current,
-            licenseKey: ckeditorLicenseKey,
+            licenseKey: ckeditorLicenseKey || '', // Use premium license from env
             // tokenUrl removed - not using cloud services
             aiKey: ckeditorAiApiKey,
           },
@@ -1040,11 +1070,13 @@ const TemplateStudioCKE: React.FC = () => {
 
   const fetchAvailablePlaceholderOptions = useCallback(async (): Promise<PlaceholderOption[]> => {
     const aggregated: PlaceholderOption[] = [...LAB_META_PLACEHOLDER_OPTIONS];
+    let addedSectionPlaceholders = false;
 
     if (labId) {
       try {
+        const loadLabAnalytes = !templateMeta?.test_group_id;
         const [labParamsResult, brandingResult, signatureResult] = await Promise.all([
-          database.templateParameters.listLabParameters(labId),
+          loadLabAnalytes ? database.templateParameters.listLabParameters(labId) : Promise.resolve({ data: [], error: null }),
           (database as any).labBrandingAssets.getAll(labId),
           (database as any).userSignatures.getAll(user?.id, labId),
         ]);
@@ -1142,6 +1174,33 @@ const TemplateStudioCKE: React.FC = () => {
       }
 
       if (templateMeta?.test_group_id) {
+        const { data: sectionRows, error: sectionError } = await database.templateSections.getByTestGroup(
+          templateMeta.test_group_id
+        );
+
+        if (sectionError) {
+          console.warn('Template section fetch failed:', sectionError);
+        } else if (sectionRows?.length) {
+          const sectionPlaceholders = sectionRows
+            .filter((section: any) => section?.placeholder_key)
+            .map((section: any) => {
+              const rawKey = String(section.placeholder_key || '').trim();
+              const token = rawKey.startsWith('{{') ? rawKey : `{{${rawKey}}}`;
+              const label = section.section_name || toTitleCase(rawKey.replace(/{{|}}/g, '')) || 'Report Section';
+              return {
+                id: `section-${section.id || rawKey}`,
+                label,
+                placeholder: token,
+                group: 'section' as const,
+              } satisfies PlaceholderOption;
+            });
+
+          if (sectionPlaceholders.length) {
+            aggregated.push(...sectionPlaceholders);
+            addedSectionPlaceholders = true;
+          }
+        }
+
         const { data: testParams, error: testError } = await database.templateParameters.listTestGroupParameters(
           templateMeta.test_group_id
         );
@@ -1158,6 +1217,9 @@ const TemplateStudioCKE: React.FC = () => {
             // Main value placeholder (already includes _VALUE suffix from API)
             const mainOption = { ...base };
 
+            const valueType = (item.valueType || '').toString().toLowerCase();
+            const isDescriptive = ['qualitative', 'semi_quantitative', 'descriptive'].includes(valueType);
+
             // Use placeholderBase if available (new ANALYTE_CODE pattern), otherwise extract from placeholder
             // The main placeholder is already {{ANALYTE_CODE_VALUE}}, so we need the base without _VALUE
             const basePlaceholderName = item.placeholderBase
@@ -1165,13 +1227,14 @@ const TemplateStudioCKE: React.FC = () => {
               : base.placeholder.replace(/^{{|_VALUE}}$|}}$/g, '');
 
             // Generate variations matching backend RPC pattern:
-            // _UNIT, _REFERENCE (not _REF_RANGE), _FLAG, _NOTE
-            const variations = [
-              { suffix: '_UNIT', labelSuffix: 'Unit', sample: item.unit },
-              { suffix: '_REFERENCE', labelSuffix: 'Reference', sample: item.referenceRange },
-              { suffix: '_FLAG', labelSuffix: 'Flag', sample: 'High/Low' },
-              { suffix: '_NOTE', labelSuffix: 'Note', sample: 'Comments' },
-            ];
+            // _UNIT, _REFERENCE (not _REF_RANGE), _FLAG
+            const variations = isDescriptive
+              ? []
+              : [
+                { suffix: '_UNIT', labelSuffix: 'Unit', sample: item.unit },
+                { suffix: '_REFERENCE', labelSuffix: 'Reference', sample: item.referenceRange },
+                { suffix: '_FLAG', labelSuffix: 'Flag', sample: 'High/Low' },
+              ];
 
             const extras = variations.map((v) => ({
               ...base,
@@ -1188,6 +1251,10 @@ const TemplateStudioCKE: React.FC = () => {
           aggregated.push(...mappedParams);
         }
       }
+    }
+
+    if (!templateMeta?.test_group_id && !addedSectionPlaceholders) {
+      aggregated.push(...SECTION_PLACEHOLDER_OPTIONS);
     }
 
     aggregated.push(...PATIENT_PLACEHOLDER_OPTIONS);
@@ -2466,310 +2533,236 @@ const TemplateStudioCKE: React.FC = () => {
         }
 
       `}</style>
-      <div className="shrink-0 border-b border-gray-200 bg-white px-6 py-4 w-full">
-        <div className="flex flex-col gap-4">
-          <div>
-            <h1 className="text-lg font-semibold text-gray-900">Template Studio · CKEditor</h1>
-            <p className="text-xs text-gray-500">Rich text editor with AI assistance and placeholder catalog.</p>
+      {/* Compact Header - Single Row */}
+      <div className="shrink-0 border-b border-gray-200 bg-white px-4 py-2 w-full">
+        <div className="flex items-center justify-between gap-4">
+          {/* Left: Template Selector */}
+          <div className="flex items-center gap-3 min-w-0">
+            <div className="flex items-center gap-2">
+              <Layers className="h-5 w-5 text-blue-600 shrink-0" />
+              <select
+                value={selectedTemplateId || ''}
+                onChange={(event) => handleTemplateSelect(event.target.value)}
+                className="text-sm font-semibold text-gray-900 bg-transparent border-0 focus:ring-0 cursor-pointer pr-8 max-w-[250px] truncate"
+              >
+                {templates
+                  .filter((template) => {
+                    const searchLower = templateSearchQuery.toLowerCase().trim();
+                    if (!searchLower) return true;
+                    const templateName = (template.template_name || 'Untitled Template').toLowerCase();
+                    return templateName.includes(searchLower);
+                  })
+                  .map((template) => (
+                    <option key={template.id} value={template.id}>
+                      {template.template_name || 'Untitled Template'}
+                    </option>
+                  ))}
+              </select>
+            </div>
             {verificationStatusBadge ? (
-              <span className={`mt-2 inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-[11px] ${verificationStatusBadge.classes}`}>
+              <span className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-medium ${verificationStatusBadge.classes}`}>
                 <CheckCircle2 className="h-3 w-3" />
                 {verificationStatusBadge.label}
               </span>
             ) : null}
-            {!ckeditorLicenseKey ? (
-              <div className="mt-2 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-[11px] text-amber-800">
-                CKEditor license key is not configured. Set <span className="font-mono">VITE_CKEDITOR_LICENSE_KEY</span> in your deployment environment and redeploy.
-              </div>
-            ) : null}
+            {lastSavedAt && (
+              <span className="text-[10px] text-gray-400 hidden md:inline">
+                Saved {lastSavedAt.toLocaleTimeString()}
+              </span>
+            )}
           </div>
-          <div className="flex flex-wrap items-center gap-2 text-xs">
-            <button
-              type="button"
-              onClick={() => setSidebarCollapsed((v) => !v)}
-              className="inline-flex items-center gap-1 rounded-md border border-gray-300 px-3 py-1.5 font-medium text-gray-700 transition hover:bg-gray-50"
-              title={sidebarCollapsed ? 'Show Template Details' : 'Hide Template Details'}
-            >
-              {sidebarCollapsed ? (
-                <ChevronRight className="h-3.5 w-3.5" />
-              ) : (
-                <ChevronLeft className="h-3.5 w-3.5" />
-              )}
-              {sidebarCollapsed ? 'Show Details' : 'Hide Details'}
-            </button>
-            <button
-              type="button"
-              onClick={() => setToolbarCollapsed((v) => !v)}
-              className="inline-flex items-center gap-1 rounded-md border border-blue-300 bg-blue-50 px-3 py-1.5 font-medium text-blue-700 transition hover:bg-blue-100"
-              title={toolbarCollapsed ? 'Show Editor Toolbar' : 'Hide Editor Toolbar'}
-            >
-              {toolbarCollapsed ? '⬆️' : '⬇️'}
-              {toolbarCollapsed ? 'Show Toolbar' : 'Hide Toolbar'}
-            </button>
-            <button
-              type="button"
-              onClick={() => setIsSourcePreviewOpen(true)}
-              className="inline-flex items-center gap-1 rounded-md border border-gray-300 px-3 py-1.5 font-medium text-gray-700 transition hover:bg-gray-50"
-            >
-              <FileCode className="h-3.5 w-3.5" /> Source
-            </button>
-            <button
-              type="button"
-              onClick={() => setIsBuilderSidebarOpen(true)}
-              className="inline-flex items-center gap-1 rounded-md border border-blue-300 bg-blue-50 px-3 py-1.5 font-medium text-blue-700 transition hover:bg-blue-100"
-            >
-              <Sparkles className="h-3.5 w-3.5" /> Template Builder
-            </button>
-            <button
-              type="button"
-              onClick={() => setIsReportUploadOpen(true)}
-              title="Upload a report image/PDF to generate template with AI"
-              className="inline-flex items-center gap-1 rounded-md border border-violet-300 bg-violet-50 px-3 py-1.5 font-medium text-violet-700 transition hover:bg-violet-100"
-            >
-              <Upload className="h-3.5 w-3.5" /> From Report
-            </button>
-            <button
-              type="button"
-              onClick={() => setPlaceholderPickerOpen(true)}
-              className="inline-flex items-center gap-1 rounded-md border border-gray-300 px-3 py-1.5 font-medium text-gray-700 transition hover:bg-gray-50"
-            >
-              Placeholders
-            </button>
-            <button
-              type="button"
-              onClick={handleConvertToWatermark}
-              title="Select an image and click to send it to background as watermark"
-              className="inline-flex items-center gap-1 rounded-md border border-indigo-200 bg-indigo-50 px-3 py-1.5 font-medium text-indigo-700 transition hover:bg-indigo-100"
-            >
-              <svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 16V4m0 0L3 8m4-4l4 4m6 0v12m0 0l4-4m-4 4l-4-4" />
-              </svg>
-              Send to Background
-            </button>
-            <button
-              type="button"
-              onClick={handleAddImageOverlay}
-              title="Select an image and add text overlay on top of it"
-              className="inline-flex items-center gap-1 rounded-md border border-teal-200 bg-teal-50 px-3 py-1.5 font-medium text-teal-700 transition hover:bg-teal-100"
-            >
-              <svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 8h10M7 12h4m1 8l-4-4H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-3l-4 4z" />
-              </svg>
-              Add Text Overlay
-            </button>
-            <button
-              type="button"
-              onClick={() => setIsPdfPreviewOpen(true)}
-              className="inline-flex items-center gap-1 rounded-md border border-orange-200 bg-orange-50 px-3 py-1.5 font-medium text-orange-700 transition hover:bg-orange-100"
-            >
-              <Eye className="h-3.5 w-3.5" /> PDF Preview
-            </button>
-            <button
-              type="button"
-              onClick={() => setIsAiConsoleOpen(true)}
-              className="inline-flex items-center gap-1 rounded-md border border-blue-200 bg-blue-50 px-3 py-1.5 font-medium text-blue-700 transition hover:bg-blue-100"
-            >
-              <Sparkles className="h-3.5 w-3.5" /> Assistant
-            </button>
-            <button
-              type="button"
-              onClick={handleRunAudit}
-              className="inline-flex items-center gap-1 rounded-md border border-purple-200 bg-purple-50 px-3 py-1.5 font-medium text-purple-700 transition hover:bg-purple-100"
-            >
-              <Wand2 className="h-3.5 w-3.5" /> Audit
-            </button>
+
+          {/* Center: Primary Actions */}
+          <div className="flex items-center gap-1.5 text-xs">
+            {/* Save Button - Always visible */}
             <button
               type="button"
               onClick={handleSave}
               disabled={isSaving}
-              className="inline-flex items-center gap-1 rounded-md bg-emerald-600 px-3 py-1.5 font-medium text-white shadow-sm transition hover:bg-emerald-700 disabled:cursor-not-allowed disabled:bg-emerald-400"
+              className="inline-flex items-center gap-1.5 rounded-md bg-emerald-600 px-3 py-1.5 font-medium text-white shadow-sm transition hover:bg-emerald-700 disabled:cursor-not-allowed disabled:bg-emerald-400"
             >
               <Save className="h-3.5 w-3.5" />
               {isSaving ? 'Saving…' : 'Save'}
             </button>
+
+            {/* Preview Button */}
+            <button
+              type="button"
+              onClick={() => setIsPdfPreviewOpen(true)}
+              className="inline-flex items-center gap-1.5 rounded-md border border-orange-200 bg-orange-50 px-3 py-1.5 font-medium text-orange-700 transition hover:bg-orange-100"
+            >
+              <Eye className="h-3.5 w-3.5" />
+              Preview
+            </button>
+
+            {/* Zoom Controls */}
+            <div className="flex items-center gap-1 px-2 border-l border-gray-200 ml-1">
+              <button
+                type="button"
+                onClick={() => setZoomLevel(Math.max(50, zoomLevel - 25))}
+                className="p-1 hover:bg-gray-100 rounded text-gray-500 transition-colors"
+                title="Zoom Out"
+              >
+                <ZoomOut className="h-4 w-4" />
+              </button>
+              <span className="text-[10px] font-bold text-gray-500 min-w-[32px] text-center">
+                {zoomLevel}%
+              </span>
+              <button
+                type="button"
+                onClick={() => setZoomLevel(Math.min(200, zoomLevel + 25))}
+                className="p-1 hover:bg-gray-100 rounded text-gray-500 transition-colors"
+                title="Zoom In"
+              >
+                <ZoomIn className="h-4 w-4" />
+              </button>
+            </div>
+
+            {/* Tools Dropdown */}
+            <div className="relative">
+              <button
+                type="button"
+                onClick={() => { setShowToolsMenu(!showToolsMenu); setShowAIMenu(false); setShowMoreMenu(false); }}
+                className="inline-flex items-center gap-1 rounded-md border border-gray-300 px-3 py-1.5 font-medium text-gray-700 transition hover:bg-gray-50"
+              >
+                <Settings className="h-3.5 w-3.5" />
+                Tools
+                <ChevronDown className="h-3 w-3" />
+              </button>
+              {showToolsMenu && (
+                <div className="absolute top-full left-0 mt-1 w-48 bg-white border border-gray-200 rounded-lg shadow-lg z-50 py-1">
+                  <button onClick={() => { setPlaceholderPickerOpen(true); setShowToolsMenu(false); }} className="w-full px-3 py-2 text-left text-sm hover:bg-gray-50 flex items-center gap-2">
+                    <Layers className="h-4 w-4 text-gray-500" /> Placeholders
+                  </button>
+                  <button onClick={() => { setIsSourcePreviewOpen(true); setShowToolsMenu(false); }} className="w-full px-3 py-2 text-left text-sm hover:bg-gray-50 flex items-center gap-2">
+                    <FileCode className="h-4 w-4 text-gray-500" /> View Source
+                  </button>
+                  <button onClick={() => { handleConvertToWatermark(); setShowToolsMenu(false); }} className="w-full px-3 py-2 text-left text-sm hover:bg-gray-50 flex items-center gap-2">
+                    <Image className="h-4 w-4 text-gray-500" /> Send to Background
+                  </button>
+                  <button onClick={() => { handleAddImageOverlay(); setShowToolsMenu(false); }} className="w-full px-3 py-2 text-left text-sm hover:bg-gray-50 flex items-center gap-2">
+                    <Type className="h-4 w-4 text-gray-500" /> Add Text Overlay
+                  </button>
+                  <div className="border-t border-gray-100 my-1" />
+                  <button onClick={() => { setToolbarCollapsed((v) => !v); setShowToolsMenu(false); }} className="w-full px-3 py-2 text-left text-sm hover:bg-gray-50">
+                    {toolbarCollapsed ? '▲ Show Editor Toolbar' : '▼ Hide Editor Toolbar'}
+                  </button>
+                </div>
+              )}
+            </div>
+
+            {/* AI Dropdown */}
+            <div className="relative">
+              <button
+                type="button"
+                onClick={() => { setShowAIMenu(!showAIMenu); setShowToolsMenu(false); setShowMoreMenu(false); }}
+                className="inline-flex items-center gap-1 rounded-md border border-purple-300 bg-purple-50 px-3 py-1.5 font-medium text-purple-700 transition hover:bg-purple-100"
+              >
+                <Sparkles className="h-3.5 w-3.5" />
+                AI
+                <ChevronDown className="h-3 w-3" />
+              </button>
+              {showAIMenu && (
+                <div className="absolute top-full left-0 mt-1 w-52 bg-white border border-gray-200 rounded-lg shadow-lg z-50 py-1">
+                  <button onClick={() => { setIsBuilderSidebarOpen(true); setShowAIMenu(false); }} className="w-full px-3 py-2 text-left text-sm hover:bg-gray-50 flex items-center gap-2">
+                    <Sparkles className="h-4 w-4 text-blue-500" /> Template Builder
+                  </button>
+                  <button onClick={() => { setIsAiConsoleOpen(true); setShowAIMenu(false); }} className="w-full px-3 py-2 text-left text-sm hover:bg-gray-50 flex items-center gap-2">
+                    <Sparkles className="h-4 w-4 text-blue-500" /> AI Assistant
+                  </button>
+                  <button onClick={() => { setIsReportUploadOpen(true); setShowAIMenu(false); }} className="w-full px-3 py-2 text-left text-sm hover:bg-gray-50 flex items-center gap-2">
+                    <Upload className="h-4 w-4 text-violet-500" /> From Report (Upload)
+                  </button>
+                  <div className="border-t border-gray-100 my-1" />
+                  <button onClick={() => { handleRunAudit(); setShowAIMenu(false); }} className="w-full px-3 py-2 text-left text-sm hover:bg-gray-50 flex items-center gap-2">
+                    <Wand2 className="h-4 w-4 text-purple-500" /> Run AI Audit
+                  </button>
+                </div>
+              )}
+            </div>
+
+            {/* More Menu */}
+            <div className="relative">
+              <button
+                type="button"
+                onClick={() => { setShowMoreMenu(!showMoreMenu); setShowToolsMenu(false); setShowAIMenu(false); }}
+                className="inline-flex items-center gap-1 rounded-md border border-gray-300 px-2 py-1.5 font-medium text-gray-700 transition hover:bg-gray-50"
+              >
+                <MoreVertical className="h-4 w-4" />
+              </button>
+              {showMoreMenu && (
+                <div className="absolute top-full right-0 mt-1 w-48 bg-white border border-gray-200 rounded-lg shadow-lg z-50 py-1">
+                  <button onClick={() => { handleCreateTemplate(); setShowMoreMenu(false); }} className="w-full px-3 py-2 text-left text-sm hover:bg-gray-50 flex items-center gap-2">
+                    <FilePlus2 className="h-4 w-4 text-gray-500" /> New Template
+                  </button>
+                  <button
+                    onClick={() => { setIsDeleteConfirmOpen(true); setShowMoreMenu(false); }}
+                    disabled={!selectedTemplateId || templates.length <= 1}
+                    className="w-full px-3 py-2 text-left text-sm hover:bg-red-50 text-red-600 flex items-center gap-2 disabled:opacity-50"
+                  >
+                    <Trash2 className="h-4 w-4" /> Delete Template
+                  </button>
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* Right: Settings Panel Toggle */}
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setSidebarCollapsed((v) => !v)}
+              className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition ${sidebarCollapsed
+                ? 'border border-gray-300 text-gray-700 hover:bg-gray-50'
+                : 'bg-blue-600 text-white hover:bg-blue-700'
+                }`}
+              title="Template Settings & Details"
+            >
+              <Settings className="h-3.5 w-3.5" />
+              <span className="hidden sm:inline">{sidebarCollapsed ? 'Settings' : 'Hide Settings'}</span>
+            </button>
           </div>
         </div>
+
+        {/* License Warning - Compact */}
+        {!ckeditorLicenseKey && (
+          <div className="mt-2 rounded-md border border-amber-300 bg-amber-50 px-3 py-1.5 text-[11px] text-amber-800">
+            CKEditor license key not configured. Set <span className="font-mono">VITE_CKEDITOR_LICENSE_KEY</span> in your environment.
+          </div>
+        )}
       </div>
 
-      <div className="flex w-full flex-1 overflow-hidden">
-        {!sidebarCollapsed && (
-          <aside className="w-full max-w-xs shrink-0 overflow-y-auto border-r border-gray-200 bg-gray-50 px-4 py-4">
-            <div className="space-y-4 text-sm">
-              <section>
-                <div className="flex items-center justify-between">
-                  <h2 className="text-xs font-semibold uppercase tracking-wide text-gray-500">Templates</h2>
-                  <div className="flex items-center gap-1">
-                    <button
-                      type="button"
-                      onClick={() => setIsDeleteConfirmOpen(true)}
-                      disabled={!selectedTemplateId || templates.length <= 1}
-                      className="inline-flex items-center gap-1 rounded-md border border-red-300 px-2 py-1 text-[11px] font-medium text-red-600 transition hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-transparent"
-                      title={templates.length <= 1 ? "Cannot delete the only template" : "Delete current template"}
-                    >
-                      <Trash2 className="h-3 w-3" />
-                    </button>
-                    <button
-                      type="button"
-                      onClick={handleCreateTemplate}
-                      className="inline-flex items-center gap-1 rounded-md border border-gray-300 px-2 py-1 text-[11px] font-medium text-gray-600 transition hover:bg-white"
-                    >
-                      <FilePlus2 className="h-3 w-3" /> New
-                    </button>
-                  </div>
-                </div>
+      {/* Click outside to close dropdowns */}
+      {(showToolsMenu || showAIMenu || showMoreMenu) && (
+        <div
+          className="fixed inset-0 z-40"
+          onClick={() => { setShowToolsMenu(false); setShowAIMenu(false); setShowMoreMenu(false); }}
+        />
+      )}
 
-                {/* Search input for filtering templates */}
-                <input
-                  type="text"
-                  value={templateSearchQuery}
-                  onChange={(e) => setTemplateSearchQuery(e.target.value)}
-                  placeholder="Search templates..."
-                  className="mt-2 w-full rounded-md border border-gray-300 px-3 py-1.5 text-sm placeholder:text-gray-400 focus:border-blue-500 focus:outline-none focus:ring-0"
-                />
-
-                <select
-                  value={selectedTemplateId || ''}
-                  onChange={(event) => handleTemplateSelect(event.target.value)}
-                  className="mt-2 w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-0"
-                >
-                  {templates
-                    .filter((template) => {
-                      const searchLower = templateSearchQuery.toLowerCase().trim();
-                      if (!searchLower) return true;
-                      const templateName = (template.template_name || 'Untitled Template').toLowerCase();
-                      return templateName.includes(searchLower);
-                    })
-                    .map((template) => (
-                      <option key={template.id} value={template.id}>
-                        {template.template_name || 'Untitled Template'}
-                      </option>
-                    ))}
-                </select>
-                {lastSavedAt ? (
-                  <p className="mt-2 text-[11px] text-gray-500">Last saved {lastSavedAt.toLocaleString()}</p>
-                ) : null}
-                {saveMessage ? (
-                  <p className="mt-2 rounded-md border border-emerald-200 bg-emerald-50 px-3 py-1 text-[11px] text-emerald-700">
-                    {saveMessage}
-                  </p>
-                ) : null}
-                {saveError ? (
-                  <p className="mt-2 rounded-md border border-red-200 bg-red-50 px-3 py-1 text-[11px] text-red-700">
-                    {saveError}
-                  </p>
-                ) : null}
-              </section>
-
-              <section className="rounded-lg border border-gray-200 bg-white px-3 py-3">
-                <h3 className="text-xs font-semibold uppercase tracking-wide text-gray-500">Template Details</h3>
-                <div className="mt-2 space-y-3 text-sm">
-                  <div>
-                    <label className="text-[11px] font-medium text-gray-600">Name</label>
-                    <input
-                      type="text"
-                      value={metadataDraft.name}
-                      onChange={(event) =>
-                        setMetadataDraft((prev) => ({ ...prev, name: event.target.value }))
-                      }
-                      className="mt-1 w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-0"
-                    />
-                  </div>
-                  <div>
-                    <label className="text-[11px] font-medium text-gray-600">Description</label>
-                    <textarea
-                      value={metadataDraft.description}
-                      onChange={(event) =>
-                        setMetadataDraft((prev) => ({ ...prev, description: event.target.value }))
-                      }
-                      className="mt-1 h-20 w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-0"
-                    />
-                  </div>
-                  <div>
-                    <label className="text-[11px] font-medium text-gray-600">Category</label>
-                    <input
-                      type="text"
-                      value={metadataDraft.category}
-                      onChange={(event) =>
-                        setMetadataDraft((prev) => ({ ...prev, category: event.target.value }))
-                      }
-                      className="mt-1 w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-0"
-                    />
-                  </div>
-                  <div>
-                    <label className="text-[11px] font-medium text-gray-600">Linked Test Group</label>
-                    <select
-                      value={metadataDraft.testGroupId}
-                      onChange={(event) =>
-                        setMetadataDraft((prev) => ({ ...prev, testGroupId: event.target.value }))
-                      }
-                      className="mt-1 w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-0"
-                    >
-                      <option value="">Not linked</option>
-                      {testGroups.map((group) => (
-                        <option key={group.id} value={group.id}>
-                          {group.name}
-                        </option>
-                      ))}
-                    </select>
-                    {testGroupsLoading ? (
-                      <p className="mt-1 text-[11px] text-gray-500">Loading test groups…</p>
-                    ) : null}
-                    {testGroupsError ? (
-                      <p className="mt-1 text-[11px] text-red-600">{testGroupsError}</p>
-                    ) : null}
-                    {attachedTestGroupName ? (
-                      <p className="mt-1 text-[11px] text-gray-500">Linked to {attachedTestGroupName}</p>
-                    ) : null}
-                  </div>
-                  <button
-                    type="button"
-                    onClick={handleMetadataSave}
-                    disabled={metadataSaving}
-                    className="w-full rounded-md border border-gray-300 px-3 py-1.5 text-xs font-medium text-gray-700 transition hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-50"
-                  >
-                    {metadataSaving ? 'Saving…' : 'Save Details'}
-                  </button>
-                  {metadataMessage ? (
-                    <p className="rounded-md border border-emerald-200 bg-emerald-50 px-3 py-1 text-[11px] text-emerald-700">
-                      {metadataMessage}
-                    </p>
-                  ) : null}
-                  {metadataError ? (
-                    <p className="rounded-md border border-red-200 bg-red-50 px-3 py-1 text-[11px] text-red-700">
-                      {metadataError}
-                    </p>
-                  ) : null}
-                </div>
-              </section>
-
-              {auditResult ? (
-                <section className="rounded-lg border border-gray-200 bg-white px-3 py-3">
-                  <h3 className="text-xs font-semibold uppercase tracking-wide text-gray-500">Last Audit</h3>
-                  <p className="mt-2 text-sm text-gray-700">{auditResult.summary}</p>
-                  <button
-                    type="button"
-                    onClick={() => setIsAuditModalOpen(true)}
-                    className="mt-3 inline-flex items-center gap-1 rounded-md border border-purple-200 bg-purple-50 px-3 py-1 text-[11px] font-medium text-purple-700 hover:bg-purple-100"
-                  >
-                    Review audit
-                  </button>
-                </section>
-              ) : null}
-            </div>
-          </aside>
-        )}
-
-        <main className="flex-1 w-full overflow-x-auto overflow-y-auto px-6 py-6">
-
-
+      <div className="flex w-full flex-1 overflow-auto relative bg-slate-50">
+        {/* Main Editor Area - Full Width if sidebar is collapsed */}
+        <main className="flex-1 relative px-8 py-10 transition-all duration-300 min-w-0">
           {saveError ? (
             <div className="mb-4 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
               {saveError}
             </div>
           ) : null}
 
-          <div className="editor-wrapper" style={{ width: '100%' }}>
-            <div className="relative rounded-lg border border-gray-200 bg-white min-w-[800px]" style={{ width: '100%' }}>
+          <div className="editor-wrapper flex flex-col items-center pb-20 min-w-[1000px]">
+            <div
+              className="relative rounded-lg border border-gray-200 bg-white shadow-sm"
+              style={{
+                width: '1000px',
+                minWidth: '1000px',
+                transform: `scale(${zoomLevel / 100})`,
+                transformOrigin: 'top center',
+                transition: 'transform 0.2s ease-in-out',
+                // Explicitly set the space taken by the scaled editor to prevent layout jumping
+                marginRight: '0',
+                marginBottom: zoomLevel < 100 ? `calc(800px * ${(100 - zoomLevel) / 100} * -1)` : '0'
+              }}
+            >
               {editorBooting ? (
                 <div className="absolute inset-0 z-10 flex items-center justify-center bg-white/80">
                   <div className="flex items-center gap-2 text-sm text-gray-600">
@@ -2778,18 +2771,24 @@ const TemplateStudioCKE: React.FC = () => {
                   </div>
                 </div>
               ) : null}
-              <div key={selectedTemplateId || 'new-template'} ref={editorContainerRef} className="min-h-[560px] min-w-[800px]" />
+              <div key={selectedTemplateId || 'new-template'} ref={editorContainerRef} className="min-h-[700px]" />
             </div>
 
-            <div className="mt-6 min-w-[800px]">
-              <label className="text-xs font-semibold uppercase tracking-wide text-gray-500">Custom CSS (optional)</label>
-              <textarea
-                value={cssContent}
-                onChange={(event) => setCssContent(event.target.value)}
-                className="mt-2 h-40 w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-0"
-                placeholder="/* Add template-specific styles here */"
-              />
-            </div>
+            <details className="mt-8 w-full max-w-[1000px] border border-gray-200 rounded-lg bg-white overflow-hidden group shadow-sm">
+              <summary className="flex items-center gap-2 px-4 py-2 cursor-pointer hover:bg-gray-50 transition-colors list-none select-none border-b border-transparent group-open:border-gray-100">
+                <ChevronRight className="w-4 h-4 text-gray-400 group-open:rotate-90 transition-transform" />
+                <span className="text-xs font-semibold uppercase tracking-wide text-gray-600">Custom CSS (Optional)</span>
+              </summary>
+              <div className="p-4">
+                <textarea
+                  value={cssContent}
+                  onChange={(event) => setCssContent(event.target.value)}
+                  className="h-48 w-full rounded-md border border-gray-300 px-3 py-2 text-xs font-mono bg-gray-50 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                  placeholder="/* Add template-specific styles here */"
+                  spellCheck={false}
+                />
+              </div>
+            </details>
           </div>
 
           {saveMessage ? (
@@ -2798,111 +2797,294 @@ const TemplateStudioCKE: React.FC = () => {
             </p>
           ) : null}
         </main>
-      </div>
 
-      {placeholderPickerOpen ? (
-        <PlaceholderPicker
-          options={placeholderOptions}
-          onInsert={handleInsertPlaceholder}
-          onClose={() => setPlaceholderPickerOpen(false)}
-          onRefresh={loadPlaceholderOptions}
-          loading={placeholderLoading}
-          errorMessage={placeholderError}
-        />
-      ) : null}
-
-      {isSourcePreviewOpen ? (
-        <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/50 px-4">
-          <div className="w-full max-w-4xl rounded-lg border border-gray-200 bg-white shadow-xl">
-            <div className="flex items-center justify-between border-b border-gray-200 px-5 py-3">
-              <div>
-                <h2 className="text-sm font-semibold text-gray-900">Template Source Preview</h2>
-                <p className="text-[11px] text-gray-500">Copy HTML or CSS directly without leaving the editor.</p>
-              </div>
+        {/* Push-out Settings Panel */}
+        <div
+          className={`shrink-0 border-l border-gray-200 bg-white shadow-xl transition-all duration-300 ease-in-out relative z-30 ${sidebarCollapsed ? 'w-0' : 'w-80'
+            }`}
+        >
+          <div className={`w-80 h-full flex flex-col transition-opacity duration-300 ${sidebarCollapsed ? 'opacity-0' : 'opacity-100'}`}>
+            <div className="flex items-center justify-between px-4 py-3 border-b border-gray-100 bg-gray-50">
+              <h3 className="font-semibold text-gray-900">Template Settings</h3>
               <button
-                type="button"
-                onClick={() => {
-                  setIsSourcePreviewOpen(false);
-                  setSourceCopyState(null);
-                }}
-                className="rounded-md border border-gray-300 px-3 py-1.5 text-xs font-medium text-gray-600 hover:bg-gray-100"
+                onClick={() => setSidebarCollapsed(true)}
+                className="p-1 hover:bg-gray-200 rounded-full text-gray-500 transition-colors"
               >
-                Close
+                <X className="w-5 h-5" />
               </button>
             </div>
-            <div className="grid gap-4 px-5 py-4 lg:grid-cols-2">
-              <section className="flex flex-col">
-                <div className="mb-2 flex items-center justify-between">
-                  <h3 className="text-xs font-semibold uppercase tracking-wide text-gray-500">HTML</h3>
+
+            <div className="flex-1 overflow-y-auto p-4 space-y-6">
+              {/* Template Metadata Form */}
+              <section className="space-y-4">
+                <h4 className="text-xs font-semibold uppercase tracking-wide text-gray-500">General Details</h4>
+                <div className="space-y-3 text-sm">
+                  <div>
+                    <label className="block text-xs font-medium text-gray-700 mb-1">Name</label>
+                    <input
+                      type="text"
+                      value={metadataDraft.name}
+                      onChange={(event) =>
+                        setMetadataDraft((prev) => ({ ...prev, name: event.target.value }))
+                      }
+                      className="w-full rounded-md border border-gray-300 px-3 py-2 text-xs focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-medium text-gray-700 mb-1">Description</label>
+                    <textarea
+                      value={metadataDraft.description}
+                      onChange={(event) =>
+                        setMetadataDraft((prev) => ({ ...prev, description: event.target.value }))
+                      }
+                      rows={3}
+                      className="w-full rounded-md border border-gray-300 px-3 py-2 text-xs focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-medium text-gray-700 mb-1">Category</label>
+                    <input
+                      type="text"
+                      value={metadataDraft.category}
+                      onChange={(event) =>
+                        setMetadataDraft((prev) => ({ ...prev, category: event.target.value }))
+                      }
+                      className="w-full rounded-md border border-gray-300 px-3 py-2 text-xs focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-medium text-gray-700 mb-1">Linked Test Group</label>
+                    <Combobox
+                      value={testGroups.find(g => g.id === metadataDraft.testGroupId) || null}
+                      onChange={(group: TestGroupOption | null) => {
+                        setMetadataDraft(prev => ({ ...prev, testGroupId: group ? group.id : '' }));
+                      }}
+                      nullable
+                    >
+                      <div className="relative">
+                        <div className="relative w-full cursor-default overflow-hidden rounded-md border border-gray-300 bg-white text-left text-xs focus-within:ring-1 focus-within:ring-blue-500 focus-within:border-blue-500">
+                          <Combobox.Input
+                            className="w-full border-none py-2 pl-3 pr-10 text-xs leading-5 text-gray-900 focus:ring-0"
+                            displayValue={(group: TestGroupOption | null) => group?.name || ''}
+                            onChange={(event) => setTestGroupQuery(event.target.value)}
+                            placeholder="Type to search test groups..."
+                          />
+                          <Combobox.Button className="absolute inset-y-0 right-0 flex items-center pr-2">
+                            <ChevronDown className="h-4 w-4 text-gray-400" aria-hidden="true" />
+                          </Combobox.Button>
+                        </div>
+                        <Transition
+                          as={Fragment}
+                          leave="transition ease-in duration-100"
+                          leaveFrom="opacity-100"
+                          leaveTo="opacity-0"
+                          afterLeave={() => setTestGroupQuery('')}
+                        >
+                          <Combobox.Options className="absolute z-50 mt-1 max-h-60 w-full overflow-auto rounded-md bg-white py-1 text-xs shadow-lg ring-1 ring-black ring-opacity-5 focus:outline-none">
+                            <Combobox.Option
+                              value={null}
+                              className={({ active }) =>
+                                `relative cursor-default select-none py-2 pl-3 pr-4 ${active ? 'bg-blue-600 text-white' : 'text-gray-900'
+                                }`
+                              }
+                            >
+                              Not linked
+                            </Combobox.Option>
+                            {testGroupsLoading ? (
+                              <div className="relative cursor-default select-none py-2 px-4 text-gray-500">
+                                Loading...
+                              </div>
+                            ) : filteredTestGroups.length === 0 && testGroupQuery !== '' ? (
+                              <div className="relative cursor-default select-none py-2 px-4 text-gray-700">
+                                Nothing found.
+                              </div>
+                            ) : (
+                              filteredTestGroups.map((group) => (
+                                <Combobox.Option
+                                  key={group.id}
+                                  className={({ active }) =>
+                                    `relative cursor-default select-none py-2 pl-10 pr-4 ${active ? 'bg-blue-600 text-white' : 'text-gray-900'
+                                    }`
+                                  }
+                                  value={group}
+                                >
+                                  {({ selected, active }) => (
+                                    <>
+                                      <span className={`block truncate ${selected ? 'font-medium' : 'font-normal'}`}>
+                                        {group.name}
+                                      </span>
+                                      {selected ? (
+                                        <span className={`absolute inset-y-0 left-0 flex items-center pl-3 ${active ? 'text-white' : 'text-blue-600'}`}>
+                                          <CheckCircle2 className="h-4 w-4" aria-hidden="true" />
+                                        </span>
+                                      ) : null}
+                                    </>
+                                  )}
+                                </Combobox.Option>
+                              ))
+                            )}
+                          </Combobox.Options>
+                        </Transition>
+                      </div>
+                    </Combobox>
+                    {attachedTestGroupName && (
+                      <p className="mt-1 text-[10px] text-blue-600">Currently linked to: {attachedTestGroupName}</p>
+                    )}
+                  </div>
+
                   <button
                     type="button"
-                    onClick={() => handleCopySource('html')}
-                    className="rounded-md border border-gray-300 px-2 py-1 text-[11px] text-gray-600 hover:bg-gray-100"
+                    onClick={handleMetadataSave}
+                    disabled={metadataSaving}
+                    className="w-full mt-2 rounded-md bg-blue-50 border border-blue-200 px-3 py-2 text-xs font-medium text-blue-700 transition hover:bg-blue-100 disabled:opacity-50"
                   >
-                    {sourceCopyState === 'html' ? 'Copied!' : 'Copy'}
+                    {metadataSaving ? 'Saving Details…' : 'Save Details'}
                   </button>
+
+                  {metadataMessage && (
+                    <div className="flex items-center gap-2 text-[10px] text-emerald-600 bg-emerald-50 p-2 rounded border border-emerald-100">
+                      <CheckCircle2 className="w-3 h-3" /> {metadataMessage}
+                    </div>
+                  )}
                 </div>
-                <textarea
-                  value={htmlContent}
-                  readOnly
-                  spellCheck={false}
-                  className="h-64 resize-none rounded-md border border-gray-300 bg-gray-50 p-3 text-xs font-mono text-gray-800 focus:outline-none"
-                />
               </section>
-              <section className="flex flex-col">
-                <div className="mb-2 flex items-center justify-between">
-                  <h3 className="text-xs font-semibold uppercase tracking-wide text-gray-500">CSS</h3>
-                  <button
-                    type="button"
-                    onClick={() => handleCopySource('css')}
-                    className="rounded-md border border-gray-300 px-2 py-1 text-[11px] text-gray-600 hover:bg-gray-100"
-                  >
-                    {sourceCopyState === 'css' ? 'Copied!' : 'Copy'}
-                  </button>
-                </div>
-                <textarea
-                  value={cssContent}
-                  readOnly
-                  spellCheck={false}
-                  className="h-64 resize-none rounded-md border border-gray-300 bg-gray-50 p-3 text-xs font-mono text-gray-800 focus:outline-none"
-                  placeholder="/* No custom CSS yet */"
-                />
-              </section>
+
+              <hr className="border-gray-100" />
+
+              {/* Audit Summary Section */}
+              {auditResult && (
+                <section className="space-y-3">
+                  <h4 className="text-xs font-semibold uppercase tracking-wide text-gray-500">Compliance & Audit</h4>
+                  <div className="bg-purple-50 rounded-lg p-3 border border-purple-100">
+                    <div className="flex items-start gap-2">
+                      <CheckCircle2 className="w-4 h-4 text-purple-600 mt-0.5 shrink-0" />
+                      <div>
+                        <p className="text-xs font-semibold text-purple-900">Last Audit Result</p>
+                        <p className="text-xs text-purple-800 mt-1 leading-relaxed">{auditResult.summary}</p>
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setIsAuditModalOpen(true)}
+                      className="mt-3 w-full rounded border border-purple-200 bg-white px-3 py-1.5 text-[11px] font-medium text-purple-700 hover:bg-purple-50 transition-colors"
+                    >
+                      View Full Audit Report
+                    </button>
+                  </div>
+                </section>
+              )}
             </div>
           </div>
         </div>
-      ) : null}
 
-      {isA4PreviewOpen ? (
-        <div className="fixed inset-0 z-[200000] flex items-center justify-center bg-black/60 px-4">
-          <div className="h-[90vh] w-full max-w-6xl rounded-lg border border-gray-200 bg-white shadow-2xl">
-            <div className="flex items-center justify-between border-b border-gray-200 px-6 py-4">
-              <div>
-                <h2 className="text-lg font-semibold text-gray-900">A4 Full View Preview</h2>
-                <p className="text-sm text-gray-500">Complete A4 document preview with actual dimensions</p>
+        {
+          placeholderPickerOpen ? (
+            <PlaceholderPicker
+              options={placeholderOptions}
+              onInsert={handleInsertPlaceholder}
+              onClose={() => setPlaceholderPickerOpen(false)}
+              onRefresh={loadPlaceholderOptions}
+              loading={placeholderLoading}
+              errorMessage={placeholderError}
+            />
+          ) : null
+        }
+
+        {
+          isSourcePreviewOpen ? (
+            <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/50 px-4">
+              <div className="w-full max-w-4xl rounded-lg border border-gray-200 bg-white shadow-xl">
+                <div className="flex items-center justify-between border-b border-gray-200 px-5 py-3">
+                  <div>
+                    <h2 className="text-sm font-semibold text-gray-900">Template Source Preview</h2>
+                    <p className="text-[11px] text-gray-500">Copy HTML or CSS directly without leaving the editor.</p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsSourcePreviewOpen(false);
+                      setSourceCopyState(null);
+                    }}
+                    className="rounded-md border border-gray-300 px-3 py-1.5 text-xs font-medium text-gray-600 hover:bg-gray-100"
+                  >
+                    Close
+                  </button>
+                </div>
+                <div className="grid gap-4 px-5 py-4 lg:grid-cols-2">
+                  <section className="flex flex-col">
+                    <div className="mb-2 flex items-center justify-between">
+                      <h3 className="text-xs font-semibold uppercase tracking-wide text-gray-500">HTML</h3>
+                      <button
+                        type="button"
+                        onClick={() => handleCopySource('html')}
+                        className="rounded-md border border-gray-300 px-2 py-1 text-[11px] text-gray-600 hover:bg-gray-100"
+                      >
+                        {sourceCopyState === 'html' ? 'Copied!' : 'Copy'}
+                      </button>
+                    </div>
+                    <textarea
+                      value={htmlContent}
+                      readOnly
+                      spellCheck={false}
+                      className="h-64 resize-none rounded-md border border-gray-300 bg-gray-50 p-3 text-xs font-mono text-gray-800 focus:outline-none"
+                    />
+                  </section>
+                  <section className="flex flex-col">
+                    <div className="mb-2 flex items-center justify-between">
+                      <h3 className="text-xs font-semibold uppercase tracking-wide text-gray-500">CSS</h3>
+                      <button
+                        type="button"
+                        onClick={() => handleCopySource('css')}
+                        className="rounded-md border border-gray-300 px-2 py-1 text-[11px] text-gray-600 hover:bg-gray-100"
+                      >
+                        {sourceCopyState === 'css' ? 'Copied!' : 'Copy'}
+                      </button>
+                    </div>
+                    <textarea
+                      value={cssContent}
+                      readOnly
+                      spellCheck={false}
+                      className="h-64 resize-none rounded-md border border-gray-300 bg-gray-50 p-3 text-xs font-mono text-gray-800 focus:outline-none"
+                      placeholder="/* No custom CSS yet */"
+                    />
+                  </section>
+                </div>
               </div>
-              <button
-                type="button"
-                onClick={() => setIsA4PreviewOpen(false)}
-                className="rounded-md border border-gray-300 px-4 py-2 text-sm font-medium text-gray-600 hover:bg-gray-100"
-              >
-                Close
-              </button>
             </div>
+          ) : null
+        }
 
-            <div className="flex h-[calc(90vh-80px)] overflow-hidden">
-              {/* A4 Preview Container */}
-              <div className="flex-1 overflow-auto bg-gray-100 p-8">
-                <div className="mx-auto bg-white shadow-lg" style={{
-                  width: '210mm',
-                  minHeight: '297mm',
-                  padding: '20mm',
-                  position: 'relative'
-                }}>
-                  {/* Template Content with proper CSS injection */}
-                  <div
-                    dangerouslySetInnerHTML={{
-                      __html: `
+        {
+          isA4PreviewOpen ? (
+            <div className="fixed inset-0 z-[200000] flex items-center justify-center bg-black/60 px-4">
+              <div className="h-[90vh] w-full max-w-6xl rounded-lg border border-gray-200 bg-white shadow-2xl">
+                <div className="flex items-center justify-between border-b border-gray-200 px-6 py-4">
+                  <div>
+                    <h2 className="text-lg font-semibold text-gray-900">A4 Full View Preview</h2>
+                    <p className="text-sm text-gray-500">Complete A4 document preview with actual dimensions</p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setIsA4PreviewOpen(false)}
+                    className="rounded-md border border-gray-300 px-4 py-2 text-sm font-medium text-gray-600 hover:bg-gray-100"
+                  >
+                    Close
+                  </button>
+                </div>
+
+                <div className="flex h-[calc(90vh-80px)] overflow-hidden">
+                  {/* A4 Preview Container */}
+                  <div className="flex-1 overflow-auto bg-gray-100 p-8">
+                    <div className="mx-auto bg-white shadow-lg" style={{
+                      width: '210mm',
+                      minHeight: '297mm',
+                      padding: '20mm',
+                      position: 'relative'
+                    }}>
+                      {/* Template Content with proper CSS injection */}
+                      <div
+                        dangerouslySetInnerHTML={{
+                          __html: `
                         <style>
                           /* Reset and base styles for A4 preview */
                           * {
@@ -3067,181 +3249,181 @@ const TemplateStudioCKE: React.FC = () => {
                         </style>
                         ${htmlContent || '<p>No content available</p>'}
                       `
-                    }}
-                  />
-                </div>
-              </div>
-
-              {/* Information Panel */}
-              <div className="w-80 border-l border-gray-200 bg-gray-50 p-6">
-                <h3 className="text-sm font-semibold text-gray-900 mb-4">A4 Document Info</h3>
-
-                <div className="space-y-3 text-sm">
-                  <div>
-                    <dt className="font-medium text-gray-700">Paper Size</dt>
-                    <dd className="text-gray-600">A4 (210 × 297 mm)</dd>
-                  </div>
-
-                  <div>
-                    <dt className="font-medium text-gray-700">Margins</dt>
-                    <dd className="text-gray-600">20mm all sides</dd>
-                  </div>
-
-                  <div>
-                    <dt className="font-medium text-gray-700">Content Area</dt>
-                    <dd className="text-gray-600">170 × 257 mm</dd>
-                  </div>
-
-                  <div>
-                    <dt className="font-medium text-gray-700">Template</dt>
-                    <dd className="text-gray-600">{templateMeta?.template_name || 'Untitled'}</dd>
-                  </div>
-
-                  {templateMeta?.template_description && (
-                    <div>
-                      <dt className="font-medium text-gray-700">Description</dt>
-                      <dd className="text-gray-600">{templateMeta.template_description}</dd>
+                        }}
+                      />
                     </div>
-                  )}
-
-                  <div className="pt-4 border-t border-gray-200">
-                    <dt className="font-medium text-gray-700 mb-2">CSS Applied</dt>
-                    <dd className="text-xs text-gray-500 font-mono bg-gray-100 p-2 rounded">
-                      {cssContent ? 'Custom CSS active' : 'No custom CSS'}
-                    </dd>
                   </div>
 
-                  <div className="pt-4">
-                    <button
-                      type="button"
-                      onClick={() => {
-                        const printWindow = window.open('', '_blank');
-                        if (printWindow) {
-                          // Extract body content only - header/footer come from PDF.co overlay
-                          const bodyRegion = document.querySelector('[data-report-region="body"]') || editorContainerRef.current;
-                          let bodyHtml = bodyRegion?.innerHTML || 'Place body content here';
+                  {/* Information Panel */}
+                  <div className="w-80 border-l border-gray-200 bg-gray-50 p-6">
+                    <h3 className="text-sm font-semibold text-gray-900 mb-4">A4 Document Info</h3>
 
-                          // Render placeholders with sample data
-                          const sampleContext = {
-                            // Patient Details
-                            patientName: 'John Doe',
-                            patientAge: '45 Years',
-                            patientGender: 'Male',
-                            patientId: 'PID-2024-001',
-                            patientMobile: '+1 234 567 8900',
-                            patientAddress: '123 Main St, Springfield, IL',
+                    <div className="space-y-3 text-sm">
+                      <div>
+                        <dt className="font-medium text-gray-700">Paper Size</dt>
+                        <dd className="text-gray-600">A4 (210 × 297 mm)</dd>
+                      </div>
 
-                            // Visit/Order Details
-                            visitDate: '26 Nov 2025',
-                            registrationDate: '26 Nov 2025',
-                            sampleCollectedAt: '26 Nov 2025, 10:30 AM',
-                            sampleReceivedAt: '26 Nov 2025, 11:00 AM',
-                            reportDate: '26 Nov 2025, 02:30 PM',
-                            approvedAt: '26 Nov 2025, 02:45 PM',
-                            orderId: 'ORD-2024-00123',
-                            labNumber: 'LAB-123',
-                            referringDoctorName: 'Dr. Robert Smith, MD',
-                            referringDoctorId: 'DOC-555',
+                      <div>
+                        <dt className="font-medium text-gray-700">Margins</dt>
+                        <dd className="text-gray-600">20mm all sides</dd>
+                      </div>
 
-                            // Location/Lab Details (for internal logic)
-                            // Location/Lab Details (for internal logic)
-                            locationName: 'Main Diagnostic Center',
+                      <div>
+                        <dt className="font-medium text-gray-700">Content Area</dt>
+                        <dd className="text-gray-600">170 × 257 mm</dd>
+                      </div>
 
-                            // Lab Info for Header (Actual or Dummy)
-                            labName: labDetails?.name || 'City Diagnostic Labs',
-                            labAddress: labDetails?.address || '456 Healthcare Ave, Medical District, NY 10001',
-                            labPhone: labDetails?.phone || '(555) 123-4567',
-                            labEmail: labDetails?.email || 'results@citydiagnostics.com',
-                            labWebsite: labDetails?.website || 'www.citydiagnostics.com',
+                      <div>
+                        <dt className="font-medium text-gray-700">Template</dt>
+                        <dd className="text-gray-600">{templateMeta?.template_name || 'Untitled'}</dd>
+                      </div>
 
-                            // Dynamic Content Placeholders
-                            crpResult: '66',
-                            crpUnit: 'mg/L',
-                            crpRefRange: '< 5',
-                            crpRemarks: 'Elevated levels indicating inflammation.',
+                      {templateMeta?.template_description && (
+                        <div>
+                          <dt className="font-medium text-gray-700">Description</dt>
+                          <dd className="text-gray-600">{templateMeta.template_description}</dd>
+                        </div>
+                      )}
 
-                            // Analytes shown in user feedback
-                            ANALYTE_EOS_VALUE: '0.45',
-                            ANALYTE_EOS_UNIT: '10^9/L',
-                            ANALYTE_EOS_REFERENCE_RANGE: '0.04 - 0.54',
-                            ANALYTE_WBC_VALUE: '7.5',
-                            ANALYTE_WBC_UNIT: '10^9/L',
-                            ANALYTE_RBC_VALUE: '4.8',
+                      <div className="pt-4 border-t border-gray-200">
+                        <dt className="font-medium text-gray-700 mb-2">CSS Applied</dt>
+                        <dd className="text-xs text-gray-500 font-mono bg-gray-100 p-2 rounded">
+                          {cssContent ? 'Custom CSS active' : 'No custom CSS'}
+                        </dd>
+                      </div>
 
-                            // Signatures & Approvers
-                            approverSignature: 'https://upload.wikimedia.org/wikipedia/commons/thumb/e/e4/John_Hancock_Signature.svg/1200px-John_Hancock_Signature.svg.png',
-                            approvedByName: 'Dr. Sarah Johnson, PhD',
-                            approverDesignation: 'Senior Pathologist',
-                            signatoryName: 'Dr. Sarah Johnson, PhD',
-                            signatoryDesignation: 'Senior Pathologist',
-                            technicianName: 'Jane Technician',
+                      <div className="pt-4">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const printWindow = window.open('', '_blank');
+                            if (printWindow) {
+                              // Extract body content only - header/footer come from PDF.co overlay
+                              const bodyRegion = document.querySelector('[data-report-region="body"]') || editorContainerRef.current;
+                              let bodyHtml = bodyRegion?.innerHTML || 'Place body content here';
 
+                              // Render placeholders with sample data
+                              const sampleContext = {
+                                // Patient Details
+                                patientName: 'John Doe',
+                                patientAge: '45 Years',
+                                patientGender: 'Male',
+                                patientId: 'PID-2024-001',
+                                patientMobile: '+1 234 567 8900',
+                                patientAddress: '123 Main St, Springfield, IL',
 
+                                // Visit/Order Details
+                                visitDate: '26 Nov 2025',
+                                registrationDate: '26 Nov 2025',
+                                sampleCollectedAt: '26 Nov 2025, 10:30 AM',
+                                sampleReceivedAt: '26 Nov 2025, 11:00 AM',
+                                reportDate: '26 Nov 2025, 02:30 PM',
+                                approvedAt: '26 Nov 2025, 02:45 PM',
+                                orderId: 'ORD-2024-00123',
+                                labNumber: 'LAB-123',
+                                referringDoctorName: 'Dr. Robert Smith, MD',
+                                referringDoctorId: 'DOC-555',
 
+                                // Location/Lab Details (for internal logic)
+                                // Location/Lab Details (for internal logic)
+                                locationName: 'Main Diagnostic Center',
 
-                            // Common Table Headers
-                            testNameHeader: 'Test Description',
-                            resultHeader: 'Result',
-                            unitHeader: 'Units',
-                            refRangeHeader: 'Reference Range'
-                          };
+                                // Lab Info for Header (Actual or Dummy)
+                                labName: labDetails?.name || 'City Diagnostic Labs',
+                                labAddress: labDetails?.address || '456 Healthcare Ave, Medical District, NY 10001',
+                                labPhone: labDetails?.phone || '(555) 123-4567',
+                                labEmail: labDetails?.email || 'results@citydiagnostics.com',
+                                labWebsite: labDetails?.website || 'www.citydiagnostics.com',
 
-                          // Helper to generate a dummy barcode URL
-                          const barcodeUrl = 'https://bwipjs-api.metafloor.com/?bcid=code128&text=ORD-2024-00123&scale=2&height=10&incltext';
+                                // Dynamic Content Placeholders
+                                crpResult: '66',
+                                crpUnit: 'mg/L',
+                                crpRefRange: '< 5',
+                                crpRemarks: 'Elevated levels indicating inflammation.',
 
-                          // Simple placeholder replacement (regex-based for print preview)
-                          const replacePlaceholders = (html: string) => {
-                            let result = html;
+                                // Analytes shown in user feedback
+                                ANALYTE_EOS_VALUE: '0.45',
+                                ANALYTE_EOS_UNIT: '10^9/L',
+                                ANALYTE_EOS_REFERENCE_RANGE: '0.04 - 0.54',
+                                ANALYTE_WBC_VALUE: '7.5',
+                                ANALYTE_WBC_UNIT: '10^9/L',
+                                ANALYTE_RBC_VALUE: '4.8',
 
-                            // 1. Replace known context keys
-                            Object.entries(sampleContext).forEach(([key, value]) => {
-                              const regex = new RegExp(`\\{\\{${key}\\}\\}`, 'gi'); // Case insensitive replacement
-                              result = result.replace(regex, String(value));
-                            });
-
-                            // 2. Handle patterns that might be missing from context but are common
-                            result = result.replace(/\{\{lab_name\}\}/gi, sampleContext.labName);
-                            result = result.replace(/\{\{lab_address\}\}/gi, sampleContext.labAddress);
-
-                            // 3. Handle signature injection if {{approverSignature}} is used in an img src
-                            result = result.replace(/src="\{\{approverSignature\}\}"/gi, `src="${sampleContext.approverSignature}"`);
-
-                            // 4. Generic fallback for unknown ANALYTE_ placeholders to avoid ugly {{...}}
-                            result = result.replace(/\{\{ANALYTE_[A-Z0-9_]+_VALUE\}\}/g, '25.5');
-                            result = result.replace(/\{\{ANALYTE_[A-Z0-9_]+_UNIT\}\}/g, 'mg/dL');
-                            result = result.replace(/\{\{ANALYTE_[A-Z0-9_]+_REFERENCE_RANGE\}\}/g, '10.0 - 40.0');
-                            result = result.replace(/\{\{ANALYTE_[A-Z0-9_]+_REFERENCE\}\}/g, '10.0 - 40.0');
-                            result = result.replace(/\{\{ANALYTE_[A-Z0-9_]+_FLAG\}\}/g, 'Normal');
-
-                            // 5. Generic fallback for new suffixes
-                            result = result.replace(/\{\{[A-Za-z0-9_]+_UNIT\}\}/g, 'mg/dL');
-                            result = result.replace(/\{\{[A-Za-z0-9_]+_REF_RANGE\}\}/g, '10 - 40');
-                            result = result.replace(/\{\{[A-Za-z0-9_]+_FLAG\}\}/g, 'Normal');
-                            result = result.replace(/\{\{[A-Za-z0-9_]+_NOTE\}\}/g, 'Sample note');
-
-                            return result;
-                          };
+                                // Signatures & Approvers
+                                approverSignature: 'https://upload.wikimedia.org/wikipedia/commons/thumb/e/e4/John_Hancock_Signature.svg/1200px-John_Hancock_Signature.svg.png',
+                                approvedByName: 'Dr. Sarah Johnson, PhD',
+                                approverDesignation: 'Senior Pathologist',
+                                signatoryName: 'Dr. Sarah Johnson, PhD',
+                                signatoryDesignation: 'Senior Pathologist',
+                                technicianName: 'Jane Technician',
 
 
 
-                          // UNWRAP TABLES FROM FIGURES
-                          // The gray box issue is caused by CKEditor's <figure> wrapper handling
-                          const tempDiv = document.createElement('div');
-                          tempDiv.innerHTML = bodyHtml;
 
-                          const figures = tempDiv.querySelectorAll('figure.table');
-                          figures.forEach(figure => {
-                            const table = figure.querySelector('table');
-                            if (table) {
-                              figure.replaceWith(table);
-                            }
-                          });
+                                // Common Table Headers
+                                testNameHeader: 'Test Description',
+                                resultHeader: 'Result',
+                                unitHeader: 'Units',
+                                refRangeHeader: 'Reference Range'
+                              };
 
-                          bodyHtml = tempDiv.innerHTML;
+                              // Helper to generate a dummy barcode URL
+                              const barcodeUrl = 'https://bwipjs-api.metafloor.com/?bcid=code128&text=ORD-2024-00123&scale=2&height=10&incltext';
 
-                          bodyHtml = replacePlaceholders(bodyHtml);
+                              // Simple placeholder replacement (regex-based for print preview)
+                              const replacePlaceholders = (html: string) => {
+                                let result = html;
 
-                          printWindow.document.write(`
+                                // 1. Replace known context keys
+                                Object.entries(sampleContext).forEach(([key, value]) => {
+                                  const regex = new RegExp(`\\{\\{${key}\\}\\}`, 'gi'); // Case insensitive replacement
+                                  result = result.replace(regex, String(value));
+                                });
+
+                                // 2. Handle patterns that might be missing from context but are common
+                                result = result.replace(/\{\{lab_name\}\}/gi, sampleContext.labName);
+                                result = result.replace(/\{\{lab_address\}\}/gi, sampleContext.labAddress);
+
+                                // 3. Handle signature injection if {{approverSignature}} is used in an img src
+                                result = result.replace(/src="\{\{approverSignature\}\}"/gi, `src="${sampleContext.approverSignature}"`);
+
+                                // 4. Generic fallback for unknown ANALYTE_ placeholders to avoid ugly {{...}}
+                                result = result.replace(/\{\{ANALYTE_[A-Z0-9_]+_VALUE\}\}/g, '25.5');
+                                result = result.replace(/\{\{ANALYTE_[A-Z0-9_]+_UNIT\}\}/g, 'mg/dL');
+                                result = result.replace(/\{\{ANALYTE_[A-Z0-9_]+_REFERENCE_RANGE\}\}/g, '10.0 - 40.0');
+                                result = result.replace(/\{\{ANALYTE_[A-Z0-9_]+_REFERENCE\}\}/g, '10.0 - 40.0');
+                                result = result.replace(/\{\{ANALYTE_[A-Z0-9_]+_FLAG\}\}/g, 'Normal');
+
+                                // 5. Generic fallback for new suffixes
+                                result = result.replace(/\{\{[A-Za-z0-9_]+_UNIT\}\}/g, 'mg/dL');
+                                result = result.replace(/\{\{[A-Za-z0-9_]+_REF_RANGE\}\}/g, '10 - 40');
+                                result = result.replace(/\{\{[A-Za-z0-9_]+_FLAG\}\}/g, 'Normal');
+                                result = result.replace(/\{\{[A-Za-z0-9_]+_NOTE\}\}/g, 'Sample note');
+
+                                return result;
+                              };
+
+
+
+                              // UNWRAP TABLES FROM FIGURES
+                              // The gray box issue is caused by CKEditor's <figure> wrapper handling
+                              const tempDiv = document.createElement('div');
+                              tempDiv.innerHTML = bodyHtml;
+
+                              const figures = tempDiv.querySelectorAll('figure.table');
+                              figures.forEach(figure => {
+                                const table = figure.querySelector('table');
+                                if (table) {
+                                  figure.replaceWith(table);
+                                }
+                              });
+
+                              bodyHtml = tempDiv.innerHTML;
+
+                              bodyHtml = replacePlaceholders(bodyHtml);
+
+                              printWindow.document.write(`
                             <html>
                               <head>
                                 <title>Print Preview - ${templateMeta?.template_name || 'Untitled'}</title>
@@ -3503,128 +3685,129 @@ const TemplateStudioCKE: React.FC = () => {
                               </body>
                             </html>
                           `);
-                          printWindow.document.close();
-                          printWindow.print();
-                        }
-                      }}
-                      className="w-full rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700"
+                              printWindow.document.close();
+                              printWindow.print();
+                            }
+                          }}
+                          className="w-full rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700"
+                        >
+                          Print Preview
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          ) : null
+        }
+
+        {
+          isDeleteConfirmOpen ? (
+            <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 px-4">
+              <div className="w-full max-w-md rounded-lg border border-gray-200 bg-white shadow-2xl">
+                <div className="flex items-center gap-3 border-b border-gray-200 px-6 py-4">
+                  <div className="flex h-10 w-10 items-center justify-center rounded-full bg-red-100">
+                    <Trash2 className="h-5 w-5 text-red-600" />
+                  </div>
+                  <div>
+                    <h2 className="text-lg font-semibold text-gray-900">Delete Template</h2>
+                    <p className="text-sm text-gray-500">This action cannot be undone</p>
+                  </div>
+                </div>
+
+                <div className="px-6 py-4">
+                  <p className="text-sm text-gray-700 mb-4">
+                    Are you sure you want to delete the template <strong>"{templateMeta?.template_name || 'Untitled Template'}"</strong>?
+                    This will permanently remove the template and all its versions.
+                  </p>
+
+                  <div className="flex justify-end gap-3">
+                    <button
+                      type="button"
+                      onClick={() => setIsDeleteConfirmOpen(false)}
+                      disabled={isDeleting}
+                      className="rounded-md border border-gray-300 px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
                     >
-                      Print Preview
+                      Cancel
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleDeleteTemplate}
+                      disabled={isDeleting}
+                      className="inline-flex items-center gap-2 rounded-md bg-red-600 px-4 py-2 text-sm font-medium text-white hover:bg-red-700 disabled:cursor-not-allowed disabled:bg-red-400"
+                    >
+                      {isDeleting ? (
+                        <>
+                          <Loader2 className="h-4 w-4 animate-spin" />
+                          Deleting...
+                        </>
+                      ) : (
+                        <>
+                          <Trash2 className="h-4 w-4" />
+                          Delete Template
+                        </>
+                      )}
                     </button>
                   </div>
                 </div>
               </div>
             </div>
-          </div>
-        </div>
-      ) : null
-      }
+          ) : null
+        }
 
-      {
-        isDeleteConfirmOpen ? (
-          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 px-4">
-            <div className="w-full max-w-md rounded-lg border border-gray-200 bg-white shadow-2xl">
-              <div className="flex items-center gap-3 border-b border-gray-200 px-6 py-4">
-                <div className="flex h-10 w-10 items-center justify-center rounded-full bg-red-100">
-                  <Trash2 className="h-5 w-5 text-red-600" />
-                </div>
-                <div>
-                  <h2 className="text-lg font-semibold text-gray-900">Delete Template</h2>
-                  <p className="text-sm text-gray-500">This action cannot be undone</p>
-                </div>
-              </div>
+        <TemplateAIConsole
+          open={isAiConsoleOpen}
+          onClose={() => setIsAiConsoleOpen(false)}
+          editor={editorAdapter}
+          templateName={templateMeta?.template_name || 'Template'}
+          labId={labId || ''}
+          onApplied={() => setSaveMessage('AI changes applied in the editor. Review and save when ready.')}
+        />
 
-              <div className="px-6 py-4">
-                <p className="text-sm text-gray-700 mb-4">
-                  Are you sure you want to delete the template <strong>"{templateMeta?.template_name || 'Untitled Template'}"</strong>?
-                  This will permanently remove the template and all its versions.
-                </p>
+        <TemplateAIAuditModal
+          open={isAuditModalOpen}
+          onClose={() => setIsAuditModalOpen(false)}
+          loading={auditLoading}
+          result={auditResult}
+          error={auditError}
+          lastCheckedAt={templateMeta?.ai_verification_checked_at || null}
+          onImplement={handleImplementAudit}
+          implementing={auditImplementing}
+          disableImplement={!labId || !templateMeta}
+          onRevert={handleRevertAuditImplementation}
+          canRevert={!!auditRevertSnapshot}
+          successMessage={auditSuccessMessage}
+        />
 
-                <div className="flex justify-end gap-3">
-                  <button
-                    type="button"
-                    onClick={() => setIsDeleteConfirmOpen(false)}
-                    disabled={isDeleting}
-                    className="rounded-md border border-gray-300 px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
-                  >
-                    Cancel
-                  </button>
-                  <button
-                    type="button"
-                    onClick={handleDeleteTemplate}
-                    disabled={isDeleting}
-                    className="inline-flex items-center gap-2 rounded-md bg-red-600 px-4 py-2 text-sm font-medium text-white hover:bg-red-700 disabled:cursor-not-allowed disabled:bg-red-400"
-                  >
-                    {isDeleting ? (
-                      <>
-                        <Loader2 className="h-4 w-4 animate-spin" />
-                        Deleting...
-                      </>
-                    ) : (
-                      <>
-                        <Trash2 className="h-4 w-4" />
-                        Delete Template
-                      </>
-                    )}
-                  </button>
-                </div>
-              </div>
-            </div>
-          </div>
-        ) : null
-      }
+        <TemplateBuilderSidebar
+          open={isBuilderSidebarOpen}
+          onClose={() => setIsBuilderSidebarOpen(false)}
+          editor={editorAdapter}
+          templateName={templateMeta?.template_name || 'Template'}
+          labId={labId || ''}
+          testGroupId={templateMeta?.test_group_id || undefined}
+          placeholderOptions={placeholderOptions}
+          onRefreshPlaceholders={loadPlaceholderOptions}
+          placeholderLoading={placeholderLoading}
+        />
 
-      <TemplateAIConsole
-        open={isAiConsoleOpen}
-        onClose={() => setIsAiConsoleOpen(false)}
-        editor={editorAdapter}
-        templateName={templateMeta?.template_name || 'Template'}
-        labId={labId || ''}
-        onApplied={() => setSaveMessage('AI changes applied in the editor. Review and save when ready.')}
-      />
+        <ReportUploadModal
+          open={isReportUploadOpen}
+          onClose={() => setIsReportUploadOpen(false)}
+          labId={labId || ''}
+          onHtmlGenerated={handleReportUploadGenerated}
+        />
 
-      <TemplateAIAuditModal
-        open={isAuditModalOpen}
-        onClose={() => setIsAuditModalOpen(false)}
-        loading={auditLoading}
-        result={auditResult}
-        error={auditError}
-        lastCheckedAt={templateMeta?.ai_verification_checked_at || null}
-        onImplement={handleImplementAudit}
-        implementing={auditImplementing}
-        disableImplement={!labId || !templateMeta}
-        onRevert={handleRevertAuditImplementation}
-        canRevert={!!auditRevertSnapshot}
-        successMessage={auditSuccessMessage}
-      />
-
-      <TemplateBuilderSidebar
-        open={isBuilderSidebarOpen}
-        onClose={() => setIsBuilderSidebarOpen(false)}
-        editor={editorAdapter}
-        templateName={templateMeta?.template_name || 'Template'}
-        labId={labId || ''}
-        testGroupId={templateMeta?.test_group_id || undefined}
-        placeholderOptions={placeholderOptions}
-        onRefreshPlaceholders={loadPlaceholderOptions}
-        placeholderLoading={placeholderLoading}
-      />
-
-      <ReportUploadModal
-        open={isReportUploadOpen}
-        onClose={() => setIsReportUploadOpen(false)}
-        labId={labId || ''}
-        onHtmlGenerated={handleReportUploadGenerated}
-      />
-
-      <PDFPreviewModal
-        open={isPdfPreviewOpen}
-        onClose={() => setIsPdfPreviewOpen(false)}
-        htmlContent={htmlContent}
-        cssContent={cssContent}
-        labId={labId || ''}
-      />
-    </div >
+        <PDFPreviewModal
+          open={isPdfPreviewOpen}
+          onClose={() => setIsPdfPreviewOpen(false)}
+          htmlContent={htmlContent}
+          cssContent={cssContent}
+          labId={labId || ''}
+        />
+      </div>
+    </div>
   );
 };
 

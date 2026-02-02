@@ -10,6 +10,7 @@ const VerificationPage: React.FC = () => {
     const [loading, setLoading] = useState(true);
     const [status, setStatus] = useState<'verified' | 'not_found' | 'error'>('verified'); // Defaulting via logic later
     const [data, setData] = useState<any>(null);
+    const [pdfUrl, setPdfUrl] = useState<string | null>(null);
 
     useEffect(() => {
         if (!reportId) {
@@ -20,29 +21,37 @@ const VerificationPage: React.FC = () => {
 
         const verifyReport = async () => {
             try {
-                // Search in orders via sample_id or id
-                // Note: reportId from QR might be order_id or sample_id
-                const { data: order, error } = await supabase
-                    .from('orders')
-                    .select(`
-            id,
-            sample_id,
-            created_at,
-            patient:patients (
-              name,
-              gender,
-              age
-            ),
-            doctor
-          `)
-                    .or(`id.eq.${reportId},sample_id.eq.${reportId}`)
-                    .single();
+                // Call secure Edge Function instead of querying orders table directly
+                // This ensures orders table is not exposed to public
+                const { data: response, error } = await supabase.functions.invoke('verify-report', {
+                    body: { id: reportId }
+                });
 
-                if (error || !order) {
+                if (error) {
+                    console.error('Edge function error:', error);
+                    setStatus('error');
+                    setLoading(false);
+                    return;
+                }
+
+                if (response.status === 'not_found') {
                     setStatus('not_found');
-                } else {
-                    setData(order);
+                } else if (response.status === 'verified' && response.data) {
+                    // Map the response to match existing data structure
+                    setData({
+                        sample_id: response.data.sample_id,
+                        created_at: response.data.created_at,
+                        doctor: response.data.doctor,
+                        patient: {
+                            name: response.data.patient_name,
+                            gender: response.data.patient_gender,
+                            age: response.data.patient_age
+                        }
+                    });
+                    setPdfUrl(response.data.pdf_url || null);
                     setStatus('verified');
+                } else {
+                    setStatus('error');
                 }
             } catch (err) {
                 console.error('Verification error:', err);
@@ -121,11 +130,18 @@ const VerificationPage: React.FC = () => {
 
                         <div className="mt-8">
                             <button
-                                className="w-full flex items-center justify-center gap-2 bg-blue-600 hover:bg-blue-700 text-white font-semibold py-3 px-4 rounded-lg transition-colors"
-                                onClick={() => alert('Download feature coming soon via public link generation')}
+                                className="w-full flex items-center justify-center gap-2 bg-blue-600 hover:bg-blue-700 text-white font-semibold py-3 px-4 rounded-lg transition-colors disabled:bg-gray-400 disabled:cursor-not-allowed"
+                                onClick={() => {
+                                    if (pdfUrl) {
+                                        window.open(pdfUrl, '_blank');
+                                    } else {
+                                        alert('The PDF report has not been generated yet. Please contact the laboratory for assistance.');
+                                    }
+                                }}
+                                disabled={!pdfUrl}
                             >
                                 <FileText className="w-5 h-5" />
-                                View Original PDF
+                                {pdfUrl ? 'View Original PDF' : 'PDF Not Available'}
                             </button>
                         </div>
                     </div>

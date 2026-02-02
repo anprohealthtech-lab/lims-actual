@@ -187,12 +187,17 @@ const ReportDesignStudio: React.FC<ReportDesignStudioProps> = ({ orderId, onClos
                 throw new Error("Preview HTML not ready");
             }
 
+            // Get current user ID for WhatsApp integration
+            const { data: { user } } = await supabase.auth.getUser();
+            const triggeredByUserId = user?.id;
+
             // 2. Call Edge Function with HTML Payload
             const { data: funcData, error: funcError } = await supabase.functions.invoke('generate-pdf-letterhead', {
                 body: {
                     orderId,
                     htmlOverride: fullHtml, // Sending the manually crafted HTML
-                    isManualDesign: true
+                    isManualDesign: true,
+                    triggeredByUserId
                 }
             });
 

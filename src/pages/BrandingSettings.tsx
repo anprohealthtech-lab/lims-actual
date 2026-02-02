@@ -142,10 +142,11 @@ export const BrandingSettings: React.FC = () => {
         if (labData.pdf_layout_settings) {
           setPdfSettings(labData.pdf_layout_settings);
         } else {
-          // Initialize defaults
+          // Initialize defaults - use 'inherit' for headerTextColor so text remains visible
+          // regardless of letterhead design. Labs with dark header areas can set to 'white'.
           setPdfSettings({
             resultColors: { enabled: true, high: '#dc2626', low: '#ea580c', normal: '#16a34a' },
-            headerTextColor: 'white',
+            headerTextColor: 'inherit',
             headerHeight: '90px',
             footerHeight: '80px',
             margins: { top: '180px', bottom: '150px', left: '20px', right: '20px' }
@@ -867,13 +868,13 @@ export const BrandingSettings: React.FC = () => {
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1">Header Text Color</label>
                   <select
-                    value={pdfSettings?.headerTextColor || 'white'}
+                    value={pdfSettings?.headerTextColor || 'inherit'}
                     onChange={(e) => setPdfSettings({ ...pdfSettings, headerTextColor: e.target.value })}
                     className="mt-1 block w-full pl-3 pr-10 py-2 text-base border-gray-300 focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm rounded-md"
                   >
-                    <option value="white">White (Recommended for dark headers)</option>
+                    <option value="inherit">Default / Inherit (Recommended)</option>
+                    <option value="white">White (For dark letterhead headers)</option>
                     <option value="black">Black</option>
-                    <option value="inherit">Default / Inherit</option>
                   </select>
                 </div>
                 <div>

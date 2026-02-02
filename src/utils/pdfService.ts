@@ -861,10 +861,17 @@ export const renderLabTemplateHtmlBundle = (
   if (options.context) {
     const derivedContext = buildContextFromReportTemplate(options.context);
     const placeholderValues = options.context.placeholderValues ?? {};
+    const sectionContent = options.context.sectionContent ?? {};
+    const safeSectionContent = Object.fromEntries(
+      Object.entries(sectionContent)
+        .filter(([, value]) => value !== undefined && value !== null)
+        .map(([key, value]) => [key, new nunjucks.runtime.SafeString(String(value))])
+    );
     renderContext = {
       ...renderContext,
       ...derivedContext,
       ...placeholderValues,
+      ...safeSectionContent,
     };
   }
 
@@ -2304,17 +2311,6 @@ const prepareReportHtml = async (
     } catch (error) {
       console.warn('Failed to inject report extras:', error);
       // Don't fail PDF generation if extras injection fails
-    }
-  }
-
-  // Inject section content (findings, impressions, recommendations from PBS/Radiology)
-  // This replaces {{section:placeholder_key}} placeholders with actual content
-  if (context) {
-    try {
-      finalHtml = await injectSectionContent(finalHtml, context);
-    } catch (error) {
-      console.warn('Failed to inject section content:', error);
-      // Don't fail PDF generation if section injection fails
     }
   }
 

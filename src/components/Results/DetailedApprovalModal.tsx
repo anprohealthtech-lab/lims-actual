@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { supabase } from '../../utils/supabase';
+import { supabase, formatAge } from '../../utils/supabase';
 import { 
   X, FileText, Image, Download, CheckCircle, XCircle, 
   AlertTriangle, Clock, User, Calendar, Paperclip, Eye,
@@ -260,7 +260,7 @@ const DetailedApprovalModal: React.FC<DetailedApprovalModalProps> = ({
           <div>
             <h2 className="text-2xl font-bold">{testResult.test_name} - Detailed Verification</h2>
             <div className="flex items-center space-x-4 text-sm text-gray-600 mt-1">
-              <span>{testResult.patient_name} ({testResult.age}y {testResult.gender})</span>
+              <span>{testResult.patient_name} ({formatAge(testResult.age, (testResult as any).age_unit)} {testResult.gender})</span>
               <span>•</span>
               <span>Order: {testResult.order_id.slice(0, 8)}</span>
               <span>•</span>

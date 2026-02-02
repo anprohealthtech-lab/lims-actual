@@ -1438,16 +1438,33 @@ async function fetchSectionContent(
 }
 
 /**
- * Inject section content into HTML by replacing {{section:key}} placeholders
+ * Inject section content into HTML by replacing placeholders
+ * Supports {{section:key}}, {{key}}, and {{section:key}} stored as placeholder_key
  */
+function normalizeSectionKey(key: string): { rawKey: string; originalKey: string } {
+  const trimmed = (key || '').trim()
+  if (!trimmed) {
+    return { rawKey: '', originalKey: '' }
+  }
+  if (trimmed.toLowerCase().startsWith('section:')) {
+    return { rawKey: trimmed.slice(8), originalKey: trimmed }
+  }
+  return { rawKey: trimmed, originalKey: trimmed }
+}
+
 function injectSectionContent(html: string, sectionContent: Record<string, string>): string {
   if (!html || Object.keys(sectionContent).length === 0) return html
   
   let resultHtml = html
   for (const [key, content] of Object.entries(sectionContent)) {
     if (!content) continue
-    
-    const placeholder = `{{section:${key}}}`
+
+    const { rawKey, originalKey } = normalizeSectionKey(key)
+    if (!rawKey) continue
+
+    const prefixedPlaceholder = `{{section:${rawKey}}}`
+    const simplePlaceholder = `{{${rawKey}}}`
+    const originalPlaceholder = originalKey.startsWith('section:') ? `{{${originalKey}}}` : null
     
     // Preserve basic formatting: convert newlines to proper HTML paragraphs/breaks
     // Content comes from doctor input (CKEditor), preserve formatting
@@ -1466,9 +1483,15 @@ function injectSectionContent(html: string, sectionContent: Record<string, strin
     
     const wrappedContent = `<div class="section-content">${formattedContent}</div>`
     
-    // Replace all occurrences (case-insensitive)
-    const regex = new RegExp(placeholder.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi')
-    resultHtml = resultHtml.replace(regex, wrappedContent)
+    const prefixedRegex = new RegExp(prefixedPlaceholder.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi')
+    const simpleRegex = new RegExp(simplePlaceholder.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi')
+    resultHtml = resultHtml.replace(prefixedRegex, wrappedContent)
+    resultHtml = resultHtml.replace(simpleRegex, wrappedContent)
+
+    if (originalPlaceholder) {
+      const originalRegex = new RegExp(originalPlaceholder.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi')
+      resultHtml = resultHtml.replace(originalRegex, wrappedContent)
+    }
   }
   
   console.log(`📝 Injected ${Object.keys(sectionContent).length} section(s):`, Object.keys(sectionContent))
@@ -2800,20 +2823,6 @@ serve(async (req) => {
     console.log('✅ Attachments found:', attachments?.length || 0)
     
     // ========================================
-    // Step 7b: Get Section Content for Pre-defined Report Sections
-    // ========================================
-    console.log('\n📄 Step 7b: Fetching section content for placeholders...')
-    
-    // Get ALL result IDs for this order (not just ones with extras)
-    const { data: allResults } = await supabaseClient
-      .from('results')
-      .select('id')
-      .eq('order_id', orderId)
-    
-    const resultIds = (allResults || []).map((r: any) => r.id)
-    console.log(`📋 Found ${resultIds.length} result(s) for order`)
-    
-    // ========================================
     // Step 7c: Get Branding Pages (Front/Back)
     // ========================================
     console.log('\n🎨 Step 7c: Fetching front/back pages...')
@@ -2854,9 +2863,6 @@ serve(async (req) => {
       analytesByGroupKeys: Array.from(analytesByGroup.keys()),
       effectiveGroupCount
     })
-
-    // Section content map for placeholders
-    const sectionContent: Record<string, string> = {}
 
     // Helper: Select appropriate template
     const selectTemplate = (ctx: any) => {
@@ -3078,13 +3084,6 @@ serve(async (req) => {
       const dynamicCss = generateDynamicCss(pdfSettings)
       bodyHtml = buildPdfBodyDocument(renderedSections.join('\n'), (template.gjs_css || '') + '\n' + dynamicCss)
       rawHtmlForPrint = bodyHtml // Save for print version
-    }
-
-    // Inject section content ({{section:key}} placeholders)
-    if (Object.keys(sectionContent).length > 0) {
-      bodyHtml = injectSectionContent(bodyHtml, sectionContent)
-      rawHtmlForPrint = injectSectionContent(rawHtmlForPrint, sectionContent)
-      console.log('✅ Section content injected into bodyHtml and rawHtmlForPrint')
     }
 
     // Apply flag styling (color-code high/low/normal flags)

@@ -135,7 +135,7 @@ Return ONLY valid JSON with no additional text.`;
 
     // Call Gemini API to process the manual
     const geminiResponse = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-exp:generateContent?key=${geminiApiKey}`,
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${geminiApiKey}`,
       {
         method: 'POST',
         headers: {
@@ -293,100 +293,220 @@ Return ONLY valid JSON with no additional text.`;
 })
 
 function getManualProcessingPrompt(): string {
-  return `You are an AI agent specialized in converting laboratory test manuals/IFUs into structured workflows. Your task is to analyze the provided manual URI and generate two outputs:
+  return `You are an AI agent specialized in creating NABL/ISO 15189:2022 compliant laboratory workflows. Your task is to generate structured workflows that meet accreditation requirements.
 
-1. A SurveyJS workflow definition for technicians
-2. An AI processing specification for result extraction
+=== CRITICAL: ORDER CONTEXT FIELDS ===
+The workflow will receive pre-populated context from the order. Use these EXACT field names for auto-population:
 
-OUTPUT FORMAT:
+PRE-POPULATED FROM ORDER (mark as readOnly or display-only):
+- sampleId / sampleID: Sample identifier (e.g., "XXX-001")
+- patientId / patientID: Patient UUID
+- patientName: Full patient name
+- patientAge: Patient age in years
+- patientGender: "Male" / "Female" / "Other"
+- collectionDate: Sample collection date (YYYY-MM-DD)
+- collectionTime: Sample collection time (HH:MM)
+- collectorName: Name of phlebotomist/collector
+- orderId: Order UUID
+- orderNumber: Display order number
+- testGroupId: Test group UUID
+- testName: Name of the test
+- testCode: Test code
+- labId: Lab UUID
+- labName: Lab name
+- technicianId: Current user UUID
+- technicianName: Current user name
+- workingDate: Today's date (YYYY-MM-DD)
+- workingTime: Current time (HH:MM)
+
+FIELDS TECHNICIAN MUST ENTER (NEW DATA):
+- QC values (IQC low/normal/high results)
+- Calibration verification
+- Test results / measurements
+- Observations / morphology notes
+- Equipment readings
+- Lot numbers (if not tracked)
+- Verification confirmations
+
+=== OUTPUT FORMAT ===
 {
   "technician_flow_draft": {
     "ui": {
       "engine": "surveyjs",
       "template": {
         "title": "string",
+        "description": "string",
         "pages": [
           {
-            "name": "string",
-            "elements": [
-              {
-                "type": "html|text|radiogroup|checkbox|dropdown|rating|matrix|file",
-                "name": "string",
-                "title": "string",
-                "isRequired": boolean,
-                "choices": ["option1", "option2"],
-                "html": "content for html type"
-              }
-            ]
+            "name": "preAnalytical",
+            "title": "Pre-Analytical Phase",
+            "elements": [...]
+          },
+          {
+            "name": "qcVerification",
+            "title": "Quality Control Verification",
+            "elements": [...]
+          },
+          {
+            "name": "analytical",
+            "title": "Analytical Phase",
+            "elements": [...]
+          },
+          {
+            "name": "postAnalytical",
+            "title": "Post-Analytical Phase",
+            "elements": [...]
           }
-        ],
-        "showPrevButton": false,
-        "showProgressBar": "off",
-        "completedHtml": "<h3>Test completed</h3>"
+        ]
       }
     },
     "meta": {
       "owner": "string",
-      "title": "string"
+      "title": "string",
+      "nabl_compliant": true,
+      "iso_15189_version": "2022",
+      "requires_qc": true,
+      "context_fields": ["sampleId", "patientId", "collectionDate", ...]
     },
     "rules": {
       "mode": "ADVANCED",
-      "steps": [
-        {"id": "page_name", "no": 0}
-      ]
+      "steps": [...]
     }
   },
   "ai_spec_draft": {
-    "steps": [
-      {
-        "step_type": "extract_values|validate_range|calculate_result|flag_abnormal",
-        "description": "string",
-        "parameters": {
-          "target_fields": ["field1", "field2"],
-          "validation_rules": ["numeric", "range_check"],
-          "calculations": "formula if applicable"
-        }
-      }
-    ]
+    "steps": [...]
   },
   "builder_validation": {
-    "needs_attention": [
-      {
-        "description": "string",
-        "severity": "info|warning|error"
-      }
-    ]
+    "needs_attention": [...]
   },
-  "sections_provenance": {
-    "preparation_section": "page_numbers_or_sections",
-    "procedure_section": "page_numbers_or_sections", 
-    "results_section": "page_numbers_or_sections",
-    "quality_control": "page_numbers_or_sections"
+  "accreditation_checklist": {
+    "pre_analytical_documented": true,
+    "qc_verification_included": true,
+    "calibration_check_included": true,
+    "critical_value_protocol": true,
+    "result_verification_step": true,
+    "technician_signature": true,
+    "timestamp_recorded": true
   }
 }
 
-TECHNICIAN WORKFLOW REQUIREMENTS:
-- Break down test procedure into logical steps/pages
-- Include sample preparation, quality control, measurement, and result entry
-- Use appropriate SurveyJS element types (html for instructions, text for data entry, etc.)
-- Make critical steps required
-- Include visual aids and safety warnings where applicable
-- CRITICAL: Structure must match the working format with ui.engine, ui.template, meta, and rules sections
-- Use html elements for instructions/titles within page elements
-- Each page should have elements array, not separate title property
+=== NABL/ISO 15189:2022 MANDATORY REQUIREMENTS ===
 
-AI SPEC REQUIREMENTS:
-- Define steps for automated result processing
-- Include validation rules for extracted values
-- Specify calculations if the test requires computed results
-- Define abnormal value flagging criteria
-- Map to standard units and reference ranges when possible
+1. PRE-ANALYTICAL PHASE (Page 1):
+   DISPLAY (from order context - readOnly):
+   - Sample ID verification (sampleId)
+   - Patient identification (patientName, patientId)
+   - Collection date/time (collectionDate, collectionTime)
+   - Sample collector (collectorName)
 
-VALIDATION REQUIREMENTS:
-- Flag sections that need human review
-- Identify missing critical information
-- Note any ambiguities in the manual
-- Highlight regulatory compliance concerns
+   VERIFY (technician confirms):
+   - Sample adequacy check (checkbox)
+   - Sample condition acceptable (dropdown: Good/Hemolyzed/Lipemic/Clotted/Insufficient)
+   - Labeling matches patient (checkbox)
+   - Storage conditions verified (checkbox)
+   - Sample received within stability window (checkbox)
 
-Focus on accuracy, safety, and regulatory compliance. The workflow will be used in a production laboratory environment.`
+2. QUALITY CONTROL VERIFICATION (Page 2):
+   MANDATORY for accreditation:
+   - IQC run date (default to workingDate)
+   - IQC lot number (text, required)
+   - IQC Level 1 (Low) result (numeric, required)
+   - IQC Level 2 (Normal) result (numeric, required)
+   - IQC Level 3 (High) result (numeric, optional)
+   - IQC Pass/Fail for each level (auto-calculate or manual)
+   - Westgard rule violations (if any)
+   - QC accepted by (technicianName - readOnly)
+   - Calibration verified today (checkbox)
+   - Last calibration date (date field)
+
+3. ANALYTICAL PHASE (Page 3):
+   CAPTURE:
+   - Test start time (auto-populate workingTime)
+   - Analyzer/Equipment used (dropdown or text)
+   - Reagent lot number (text)
+   - Reagent expiry verified (checkbox)
+   - Test result value(s) (numeric, required)
+   - Units (display from test config)
+   - Any observations during testing (textarea)
+   - Test completion time (time field)
+
+4. POST-ANALYTICAL PHASE (Page 4):
+   VERIFICATION:
+   - Result within expected range (auto-flag based on reference)
+   - Critical value check (if applicable)
+   - If critical: immediate notification required (checkbox + whom notified)
+   - Previous patient result (if available, display)
+   - Delta check passed (if configured)
+   - Result reviewed by (technicianName)
+   - Ready for authorization (checkbox)
+   - Additional comments (textarea)
+
+=== ELEMENT TYPE GUIDELINES ===
+
+For DISPLAY fields (from context):
+{
+  "type": "html",
+  "name": "sampleInfo",
+  "html": "<div class='context-display'><strong>Sample ID:</strong> {sampleId}<br/><strong>Patient:</strong> {patientName}</div>"
+}
+
+For VERIFICATION checkpoints:
+{
+  "type": "checkbox",
+  "name": "sampleAdequate",
+  "title": "Sample Adequacy Verified",
+  "choices": [{"value": "verified", "text": "I confirm sample is adequate for testing"}],
+  "isRequired": true
+}
+
+For NUMERIC results:
+{
+  "type": "text",
+  "name": "resultValue",
+  "title": "Test Result",
+  "inputType": "number",
+  "isRequired": true,
+  "validators": [{"type": "numeric", "text": "Must be a valid number"}]
+}
+
+For QC entries:
+{
+  "type": "text",
+  "name": "iqcLevel1",
+  "title": "IQC Level 1 (Low) Result",
+  "inputType": "number",
+  "isRequired": true,
+  "validators": [{"type": "numeric"}]
+}
+
+=== AI SPEC FOR RESULT PROCESSING ===
+
+Include steps for:
+1. extract_values: Pull numeric results from workflow
+2. validate_qc: Check IQC values against targets
+3. apply_westgard: Evaluate Westgard rules
+4. validate_range: Check patient result against reference range
+5. flag_critical: Flag critical values for immediate action
+6. calculate_result: Any derived calculations (e.g., eGFR from creatinine)
+7. map_to_analyte: Map to lab's analyte IDs
+
+=== VALIDATION REQUIREMENTS ===
+
+Flag as ERRORS:
+- Missing QC verification step
+- No sample identification verification
+- No result entry field
+- No technician signature/confirmation
+
+Flag as WARNINGS:
+- Missing critical value protocol
+- No calibration verification
+- Missing lot number tracking
+- No previous result comparison
+
+Flag as INFO:
+- Optional fields not included
+- Default values used
+
+Focus on creating workflows that will pass NABL/ISO 15189:2022 audit requirements while being practical for daily lab use.`
 }

@@ -7,7 +7,7 @@ serve(async (req) => {
   try {
     const { file_content, file_type, test_metadata } = await req.json()
     
-    const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash-exp" })
+    const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" })
     
     const systemPrompt = `You are an expert LIMS workflow builder creating modular, AI-powered testing workflows.
 
@@ -50,7 +50,7 @@ OUTPUT FORMAT:
           "element": "element_name",
           "event": "file_uploaded"
         },
-        "model": "gemini-2.0-flash-exp",
+        "model": "gemini-2.5-flash",
         "temperature": 0.1,
         "custom_prompt": "Detailed prompt with {{variables}}",
         "analysis_targets": [

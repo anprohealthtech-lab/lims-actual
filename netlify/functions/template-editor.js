@@ -32,22 +32,20 @@ const PROMPT_INTRO = `You are an expert HTML template assistant for laboratory r
 
 You receive:
 - currentHtml: the existing HTML template (can be empty for new templates).
-- currentCss: ignore this - we do NOT use CSS in output anymore.
+- currentCss: optional CSS string for the template.
 - instructions: user instructions describing desired modifications OR new template request.
 
 MODES:
 1. MODIFY MODE: If currentHtml has content, modify it according to instructions.
 2. CREATE MODE: If currentHtml is empty or minimal, create a new template from scratch based on instructions.
 
-Return JSON with { html: string, css: "", summary?: string, warnings?: string[] }.
+Return JSON with { html: string, css: string, summary?: string, warnings?: string[] }.
 
-CRITICAL: CSS-FREE OUTPUT RULES
-- NEVER include <style> tags or blocks
-- NEVER include inline CSS (style="...")
-- NEVER include inline colors, fonts, backgrounds, or theme styles
-- Use ONLY structural HTML attributes: width, colspan, rowspan, align, valign
-- Use semantic class names for styling hooks (CSS is added by lab in editor)
-- Return css field as empty string: css: ""
+CSS RULES:
+- You MAY return a css string in the json response.
+- If instructions ask for styling (colors, fonts, layout updates), put the CSS rules in the css field.
+- DO NOT include <style> tags in the html field. Put the CSS content in the css field.
+- Use semantic class names for styling hooks.
 
 CRITICAL SECURITY RULES (MUST FOLLOW):
 - NEVER include <script> tags in the HTML
@@ -67,6 +65,16 @@ REQUIRED CLASS NAMES (use these for styling hooks):
 - .report-footer - Footer section
 - .signature-block - Signature area
 - .flag-high, .flag-low, .flag-normal - Result flag indicators
+- .method-name - Test methodology/method name (use inside section headers)
+
+METHOD NAME EXAMPLE:
+To add a test method under a section header, use:
+<tr class="section-header">
+  <td colspan="5">
+    <strong>BLOOD COUNT AND INDICES</strong>
+    <span class="method-name">Electrical Impedance Principle (Coulter Principle)</span>
+  </td>
+</tr>
 
 ═══════════════════════════════════════════════════════════════════════════════
 CRITICAL: PLACEHOLDER NAMING - USE ONLY THESE EXACT NAMES
@@ -189,7 +197,7 @@ CRITICAL: When fixing issues, ADD what's missing, don't REMOVE what's present.
 
 If the request is unclear, respond with a summary asking for clarification and leave html empty.
 
-IMPORTANT: Your response must be valid JSON. The css field must be an empty string "".`;
+IMPORTANT: Your response must be valid JSON. The css field can contain detailed CSS rules.`;
 
 const GEMINI_MODEL = 'gemini-2.0-flash';
 
@@ -226,7 +234,7 @@ function sanitizeResponse(candidate) {
     if (foundPatterns.length > 0) {
       console.warn('Found forbidden patterns in HTML:', foundPatterns);
       console.warn('HTML preview (first 500 chars):', sanitized.html.substring(0, 500));
-      
+
       sanitized.warnings = [
         ...(Array.isArray(sanitized.warnings) ? sanitized.warnings : []),
         `AI response contained potentially unsafe markup (${foundPatterns.join(', ')}) and was removed.`,
@@ -444,7 +452,7 @@ IMPORTANT: Only use the analyte placeholders listed above. Do NOT invent new ana
       };
     }
 
-  let candidatePayload = extractCandidatePayload(parsed);
+    let candidatePayload = extractCandidatePayload(parsed);
     if (!candidatePayload) {
       // Fallback: try to extract a JSON object embedded anywhere inside the raw response text
       try {
@@ -470,7 +478,7 @@ IMPORTANT: Only use the analyte placeholders listed above. Do NOT invent new ana
     console.log('Has HTML:', !!candidatePayload.html);
     console.log('Has CSS:', !!candidatePayload.css);
     console.log('Summary:', candidatePayload.summary);
-    
+
     // Log the full HTML response for debugging
     if (candidatePayload.html) {
       console.log('=== FULL HTML RESPONSE (first 2000 chars) ===');

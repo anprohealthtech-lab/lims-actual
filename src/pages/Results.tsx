@@ -7,7 +7,7 @@ import {
   RefreshCw
 } from 'lucide-react';
 import { Result, initializeStorage } from '../utils/localStorage';
-import { database, supabase } from '../utils/supabase';
+import { database, supabase, formatAge } from '../utils/supabase';
 import { useAuth } from '../contexts/AuthContext';
 import { hasAbnormalFlags } from '../utils/flagCalculation';
 
@@ -863,7 +863,7 @@ const Results: React.FC = () => {
                         />
                         <div className="font-medium text-gray-900">{r.patientName}</div>
                         {typeof r.age === 'number' && (
-                          <div className="text-xs text-gray-500">• {r.age}y</div>
+                          <div className="text-xs text-gray-500">• {formatAge(r.age, (r as any).age_unit)}</div>
                         )}
                       </div>
                       <div className="text-xs text-gray-500">{r.sampleId || 'No Sample'}</div>
@@ -1128,7 +1128,7 @@ const Results: React.FC = () => {
                         />
                         <div className="font-medium text-gray-900">{r.patientName}</div>
                         {typeof r.age === 'number' && (
-                          <div className="text-xs text-gray-500">• {r.age}y</div>
+                          <div className="text-xs text-gray-500">• {formatAge(r.age, (r as any).age_unit)}</div>
                         )}
                       </div>
                       <div className="text-xs text-gray-500">{r.sampleId || 'No Sample'}</div>

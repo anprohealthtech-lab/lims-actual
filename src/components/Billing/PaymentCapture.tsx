@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { X, Check } from 'lucide-react';
+import { X, Check, FileText } from 'lucide-react';
 import { database } from '../../utils/supabase';
 
 interface Payment {
@@ -11,19 +11,23 @@ interface Payment {
   location_id?: string | null;
   account_id?: string | null;
   created_at: string;
+  invoice_id?: string;
 }
 
 interface PaymentCaptureProps {
-  invoiceId: string;
+  invoiceId?: string;  // Single invoice mode
+  orderId?: string;    // Multi-invoice mode - fetches all invoices for order
   onClose: () => void;
   onSuccess: () => void;
 }
 
-const PaymentCapture: React.FC<PaymentCaptureProps> = ({ invoiceId, onClose, onSuccess }) => {
+const PaymentCapture: React.FC<PaymentCaptureProps> = ({ invoiceId, orderId, onClose, onSuccess }) => {
   const [loading, setLoading] = useState(true);
-  const [invoice, setInvoice] = useState<any>(null); // Use any for now to avoid type issues
+  const [invoices, setInvoices] = useState<any[]>([]); // All invoices for the order
+  const [primaryInvoice, setPrimaryInvoice] = useState<any>(null); // Most recent invoice for display
   const [payments, setPayments] = useState<Payment[]>([]);
   const [processing, setProcessing] = useState(false);
+  const [selectedInvoiceId, setSelectedInvoiceId] = useState<string>(''); // Which invoice to record payment against
 
   // Display bill-to label - simplified for now
   const billTo = { kind: 'Self', name: '' };
@@ -37,23 +41,61 @@ const PaymentCapture: React.FC<PaymentCaptureProps> = ({ invoiceId, onClose, onS
 
   useEffect(() => {
     loadInvoiceAndPayments();
-  }, [invoiceId]);
+  }, [invoiceId, orderId]);
 
   const loadInvoiceAndPayments = async () => {
     try {
       setLoading(true);
-      const { data: invoiceData, error: invoiceError } = await database.invoices.getById(invoiceId);
-      if (invoiceError) throw invoiceError;
-      setInvoice(invoiceData as any);
-
-      const { data: paymentsData, error: paymentsError } = await database.payments.getByInvoiceId(invoiceId);
-      if (paymentsError) throw paymentsError;
-      setPayments((paymentsData as any[]) || []);
-
-      if (invoiceData) {
-        const totalPaid = (paymentsData || []).reduce((sum: number, p: any) => sum + (p.amount || 0), 0);
-        const remaining = (invoiceData.total_after_discount || invoiceData.total) - totalPaid;
-        setAmount(Math.max(0, remaining).toString());
+      
+      let allInvoices: any[] = [];
+      let allPayments: Payment[] = [];
+      
+      if (orderId) {
+        // Multi-invoice mode: fetch ALL invoices for this order
+        const { data: invoicesData, error: invoicesError } = await database.invoices.getAllByOrderId(orderId);
+        if (invoicesError) throw invoicesError;
+        allInvoices = invoicesData || [];
+        
+        // Fetch payments for each invoice
+        for (const inv of allInvoices) {
+          const { data: invPayments } = await database.payments.getByInvoiceId(inv.id);
+          if (invPayments) {
+            allPayments.push(...(invPayments as Payment[]).map(p => ({ ...p, invoice_id: inv.id })));
+          }
+        }
+      } else if (invoiceId) {
+        // Single invoice mode
+        const { data: invoiceData, error: invoiceError } = await database.invoices.getById(invoiceId);
+        if (invoiceError) throw invoiceError;
+        if (invoiceData) allInvoices = [invoiceData];
+        
+        const { data: paymentsData } = await database.payments.getByInvoiceId(invoiceId);
+        allPayments = (paymentsData as Payment[]) || [];
+      }
+      
+      setInvoices(allInvoices);
+      setPrimaryInvoice(allInvoices[0] || null);
+      setPayments(allPayments);
+      
+      // Default to the invoice with highest remaining balance
+      if (allInvoices.length > 0) {
+        // Find invoice with most remaining balance
+        let bestInvoice = allInvoices[0];
+        let maxBalance = 0;
+        
+        for (const inv of allInvoices) {
+          const invPayments = allPayments.filter(p => p.invoice_id === inv.id);
+          const invPaid = invPayments.reduce((sum, p) => sum + (p.amount || 0), 0);
+          const invTotal = inv.total_after_discount || inv.total || 0;
+          const invBalance = invTotal - invPaid;
+          if (invBalance > maxBalance) {
+            maxBalance = invBalance;
+            bestInvoice = inv;
+          }
+        }
+        
+        setSelectedInvoiceId(bestInvoice.id);
+        setAmount(Math.max(0, maxBalance).toString());
       }
     } catch (err) {
       console.error('Error loading invoice/payments', err);
@@ -63,10 +105,20 @@ const PaymentCapture: React.FC<PaymentCaptureProps> = ({ invoiceId, onClose, onS
     }
   };
 
+  // Aggregate totals across all invoices
+  const totalInvoiced = invoices.reduce((sum, inv) => sum + (inv.total_after_discount || inv.total || 0), 0);
   const totalPaid = payments.reduce((sum, p) => sum + p.amount, 0);
-  const invoiceTotal = (invoice?.total_after_discount ?? invoice?.total ?? 0);
-  const balance = invoiceTotal - totalPaid;
-  const isFullyPaid = balance <= 0.0001;
+  const totalBalance = totalInvoiced - totalPaid;
+  const isFullyPaid = totalBalance <= 0.0001;
+
+  // Get balance for selected invoice
+  const getInvoiceBalance = (invId: string) => {
+    const inv = invoices.find(i => i.id === invId);
+    if (!inv) return 0;
+    const invPayments = payments.filter(p => p.invoice_id === invId);
+    const invPaid = invPayments.reduce((sum, p) => sum + (p.amount || 0), 0);
+    return (inv.total_after_discount || inv.total || 0) - invPaid;
+  };
 
   const methodChoices: Payment['payment_method'][] = ['cash', 'card', 'upi', 'bank'];
 
@@ -78,8 +130,10 @@ const PaymentCapture: React.FC<PaymentCaptureProps> = ({ invoiceId, onClose, onS
       alert('Please enter a valid amount');
       return;
     }
-    if (amt > balance) {
-      alert(`Payment amount cannot exceed balance of ₹${balance.toFixed(2)}`);
+    
+    const selectedBalance = getInvoiceBalance(selectedInvoiceId);
+    if (amt > selectedBalance + 0.01) {
+      alert(`Payment amount cannot exceed invoice balance of ₹${selectedBalance.toFixed(2)}`);
       return;
     }
     if (paymentMethod !== 'cash' && !paymentReference) {
@@ -89,13 +143,14 @@ const PaymentCapture: React.FC<PaymentCaptureProps> = ({ invoiceId, onClose, onS
 
     setProcessing(true);
     try {
+      const selectedInvoice = invoices.find(i => i.id === selectedInvoiceId);
       const payload = {
-        invoice_id: invoiceId,
+        invoice_id: selectedInvoiceId,
         amount: amt,
         payment_method: paymentMethod,
         payment_reference: paymentReference || null,
         payment_date: paymentDate,
-        location_id: paymentMethod === 'cash' ? (invoice?.location_id ?? null) : null,
+        location_id: paymentMethod === 'cash' ? (selectedInvoice?.location_id ?? null) : null,
         notes: notes || null,
       };
 
@@ -112,7 +167,7 @@ const PaymentCapture: React.FC<PaymentCaptureProps> = ({ invoiceId, onClose, onS
     }
   };
 
-  if (loading || !invoice) {
+  if (loading || invoices.length === 0) {
     return (
       <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
         <div className="bg-white rounded-lg p-6">
@@ -132,34 +187,45 @@ const PaymentCapture: React.FC<PaymentCaptureProps> = ({ invoiceId, onClose, onS
           </button>
         </div>
 
-        {/* Invoice Summary */}
+        {/* Invoice Summary - show all invoices if multiple */}
         <div className="bg-gray-50 p-4 rounded-lg mb-6">
+          {invoices.length > 1 && (
+            <div className="mb-3 pb-3 border-b border-gray-200">
+              <div className="flex items-center gap-2 text-sm text-blue-700 bg-blue-50 px-3 py-2 rounded-lg">
+                <FileText className="w-4 h-4" />
+                <span className="font-medium">This order has {invoices.length} invoices (tests added after initial billing)</span>
+              </div>
+            </div>
+          )}
+          
           <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
             <div>
-              <div className="text-sm text-gray-600">Invoice #</div>
-              <div className="font-medium">{invoice.id.slice(0, 8)}</div>
+              <div className="text-sm text-gray-600">{invoices.length > 1 ? 'Invoices' : 'Invoice #'}</div>
+              <div className="font-medium">
+                {invoices.length > 1 
+                  ? invoices.map(inv => inv.invoice_number || inv.id.slice(0, 8)).join(', ')
+                  : (primaryInvoice?.invoice_number || primaryInvoice?.id?.slice(0, 8))
+                }
+              </div>
             </div>
             <div>
               <div className="text-sm text-gray-600">Patient</div>
-              <div className="font-medium">{invoice.patient_name}</div>
+              <div className="font-medium">{primaryInvoice?.patient_name}</div>
             </div>
             <div>
-              <div className="text-sm text-gray-600">Invoice Amount</div>
-              <div className="font-medium">
-                {invoice.discount && invoice.discount > 0 ? (
-                  <div className="flex flex-col">
-                    <span className="line-through text-gray-400 text-xs">₹{(invoice.subtotal || invoice.total_before_discount || invoice.total)?.toFixed(2)}</span>
-                    <span className="text-green-600 font-bold">₹{invoiceTotal.toFixed(2)}</span>
-                    <span className="text-xs text-green-600">({invoice.total_discount || invoice.discount} off)</span>
-                  </div>
-                ) : (
-                  <span>₹{invoiceTotal.toFixed(2)}</span>
+              <div className="text-sm text-gray-600">{invoices.length > 1 ? 'Total Amount' : 'Invoice Amount'}</div>
+              <div className="font-medium text-lg">
+                <span className="text-green-600 font-bold">₹{totalInvoiced.toFixed(2)}</span>
+                {invoices.length > 1 && (
+                  <span className="text-xs text-gray-500 block">
+                    ({invoices.map(inv => `₹${(inv.total_after_discount || inv.total || 0).toFixed(0)}`).join(' + ')})
+                  </span>
                 )}
               </div>
             </div>
             <div>
               <div className="text-sm text-gray-600">Payment Type</div>
-              <div className="font-medium capitalize">{invoice.payment_type || 'self'}</div>
+              <div className="font-medium capitalize">{primaryInvoice?.payment_type || 'self'}</div>
             </div>
           </div>
 
@@ -173,21 +239,21 @@ const PaymentCapture: React.FC<PaymentCaptureProps> = ({ invoiceId, onClose, onS
           </div>
         </div>
 
-        {/* Payment Progress */}
+        {/* Payment Progress - shows total across all invoices */}
         <div className="mb-6">
           <div className="flex justify-between mb-2">
             <span className="text-sm font-medium text-gray-700">Payment Progress</span>
-            <span className="text-sm text-gray-500">₹{totalPaid.toFixed(2)} / ₹{invoiceTotal.toFixed(2)}</span>
+            <span className="text-sm text-gray-500">₹{totalPaid.toFixed(2)} / ₹{totalInvoiced.toFixed(2)}</span>
           </div>
           <div className="w-full bg-gray-200 rounded-full h-2">
             <div
               className={`h-2 rounded-full transition-all ${isFullyPaid ? 'bg-green-600' : 'bg-blue-600'}`}
-              style={{ width: `${Math.min(100, (totalPaid / invoiceTotal) * 100)}%` }}
+              style={{ width: `${Math.min(100, (totalPaid / totalInvoiced) * 100)}%` }}
             />
           </div>
           <div className="mt-2 text-right">
             <span className={`text-sm font-medium ${isFullyPaid ? 'text-green-600' : 'text-orange-600'}`}>
-              Balance: ₹{Math.max(0, balance).toFixed(2)}
+              Balance: ₹{Math.max(0, totalBalance).toFixed(2)}
             </span>
           </div>
         </div>
@@ -218,6 +284,31 @@ const PaymentCapture: React.FC<PaymentCaptureProps> = ({ invoiceId, onClose, onS
         {/* Payment Form (with credit_adjustment option when account-billed) */}
         {!isFullyPaid && (
           <form onSubmit={handleSubmit} className="space-y-4">
+            {/* Invoice Selector - only show when multiple invoices */}
+            {invoices.length > 1 && (
+              <div className="mb-4 p-3 bg-yellow-50 rounded-lg border border-yellow-200">
+                <label className="block text-sm font-medium text-gray-700 mb-2">Select Invoice to Pay *</label>
+                <select
+                  value={selectedInvoiceId}
+                  onChange={(e) => setSelectedInvoiceId(e.target.value)}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                >
+                  {invoices.map(inv => {
+                    const invBalance = getInvoiceBalance(inv.id);
+                    return (
+                      <option key={inv.id} value={inv.id} disabled={invBalance <= 0}>
+                        {inv.invoice_number || inv.id.slice(0, 8)} - ₹{(inv.total_after_discount || inv.total || 0).toFixed(2)} 
+                        {invBalance > 0 ? ` (Balance: ₹${invBalance.toFixed(2)})` : ' (Paid)'}
+                      </option>
+                    );
+                  })}
+                </select>
+                <p className="text-xs text-gray-500 mt-1">
+                  Payment will be recorded against the selected invoice. Balance for selected: ₹{getInvoiceBalance(selectedInvoiceId).toFixed(2)}
+                </p>
+              </div>
+            )}
+
             <div className="grid grid-cols-2 gap-4">
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">Amount *</label>
@@ -227,7 +318,7 @@ const PaymentCapture: React.FC<PaymentCaptureProps> = ({ invoiceId, onClose, onS
                     type="number"
                     required
                     min="0.01"
-                    max={balance}
+                    max={getInvoiceBalance(selectedInvoiceId)}
                     step="0.01"
                     value={amount}
                     onChange={(e) => setAmount(e.target.value)}

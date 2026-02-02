@@ -28,9 +28,11 @@ import {
   Plus,
   Trash2,
   Search,
+  Ban,
+  RotateCcw,
 } from "lucide-react";
 import QRCodeLib from "qrcode";
-import { database, supabase } from "../../utils/supabase";
+import { database, supabase, formatAge } from "../../utils/supabase";
 import { SampleTypeIndicator } from "../Common/SampleTypeIndicator";
 import { generateAndDownloadReport, getLabTemplate, type ReportData } from "../../utils/pdfGenerator";
 import { generateInvoicePDF } from "../../utils/invoicePdfService";
@@ -44,6 +46,7 @@ import InvoiceDeliveryTracker from "../Billing/InvoiceDeliveryTracker";
 import InvoiceGenerationModal from "../Billing/InvoiceGenerationModal";
 import SampleCollectionTracker from "../Samples/SampleCollectionTracker";
 import ReportDesignStudio from "../ReportStudio/ReportDesignStudio";
+import { ThermalPrintButton } from "../Invoices/ThermalPrintButton";
 import { SendReportModal } from "./SendReportModal";
 import {
   processTRFImage,
@@ -84,6 +87,8 @@ export interface DashboardOrder {
   paid_amount?: number;
   due_amount?: number;
   payment_status?: 'unpaid' | 'partial' | 'paid' | null;
+  discount_amount?: number;
+  discount_source?: 'manual' | 'doctor' | 'location' | 'account' | null;
 
   patient?: { name?: string | null; age?: string | null; gender?: string | null; phone?: string | null; mobile?: string | null; email?: string | null } | null;
   tests: {
@@ -91,6 +96,9 @@ export interface DashboardOrder {
     test_name: string;
     outsourced_lab_id?: string | null;
     outsourced_labs?: { name?: string | null } | null;
+    is_canceled?: boolean;
+    is_billed?: boolean;
+    invoice_id?: string | null;
   }[];
 
   // Report info
@@ -192,6 +200,68 @@ const DashboardOrderModal: React.FC<DashboardOrderModalProps> = ({
   const [showReportStudio, setShowReportStudio] = useState(false);
   const [showSendReport, setShowSendReport] = useState(false);
   const [lastGeneratedPdf, setLastGeneratedPdf] = useState<string | null>(order.report_url || null);
+
+  // Discount State
+  const [invoiceDiscount, setInvoiceDiscount] = useState<{
+    total_discount: number;
+    subtotal: number;
+    total_after_discount: number;
+    items: Array<{
+      test_name: string;
+      price: number;
+      discount_type: string | null;
+      discount_value: number | null;
+      discount_amount: number;
+      discount_reason: string | null;
+      total: number;
+    }>;
+  } | null>(null);
+
+  // Fetch invoice discount info when order has invoice
+  useEffect(() => {
+    const fetchInvoiceDiscount = async () => {
+      if (!order.invoice_id) {
+        setInvoiceDiscount(null);
+        return;
+      }
+
+      try {
+        // Fetch invoice totals
+        const { data: invoice } = await supabase
+          .from('invoices')
+          .select('subtotal, total_discount, total_after_discount')
+          .eq('id', order.invoice_id)
+          .single();
+
+        // Fetch invoice items with discount details
+        const { data: items } = await supabase
+          .from('invoice_items')
+          .select('test_name, price, discount_type, discount_value, discount_amount, discount_reason, total')
+          .eq('invoice_id', order.invoice_id);
+
+        if (invoice) {
+          setInvoiceDiscount({
+            total_discount: invoice.total_discount || 0,
+            subtotal: invoice.subtotal || 0,
+            total_after_discount: invoice.total_after_discount || 0,
+            items: (items || []).map((item: any) => ({
+              test_name: item.test_name,
+              price: item.price || 0,
+              discount_type: item.discount_type,
+              discount_value: item.discount_value,
+              discount_amount: item.discount_amount || 0,
+              discount_reason: item.discount_reason,
+              total: item.total || 0
+            }))
+          });
+        }
+      } catch (err) {
+        console.error('Error fetching invoice discount:', err);
+      }
+    };
+
+    fetchInvoiceDiscount();
+  }, [order.invoice_id, invoiceRefreshTrigger]);
 
   // Fetch available tests when modal opens
   useEffect(() => {
@@ -366,7 +436,7 @@ const DashboardOrderModal: React.FC<DashboardOrderModalProps> = ({
     if (!confirm(`Are you sure you want to remove ${testName}?`)) return;
 
     try {
-      // 1. Check if invoiced/billed
+      // 1. Check if invoiced/billed - fetch fresh data from DB
       const { data: testData, error: fetchError } = await supabase
         .from('order_tests')
         .select('invoice_id, price, is_billed')
@@ -375,8 +445,32 @@ const DashboardOrderModal: React.FC<DashboardOrderModalProps> = ({
 
       if (fetchError) throw fetchError;
 
+      if (!testData) {
+        alert('Test not found. It may have already been removed.');
+        return;
+      }
+
       if (testData.invoice_id || testData.is_billed) {
-        alert('Cannot remove this test because an invoice has already been generated for it. Please cancel/regenerate the invoice first.');
+        alert('Cannot delete this test because an invoice has been generated. Use the Cancel button instead to exclude it from reports while preserving billing records.');
+        // Update local state to reflect the billed status
+        setTests(prev => prev.map(t =>
+          t.id === testId ? { ...t, is_billed: true, invoice_id: testData.invoice_id } : t
+        ));
+        return;
+      }
+
+      // Also check if there's an invoice_item for this test (belt and suspenders)
+      const { data: invoiceItem } = await supabase
+        .from('invoice_items')
+        .select('id')
+        .eq('order_test_id', testId)
+        .maybeSingle();
+
+      if (invoiceItem) {
+        alert('Cannot delete this test because it has been invoiced. Use the Cancel button instead.');
+        setTests(prev => prev.map(t =>
+          t.id === testId ? { ...t, is_billed: true } : t
+        ));
         return;
       }
 
@@ -413,7 +507,81 @@ const DashboardOrderModal: React.FC<DashboardOrderModalProps> = ({
 
     } catch (err: any) {
       console.error('Remove test error:', err);
-      alert('Failed to remove test: ' + err.message);
+      // Check if it's a foreign key constraint error (results exist)
+      if (err.code === '23503' || err.message?.includes('violates foreign key constraint')) {
+        alert('Cannot delete this test because results have been entered.\n\nUse the Cancel button (🚫) to exclude it from the final report instead.');
+      } else {
+        alert('Failed to remove test: ' + err.message);
+      }
+    }
+  };
+
+  // Cancel test (exclude from PDF but keep for billing/refund)
+  const handleCancelTest = async (testId: string, testName: string) => {
+    const reason = prompt(`Cancel "${testName}"?\n\nThis will exclude it from the final report PDF.\nThe test will remain in billing records for refund purposes.\n\nEnter cancellation reason (optional):`);
+    if (reason === null) return; // User clicked Cancel on prompt
+
+    try {
+      const { data: userData } = await supabase.auth.getUser();
+
+      const { error } = await supabase
+        .from('order_tests')
+        .update({
+          is_canceled: true,
+          canceled_at: new Date().toISOString(),
+          canceled_by: userData?.user?.id || null,
+          cancellation_reason: reason || null
+        })
+        .eq('id', testId);
+
+      if (error) throw error;
+
+      // Update local state
+      setTests(prev => prev.map(t =>
+        t.id === testId ? { ...t, is_canceled: true } : t
+      ));
+
+      alert(`"${testName}" has been canceled and will not appear in reports.\nYou can process a refund for this test.`);
+
+      // Refresh parent dashboard
+      await onUpdateStatus(order.id, order.status);
+
+    } catch (err: any) {
+      console.error('Cancel test error:', err);
+      alert('Failed to cancel test: ' + err.message);
+    }
+  };
+
+  // Restore canceled test
+  const handleRestoreTest = async (testId: string, testName: string) => {
+    if (!confirm(`Restore "${testName}"?\n\nThis will include it back in the final report PDF.`)) return;
+
+    try {
+      const { error } = await supabase
+        .from('order_tests')
+        .update({
+          is_canceled: false,
+          canceled_at: null,
+          canceled_by: null,
+          cancellation_reason: null
+        })
+        .eq('id', testId);
+
+      if (error) throw error;
+
+      // Update local state
+      setTests(prev => prev.map(t =>
+        t.id === testId ? { ...t, is_canceled: false } : t
+      ));
+
+      alert(`"${testName}" has been restored and will appear in reports.`);
+
+      // Refresh parent dashboard
+      await onUpdateStatus(order.id, order.status);
+
+    } catch (err: any) {
+      console.error('Restore test error:', err);
+      alert('Failed to restore test: ' + err.message);
     }
   };
 
@@ -867,7 +1035,7 @@ const DashboardOrderModal: React.FC<DashboardOrderModalProps> = ({
                 <OrderStatusDisplay order={order} compact={true} />
               </div>
               <div className="text-sm text-gray-500 mt-1 flex items-center gap-2">
-                <span className="font-medium">{(order.patient?.age || 'N/A') + 'y'}</span>
+                <span className="font-medium">{formatAge(order.patient?.age, (order.patient as any)?.age_unit)}</span>
                 <span>•</span>
                 <span className="font-medium">{order.patient?.gender || 'N/A'}</span>
                 {order.patient_phone && (
@@ -1187,39 +1355,88 @@ const DashboardOrderModal: React.FC<DashboardOrderModalProps> = ({
               </div>
               <div className="divide-y divide-gray-100 flex-1">
                 {tests.map((test, i) => (
-                  <div key={i} className="px-5 py-4 flex items-center justify-between hover:bg-gray-50 transition-colors group">
-                    <div>
-                      <span className="text-sm font-semibold text-gray-900 block mb-0.5 group-hover:text-blue-700 transition-colors">{test.test_name}</span>
+                  <div key={i} className={`px-5 py-4 flex items-center justify-between transition-colors group ${test.is_canceled
+                      ? 'bg-gray-100 opacity-60'
+                      : 'hover:bg-gray-50'
+                    }`}>
+                    <div className="flex-1">
+                      <span className={`text-sm font-semibold block mb-0.5 transition-colors ${test.is_canceled
+                          ? 'text-gray-500 line-through'
+                          : 'text-gray-900 group-hover:text-blue-700'
+                        }`}>
+                        {test.test_name}
+                        {test.is_canceled && (
+                          <span className="ml-2 text-xs bg-red-100 text-red-600 px-2 py-0.5 rounded-full font-medium no-underline inline-block">
+                            CANCELED
+                          </span>
+                        )}
+                      </span>
                       <span className="text-xs text-gray-400 font-medium">Test Code: {test.id.slice(0, 8)}</span>
                     </div>
 
-                    {/* Outsourcing Dropdown */}
+                    {/* Outsourcing Dropdown & Actions */}
                     <div className="relative flex items-center gap-2">
-                      <select
-                        value={test.outsourced_lab_id || 'inhouse'}
-                        onChange={(e) => handleTestOutsourceChange(test.id, e.target.value)}
-                        className={`text-xs border rounded-lg px-3 py-1.5 focus:ring-2 focus:ring-blue-500 outline-none appearance-none cursor-pointer pr-8 font-medium transition-all ${test.outsourced_lab_id
-                          ? 'bg-purple-50 text-purple-700 border-purple-200 hover:bg-purple-100'
-                          : 'bg-white text-gray-600 border-gray-200 hover:bg-gray-50'
-                          }`}
-                      >
-                        <option value="inhouse">In-House</option>
-                        {outsourcedLabs.map(lab => (
-                          <option key={lab.id} value={lab.id}>
-                            Outsource to {lab.name}
-                          </option>
-                        ))}
-                      </select>
-                      <div className="absolute right-8 top-1/2 -translate-y-1/2 pointer-events-none">
-                        <Building className={`h-3 w-3 ${test.outsourced_lab_id ? 'text-purple-400' : 'text-gray-400'}`} />
-                      </div>
-                      <button
-                        onClick={() => handleRemoveTest(test.id, test.test_name)}
-                        className="text-gray-400 hover:text-red-500 p-1.5 hover:bg-red-50 rounded-lg transition-colors"
-                        title="Remove Test"
-                      >
-                        <Trash2 className="h-4 w-4" />
-                      </button>
+                      {!test.is_canceled && (
+                        <>
+                          <select
+                            value={test.outsourced_lab_id || 'inhouse'}
+                            onChange={(e) => handleTestOutsourceChange(test.id, e.target.value)}
+                            className={`text-xs border rounded-lg px-3 py-1.5 focus:ring-2 focus:ring-blue-500 outline-none appearance-none cursor-pointer pr-8 font-medium transition-all ${test.outsourced_lab_id
+                              ? 'bg-purple-50 text-purple-700 border-purple-200 hover:bg-purple-100'
+                              : 'bg-white text-gray-600 border-gray-200 hover:bg-gray-50'
+                              }`}
+                          >
+                            <option value="inhouse">In-House</option>
+                            {outsourcedLabs.map(lab => (
+                              <option key={lab.id} value={lab.id}>
+                                Outsource to {lab.name}
+                              </option>
+                            ))}
+                          </select>
+                          <div className="absolute right-24 top-1/2 -translate-y-1/2 pointer-events-none">
+                            <Building className={`h-3 w-3 ${test.outsourced_lab_id ? 'text-purple-400' : 'text-gray-400'}`} />
+                          </div>
+                        </>
+                      )}
+
+                      {/* Action Buttons */}
+                      {test.is_canceled ? (
+                        <button
+                          onClick={() => handleRestoreTest(test.id, test.test_name)}
+                          className="text-gray-500 hover:text-green-600 p-1.5 hover:bg-green-50 rounded-lg transition-colors flex items-center gap-1 text-xs font-medium"
+                          title="Restore Test"
+                        >
+                          <RotateCcw className="h-4 w-4" />
+                          <span>Restore</span>
+                        </button>
+                      ) : (
+                        <>
+                          {/* Cancel button - always available to exclude test from report */}
+                          <button
+                            onClick={() => handleCancelTest(test.id, test.test_name)}
+                            className="text-gray-400 hover:text-orange-500 p-1.5 hover:bg-orange-50 rounded-lg transition-colors"
+                            title="Cancel Test (exclude from report)"
+                          >
+                            <Ban className="h-4 w-4" />
+                          </button>
+                          {/* Delete button - ONLY for non-billed tests */}
+                          {!(test.is_billed || test.invoice_id) && (
+                            <button
+                              onClick={() => handleRemoveTest(test.id, test.test_name)}
+                              className="text-gray-400 hover:text-red-500 p-1.5 hover:bg-red-50 rounded-lg transition-colors"
+                              title="Remove Test"
+                            >
+                              <Trash2 className="h-4 w-4" />
+                            </button>
+                          )}
+                          {/* Show locked indicator for billed tests */}
+                          {(test.is_billed || test.invoice_id) && (
+                            <span className="text-xs text-green-600 bg-green-50 px-2 py-1 rounded-full font-medium">
+                              Invoiced
+                            </span>
+                          )}
+                        </>
+                      )}
                     </div>
                   </div>
                 ))}
@@ -1239,14 +1456,68 @@ const DashboardOrderModal: React.FC<DashboardOrderModalProps> = ({
                   </h3>
 
                   <div className="space-y-3 mb-5">
+                    {/* Subtotal (before discount) */}
                     <div className="flex justify-between items-center p-2 rounded hover:bg-gray-50 transition-colors">
-                      <span className="text-sm text-gray-600 font-medium">Total Amount</span>
-                      <span className="font-bold text-gray-900 text-base">₹{(currentTotal || 0).toLocaleString()}</span>
+                      <span className="text-sm text-gray-600 font-medium">Subtotal</span>
+                      <span className="font-bold text-gray-900 text-base">
+                        ₹{(invoiceDiscount?.subtotal || currentTotal || 0).toLocaleString()}
+                      </span>
                     </div>
+
+                    {/* Discount Section - Show if invoice has discount */}
+                    {invoiceDiscount && invoiceDiscount.total_discount > 0 && (
+                      <div className="bg-green-50 border border-green-100 rounded-lg p-3 space-y-2">
+                        <div className="flex justify-between items-center">
+                          <span className="text-sm text-green-700 font-medium flex items-center gap-1">
+                            <span className="text-green-500">🏷️</span> Discount Applied
+                          </span>
+                          <span className="font-bold text-green-600 text-base">
+                            -₹{invoiceDiscount.total_discount.toLocaleString()}
+                          </span>
+                        </div>
+
+                        {/* Show discount breakdown per item */}
+                        {invoiceDiscount.items.filter(i => i.discount_amount > 0).length > 0 && (
+                          <div className="border-t border-green-200 pt-2 mt-2 space-y-1">
+                            {invoiceDiscount.items
+                              .filter(item => item.discount_amount > 0)
+                              .map((item, idx) => (
+                                <div key={idx} className="flex justify-between items-center text-xs">
+                                  <span className="text-green-700 truncate max-w-[150px]" title={item.test_name}>
+                                    {item.test_name}
+                                  </span>
+                                  <span className="text-green-600 font-medium">
+                                    {item.discount_type === 'percent'
+                                      ? `-${item.discount_value}%`
+                                      : `-₹${item.discount_amount}`}
+                                    {item.discount_reason && (
+                                      <span className="text-green-500 ml-1">({item.discount_reason})</span>
+                                    )}
+                                  </span>
+                                </div>
+                              ))}
+                          </div>
+                        )}
+                      </div>
+                    )}
+
+                    {/* Net Amount (after discount) */}
+                    {invoiceDiscount && invoiceDiscount.total_discount > 0 && (
+                      <div className="flex justify-between items-center p-2 rounded bg-blue-50 border border-blue-100">
+                        <span className="text-sm text-blue-700 font-medium">Net Amount</span>
+                        <span className="font-bold text-blue-700 text-base">
+                          ₹{invoiceDiscount.total_after_discount.toLocaleString()}
+                        </span>
+                      </div>
+                    )}
+
+                    {/* Paid Amount */}
                     <div className="flex justify-between items-center p-2 rounded hover:bg-gray-50 transition-colors">
                       <span className="text-sm text-gray-600 font-medium">Paid</span>
                       <span className="font-bold text-green-600 text-base">₹{(order.paid_amount || 0).toLocaleString()}</span>
                     </div>
+
+                    {/* Due Amount */}
                     {!order.account_name && (
                       <div className="pt-3 border-t border-gray-100 flex justify-between items-center">
                         <span className="text-sm font-bold text-gray-900 uppercase tracking-tight">Due Amount</span>
@@ -1290,24 +1561,47 @@ const DashboardOrderModal: React.FC<DashboardOrderModalProps> = ({
                             Monthly Consolidated Billing
                           </div>
                         ) : (
-                          <button
-                            onClick={() => setShowInvoiceModal(true)}
-                            className="w-full flex items-center justify-center gap-2 bg-gradient-to-r from-blue-600 to-blue-700 text-white py-2.5 rounded-lg hover:from-blue-700 hover:to-blue-800 transition-all text-sm font-bold shadow-md hover:shadow-lg active:scale-95 transform duration-150"
-                          >
-                            <DollarSign className="h-4 w-4" />
-                            Create Invoice
-                          </button>
+                          <>
+                            <button
+                              onClick={() => setShowInvoiceModal(true)}
+                              className="w-full flex items-center justify-center gap-2 bg-gradient-to-r from-blue-600 to-blue-700 text-white py-2.5 rounded-lg hover:from-blue-700 hover:to-blue-800 transition-all text-sm font-bold shadow-md hover:shadow-lg active:scale-95 transform duration-150"
+                            >
+                              <DollarSign className="h-4 w-4" />
+                              Create Invoice
+                            </button>
+                            <p className="text-xs text-gray-500 text-center">
+                              💡 Discounts from Doctor, Location, or Account will be auto-applied during invoice creation
+                            </p>
+                          </>
                         )}
                       </>
                     )}
 
-                    {order.billing_status === 'billed' && (order.due_amount || 0) > 0 && !(order.account_name && order.billing_status === 'billed') && (
+                    {/* Always show Pay button - will prompt to create invoice if needed */}
+                    {(order.due_amount || 0) > 0 && !(order.account_name && order.account_billing_mode === 'monthly') && (
                       <button
-                        onClick={() => setShowPaymentModal(true)}
-                        className="w-full flex items-center justify-center gap-2 bg-gradient-to-r from-green-600 to-green-700 text-white py-2.5 rounded-lg hover:from-green-700 hover:to-green-800 transition-all text-sm font-bold shadow-md hover:shadow-lg active:scale-95 transform duration-150"
+                        onClick={() => {
+                          if (!order.invoice_id && order.billing_status !== 'billed' && order.billing_status !== 'partial') {
+                            // No invoice - ask to create first
+                            const createFirst = window.confirm(
+                              "No invoice found for this order.\n\nWould you like to create an invoice first?\n\nClick OK to create invoice, Cancel to go back."
+                            );
+                            if (createFirst) {
+                              setShowInvoiceModal(true);
+                            }
+                          } else {
+                            setShowPaymentModal(true);
+                          }
+                        }}
+                        className={`w-full flex items-center justify-center gap-2 py-2.5 rounded-lg transition-all text-sm font-bold shadow-md hover:shadow-lg active:scale-95 transform duration-150 ${
+                          order.billing_status === 'billed' || order.billing_status === 'partial'
+                            ? 'bg-gradient-to-r from-green-600 to-green-700 text-white hover:from-green-700 hover:to-green-800'
+                            : 'bg-purple-100 text-purple-700 hover:bg-purple-200 border border-purple-300'
+                        }`}
+                        title={order.billing_status !== 'billed' && order.billing_status !== 'partial' ? 'Will create invoice first' : 'Record payment'}
                       >
                         <CreditCard className="h-4 w-4" />
-                        Record Payment
+                        {order.billing_status !== 'billed' && order.billing_status !== 'partial' ? 'Pay (Create Invoice)' : 'Record Payment'}
                       </button>
                     )}
 
@@ -1355,6 +1649,19 @@ const DashboardOrderModal: React.FC<DashboardOrderModalProps> = ({
                           <File className="h-4 w-4 group-hover:text-green-600 transition-colors" />
                           Generate PDF
                         </button>
+
+                        {/* Thermal Print Button */}
+                        {order.invoice_id && (
+                          <div className="w-full">
+                            <ThermalPrintButton
+                              invoiceId={order.invoice_id}
+                              format="thermal_80mm"
+                              variant="secondary"
+                              size="md"
+                              label="Print Thermal Slip"
+                            />
+                          </div>
+                        )}
 
                         {/* Invoice Delivery Tracker */}
                         {order.invoice_id && (
@@ -1446,15 +1753,31 @@ const DashboardOrderModal: React.FC<DashboardOrderModalProps> = ({
           onClose={() => setShowInvoiceModal(false)}
           onSuccess={async () => {
             setShowInvoiceModal(false);
+            // Refresh tests state to reflect billed status
+            const { data: updatedTests } = await supabase
+              .from('order_tests')
+              .select('id, test_name, outsourced_lab_id, is_canceled, is_billed, invoice_id, outsourced_labs(name)')
+              .eq('order_id', order.id);
+            if (updatedTests) {
+              setTests(updatedTests.map((t: any) => ({
+                id: t.id,
+                test_name: t.test_name,
+                outsourced_lab_id: t.outsourced_lab_id,
+                outsourced_labs: t.outsourced_labs,
+                is_canceled: t.is_canceled,
+                is_billed: t.is_billed,
+                invoice_id: t.invoice_id
+              })));
+            }
             // Trigger a refresh in parent to update billing status
             onUpdateStatus(order.id, order.status);
           }}
         />
       )}
 
-      {showPaymentModal && order.invoice_id && (
+      {showPaymentModal && (
         <PaymentCapture
-          invoiceId={order.invoice_id}
+          orderId={order.id}
           onClose={() => setShowPaymentModal(false)}
           onSuccess={() => {
             setShowPaymentModal(false);
