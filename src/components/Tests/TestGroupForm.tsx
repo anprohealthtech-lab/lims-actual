@@ -16,6 +16,7 @@ interface TestGroup {
   code: string;
   category: string;
   clinicalPurpose: string;
+  methodology?: string;
   analytes: string[];
   price: number;
   turnaroundTime: string;
@@ -53,6 +54,7 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
     code: testGroup?.code || '',
     category: testGroup?.category || '',
     clinicalPurpose: testGroup?.clinicalPurpose || '',
+    methodology: testGroup?.methodology || '',
     selectedAnalytes: testGroup?.analytes || [],
     price: testGroup?.price?.toString() || '',
     turnaroundTime: testGroup?.turnaroundTime || '',
@@ -88,10 +90,14 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
   const [showAnalyteForm, setShowAnalyteForm] = useState(false);
   const [loading, setLoading] = useState(true);
   const [editingAttachedAnalyte, setEditingAttachedAnalyte] = useState<any>(null);
+  const [labMethodOptions, setLabMethodOptions] = useState<string[]>([]);
+  const [newMethodValue, setNewMethodValue] = useState('');
+  const [methodError, setMethodError] = useState<string | null>(null);
 
   // Load analytes and outsourced labs
   useEffect(() => {
     loadData();
+    loadLabMethodOptions();
   }, []);
 
   const loadData = async () => {
@@ -117,6 +123,56 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
       console.error('Error loading data:', error);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const loadLabMethodOptions = async () => {
+    try {
+      const { data, error: loadError } = await database.labs.getById();
+      if (loadError) {
+        console.error('Failed to load lab method options:', loadError);
+        return;
+      }
+      const options = Array.isArray(data?.method_options) ? data.method_options : [];
+      setLabMethodOptions(options);
+    } catch (error) {
+      console.error('Failed to load lab method options:', error);
+    }
+  };
+
+  const handleAddMethodOption = async () => {
+    setMethodError(null);
+    const trimmed = newMethodValue.trim();
+    if (!trimmed) return;
+    if (labMethodOptions.some((option) => option.toLowerCase() === trimmed.toLowerCase())) {
+      setFormData(prev => ({ ...prev, methodology: trimmed }));
+      setNewMethodValue('');
+      return;
+    }
+
+    try {
+      const labId = await database.getCurrentUserLabId();
+      if (!labId) {
+        setMethodError('No lab context found.');
+        return;
+      }
+
+      const nextOptions = [...labMethodOptions, trimmed];
+      const { error: updateError } = await database.labs.update(labId, {
+        method_options: nextOptions,
+      });
+
+      if (updateError) {
+        setMethodError(updateError instanceof Error ? updateError.message : 'Failed to add method');
+        return;
+      }
+
+      setLabMethodOptions(nextOptions);
+      setFormData(prev => ({ ...prev, methodology: trimmed }));
+      setNewMethodValue('');
+    } catch (error) {
+      console.error('Failed to update lab method options:', error);
+      setMethodError(error instanceof Error ? error.message : 'Failed to add method');
     }
   };
 
@@ -259,6 +315,7 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
         tat_hours: parseFloat(formData.tat_hours) || 3,
         default_ai_processing_type: formData.default_ai_processing_type,
         group_level_prompt: formData.group_level_prompt,
+        methodology: formData.methodology || null,
         lab_id: labId, // Add lab_id for lab-specific test group
         to_be_copied: false, // Default to not template (owner will promote manually)
         is_outsourced: formData.is_outsourced,
@@ -410,6 +467,44 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
                 placeholder="Describe the clinical purpose and indications for this test group"
                 className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
               />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">
+                Methodology / Technique
+              </label>
+              <select
+                name="methodology"
+                value={formData.methodology}
+                onChange={handleChange}
+                className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+              >
+                <option value="">Select Method</option>
+                {labMethodOptions.map((option) => (
+                  <option key={option} value={option}>{option}</option>
+                ))}
+              </select>
+              <div className="mt-2 flex flex-wrap gap-2">
+                <input
+                  type="text"
+                  value={newMethodValue}
+                  onChange={(e) => setNewMethodValue(e.target.value)}
+                  placeholder="Add new method"
+                  className="flex-1 min-w-[200px] px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                />
+                <button
+                  type="button"
+                  onClick={handleAddMethodOption}
+                  className="px-3 py-2 bg-gray-900 text-white rounded-md hover:bg-gray-800"
+                >
+                  Add Method
+                </button>
+              </div>
+              {methodError && (
+                <div className="text-xs text-red-600 mt-1">{methodError}</div>
+              )}
+              <div className="text-xs text-gray-500 mt-1">
+                Methods are saved per lab and available for all analytes and test groups.
+              </div>
             </div>
           </div>
 

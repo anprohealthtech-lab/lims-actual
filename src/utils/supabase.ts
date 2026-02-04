@@ -5320,18 +5320,19 @@ export const database = {
       }
       
       const { data, error } = await supabase
-        .from('test_groups')
-        .select(`
-          id,
-          name,
-          code,
-          category,
-          clinical_purpose,
-          price,
-          turnaround_time,
-          sample_type,
-          requires_fasting,
-          is_active,
+          .from('test_groups')
+          .select(`
+            id,
+            name,
+            code,
+            category,
+            clinical_purpose,
+            methodology,
+            price,
+            turnaround_time,
+            sample_type,
+            requires_fasting,
+            is_active,
           created_at,
           updated_at,
           default_ai_processing_type,
@@ -5372,18 +5373,19 @@ export const database = {
 
     getById: async (id: string) => {
       const { data, error } = await supabase
-        .from('test_groups')
-        .select(`
-          id,
-          name,
-          code,
-          category,
-          clinical_purpose,
-          price,
-          turnaround_time,
-          sample_type,
-          requires_fasting,
-          is_active,
+          .from('test_groups')
+          .select(`
+            id,
+            name,
+            code,
+            category,
+            clinical_purpose,
+            methodology,
+            price,
+            turnaround_time,
+            sample_type,
+            requires_fasting,
+            is_active,
           created_at,
           updated_at,
           default_ai_processing_type,
@@ -5414,18 +5416,19 @@ export const database = {
 
     getByNames: async (names: string[]) => {
       const { data, error } = await supabase
-        .from('test_groups')
-        .select(`
-          id,
-          name,
-          code,
-          category,
-          clinical_purpose,
-          price,
-          turnaround_time,
-          sample_type,
-          requires_fasting,
-          is_active,
+          .from('test_groups')
+          .select(`
+            id,
+            name,
+            code,
+            category,
+            clinical_purpose,
+            methodology,
+            price,
+            turnaround_time,
+            sample_type,
+            requires_fasting,
+            is_active,
           created_at,
           updated_at,
           default_ai_processing_type,
@@ -5458,9 +5461,10 @@ export const database = {
           name: testGroupData.name || 'Unnamed Test Group',
           code: testGroupData.code || 'UNNAMED',
           category: testGroupData.category || 'Laboratory',
-          clinical_purpose: testGroupData.clinicalPurpose || 'Clinical assessment and diagnosis',
-          price: testGroupData.price || 0,
-          turnaround_time: testGroupData.turnaroundTime || '24 hours',
+            clinical_purpose: testGroupData.clinicalPurpose || 'Clinical assessment and diagnosis',
+            methodology: testGroupData.methodology || null,
+            price: testGroupData.price || 0,
+            turnaround_time: testGroupData.turnaroundTime || '24 hours',
           tat_hours: testGroupData.tat_hours || 3, // TAT in hours for breach calculation
           sample_type: testGroupData.sampleType || 'Serum',
           requires_fasting: testGroupData.requiresFasting || false,
@@ -5537,8 +5541,9 @@ export const database = {
             name: updates.name,
             code: updates.code,
             category: updates.category,
-            clinical_purpose: updates.clinicalPurpose,
-            price: updates.price,
+              clinical_purpose: updates.clinicalPurpose,
+              methodology: updates.methodology ?? null,
+              price: updates.price,
             turnaround_time: updates.turnaroundTime,
             tat_hours: updates.tat_hours, // TAT in hours for breach calculation
             sample_type: updates.sampleType,
@@ -12695,6 +12700,992 @@ const analytics = {
   },
 };
 
+// ============================================================================
+// INVENTORY MODULE - AI-First Inventory Management
+// ============================================================================
+
+export interface InventoryItem {
+  id: string;
+  lab_id: string;
+  location_id?: string | null;
+  name: string;
+  code?: string;
+  type: 'reagent' | 'consumable' | 'calibrator' | 'control' | 'general';
+  current_stock: number;
+  unit: string;
+  min_stock: number;
+  batch_number?: string;
+  expiry_date?: string;
+  storage_temp?: string;
+  storage_location?: string;
+  consumption_scope: 'per_test' | 'per_sample' | 'per_order' | 'general' | 'manual';
+  consumption_per_use?: number;
+  pack_contains?: number;
+  unit_price?: number;
+  supplier_name?: string;
+  supplier_contact?: string;
+  ai_data?: Record<string, any>;
+  is_active: boolean;
+  notes?: string;
+  created_at: string;
+  updated_at: string;
+  created_by?: string;
+  // Computed fields from views
+  tests_remaining?: number;
+  days_to_expiry?: number;
+  needs_attention?: boolean;
+}
+
+export interface InventoryTransaction {
+  id: string;
+  lab_id: string;
+  item_id: string;
+  location_id?: string | null;
+  type: 'in' | 'out' | 'adjust';
+  quantity: number;
+  stock_before?: number;
+  stock_after?: number;
+  reason?: string;
+  reference?: string;
+  batch_number?: string;
+  expiry_date?: string;
+  unit_price?: number;
+  order_id?: string;
+  result_id?: string;
+  test_group_id?: string;
+  ai_input?: Record<string, any>;
+  performed_by?: string;
+  created_at: string;
+  // Joined fields
+  item?: InventoryItem;
+  performed_by_user?: { name: string; email: string };
+}
+
+export interface StockAlert {
+  id: string;
+  lab_id: string;
+  item_id: string;
+  location_id?: string | null;
+  type: 'low_stock' | 'out_of_stock' | 'expiring' | 'expired';
+  message: string;
+  current_value?: number;
+  threshold_value?: number;
+  ai_suggestion?: string;
+  status: 'active' | 'dismissed' | 'resolved';
+  dismissed_by?: string;
+  dismissed_at?: string;
+  resolved_at?: string;
+  resolution_note?: string;
+  created_at: string;
+  // Joined fields
+  item?: InventoryItem;
+}
+
+export interface InventoryTestMapping {
+  id: string;
+  lab_id: string;
+  test_group_id?: string;
+  analyte_id?: string;
+  item_id: string;
+  quantity_per_test: number;
+  unit?: string;
+  ai_suggested: boolean;
+  ai_confidence?: number;
+  ai_reasoning?: string;
+  is_active: boolean;
+  created_at: string;
+  updated_at: string;
+  created_by?: string;
+  // Joined fields
+  item?: InventoryItem;
+  test_group?: { id: string; name: string };
+  analyte?: { id: string; name: string };
+}
+
+export interface InventoryDashboardStats {
+  total_items: number;
+  low_stock_count: number;
+  out_of_stock_count: number;
+  expiring_soon_count: number;
+  active_alerts_count: number;
+  total_value: number;
+}
+
+const inventory = {
+  // ============================================================================
+  // ITEMS CRUD
+  // ============================================================================
+
+  async getItems(options?: {
+    type?: string;
+    search?: string;
+    lowStockOnly?: boolean;
+    expiringDays?: number;
+    isActive?: boolean;
+    locationId?: string;
+  }): Promise<{ data: InventoryItem[] | null; error: any }> {
+    const labId = await database.getCurrentUserLabId();
+    if (!labId) return { data: null, error: new Error('No lab_id found') };
+
+    const tableName = options?.lowStockOnly ? 'v_inventory_with_tests' : 'inventory_items';
+    let query = supabase
+      .from(tableName)
+      .select('*')
+      .eq('lab_id', labId)
+      .order('name');
+
+    if (options?.type) {
+      query = query.eq('type', options.type);
+    }
+
+    if (options?.search) {
+      query = query.or(`name.ilike.%${options.search}%,code.ilike.%${options.search}%`);
+    }
+
+    if (options?.lowStockOnly) {
+      query = query.in('stock_status', ['low_stock', 'out_of_stock']);
+    }
+
+    if (options?.isActive !== undefined) {
+      query = query.eq('is_active', options.isActive);
+    }
+
+    if (options?.locationId) {
+      query = query.eq('location_id', options.locationId);
+    }
+
+    const { data, error } = await query;
+    return { data, error };
+  },
+
+  async getItemsWithStats(options?: { locationId?: string }): Promise<{ data: InventoryItem[] | null; error: any }> {
+    const labId = await database.getCurrentUserLabId();
+    if (!labId) return { data: null, error: new Error('No lab_id found') };
+
+    // Use the view that includes tests_remaining calculation
+    let query = supabase
+      .from('v_inventory_with_tests')
+      .select('*')
+      .eq('lab_id', labId)
+      .eq('is_active', true)
+      .order('name');
+
+    if (options?.locationId) {
+      query = query.eq('location_id', options.locationId);
+    }
+
+    const { data, error } = await query;
+
+    return { data, error };
+  },
+
+  async getItemsNeedingAttention(options?: { locationId?: string }): Promise<{ data: InventoryItem[] | null; error: any }> {
+    const labId = await database.getCurrentUserLabId();
+    if (!labId) return { data: null, error: new Error('No lab_id found') };
+
+    // Use the attention view
+    let query = supabase
+      .from('v_inventory_attention')
+      .select('*')
+      .eq('lab_id', labId)
+      .order('priority', { ascending: true });
+
+    if (options?.locationId) {
+      query = query.eq('location_id', options.locationId);
+    }
+
+    const { data, error } = await query;
+
+    return { data, error };
+  },
+
+  async getItemById(itemId: string): Promise<{ data: InventoryItem | null; error: any }> {
+    const { data, error } = await supabase
+      .from('inventory_items')
+      .select('*')
+      .eq('id', itemId)
+      .single();
+
+    return { data, error };
+  },
+
+  async createItem(item: Partial<InventoryItem> & { location_id?: string | null }): Promise<{ data: InventoryItem | null; error: any }> {
+    const labId = await database.getCurrentUserLabId();
+    if (!labId) return { data: null, error: new Error('No lab_id found') };
+
+    const { data: { user } } = await supabase.auth.getUser();
+
+    let locationId = item.location_id;
+    if (!locationId) {
+      const { data: lab } = await supabase
+        .from('labs')
+        .select('default_processing_location_id')
+        .eq('id', labId)
+        .single();
+      locationId = lab?.default_processing_location_id || null;
+    }
+
+    const { data, error } = await supabase
+      .from('inventory_items')
+      .insert({
+        ...item,
+        lab_id: labId,
+        location_id: locationId,
+        created_by: user?.id,
+      })
+      .select()
+      .single();
+
+    return { data, error };
+  },
+
+  async updateItem(itemId: string, updates: Partial<InventoryItem>): Promise<{ data: InventoryItem | null; error: any }> {
+    const { data, error } = await supabase
+      .from('inventory_items')
+      .update({
+        ...updates,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', itemId)
+      .select()
+      .single();
+
+    return { data, error };
+  },
+
+  async deleteItem(itemId: string): Promise<{ error: any }> {
+    // Soft delete by setting is_active to false
+    const { error } = await supabase
+      .from('inventory_items')
+      .update({ is_active: false, updated_at: new Date().toISOString() })
+      .eq('id', itemId);
+
+    return { error };
+  },
+
+  // ============================================================================
+  // TRANSACTIONS
+  // ============================================================================
+
+  async getTransactions(options?: {
+    itemId?: string;
+    type?: 'in' | 'out' | 'adjust';
+    fromDate?: string;
+    toDate?: string;
+    limit?: number;
+    locationId?: string;
+  }): Promise<{ data: InventoryTransaction[] | null; error: any }> {
+    const labId = await database.getCurrentUserLabId();
+    if (!labId) return { data: null, error: new Error('No lab_id found') };
+
+    let query = supabase
+      .from('inventory_transactions')
+      .select(`
+        *,
+        item:inventory_items(id, name, code, unit),
+        performed_by_user:users!inventory_transactions_performed_by_fkey(name, email)
+      `)
+      .eq('lab_id', labId)
+      .order('created_at', { ascending: false });
+
+    if (options?.itemId) {
+      query = query.eq('item_id', options.itemId);
+    }
+
+    if (options?.type) {
+      query = query.eq('type', options.type);
+    }
+
+    if (options?.fromDate) {
+      query = query.gte('created_at', options.fromDate);
+    }
+
+    if (options?.toDate) {
+      query = query.lte('created_at', options.toDate);
+    }
+
+    if (options?.limit) {
+      query = query.limit(options.limit);
+    }
+
+    if (options?.locationId) {
+      query = query.eq('location_id', options.locationId);
+    }
+
+    const { data, error } = await query;
+    return { data, error };
+  },
+
+  async createTransaction(transaction: {
+    item_id: string;
+    type: 'in' | 'out' | 'adjust';
+    quantity: number;
+    reason?: string;
+    reference?: string;
+    batch_number?: string;
+    expiry_date?: string;
+    unit_price?: number;
+    order_id?: string;
+    result_id?: string;
+    test_group_id?: string;
+    ai_input?: Record<string, any>;
+    location_id?: string;
+  }): Promise<{ data: InventoryTransaction | null; error: any }> {
+    const labId = await database.getCurrentUserLabId();
+    if (!labId) return { data: null, error: new Error('No lab_id found') };
+
+    const { data: { user } } = await supabase.auth.getUser();
+
+    const { data, error } = await supabase
+      .from('inventory_transactions')
+      .insert({
+        ...transaction,
+        lab_id: labId,
+        performed_by: user?.id,
+      })
+      .select()
+      .single();
+
+    return { data, error };
+  },
+
+  // ============================================================================
+  // STOCK OPERATIONS
+  // ============================================================================
+
+  async addStock(params: {
+    itemId: string;
+    quantity: number;
+    reason?: string;
+    reference?: string;
+    batchNumber?: string;
+    expiryDate?: string;
+    unitPrice?: number;
+    supplierName?: string;
+    locationId?: string;
+  }): Promise<{ data: InventoryTransaction | null; error: any }> {
+    return this.createTransaction({
+      item_id: params.itemId,
+      type: 'in',
+      quantity: params.quantity,
+      reason: params.reason || 'Purchase',
+      reference: params.reference,
+      batch_number: params.batchNumber,
+      expiry_date: params.expiryDate,
+      unit_price: params.unitPrice,
+      location_id: params.locationId,
+    });
+  },
+
+  async consumeStock(params: {
+    itemId: string;
+    quantity: number;
+    reason: string;
+    orderId?: string;
+    resultId?: string;
+    testGroupId?: string;
+    locationId?: string;
+  }): Promise<{ data: InventoryTransaction | null; error: any }> {
+    return this.createTransaction({
+      item_id: params.itemId,
+      type: 'out',
+      quantity: params.quantity,
+      reason: params.reason,
+      order_id: params.orderId,
+      result_id: params.resultId,
+      test_group_id: params.testGroupId,
+      location_id: params.locationId,
+    });
+  },
+
+  async adjustStock(params: {
+    itemId: string;
+    newQuantity: number;
+    reason: string;
+    locationId?: string;
+  }): Promise<{ data: InventoryTransaction | null; error: any }> {
+    return this.createTransaction({
+      item_id: params.itemId,
+      type: 'adjust',
+      quantity: params.newQuantity,
+      reason: params.reason,
+      location_id: params.locationId,
+    });
+  },
+
+  // ============================================================================
+  // ALERTS
+  // ============================================================================
+
+  async getAlerts(options?: {
+    status?: 'active' | 'dismissed' | 'resolved';
+    type?: 'low_stock' | 'out_of_stock' | 'expiring' | 'expired';
+    locationId?: string;
+  }): Promise<{ data: StockAlert[] | null; error: any }> {
+    const labId = await database.getCurrentUserLabId();
+    if (!labId) return { data: null, error: new Error('No lab_id found') };
+
+    let query = supabase
+      .from('stock_alerts')
+      .select(`
+        *,
+        item:inventory_items(id, name, code, current_stock, unit, min_stock)
+      `)
+      .eq('lab_id', labId)
+      .order('created_at', { ascending: false });
+
+    if (options?.status) {
+      query = query.eq('status', options.status);
+    } else {
+      query = query.eq('status', 'active'); // Default to active
+    }
+
+    if (options?.type) {
+      query = query.eq('type', options.type);
+    }
+
+    if (options?.locationId) {
+      query = query.eq('location_id', options.locationId);
+    }
+
+    const { data, error } = await query;
+    return { data, error };
+  },
+
+  async dismissAlert(alertId: string): Promise<{ error: any }> {
+    const { data: { user } } = await supabase.auth.getUser();
+
+    const { error } = await supabase
+      .from('stock_alerts')
+      .update({
+        status: 'dismissed',
+        dismissed_by: user?.id,
+        dismissed_at: new Date().toISOString(),
+      })
+      .eq('id', alertId);
+
+    return { error };
+  },
+
+  async resolveAlert(alertId: string, resolutionNote?: string): Promise<{ error: any }> {
+    const { error } = await supabase
+      .from('stock_alerts')
+      .update({
+        status: 'resolved',
+        resolved_at: new Date().toISOString(),
+        resolution_note: resolutionNote,
+      })
+      .eq('id', alertId);
+
+    return { error };
+  },
+
+  // ============================================================================
+  // DASHBOARD STATS
+  // ============================================================================
+
+  async getDashboardStats(options?: { locationId?: string }): Promise<{ data: InventoryDashboardStats | null; error: any }> {
+    const labId = await database.getCurrentUserLabId();
+    if (!labId) return { data: null, error: new Error('No lab_id found') };
+
+    try {
+      // Get stats from database function
+      const { data, error } = await supabase.rpc('fn_inventory_dashboard_stats', {
+        p_lab_id: labId,
+        p_location_id: options?.locationId || null,
+      });
+
+      if (error) {
+        // Fallback to manual calculation if function doesn't exist
+        let itemsQuery = supabase
+          .from('inventory_items')
+          .select('id, current_stock, min_stock, unit_price, expiry_date')
+          .eq('lab_id', labId)
+          .eq('is_active', true);
+
+        if (options?.locationId) {
+          itemsQuery = itemsQuery.eq('location_id', options.locationId);
+        }
+
+        const { data: items } = await itemsQuery;
+
+        let alertsQuery = supabase
+          .from('stock_alerts')
+          .select('id')
+          .eq('lab_id', labId)
+          .eq('status', 'active');
+
+        if (options?.locationId) {
+          alertsQuery = alertsQuery.eq('location_id', options.locationId);
+        }
+
+        const { data: alerts } = await alertsQuery;
+
+        const today = new Date();
+        const thirtyDaysFromNow = new Date(today.getTime() + 30 * 24 * 60 * 60 * 1000);
+
+        const stats: InventoryDashboardStats = {
+          total_items: items?.length || 0,
+          low_stock_count: items?.filter(i => i.current_stock <= i.min_stock && i.current_stock > 0).length || 0,
+          out_of_stock_count: items?.filter(i => i.current_stock <= 0).length || 0,
+          expiring_soon_count: items?.filter(i => {
+            if (!i.expiry_date) return false;
+            const exp = new Date(i.expiry_date);
+            return exp <= thirtyDaysFromNow && exp > today;
+          }).length || 0,
+          active_alerts_count: alerts?.length || 0,
+          total_value: items?.reduce((sum, i) => sum + (i.current_stock * (i.unit_price || 0)), 0) || 0,
+        };
+
+        return { data: stats, error: null };
+      }
+
+      const row = data?.[0] || null;
+      if (!row) return { data: null, error: null };
+
+      const normalized: InventoryDashboardStats = {
+        total_items: row.total_items ?? 0,
+        low_stock_count: row.low_stock_count ?? row.low_stock ?? 0,
+        out_of_stock_count: row.out_of_stock_count ?? row.out_of_stock ?? 0,
+        expiring_soon_count: row.expiring_soon_count ?? row.expiring_soon ?? 0,
+        active_alerts_count: row.active_alerts_count ?? 0,
+        total_value: row.total_value ?? 0,
+      };
+
+      return { data: normalized, error: null };
+    } catch (err) {
+      return { data: null, error: err };
+    }
+  },
+
+  // ============================================================================
+  // TEST MAPPING
+  // ============================================================================
+
+  async getTestMappings(testGroupId?: string): Promise<{ data: InventoryTestMapping[] | null; error: any }> {
+    const labId = await database.getCurrentUserLabId();
+    if (!labId) return { data: null, error: new Error('No lab_id found') };
+
+    let query = supabase
+      .from('inventory_test_mapping')
+      .select(`
+        *,
+        item:inventory_items(id, name, code, unit, current_stock),
+        test_group:test_groups(id, name),
+        analyte:analytes(id, name)
+      `)
+      .eq('lab_id', labId)
+      .eq('is_active', true);
+
+    if (testGroupId) {
+      query = query.eq('test_group_id', testGroupId);
+    }
+
+    const { data, error } = await query;
+    return { data, error };
+  },
+
+  async createTestMapping(mapping: {
+    test_group_id?: string;
+    analyte_id?: string;
+    item_id: string;
+    quantity_per_test: number;
+    unit?: string;
+  }): Promise<{ data: InventoryTestMapping | null; error: any }> {
+    const labId = await database.getCurrentUserLabId();
+    if (!labId) return { data: null, error: new Error('No lab_id found') };
+
+    const { data: { user } } = await supabase.auth.getUser();
+
+    const { data, error } = await supabase
+      .from('inventory_test_mapping')
+      .insert({
+        ...mapping,
+        lab_id: labId,
+        created_by: user?.id,
+      })
+      .select()
+      .single();
+
+    return { data, error };
+  },
+
+  async deleteTestMapping(mappingId: string): Promise<{ error: any }> {
+    const { error } = await supabase
+      .from('inventory_test_mapping')
+      .update({ is_active: false, updated_at: new Date().toISOString() })
+      .eq('id', mappingId);
+
+    return { error };
+  },
+
+  // ============================================================================
+  // AI INPUT PARSING (calls edge function)
+  // ============================================================================
+
+  async parseAiInput(input: string, inputType: 'voice' | 'text' | 'ocr' = 'text'): Promise<{
+    data: any | null;
+    error: any;
+  }> {
+    const labId = await database.getCurrentUserLabId();
+    if (!labId) return { data: null, error: new Error('No lab_id found') };
+
+    const { data: { user } } = await supabase.auth.getUser();
+
+    // Get existing items for matching
+    const { data: items } = await supabase
+      .from('inventory_items')
+      .select('id, name, code, unit, current_stock')
+      .eq('lab_id', labId)
+      .eq('is_active', true);
+
+    const { data, error } = await supabase.functions.invoke('inventory-ai-input', {
+      body: {
+        input,
+        inputType,
+        labId,
+        userId: user?.id,
+        existingItems: items || [],
+      },
+    });
+
+    return { data, error };
+  },
+
+  // ============================================================================
+  // BULK OPERATIONS (PDF Import)
+  // ============================================================================
+
+  async bulkCreateOrUpdateItems(items: Array<{
+    name: string;
+    code?: string;
+    type?: string;
+    quantity: number;
+    unit?: string;
+    batch_number?: string;
+    expiry_date?: string;
+    unit_price?: number;
+    supplier_name?: string;
+  }>, locationId?: string): Promise<{
+    data: { created: number; updated: number; errors: string[] } | null;
+    error: any
+  }> {
+    const labId = await database.getCurrentUserLabId();
+    if (!labId) return { data: null, error: new Error('No lab_id found') };
+
+    const { data: { user } } = await supabase.auth.getUser();
+
+    const results = { created: 0, updated: 0, errors: [] as string[] };
+
+    let resolvedLocationId = locationId;
+    if (!resolvedLocationId) {
+      const { data: lab } = await supabase
+        .from('labs')
+        .select('default_processing_location_id')
+        .eq('id', labId)
+        .single();
+      resolvedLocationId = lab?.default_processing_location_id || null;
+    }
+
+    for (const item of items) {
+      try {
+        // Check if item exists (by name or code)
+        const { data: existing } = await supabase
+          .from('inventory_items')
+          .select('id, current_stock')
+          .eq('lab_id', labId)
+          .or(`name.ilike.${item.name},code.eq.${item.code || ''}`)
+          .maybeSingle();
+
+        if (existing) {
+          // Create transaction record (trigger updates stock)
+          await supabase
+            .from('inventory_transactions')
+            .insert({
+              lab_id: labId,
+              item_id: existing.id,
+              location_id: null,
+              type: 'in',
+              quantity: item.quantity,
+              reason: 'PDF Import',
+              batch_number: item.batch_number,
+              expiry_date: item.expiry_date,
+              unit_price: item.unit_price,
+              performed_by: user?.id,
+            });
+
+          results.updated++;
+        } else {
+          // Create new item
+          const { data: newItem, error: createError } = await supabase
+            .from('inventory_items')
+            .insert({
+              lab_id: labId,
+              location_id: resolvedLocationId,
+              name: item.name,
+              code: item.code,
+              type: item.type || 'consumable',
+              current_stock: 0,
+              unit: item.unit || 'pcs',
+              batch_number: item.batch_number,
+              expiry_date: item.expiry_date,
+              unit_price: item.unit_price,
+              supplier_name: item.supplier_name,
+              created_by: user?.id,
+            })
+            .select()
+            .single();
+
+          if (createError) {
+            results.errors.push(`Failed to create ${item.name}: ${createError.message}`);
+          } else {
+            // Create initial transaction
+            await supabase
+              .from('inventory_transactions')
+              .insert({
+                lab_id: labId,
+                item_id: newItem.id,
+                location_id: resolvedLocationId,
+                type: 'in',
+                quantity: item.quantity,
+                reason: 'PDF Import - Initial Stock',
+                batch_number: item.batch_number,
+                expiry_date: item.expiry_date,
+                unit_price: item.unit_price,
+                performed_by: user?.id,
+              });
+
+            results.created++;
+          }
+        }
+      } catch (err: any) {
+        results.errors.push(`Error processing ${item.name}: ${err.message}`);
+      }
+    }
+
+    return { data: results, error: null };
+  },
+
+  // ============================================================================
+  // CONSUMPTION SUMMARY
+  // ============================================================================
+
+  async getConsumptionSummary(days: number = 30): Promise<{ data: any[] | null; error: any }> {
+    const labId = await database.getCurrentUserLabId();
+    if (!labId) return { data: null, error: new Error('No lab_id found') };
+
+    const { data, error } = await supabase
+      .from('v_inventory_consumption_summary')
+      .select('*')
+      .eq('lab_id', labId);
+
+    return { data, error };
+  },
+
+  // ============================================================================
+  // AI CLASSIFICATION & MAPPING
+  // ============================================================================
+
+  async getClassificationStats(): Promise<{
+    data: {
+      pending: number;
+      classified: number;
+      mapped: number;
+      confirmed: number;
+      byCategory: { qc_control: number; test_specific: number; general: number };
+    } | null;
+    error: any
+  }> {
+    const labId = await database.getCurrentUserLabId();
+    if (!labId) return { data: null, error: new Error('No lab_id found') };
+
+    const { data: items, error } = await supabase
+      .from('inventory_items')
+      .select('id, ai_classification_status, ai_category')
+      .eq('lab_id', labId)
+      .eq('is_active', true);
+
+    if (error) return { data: null, error };
+
+    const stats = {
+      pending: items?.filter(i => !i.ai_classification_status || i.ai_classification_status === 'pending').length || 0,
+      classified: items?.filter(i => i.ai_classification_status === 'classified').length || 0,
+      mapped: items?.filter(i => i.ai_classification_status === 'mapped').length || 0,
+      confirmed: items?.filter(i => i.ai_classification_status === 'confirmed').length || 0,
+      byCategory: {
+        qc_control: items?.filter(i => i.ai_category === 'qc_control').length || 0,
+        test_specific: items?.filter(i => i.ai_category === 'test_specific').length || 0,
+        general: items?.filter(i => i.ai_category === 'general').length || 0,
+      },
+    };
+
+    return { data: stats, error: null };
+  },
+
+  async getPendingClassificationItems(limit: number = 50): Promise<{ data: InventoryItem[] | null; error: any }> {
+    const labId = await database.getCurrentUserLabId();
+    if (!labId) return { data: null, error: new Error('No lab_id found') };
+
+    const { data, error } = await supabase
+      .from('inventory_items')
+      .select('*')
+      .eq('lab_id', labId)
+      .eq('is_active', true)
+      .or('ai_classification_status.is.null,ai_classification_status.eq.pending')
+      .order('created_at', { ascending: false })
+      .limit(limit);
+
+    return { data, error };
+  },
+
+  async getClassifiedItems(category?: string, limit: number = 50): Promise<{ data: InventoryItem[] | null; error: any }> {
+    const labId = await database.getCurrentUserLabId();
+    if (!labId) return { data: null, error: new Error('No lab_id found') };
+
+    let query = supabase
+      .from('inventory_items')
+      .select('*')
+      .eq('lab_id', labId)
+      .eq('is_active', true)
+      .eq('ai_classification_status', 'classified')
+      .order('ai_classification_confidence', { ascending: false })
+      .limit(limit);
+
+    if (category) {
+      query = query.eq('ai_category', category);
+    }
+
+    const { data, error } = await query;
+    return { data, error };
+  },
+
+  async getMappingSummaries(limit: number = 50): Promise<{ data: any[] | null; error: any }> {
+    const labId = await database.getCurrentUserLabId();
+    if (!labId) return { data: null, error: new Error('No lab_id found') };
+
+    const { data, error } = await supabase
+      .from('v_inventory_mapping_summary')
+      .select('*')
+      .eq('lab_id', labId)
+      .gt('total_mappings', 0)
+      .limit(limit);
+
+    return { data, error };
+  },
+
+  async runAIClassification(itemIds?: string[], batchSize: number = 10): Promise<{
+    data: {
+      success: boolean;
+      classified: number;
+      categories: { qc_control: number; test_specific: number; general: number };
+      results: any[];
+    } | null;
+    error: any
+  }> {
+    const labId = await database.getCurrentUserLabId();
+    if (!labId) return { data: null, error: new Error('No lab_id found') };
+
+    // Get items to classify
+    let items: InventoryItem[] = [];
+    if (itemIds && itemIds.length > 0) {
+      const { data } = await supabase
+        .from('inventory_items')
+        .select('id, name, code, type, unit, current_stock, primary_mapping_instruction')
+        .eq('lab_id', labId)
+        .in('id', itemIds)
+        .limit(batchSize);
+      items = data || [];
+    } else {
+      const { data } = await supabase
+        .from('inventory_items')
+        .select('id, name, code, type, unit, current_stock, primary_mapping_instruction')
+        .eq('lab_id', labId)
+        .eq('is_active', true)
+        .or('ai_classification_status.is.null,ai_classification_status.eq.pending')
+        .limit(batchSize);
+      items = data || [];
+    }
+
+    if (items.length === 0) {
+      return { data: { success: true, classified: 0, categories: { qc_control: 0, test_specific: 0, general: 0 }, results: [] }, error: null };
+    }
+
+    const { data, error } = await supabase.functions.invoke('inventory-ai-classify', {
+      body: {
+        lab_id: labId,
+        items: items.map(i => ({
+          id: i.id,
+          name: i.name,
+          code: i.code,
+          type: i.type,
+          unit: i.unit,
+          current_stock: i.current_stock,
+          primary_mapping_instruction: i.primary_mapping_instruction,
+        })),
+        batch_size: batchSize,
+      },
+    });
+
+    return { data, error };
+  },
+
+  async runAIMapping(itemIds?: string[], batchSize: number = 10): Promise<{
+    data: {
+      success: boolean;
+      items_processed: number;
+      total_mappings_created: number;
+      qc_links_created: number;
+      results: any[];
+    } | null;
+    error: any
+  }> {
+    const labId = await database.getCurrentUserLabId();
+    if (!labId) return { data: null, error: new Error('No lab_id found') };
+
+    const { data, error } = await supabase.functions.invoke('inventory-ai-map', {
+      body: {
+        lab_id: labId,
+        item_ids: itemIds,
+        batch_size: batchSize,
+      },
+    });
+
+    return { data, error };
+  },
+
+  async updateMappingInstruction(itemId: string, instruction: string): Promise<{ error: any }> {
+    const { error } = await supabase
+      .from('inventory_items')
+      .update({
+        primary_mapping_instruction: instruction,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', itemId);
+
+    return { error };
+  },
+
+  async confirmMapping(mappingId: string): Promise<{ error: any }> {
+    const { data: { user } } = await supabase.auth.getUser();
+
+    const { error } = await supabase.rpc('fn_inventory_confirm_mapping', {
+      p_mapping_id: mappingId,
+      p_user_id: user?.id,
+    });
+
+    return { error };
+  },
+
+  async linkQCLot(itemId: string, qcLotId: string): Promise<{ error: any }> {
+    const { error } = await supabase.rpc('fn_inventory_link_qc_lot', {
+      p_item_id: itemId,
+      p_qc_lot_id: qcLotId,
+    });
+
+    return { error };
+  },
+};
+
 // Add pricing namespaces to database object
 Object.assign(database, {
   notificationSettings,
@@ -12706,6 +13697,7 @@ Object.assign(database, {
   locationReceivables,
   pricingHelper,
   analytics,
+  inventory,
 });
 
 /**

@@ -75,6 +75,7 @@ interface TestGroup {
   code?: string;
   category: string;
   clinicalPurpose?: string;
+  methodology?: string;
   price?: number;
   turnaroundTime?: string;
   sampleType?: string;
@@ -360,6 +361,7 @@ const Tests: React.FC = () => {
             code: group.code,
             category: group.category,
             clinicalPurpose: group.clinical_purpose,
+            methodology: group.methodology,
             price: group.price,
             turnaroundTime: group.turnaround_time,
             sampleType: group.sample_type,

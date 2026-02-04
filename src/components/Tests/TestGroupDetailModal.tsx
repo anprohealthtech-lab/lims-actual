@@ -7,6 +7,7 @@ interface TestGroup {
   code: string;
   category: string;
   clinicalPurpose: string;
+  methodology?: string;
   analytes: string[];
   price: number;
   turnaroundTime: string;
@@ -105,6 +106,12 @@ const TestGroupDetailModal: React.FC<TestGroupDetailModalProps> = ({ testGroup, 
                   <div className="text-sm text-gray-600">Sample Type</div>
                   <div className="font-medium text-gray-900">{testGroup.sampleType}</div>
                 </div>
+                {testGroup.methodology && (
+                  <div>
+                    <div className="text-sm text-gray-600">Methodology</div>
+                    <div className="font-medium text-gray-900">{testGroup.methodology}</div>
+                  </div>
+                )}
                 <div>
                   <div className="text-sm text-gray-600">Turnaround Time</div>
                   <div className="font-medium text-gray-900">{testGroup.turnaroundTime}</div>
