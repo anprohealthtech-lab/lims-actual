@@ -257,7 +257,7 @@ ${results}
 For each result, determine:
 1. flag: "normal", "high", "low", "critical_high", "critical_low", or "abnormal" (for qualitative)
 2. confidence: 0-1 score
-3. interpretation: Brief clinical interpretation (1-2 sentences)
+3. interpretation: A short, NEUTRAL, factual observation about the result value relative to the reference range (1 sentence max)
 4. clinical_significance: "routine", "attention", "urgent", or "critical"
 5. suggested_action: Any recommended follow-up (optional)
 
@@ -266,17 +266,22 @@ Respond with a JSON array in this exact format:
   {
     "flag": "high",
     "confidence": 0.95,
-    "interpretation": "Elevated glucose indicates potential hyperglycemia.",
+    "interpretation": "Value is above the reference range.",
     "clinical_significance": "attention",
-    "suggested_action": "Consider fasting glucose retest"
+    "suggested_action": "Correlate with clinical findings"
   }
 ]
 
-Important:
+CRITICAL RULES for interpretation text:
+- NEVER suggest, name, or imply specific diseases, conditions, or diagnoses (e.g. do NOT say "malnutrition", "liver disease", "atherosclerosis", "malignancy", "diabetes", "infection")
+- NEVER use phrases like "may indicate", "suggests", "risk of", "consistent with", or "potential" followed by a disease name
+- ONLY describe the observed value relative to the reference range in neutral, objective language
+- Good examples: "Value is within normal limits.", "Result is above the upper reference limit.", "Value is below the expected range.", "Mildly elevated compared to reference range.", "Result is at the upper boundary of normal."
+- Diagnosis and clinical correlation is the physician's responsibility, NOT the lab report's
 - Use gender-specific reference ranges when applicable
 - Flag critical values appropriately
 - For qualitative tests (Positive/Negative), use "abnormal" for positive findings
-- Be concise but clinically accurate`;
+- Be concise and factual`;
 }
 
 function buildSinglePrompt(resultValue: ResultValueInput, patient?: PatientContext): string {
@@ -305,7 +310,7 @@ Respond with JSON:
 {
   "flag": "normal|high|low|critical_high|critical_low|abnormal",
   "confidence": 0.0-1.0,
-  "interpretation": "Brief clinical interpretation",
+  "interpretation": "Short neutral factual observation about value vs reference range. NEVER suggest or name specific diseases or conditions.",
   "clinical_significance": "routine|attention|urgent|critical",
   "suggested_action": "Optional follow-up recommendation"
 }`;

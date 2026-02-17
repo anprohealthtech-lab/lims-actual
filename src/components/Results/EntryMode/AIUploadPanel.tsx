@@ -1,7 +1,8 @@
 import React, { useState, useCallback, useEffect } from 'react';
 import { Brain, Upload, File, AlertCircle, CheckCircle, Loader, Play } from 'lucide-react';
-import { supabase, attachments } from '../../../utils/supabase';
+import { supabase, attachments, database } from '../../../utils/supabase';
 import { useAuth } from '../../../contexts/AuthContext';
+import { toast } from 'react-hot-toast';
 import AIProcessingProgress, { AIStep } from '../../Orders/AIProcessingProgress';
 
 interface Order {
@@ -462,6 +463,43 @@ const AIUploadPanel: React.FC<AIUploadPanelProps> = ({ order, testGroup, onUploa
           .insert(resultValues);
 
         if (error) throw error;
+
+        // Auto-consume inventory for non-outsourced tests (non-blocking)
+        const { data: orderTest } = await supabase
+          .from('order_tests')
+          .select('outsourced_lab_id')
+          .eq('order_id', order.id)
+          .eq('test_group_id', testGroupId)
+          .maybeSingle();
+
+        if (!orderTest?.outsourced_lab_id) {
+          try {
+            const { data: consumeResult } = await database.inventory.triggerAutoConsume({
+              labId: order.lab_id,
+              orderId: order.id,
+              resultId: resultId,
+              testGroupId: testGroupId,
+            });
+
+            if (consumeResult && consumeResult.itemsConsumed > 0) {
+              if (consumeResult.alertsGenerated > 0) {
+                toast(`Inventory: ${consumeResult.itemsConsumed} items consumed | ${consumeResult.alertsGenerated} low stock alert${consumeResult.alertsGenerated > 1 ? 's' : ''}`, {
+                  icon: '⚠️',
+                  style: { background: '#FEF3C7', color: '#92400E' },
+                  duration: 5000,
+                });
+              } else {
+                toast.success(`Inventory updated: ${consumeResult.itemsConsumed} item${consumeResult.itemsConsumed > 1 ? 's' : ''} consumed`);
+              }
+            }
+          } catch (err) {
+            console.warn('Inventory auto-consume failed (non-blocking):', err);
+            toast('Inventory update failed (results saved)', {
+              icon: '📦',
+              style: { background: '#FED7AA', color: '#9A3412' },
+            });
+          }
+        }
 
         // Update result metadata
         await supabase

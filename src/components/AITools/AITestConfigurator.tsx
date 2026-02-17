@@ -15,6 +15,53 @@ export const AITestConfigurator: React.FC<AITestConfiguratorProps> = ({
   existingTests = [],
   className = ''
 }) => {
+  const normalizeAIProcessingType = (type?: string | null): string => {
+    const normalized = (type || '').trim().toUpperCase();
+    const aliasMap: Record<string, string> = {
+      GEMINI: 'THERMAL_SLIP_OCR',
+      OCR_REPORT: 'THERMAL_SLIP_OCR',
+      VISION_CARD: 'RAPID_CARD_LFA',
+      VISION_COLOR: 'COLOR_STRIP_MULTIPARAM',
+    };
+    const value = aliasMap[normalized] || normalized;
+    const valid = new Set([
+      'MANUAL_ENTRY_NO_VISION',
+      'THERMAL_SLIP_OCR',
+      'INSTRUMENT_SCREEN_OCR',
+      'RAPID_CARD_LFA',
+      'COLOR_STRIP_MULTIPARAM',
+      'SINGLE_WELL_COLORIMETRIC',
+      'AGGLUTINATION_CARD',
+      'MICROSCOPY_MORPHOLOGY',
+      'ZONE_OF_INHIBITION',
+      'MENISCUS_SCALE_READING',
+      'SAMPLE_QUALITY_TUBE_CHECK',
+      'UNKNOWN_NEEDS_REVIEW',
+    ]);
+    return valid.has(value) ? value : 'MANUAL_ENTRY_NO_VISION';
+  };
+
+  const toBoolean = (value: unknown): boolean => {
+    if (typeof value === 'boolean') return value;
+    if (typeof value === 'string') return value.trim().toLowerCase() === 'true';
+    return false;
+  };
+
+  const parseFormulaVariables = (value: unknown): string[] => {
+    if (Array.isArray(value)) return value.map(String).map((v) => v.trim()).filter(Boolean);
+    if (typeof value === 'string') {
+      const trimmed = value.trim();
+      if (!trimmed) return [];
+      try {
+        const parsed = JSON.parse(trimmed);
+        if (Array.isArray(parsed)) return parsed.map(String).map((v) => v.trim()).filter(Boolean);
+      } catch {
+        return trimmed.split(',').map((v) => v.trim()).filter(Boolean);
+      }
+    }
+    return [];
+  };
+
   const { user } = useAuth();
   const [testName, setTestName] = useState('');
   const [description, setDescription] = useState('');
@@ -120,7 +167,8 @@ export const AITestConfigurator: React.FC<AITestConfiguratorProps> = ({
           requires_fasting: generatedConfig.test_group.requires_fasting,
           is_active: true,
           lab_id: labId,
-          default_ai_processing_type: 'gemini',
+          default_ai_processing_type: normalizeAIProcessingType(generatedConfig.test_group.default_ai_processing_type),
+          group_level_prompt: generatedConfig.test_group.group_level_prompt || null,
           to_be_copied: false
         })
         .select()
@@ -128,37 +176,66 @@ export const AITestConfigurator: React.FC<AITestConfiguratorProps> = ({
 
       if (testGroupError) throw testGroupError;
 
-      // 2. Create Analytes (global table, no lab_id)
-      const analytesToInsert = generatedConfig.analytes.map(analyte => ({
-        name: analyte.name,
-        code: analyte.name.replace(/[^a-zA-Z0-9]/g, '_').toUpperCase(),
-        unit: analyte.unit,
-        reference_range: analyte.reference_range,
-        low_critical: analyte.low_critical,
-        high_critical: analyte.high_critical,
-        interpretation_low: analyte.interpretation_low,
-        interpretation_normal: analyte.interpretation_normal,
-        interpretation_high: analyte.interpretation_high,
-        category: analyte.category,
-        is_active: true,
-        ai_processing_type: 'gemini',
-        group_ai_mode: 'individual',
-        is_global: false,
-        to_be_copied: false
-      }));
+      // 2. Resolve Analytes — reuse existing by name+unit, only create truly new ones
+      const resolvedAnalytes: { id: string; name: string }[] = [];
 
-      const { data: analytesData, error: analytesError } = await database.supabase
-        .from('analytes')
-        .insert(analytesToInsert)
-        .select();
+      for (const analyte of generatedConfig.analytes) {
+        const code = analyte.name.replace(/[^a-zA-Z0-9]/g, '_').toUpperCase();
 
-      if (analytesError) throw analytesError;
+        // Check if an analyte with the same name (case-insensitive) already exists
+        const { data: existing } = await database.supabase
+          .from('analytes')
+          .select('id, name')
+          .ilike('name', analyte.name.trim())
+          .limit(1);
+
+        if (existing && existing.length > 0) {
+          // Reuse existing analyte
+          resolvedAnalytes.push({ id: existing[0].id, name: existing[0].name });
+          console.log(`♻️ Reusing existing analyte: "${existing[0].name}" (${existing[0].id})`);
+        } else {
+          // Insert new analyte
+          const { data: newAnalyte, error: insertErr } = await database.supabase
+            .from('analytes')
+            .insert({
+              name: analyte.name,
+              code,
+              unit: analyte.unit,
+              reference_range: analyte.reference_range,
+              low_critical: analyte.low_critical,
+              high_critical: analyte.high_critical,
+              interpretation_low: analyte.interpretation_low,
+              interpretation_normal: analyte.interpretation_normal,
+              interpretation_high: analyte.interpretation_high,
+              category: analyte.category,
+              is_active: true,
+              ai_processing_type: normalizeAIProcessingType(analyte.ai_processing_type || generatedConfig.test_group.default_ai_processing_type),
+              group_ai_mode: analyte.group_ai_mode || 'individual',
+              is_global: false,
+              to_be_copied: false,
+              is_calculated: toBoolean((analyte as any).is_calculated),
+              formula: ((analyte as any).formula || '').trim() || null,
+              formula_variables: parseFormulaVariables((analyte as any).formula_variables),
+              formula_description: (analyte as any).formula_description || null,
+              value_type: (analyte as any).value_type || (toBoolean((analyte as any).is_calculated) ? 'numeric' : null),
+              expected_normal_values: Array.isArray((analyte as any).expected_normal_values) ? (analyte as any).expected_normal_values : []
+            })
+            .select('id, name')
+            .single();
+
+          if (insertErr) throw insertErr;
+          resolvedAnalytes.push({ id: newAnalyte.id, name: newAnalyte.name });
+          console.log(`✨ Created new analyte: "${newAnalyte.name}" (${newAnalyte.id})`);
+        }
+      }
+
+      const analytesData = resolvedAnalytes;
 
       // 3. Link Test Group to Analytes (using UUIDs)
-      const testGroupAnalytesLinks = analytesData.map((analyte: any) => ({
+      const testGroupAnalytesLinks = analytesData.map((analyte, idx) => ({
         test_group_id: testGroupData.id,
         analyte_id: analyte.id,
-        display_order: analytesData.indexOf(analyte),
+        display_order: idx,
         is_visible: true
       }));
 

@@ -64,6 +64,7 @@ import VerificationPage from './pages/VerificationPage';
 import FinancialReports from './pages/FinancialReports';
 import Analytics from './pages/Analytics';
 import QualityControl from './pages/QualityControl';
+import Inventory from './pages/Inventory';
 
 // ⬇️ B2B Portal
 import B2BLogin from './pages/B2BLogin';
@@ -211,6 +212,7 @@ const AppRoutes: React.FC = () => {
                 <Route path="/verification" element={<ResultVerificationConsole />} />
                 <Route path="/workflows" element={<WorkflowManagement />} />
                 <Route path="/quality-control" element={<QualityControl />} />
+                <Route path="/inventory" element={<Inventory />} />
                 {/* DEPRECATED: Use /workflows instead */}
                 {/* <Route path="/workflow-demo" element={<WorkflowDemo />} /> */}
                 <Route path="/workflow-configurator" element={<WorkflowConfiguratorPage />} />

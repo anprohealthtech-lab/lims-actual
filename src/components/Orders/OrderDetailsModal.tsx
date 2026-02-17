@@ -11,7 +11,7 @@
 // - (ADDED) Duplicate-safe submit (reuse results row, upsert values)
 // ===========================================================
 
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import ReactDOM from "react-dom";
 import {
   X,
@@ -37,6 +37,7 @@ import {
   ExternalLink,
   Download,
   Crop,
+  Mic,
 } from "lucide-react";
 import QRCodeLib from "qrcode";
 import { database, attachments as attachmentsAPI, supabase, uploadFile } from "../../utils/supabase";
@@ -52,6 +53,7 @@ import PhlebotomistSelector from "../Users/PhlebotomistSelector";
 import { OrderStatusDisplay } from "./OrderStatusDisplay";
 import { capturePhoto, isNative } from "../../utils/androidFileUpload";
 import { calculateFlagsForResults } from "../../utils/flagCalculation";
+import VoiceRecorder from "../Voice/VoiceRecorder";
 
 interface WorkflowStep {
   name: string;
@@ -83,7 +85,9 @@ interface ExtractedValue {
   reference: string;
   flag?: string;
   analyte_id?: string | null;
+  is_calculated?: boolean;
   expected_normal_values?: string[];
+  expected_value_flag_map?: Record<string, string>;
   verify_note?: string; // Re-run request note from verifier
   is_rerun?: boolean; // Indicates this is a re-run request
 }
@@ -120,6 +124,7 @@ interface OrderDetailsModalProps {
 interface TestGroupResult {
   test_group_id: string;
   test_group_name: string;
+  group_level_prompt?: string | null;
   order_test_group_id?: string | null;
   order_test_id?: string | null;
   source?: "order_test_groups" | "order_tests";
@@ -131,10 +136,15 @@ interface TestGroupResult {
     reference_range?: string;
     normal_range_min?: number;
     normal_range_max?: number;
+    is_calculated?: boolean;
+    formula?: string | null;
+    formula_variables?: string[] | string | null;
     existing_result?: {
       id: string;
       value: string;
       status: string;
+      unit?: string;
+      reference_range?: string;
       verified_at?: string;
     } | null;
   }[];
@@ -617,6 +627,11 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
   const [saveMessage, setSaveMessage] = useState<string | null>(null);
   const [activeEntryMode, setActiveEntryMode] = useState<"manual" | "ai">("manual");
 
+  // Voice Input
+  const [showVoiceInput, setShowVoiceInput] = useState(false);
+  const [voiceAnalyzing, setVoiceAnalyzing] = useState(false);
+  const [voiceTranscript, setVoiceTranscript] = useState<string>("");
+
   // QR
   const [qrCodeImage, setQrCodeImage] = useState<string>("");
 
@@ -659,46 +674,9 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
         if (!activeAttachment && resolvedData.length) {
           setActiveAttachment(resolvedData[0]);
           setAttachmentId(resolvedData[0].id);
-
-          // Check if there are multiple images
-          let imagesToAnalyze = [];
-          let virtualBatchId = null;
-
-          // If first image has a batch_id, filter by that batch
-          if (resolvedData[0].batch_id) {
-            imagesToAnalyze = resolvedData.filter(att => att.batch_id === resolvedData[0].batch_id);
-            virtualBatchId = resolvedData[0].batch_id;
-          } else {
-            // No batch_id - treat all images for this order as a virtual batch
-            imagesToAnalyze = resolvedData.filter(att => att.file_type?.startsWith('image/'));
-            virtualBatchId = `virtual-${order.id}`;
-          }
-
-          if (imagesToAnalyze.length > 1) {
-            // Enable multi-image AI analysis
-            setAvailableImagesForAI(imagesToAnalyze);
-            // By default, select all images for AI analysis
-            setSelectedImagesForAI(new Set(imagesToAnalyze.map((img: any) => img.id)));
-            setSelectedBatchForAI({
-              id: virtualBatchId,
-              batchId: virtualBatchId,
-              files: imagesToAnalyze,
-              total_files: imagesToAnalyze.length,
-            });
-
-            const imageReferences = imagesToAnalyze.map((att: any) => att.image_label || `Image ${att.batch_sequence || imagesToAnalyze.indexOf(att) + 1}`).join(', ');
-            const firstImageLabel = imagesToAnalyze[0]?.image_label || `Image ${imagesToAnalyze[0]?.batch_sequence || 1}`;
-            const secondImageLabel = imagesToAnalyze[1] ? (imagesToAnalyze[1]?.image_label || `Image ${imagesToAnalyze[1]?.batch_sequence || 2}`) : '';
-
-            setMultiImageAIInstructions(
-              `Analyze uploaded images (${imageReferences}):\n` +
-              `- From ${firstImageLabel}: Extract primary test results\n` +
-              (imagesToAnalyze[1] ? `- From ${secondImageLabel}: Extract secondary parameters\n` : '') +
-              (imagesToAnalyze.length > 2 ? `- From remaining images: Extract additional data\n` : '') +
-              `\nMap results to specific image references.`
-            );
-          }
         }
+
+        updateAiStateFromAttachments(resolvedData, { preferActiveAttachment: true });
       });
   }, [order.id]);
 
@@ -735,7 +713,9 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
             unit: analyte.unit || existingResult?.unit || "",
             reference: analyte.reference_range || existingResult?.reference_range || "",
             flag: isRerun && existingResult ? existingResult.flag : undefined,
+            is_calculated: !!analyte.is_calculated,
             expected_normal_values: analyte.expected_normal_values || [],
+            expected_value_flag_map: analyte.expected_value_flag_map || {},
             verify_note: isRerun && existingResult?.verify_note ? existingResult.verify_note : undefined,
             is_rerun: isRerun,
           };
@@ -851,6 +831,7 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
               id,
               name,
               code,
+              group_level_prompt,
               lab_id,
               test_group_analytes(
                 analyte_id,
@@ -861,7 +842,11 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
                   reference_range,
                   ai_processing_type,
                   ai_prompt_override,
-                  expected_normal_values
+                  expected_normal_values,
+                  expected_value_flag_map,
+                  is_calculated,
+                  formula,
+                  formula_variables
                 )
               )
             )
@@ -875,6 +860,7 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
               id,
               name,
               code,
+              group_level_prompt,
               lab_id,
               test_group_analytes(
                 analyte_id,
@@ -885,7 +871,11 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
                   reference_range,
                   ai_processing_type,
                   ai_prompt_override,
-                  expected_normal_values
+                  expected_normal_values,
+                  expected_value_flag_map,
+                  is_calculated,
+                  formula,
+                  formula_variables
                 )
               )
             )
@@ -926,6 +916,7 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
         data.order_test_groups?.filter((otg: any) => otg.test_groups).map((otg: any) => ({
           test_group_id: otg.test_groups.id,
           test_group_name: otg.test_groups.name,
+          group_level_prompt: otg.test_groups.group_level_prompt || null,
           order_test_group_id: otg.id,
           order_test_id: null,
           source: "order_test_groups" as const,
@@ -947,6 +938,7 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
           .map((ot: any) => ({
             test_group_id: ot.test_groups.id,
             test_group_name: ot.test_groups.name,
+            group_level_prompt: ot.test_groups.group_level_prompt || null,
             order_test_group_id: null,
             order_test_id: ot.id,
             source: "order_tests" as const,
@@ -993,7 +985,7 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
       if (analyteIds.length > 0 && data.lab_id) {
         const { data: labAnalytes } = await supabase
           .from('lab_analytes')
-          .select('analyte_id, expected_normal_values')
+          .select('analyte_id, expected_normal_values, expected_value_flag_map')
           .eq('lab_id', data.lab_id)
           .in('analyte_id', analyteIds);
 
@@ -1003,23 +995,38 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
             labAnalytes.map((la: any) => [la.analyte_id, la])
           );
 
-          // Merge lab-specific expected_normal_values into analytes
+          // Merge lab-specific expected_normal_values and expected_value_flag_map into analytes
           flatAnalytes = flatAnalytes.map((analyte: any) => {
             const labAnalyte = labAnalytesMap.get(analyte.id);
-            if (labAnalyte && labAnalyte.expected_normal_values) {
-              // Parse if string, otherwise use as-is
-              let expectedValues = labAnalyte.expected_normal_values;
-              if (typeof expectedValues === 'string') {
-                try {
-                  expectedValues = JSON.parse(expectedValues);
-                } catch {
-                  expectedValues = [];
+            if (labAnalyte) {
+              const updates: any = {};
+              // Parse expected_normal_values
+              if (labAnalyte.expected_normal_values) {
+                let expectedValues = labAnalyte.expected_normal_values;
+                if (typeof expectedValues === 'string') {
+                  try {
+                    expectedValues = JSON.parse(expectedValues);
+                  } catch {
+                    expectedValues = [];
+                  }
+                }
+                if (expectedValues?.length > 0) {
+                  updates.expected_normal_values = expectedValues;
                 }
               }
-              return {
-                ...analyte,
-                expected_normal_values: expectedValues?.length > 0 ? expectedValues : analyte.expected_normal_values,
-              };
+              // Parse expected_value_flag_map
+              if (labAnalyte.expected_value_flag_map) {
+                let flagMap = labAnalyte.expected_value_flag_map;
+                if (typeof flagMap === 'string') {
+                  try { flagMap = JSON.parse(flagMap); } catch { flagMap = {}; }
+                }
+                if (flagMap && Object.keys(flagMap).length > 0) {
+                  updates.expected_value_flag_map = flagMap;
+                }
+              }
+              if (Object.keys(updates).length > 0) {
+                return { ...analyte, ...updates };
+              }
             }
             return analyte;
           });
@@ -1093,12 +1100,80 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
         ), {})
       );
 
-      setAttachments(dedup as any[]);
-      if (!activeAttachment && dedup.length > 0) {
-        setActiveAttachment(dedup[0] as any);
+      const normalized = dedup as any[];
+      setAttachments(normalized);
+      if (!activeAttachment && normalized.length > 0) {
+        setActiveAttachment(normalized[0] as any);
       }
+      updateAiStateFromAttachments(normalized, { preferActiveAttachment: true });
     } catch (e) {
       console.error("Error loading attachments", e);
+    }
+  };
+
+  const updateAiStateFromAttachments = (
+    nextAttachments: any[],
+    options?: { preferActiveAttachment?: boolean }
+  ) => {
+    const imageAttachments = (nextAttachments || []).filter((att: any) =>
+      att?.file_type?.startsWith("image/")
+    );
+
+    if (imageAttachments.length === 0) {
+      setAvailableImagesForAI([]);
+      setSelectedImagesForAI(new Set());
+      setSelectedBatchForAI(null);
+      setMultiImageAIInstructions('');
+      return;
+    }
+
+    const preferredActive = options?.preferActiveAttachment && activeAttachment
+      ? imageAttachments.find((att: any) => att.id === activeAttachment.id) || imageAttachments[0]
+      : imageAttachments[0];
+
+    let imagesToAnalyze: any[] = [];
+    let virtualBatchId: string | null = null;
+
+    if (preferredActive?.batch_id) {
+      imagesToAnalyze = imageAttachments.filter(
+        (att: any) => att.batch_id === preferredActive.batch_id
+      );
+      virtualBatchId = preferredActive.batch_id;
+    } else {
+      imagesToAnalyze = imageAttachments;
+      virtualBatchId = `virtual-${order.id}`;
+    }
+
+    if (imagesToAnalyze.length > 1) {
+      setAvailableImagesForAI(imagesToAnalyze);
+      setSelectedImagesForAI(new Set(imagesToAnalyze.map((img: any) => img.id)));
+      setSelectedBatchForAI({
+        id: virtualBatchId,
+        batchId: virtualBatchId,
+        files: imagesToAnalyze,
+        total_files: imagesToAnalyze.length,
+      });
+
+      const imageReferences = imagesToAnalyze
+        .map((att: any) => att.image_label || `Image ${att.batch_sequence || imagesToAnalyze.indexOf(att) + 1}`)
+        .join(', ');
+      const firstImageLabel = imagesToAnalyze[0]?.image_label || `Image ${imagesToAnalyze[0]?.batch_sequence || 1}`;
+      const secondImageLabel = imagesToAnalyze[1]
+        ? (imagesToAnalyze[1]?.image_label || `Image ${imagesToAnalyze[1]?.batch_sequence || 2}`)
+        : '';
+
+      setMultiImageAIInstructions(
+        `Analyze uploaded images (${imageReferences}):\n` +
+        `- From ${firstImageLabel}: Extract primary test results\n` +
+        (imagesToAnalyze[1] ? `- From ${secondImageLabel}: Extract secondary parameters\n` : '') +
+        (imagesToAnalyze.length > 2 ? `- From remaining images: Extract additional data\n` : '') +
+        `\nMap results to specific image references.`
+      );
+    } else {
+      setAvailableImagesForAI(imagesToAnalyze);
+      setSelectedImagesForAI(new Set(imagesToAnalyze.map((img: any) => img.id)));
+      setSelectedBatchForAI(null);
+      setMultiImageAIInstructions('');
     }
   };
 
@@ -1270,9 +1345,13 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
 
       setAttachmentId(enrichedAttachment.id);
       setUploadedFile(file);
-      // refresh visible list
-      setAttachments(prev => [enrichedAttachment, ...prev]);
-      if (!activeAttachment) setActiveAttachment(enrichedAttachment);
+      // refresh visible list + AI image list
+      const nextAttachments = [enrichedAttachment, ...attachments];
+      setAttachments(nextAttachments);
+      setActiveAttachment(enrichedAttachment);
+      updateAiStateFromAttachments(nextAttachments, { preferActiveAttachment: true });
+      // short refresh to ensure UI reflects any server-side transforms
+      await fetchAttachmentsForOrder();
 
       // mark("upload", "ok", { name: file.name }); // Comment out until mark function is available
     } catch (err) {
@@ -1371,8 +1450,38 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
       // Close multi-upload interface
       setShowMultiUpload(false);
 
+      // Update AI analysis state for the new batch
+      if (normalizedBatch.files && normalizedBatch.files.length > 0) {
+        // Set the latest batch as available for AI analysis
+        setSelectedBatchForAI({
+          ...normalizedBatch,
+          batchId: normalizedBatch?.batchId || normalizedBatch?.id,
+          files: normalizedBatch.files,
+        });
+        setAvailableImagesForAI(normalizedBatch.files);
+
+        // Set default multi-image AI instructions
+        const imageReferences = normalizedBatch.files.map((file: any, index: number) =>
+          `Image ${index + 1}`
+        ).join(', ');
+
+        setMultiImageAIInstructions(
+          `Analyze uploaded images (${imageReferences}):\n` +
+          `- From Image 1: Extract primary test results\n` +
+          (normalizedBatch.files.length > 1 ? `- From Image 2: Extract secondary parameters\n` : '') +
+          (normalizedBatch.files.length > 2 ? `- From Image 3+: Extract additional data\n` : '') +
+          `\nMap results to specific image references.`
+        );
+
+        // Set the first attachment for compatibility and focus
+        const firstAtt = normalizedBatch.files[0];
+        setAttachmentId(firstAtt.id);
+        setActiveAttachment(firstAtt);
+        setUploadedFile(firstAtt.file || null);
+      }
+
       // Show success message
-      alert(`Successfully uploaded ${batch.files.length} images in batch!`);
+      alert(`Successfully uploaded ${batch.files.length} images in batch! AI analysis ready.`);
 
     } catch (error) {
       console.error('Error handling batch upload completion:', error);
@@ -1450,6 +1559,213 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
       type: analyte.ai_processing_type || "ocr_report",
       prompt: analyte.ai_prompt_override || undefined,
     });
+  };
+
+  const buildAnalyteDisambiguationHints = (analytes: Array<{ name?: string | null; code?: string | null; unit?: string | null; reference_range?: string | null }>) => {
+    const valid = analytes
+      .filter((a) => (a.name || "").trim().length > 0)
+      .map((a) => ({
+        name: (a.name || "").trim(),
+        code: (a.code || "").trim(),
+        unit: (a.unit || "").trim(),
+        reference: (a.reference_range || "").trim(),
+      }));
+
+    const namePairs: string[] = [];
+    for (let i = 0; i < valid.length; i++) {
+      for (let j = i + 1; j < valid.length; j++) {
+        const a = valid[i].name.toLowerCase();
+        const b = valid[j].name.toLowerCase();
+        if (a.includes(b) || b.includes(a)) {
+          namePairs.push(`${valid[i].name} <> ${valid[j].name}`);
+        }
+      }
+    }
+
+    const analyteLines = valid.map((a) => {
+      const extras = [
+        a.code ? `code=${a.code}` : "",
+        a.unit ? `unit=${a.unit}` : "",
+        a.reference ? `ref=${a.reference}` : "",
+      ].filter(Boolean).join(", ");
+      return extras ? `- ${a.name} (${extras})` : `- ${a.name}`;
+    });
+
+    const pairLine = namePairs.length > 0
+      ? `Potentially confusable names: ${namePairs.join("; ")}.`
+      : "No obvious near-duplicate names detected.";
+
+    return {
+      analyteLines,
+      pairLine,
+    };
+  };
+
+  const buildOptimizedGroupPrompt = ({
+    testGroupName,
+    basePrompt,
+    analytes,
+    analytesToExtract,
+  }: {
+    testGroupName: string;
+    basePrompt?: string | null;
+    analytes: Array<{ name?: string | null; code?: string | null; unit?: string | null; reference_range?: string | null }>;
+    analytesToExtract: string[];
+  }) => {
+    const { analyteLines, pairLine } = buildAnalyteDisambiguationHints(analytes);
+    const extractList = analytesToExtract.length > 0 ? analytesToExtract : analytes.map((a) => (a.name || "").trim()).filter(Boolean);
+
+    const optimizerBlock = [
+      `TEST GROUP CONTEXT: ${testGroupName}`,
+      `STRICT EXTRACTION TARGETS (ONLY these keys): ${extractList.join(", ")}`,
+      `Do NOT return parameters outside this list.`,
+      `Use exact full-name matching. Prefer longest exact phrase match when names overlap (example: "Very-Low-Density Lipoprotein" must not map to "Low-Density Lipoprotein").`,
+      `Never infer or fabricate calculated parameters; only extract values explicitly present in report text/image.`,
+      pairLine,
+      "Analyte dictionary:",
+      ...analyteLines,
+      "Return only valid JSON.",
+    ].join("\n");
+
+    if (basePrompt && basePrompt.trim().length > 0) {
+      return `${basePrompt.trim()}\n\n${optimizerBlock}`;
+    }
+
+    return `Extract lab results for this test group.\n${optimizerBlock}`;
+  };
+
+  // Voice Input Analysis Handler
+  const handleVoiceAnalyze = async (audioBlob: Blob) => {
+    setVoiceAnalyzing(true);
+    aiStart();
+
+    try {
+      aiMark("voice", { status: "doing", detail: "Recording voice input..." });
+
+      // Convert audio blob to base64
+      const arrayBuffer = await audioBlob.arrayBuffer();
+      const base64Audio = btoa(
+        new Uint8Array(arrayBuffer).reduce((data, byte) => data + String.fromCharCode(byte), "")
+      );
+
+      aiMark("voice", { status: "done", detail: "Audio captured" });
+      aiMark("transcribe", { status: "doing", detail: "Transcribing with Gemini..." });
+
+      // Get target test group and analytes
+      const targetTestGroup =
+        (selectedTestGroup && testGroups.find((tg) => tg.test_group_id === selectedTestGroup)) ||
+        (selectedTestId && testGroups.find((tg) => tg.order_test_id === selectedTestId)) ||
+        testGroups[0];
+
+      // Build analyte catalog for matching
+      const analyteCatalog = manualValues
+        .filter((v) => !v.is_calculated)
+        .map((v) => ({
+        id: v.analyte_id,
+        name: v.parameter,
+        unit: v.unit || "",
+        reference_range: v.reference || "",
+      }));
+
+      const analytesToExtract = manualValues
+        .filter((v) => !v.is_calculated)
+        .map((v) => v.parameter);
+
+      // Call voice-to-results edge function
+      const { data: voiceResult, error: voiceError } = await supabase.functions.invoke(
+        "voice-to-results",
+        {
+          body: {
+            audioBase64: base64Audio,
+            mimeType: audioBlob.type || "audio/webm",
+            analyteCatalog,
+            analytesToExtract,
+            orderId: order.id,
+            testGroupId: targetTestGroup?.test_group_id,
+          },
+        }
+      );
+
+      if (voiceError) {
+        throw new Error(voiceError.message || "Voice analysis failed");
+      }
+
+      if (!voiceResult?.success) {
+        throw new Error(voiceResult?.error || "Voice processing returned no results");
+      }
+
+      aiMark("transcribe", {
+        status: "done",
+        detail: `Transcript: "${voiceResult.transcript?.slice(0, 60)}..."`,
+      });
+
+      setVoiceTranscript(voiceResult.transcript || "");
+
+      // Process extracted parameters (same logic as image AI)
+      const extractedParams = (voiceResult.extractedParameters || []).map((p: any) => ({
+        parameter: p.parameter,
+        value: p.value,
+        unit: p.unit || "",
+        reference: p.reference_range || "",
+        flag: p.flag || undefined,
+        matched: !!p.matched,
+        analyte_id: p.analyte_id || null,
+        confidence: p.confidence || 0.95,
+      }));
+
+      aiMark("match", {
+        status: "doing",
+        detail: `Matching ${extractedParams.length} parameters...`,
+      });
+
+      setExtractedValues(extractedParams);
+
+      // Auto-fill manualValues with extracted data
+      setManualValues((prev) => {
+        const updated = [...prev];
+        let matchedCount = 0;
+
+        extractedParams.forEach((ep: ExtractedValue) => {
+          const epNameLower = ep.parameter.toLowerCase();
+          const epAnalyteId = ep.analyte_id;
+
+          // Try multiple matching strategies
+          const idx = updated.findIndex((v) => {
+            const vNameLower = v.parameter.toLowerCase();
+
+            // 1. Match by analyte_id
+            if (v.analyte_id && epAnalyteId && v.analyte_id === epAnalyteId) return true;
+            // 2. Match by exact name
+            if (vNameLower === epNameLower) return true;
+            // 3. Partial match
+            if (vNameLower.includes(epNameLower) || epNameLower.includes(vNameLower)) return true;
+
+            return false;
+          });
+
+          if (idx !== -1 && ep.value && !updated[idx].is_calculated) {
+            updated[idx] = { ...updated[idx], value: ep.value, flag: ep.flag };
+            matchedCount++;
+          }
+        });
+
+        aiMark("match", {
+          status: "done",
+          detail: `${matchedCount} of ${extractedParams.length} parameters matched`,
+        });
+
+        return updated;
+      });
+
+      setAiPhase("done");
+      setAiMatchedCount(extractedParams.filter((p: any) => p.matched).length);
+      setShowVoiceInput(false);
+    } catch (error: any) {
+      console.error("Voice analysis error:", error);
+      aiFail("voice", error.message || "Voice analysis failed");
+    } finally {
+      setVoiceAnalyzing(false);
+    }
   };
 
   const handleRunAIProcessing = async (analyteConfig?: { type: string; prompt?: string }) => {
@@ -1586,6 +1902,9 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
           if (!analyte?.id || typeof analyte.id !== 'string') {
             return catalog;
           }
+          if (analyte?.is_calculated) {
+            return catalog;
+          }
 
           if (!catalog.has(analyte.id)) {
             catalog.set(analyte.id, {
@@ -1656,13 +1975,25 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
       aiMark("vision", { status: "done", detail: (visionResponse.data?.fullText || "").slice(0, 80) + "…" });
 
       aiMark("nlp", { status: "doing" });
-      const analytesToExtract = manualValues.filter(v => !v.value || (typeof v.value === 'string' && v.value.trim() === "")).map(v => v.parameter);
+      const analytesToExtract = manualValues
+        .filter(
+          (v) =>
+            !v.is_calculated &&
+            (!v.value || (typeof v.value === 'string' && v.value.trim() === ""))
+        )
+        .map((v) => v.parameter);
 
       // Use the detected processing type from vision-ocr response (auto-detection result)
       const detectedProcessingType = visionResponse.data?.metadata?.aiProcessingType || processingType;
 
-      // Extract custom prompt from vision-ocr response (if available) or use manual selection
+      // Build optimized test-group prompt for disambiguation (especially useful when group prompt is missing)
       const detectedCustomPrompt = visionResponse.data?.customPrompt || customPrompt || (imagesForThisTest.length > 1 ? multiImageAIInstructions : undefined);
+      const effectiveAiPrompt = buildOptimizedGroupPrompt({
+        testGroupName: targetTestGroup?.test_group_name || "Selected Test Group",
+        basePrompt: detectedCustomPrompt || targetTestGroup?.group_level_prompt || "",
+        analytes: analyteCatalog,
+        analytesToExtract,
+      });
 
       // Prepare request body with multi-image support - USE FILTERED IMAGES
       const requestBody = {
@@ -1670,7 +2001,7 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
         visionResults: visionResponse.data,
         originalBase64Image: visionResponse.data?.originalBase64Image,
         aiProcessingType: detectedProcessingType,  // Use detected type from vision-ocr
-        aiPromptOverride: detectedCustomPrompt,  // Use custom prompt from vision-ocr or manual selection
+        aiPromptOverride: effectiveAiPrompt,
         analyteCatalog,
         analytesToExtract: analytesToExtract.length ? analytesToExtract : undefined,
         orderId: order.id,
@@ -1705,6 +2036,9 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
       aiMark("match", { status: "doing" });
       const result = geminiResponse.data;
       let matchedCount = 0;
+      const strictTargetSet = new Set(
+        analytesToExtract.map((name) => name.toLowerCase().trim())
+      );
 
       // your existing shape-handling remains
       const foundCount =
@@ -1731,7 +2065,7 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
                 rawValue !== 'NULL' &&
                 (typeof rawValue === 'string' ? rawValue.trim() !== '' : true);
 
-              if (idx !== -1 && isValidValue) {
+              if (idx !== -1 && isValidValue && !updated[idx].is_calculated) {
                 updated[idx] = { ...updated[idx], value: rawValue };
               }
             });
@@ -1843,20 +2177,29 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
                 return false;
               });
 
-              if (idx !== -1) {
+              if (idx !== -1 && !updated[idx].is_calculated) {
                 console.log(`  ✅ Matched: ${ep.parameter} (${ep.value}) → ${updated[idx].parameter}`);
                 updated[idx] = { ...updated[idx], value: ep.value, flag: ep.flag };
                 currentMatchedCount++;
               } else {
-                console.log(`  ➕ Adding new parameter: ${ep.parameter} (${ep.value})`);
-                addedParameters.push({
-                  analyte_id: epAnalyteId,
-                  parameter: ep.parameter,
-                  value: ep.value,
-                  unit: ep.unit,
-                  reference: ep.reference,
-                  flag: ep.flag
-                });
+                const normalizedEpName = ep.parameter?.toLowerCase().trim();
+                const canAppendUnknown =
+                  strictTargetSet.size === 0 ||
+                  (normalizedEpName && strictTargetSet.has(normalizedEpName));
+
+                if (canAppendUnknown) {
+                  console.log(`  ➕ Adding new parameter: ${ep.parameter} (${ep.value})`);
+                  addedParameters.push({
+                    analyte_id: epAnalyteId,
+                    parameter: ep.parameter,
+                    value: ep.value,
+                    unit: ep.unit,
+                    reference: ep.reference,
+                    flag: ep.flag
+                  });
+                } else {
+                  console.log(`  ⚠️ Ignored non-target parameter from AI: ${ep.parameter}`);
+                }
               }
             });
 
@@ -2011,12 +2354,29 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
   const getFlagColor = styleUtils.flag;
   const getConfidenceColor = styleUtils.confidence;
 
-  const FLAG_OPTIONS = [
+  const DEFAULT_FLAG_OPTIONS = [
     { value: "", label: "Normal" },
     { value: "H", label: "High" },
     { value: "L", label: "Low" },
+    { value: "A", label: "Abnormal" },
     { value: "C", label: "Critical" },
   ];
+
+  const [labFlagOptions, setLabFlagOptions] = useState(DEFAULT_FLAG_OPTIONS);
+
+  // Fetch lab flag options when order loads
+  useEffect(() => {
+    if (!order?.lab_id) return;
+    const fetchLabFlags = async () => {
+      try {
+        const { data } = await supabase.from('labs').select('flag_options').eq('id', order.lab_id).single();
+        if (data?.flag_options && Array.isArray(data.flag_options) && data.flag_options.length > 0) {
+          setLabFlagOptions(data.flag_options);
+        }
+      } catch { /* use defaults */ }
+    };
+    fetchLabFlags();
+  }, [order?.lab_id]);
 
   // Mark analytes immediately as "submitted" locally and hide them from entry
   const markAnalytesAsSubmitted = (submitted: ExtractedValue[]) => {
@@ -2052,7 +2412,13 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
   // =========================================================
 
   const handleManualValueChange = React.useCallback((index: number, field: keyof ExtractedValue, value: string) => {
-    setManualValues((prev) => prev.map((item, i) => (i === index ? { ...item, [field]: value } : item)));
+    setManualValues((prev) =>
+      prev.map((item, i) => {
+        if (i !== index) return item;
+        if (item.is_calculated && field === "value") return item;
+        return { ...item, [field]: value };
+      })
+    );
   }, []);
 
   // Popout input helpers
@@ -2062,6 +2428,8 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
     currentValue: string,
     parameterName: string
   ) => {
+    if (fieldName === 'value' && manualValues[index]?.is_calculated) return;
+
     const suggestions = fieldName === 'unit'
       ? ['mg/dL', 'g/dL', 'mmol/L', 'IU/L', 'ng/mL', '%', 'cells/μL', 'K/uL', 'M/uL', 'fl', 'pg']
       : fieldName === 'reference'
@@ -2085,7 +2453,8 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
   };
 
   const handleSaveDraft = async () => {
-    const validResults = manualValues.filter((v) => v.value && typeof v.value === 'string' && v.value.trim() !== "");
+    const actionableRows = manualValues.filter((v) => !v.is_calculated);
+    const validResults = actionableRows.filter((v) => v.value && typeof v.value === 'string' && v.value.trim() !== "");
     if (!validResults.length) {
       alert("Please enter at least one test result before saving draft.");
       return;
@@ -2141,21 +2510,12 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
     }
   };
 
-  // Helper to locate an existing results row for a panel, based on strongest key available
-  const findExistingResultsRowId = async (tg: TestGroupResult) => {
-    const q = supabase.from("results").select("id").eq("order_id", order.id);
-    if (tg.order_test_group_id) (q as any).eq("order_test_group_id", tg.order_test_group_id);
-    else if (tg.order_test_id) (q as any).eq("order_test_id", tg.order_test_id);
-    else (q as any).eq("test_group_id", tg.test_group_id);
-
-    const { data, error } = (await (q as any).limit(1)) as { data: { id: string }[] | null; error: any };
-    if (error) return null;
-    return data && data[0] ? data[0].id : null;
-  };
-
   const handleSubmitResults = async () => {
-    const validResults = manualValues.filter((v) => v.value && typeof v.value === 'string' && v.value.trim() !== "");
-    if (!validResults.length) {
+    const actionableRows = manualValues.filter((v) => !v.is_calculated);
+    const validResults = actionableRows.filter((v) => v.value && typeof v.value === 'string' && v.value.trim() !== "");
+
+    // If only calculated rows are pending (no manual-entry analytes), allow workflow to continue.
+    if (!validResults.length && actionableRows.length > 0) {
       alert("Please enter at least one test result.");
       return;
     }
@@ -2164,7 +2524,7 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
     setSaveMessage(null);
 
     // Initial clone for mutation by AI
-    let finalResults = validResults.map(v => ({ ...v }));
+    const finalResults = validResults.map(v => ({ ...v }));
 
     try {
       // 1. AUTO-RESOLVE RANGES for dynamic panels
@@ -2207,8 +2567,10 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
 
       setSaveMessage("Saving results...");
 
-      const currentUser = await supabase.auth.getUser();
-      const userLabId = await database.getCurrentUserLabId();
+      const [currentUser, userLabId] = await Promise.all([
+        supabase.auth.getUser(),
+        database.getCurrentUserLabId()
+      ]);
 
       // Determine which test groups to save to based on attachment info
       // If image was test-specific, only save to that test group
@@ -2239,13 +2601,158 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
         console.log('[SAVE] Order-level image - saving to all matching test groups');
       }
 
-      for (const testGroup of targetTestGroupsForSave) {
-        // Save only for analytes that are still editable and belong to this TG
-        const testGroupResults = finalResults.filter((v) => testGroup.analytes.some((a) => a.name === v.parameter));
-        if (testGroupResults.length === 0) continue;
+      const getGroupKey = (tg: Pick<TestGroupResult, "test_group_id" | "order_test_group_id" | "order_test_id">) => {
+        if (tg.order_test_group_id) return `otg:${tg.order_test_group_id}`;
+        if (tg.order_test_id) return `ot:${tg.order_test_id}`;
+        return `tg:${tg.test_group_id}`;
+      };
 
-        // ✅ Duplicate-safe: reuse results row if it already exists for this panel
-        let resultRowId = await findExistingResultsRowId(testGroup);
+      // Prefetch existing rows once to avoid one query per test group.
+      const existingResultRowByGroupKey = new Map<string, string>();
+      const { data: existingRows, error: existingRowsError } = await supabase
+        .from("results")
+        .select("id, test_group_id, order_test_group_id, order_test_id")
+        .eq("order_id", order.id);
+      if (existingRowsError) throw existingRowsError;
+      for (const row of existingRows || []) {
+        if (row.order_test_group_id) existingResultRowByGroupKey.set(`otg:${row.order_test_group_id}`, row.id);
+        if (row.order_test_id) existingResultRowByGroupKey.set(`ot:${row.order_test_id}`, row.id);
+        if (row.test_group_id) existingResultRowByGroupKey.set(`tg:${row.test_group_id}`, row.id);
+      }
+
+      // Prefetch outsourced status once to avoid one query per test group.
+      const targetTestGroupIds = Array.from(new Set(
+        targetTestGroupsForSave
+          .map((tg) => tg.test_group_id)
+          .filter((id): id is string => typeof id === "string" && !!id)
+      ));
+      const outsourcedTestGroupIds = new Set<string>();
+      if (targetTestGroupIds.length > 0) {
+        const { data: orderTestRows, error: orderTestRowsError } = await supabase
+          .from('order_tests')
+          .select('test_group_id, outsourced_lab_id')
+          .eq('order_id', order.id)
+          .in('test_group_id', targetTestGroupIds);
+        if (orderTestRowsError) throw orderTestRowsError;
+        for (const row of orderTestRows || []) {
+          if (row.test_group_id && row.outsourced_lab_id) outsourcedTestGroupIds.add(row.test_group_id);
+        }
+      }
+
+      const submittedRowsForUx: ExtractedValue[] = [];
+
+      const toNumber = (raw: string | number | null | undefined): number | null => {
+        if (raw === null || raw === undefined) return null;
+        const parsed = Number(String(raw).trim());
+        return Number.isFinite(parsed) ? parsed : null;
+      };
+
+      const addLookupAliases = (
+        lookup: Map<string, number>,
+        analyteName: string | undefined,
+        analyteCode: string | undefined,
+        value: string | number | null | undefined
+      ) => {
+        const num = toNumber(value);
+        if (num === null) return;
+
+        const name = (analyteName || "").trim();
+        const code = (analyteCode || "").trim();
+        if (name) lookup.set(name.toLowerCase(), num);
+        if (code) lookup.set(code.toLowerCase(), num);
+
+        if (name) {
+          const acronym = (name.match(/\b[A-Z0-9]{2,}\b/g) || []).join(" ").trim();
+          if (acronym) {
+            acronym.split(/\s+/).forEach((token) => lookup.set(token.toLowerCase(), num));
+          }
+        }
+      };
+
+      const parseFormulaVariables = (formulaVariables: string[] | string | null | undefined): string[] => {
+        if (!formulaVariables) return [];
+        if (Array.isArray(formulaVariables)) return formulaVariables.filter(Boolean);
+        try {
+          const parsed = JSON.parse(formulaVariables);
+          return Array.isArray(parsed) ? parsed.filter(Boolean) : [];
+        } catch {
+          return [];
+        }
+      };
+
+      const evaluateCalculatedValue = (analyte: TestGroupResult["analytes"][number], valueLookup: Map<string, number>): string => {
+        const formula = analyte.formula?.trim();
+        if (!formula) return "";
+
+        const variables = parseFormulaVariables(analyte.formula_variables);
+        if (variables.length === 0) return "";
+
+        let resolved = formula;
+        for (const variable of variables) {
+          const variableKey = String(variable || "").trim().toLowerCase();
+          if (!variableKey) return "";
+          let variableValue = valueLookup.get(variableKey);
+          if (variableValue === undefined) {
+            const fallbackMatch = Array.from(valueLookup.entries()).find(([key]) =>
+              key === variableKey || key.includes(variableKey) || variableKey.includes(key)
+            );
+            variableValue = fallbackMatch?.[1];
+          }
+          if (variableValue === undefined) return "";
+          const escapedVar = String(variable).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+          resolved = resolved.replace(new RegExp(`\\b${escapedVar}\\b`, "g"), String(variableValue));
+        }
+
+        if (!/^[0-9+\-*/().\s]+$/.test(resolved)) return "";
+
+        try {
+          const computed = Function(`"use strict"; return (${resolved});`)();
+          if (!Number.isFinite(computed)) return "";
+          return String(Math.round(Number(computed) * 10000) / 10000);
+        } catch {
+          return "";
+        }
+      };
+
+      for (const testGroup of targetTestGroupsForSave) {
+        // Manual/AI entered rows for this group
+        const testGroupResults = finalResults.filter((v) => testGroup.analytes.some((a) => a.name === v.parameter));
+
+        const valueLookup = new Map<string, number>();
+        for (const analyte of testGroup.analytes) {
+          const manual = manualValues.find((v) => v.analyte_id === analyte.id) || manualValues.find((v) => v.parameter === analyte.name);
+          const aiOrManual = testGroupResults.find((v) => v.analyte_id === analyte.id) || testGroupResults.find((v) => v.parameter === analyte.name);
+          addLookupAliases(valueLookup, analyte.name, analyte.code, aiOrManual?.value ?? manual?.value ?? analyte.existing_result?.value);
+        }
+
+        // Always derive calculated rows from analyte definitions so they are persisted even if hidden in manualValues
+        const calculatedRowsForGroup: ExtractedValue[] = testGroup.analytes
+          .filter((a) => !!a.is_calculated)
+          .map((a) => {
+            const manual = manualValues.find((v) => v.analyte_id === a.id) || manualValues.find((v) => v.parameter === a.name);
+            const calculatedValue = evaluateCalculatedValue(a, valueLookup);
+            return {
+              analyte_id: a.id,
+              parameter: a.name,
+              value: manual?.value?.trim() ? manual.value : calculatedValue,
+              unit: manual?.unit || a.units || "",
+              reference: manual?.reference || a.reference_range || "",
+              flag: manual?.flag,
+              is_calculated: true,
+            };
+          });
+
+        const rowsToPersist = [...testGroupResults, ...calculatedRowsForGroup].reduce<ExtractedValue[]>((acc, row) => {
+          if (!acc.some((r) => r.analyte_id === row.analyte_id || r.parameter === row.parameter)) {
+            acc.push(row);
+          }
+          return acc;
+        }, []);
+        if (rowsToPersist.length === 0) continue;
+
+        // Duplicate-safe: reuse results row if it already exists for this panel.
+        const groupKey = getGroupKey(testGroup);
+        let resultRowId = existingResultRowByGroupKey.get(groupKey) || null;
 
         if (!resultRowId) {
           const resultData = {
@@ -2272,10 +2779,11 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
             .single();
           if (resultError) throw resultError;
           resultRowId = savedResult.id;
+          existingResultRowByGroupKey.set(groupKey, resultRowId);
         }
 
         // Upsert result_values for only the analytes we are saving now:
-        const names = testGroupResults.map((r) => r.parameter);
+        const names = rowsToPersist.map((r) => r.parameter);
 
         // Delete previous entries for these analytes on this result row
         await supabase
@@ -2284,17 +2792,21 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
           .eq("result_id", resultRowId)
           .in("analyte_name", names);
 
-        const resultValuesData = testGroupResults.map((r) => {
+        const resultValuesData = rowsToPersist.map((r) => {
           const analyte = testGroup.analytes.find((a) => a.name === r.parameter);
+          // If user explicitly set a flag (via dropdown or flag mapping), mark as manual so AI won't overwrite
+          const hasUserFlag = !!r.flag;
           return {
             result_id: resultRowId!,
             analyte_id: analyte?.id,
             analyte_name: r.parameter,
             parameter: r.parameter,
-            value: r.value,
+            value: r.value && r.value.trim() !== "" ? r.value : null,
             unit: r.unit || "",
             reference_range: r.reference || "",
             flag: r.flag || null,
+            ...(hasUserFlag && { flag_source: 'manual' }),
+            is_auto_calculated: !!r.is_calculated,
             order_id: order.id,
             test_group_id: testGroup.test_group_id,
             lab_id: userLabId,
@@ -2305,18 +2817,34 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
 
         const { error: valuesError } = await supabase.from("result_values").insert(resultValuesData);
         if (valuesError) throw valuesError;
+
+        submittedRowsForUx.push(...rowsToPersist);
+
+        // Auto-consume inventory for non-outsourced tests (non-blocking)
+        const isOutsourcedTestGroup = testGroup.test_group_id
+          ? outsourcedTestGroupIds.has(testGroup.test_group_id)
+          : false;
+        if (!isOutsourcedTestGroup) {
+          database.inventory.triggerAutoConsume({
+            labId: userLabId,
+            orderId: order.id,
+            resultId: resultRowId || undefined,
+            testGroupId: testGroup.test_group_id,
+          }).catch(err => console.warn('Inventory auto-consume failed (non-blocking):', err));
+        }
       }
 
-      // Run AI flag analysis ONCE after ALL test groups are saved (optimization)
-      try {
-        const { runAIFlagAnalysis } = await import('../../utils/aiFlagAnalysis');
-        await runAIFlagAnalysis(order.id, { applyToDatabase: true, createAudit: true });
-      } catch (flagErr) {
-        console.warn('AI flag analysis failed (non-blocking):', flagErr);
-      }
+      // Run AI flag analysis in background to avoid blocking save UX.
+      import('../../utils/aiFlagAnalysis')
+        .then(({ runAIFlagAnalysis }) =>
+          runAIFlagAnalysis(order.id, { applyToDatabase: true, createAudit: true })
+        )
+        .catch((flagErr) => {
+          console.warn('AI flag analysis failed (non-blocking):', flagErr);
+        });
 
       // Local immediate UX: hide submitted analytes now
-      markAnalytesAsSubmitted(finalResults);
+      markAnalytesAsSubmitted(submittedRowsForUx.length > 0 ? submittedRowsForUx : finalResults);
 
       // Refresh read-only view + progress ONCE after all saves complete
       fetchReadonlyResults();
@@ -2616,21 +3144,28 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
       [manualValues, testGroup.analytes]
     );
 
-    const completedCount = React.useMemo(() =>
-      testGroupValues.filter((v) => v.value && typeof v.value === 'string' && v.value.trim() !== "").length,
+    const actionableTestGroupValues = React.useMemo(
+      () => testGroupValues.filter((v) => !v.is_calculated),
       [testGroupValues]
     );
 
+    const completedCount = React.useMemo(() =>
+      actionableTestGroupValues.filter((v) => v.value && typeof v.value === 'string' && v.value.trim() !== "").length,
+      [actionableTestGroupValues]
+    );
+
     const pendingCount = React.useMemo(() =>
-      testGroupValues.length - completedCount,
-      [testGroupValues.length, completedCount]
+      actionableTestGroupValues.length - completedCount,
+      [actionableTestGroupValues.length, completedCount]
     );
 
     return (
-      <div className="border border-gray-200 rounded-lg p-4 mb-4">
-        <div className="flex items-center justify-between mb-4">
-          <div className="flex items-center space-x-4">
-            <h4 className="text-lg font-medium">{testGroup.test_group_name}</h4>
+      <div className="border border-gray-200 rounded-lg p-3 sm:p-4 mb-4">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between mb-4">
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:gap-4">
+            <h4 className="text-base sm:text-lg font-medium line-clamp-2">
+              {testGroup.test_group_name}
+            </h4>
 
             {/* AI Auto-Range Button */}
             <button
@@ -2644,7 +3179,7 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
             </button>
 
             {/* Sample Collection Status */}
-            <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2">
               <span className={`px-2 py-1 rounded-full text-xs font-medium ${order.sample_collected_at
                 ? 'bg-green-100 text-green-800'
                 : 'bg-yellow-100 text-yellow-800'
@@ -2664,7 +3199,7 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
               ) : (
                 <>
                   {showPhlebotomistSelector ? (
-                    <div className="flex items-center gap-2">
+                    <div className="flex flex-wrap items-center gap-2">
                       <PhlebotomistSelector
                         labId={order.lab_id}
                         value={selectedPhlebotomistId}
@@ -2704,15 +3239,15 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
             </div>
           </div>
 
-          <div className="flex items-center space-x-3">
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:gap-3">
             <span className="text-sm text-gray-500">
-              {completedCount}/{testGroupValues.length} completed • {pendingCount} pending
+              {completedCount}/{actionableTestGroupValues.length} completed • {pendingCount} pending
             </span>
             <div className="w-20 bg-gray-200 rounded-full h-2">
               <div
                 className="bg-blue-600 h-2 rounded-full transition-all"
                 style={{
-                  width: `${testGroupValues.length ? (completedCount / testGroupValues.length) * 100 : 0}%`,
+                  width: `${actionableTestGroupValues.length ? (completedCount / actionableTestGroupValues.length) * 100 : 100}%`,
                 }}
               />
             </div>
@@ -2759,11 +3294,16 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
               {testGroupValues.map((value) => {
                 const globalIndex = manualValues.findIndex((v) => v.parameter === value.parameter);
                 return (
-                  <tr key={value.parameter} className="hover:bg-gray-50">
+                  <tr key={value.parameter} className={`hover:bg-gray-50 ${value.is_calculated ? 'bg-blue-50/40' : ''}`}>
                     {/* Parameter Name */}
                     <td className="px-4 py-3 min-w-[200px]">
                       <div className="font-medium text-gray-900">
                         {value.parameter}
+                        {value.is_calculated && (
+                          <span className="ml-2 inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-blue-100 text-blue-800">
+                            CALC
+                          </span>
+                        )}
                         {value.is_rerun && (
                           <span className="ml-2 inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-orange-100 text-orange-800">
                             RE-RUN
@@ -2782,7 +3322,15 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
                       {value.expected_normal_values && value.expected_normal_values.length > 0 ? (
                         <select
                           value={value.value || ""}
-                          onChange={(e) => handleManualValueChange(globalIndex, "value", e.target.value)}
+                          onChange={(e) => {
+                            handleManualValueChange(globalIndex, "value", e.target.value);
+                            // Auto-set flag from expected_value_flag_map
+                            const flagMap = value.expected_value_flag_map;
+                            if (flagMap && flagMap[e.target.value] !== undefined) {
+                              handleManualValueChange(globalIndex, "flag", flagMap[e.target.value]);
+                            }
+                          }}
+                          disabled={!!value.is_calculated}
                           className={`w-full px-3 py-2 border rounded-lg transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500 ${value.value && typeof value.value === 'string' && value.value.trim()
                             ? 'border-green-300 bg-green-50 text-green-800'
                             : 'border-gray-300 bg-white text-gray-700'
@@ -2793,6 +3341,13 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
                             <option key={opt} value={opt}>{opt}</option>
                           ))}
                         </select>
+                      ) : value.is_calculated ? (
+                        <input
+                          disabled
+                          value={value.value || ''}
+                          placeholder="Auto-calculated"
+                          className="w-full px-2 py-1 bg-blue-50 border border-blue-200 rounded text-blue-800 font-medium"
+                        />
                       ) : (
                         <button
                           onClick={() => openPopoutInput(globalIndex, 'value', value.value, value.parameter)}
@@ -2839,7 +3394,7 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
                         onChange={(e) => handleManualValueChange(globalIndex, "flag", e.target.value)}
                         className="w-full px-2 py-1 border border-gray-300 rounded focus:outline-none focus:ring-1 focus:ring-blue-500"
                       >
-                        {FLAG_OPTIONS.map((option) => (
+                        {labFlagOptions.map((option) => (
                           <option key={option.value} value={option.value}>
                             {option.label}
                           </option>
@@ -2998,10 +3553,12 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
                     {activeAttachment && (
                       <div className="mt-4 space-y-4">
                         {/* Info Grid */}
-                        <div className="bg-gray-50 rounded-lg p-3 grid grid-cols-2 gap-x-4 gap-y-2 text-xs">
+                        <div className="bg-gray-50 rounded-lg p-3 grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-2 text-xs">
                           <div>
                             <span className="text-gray-500 block">Filename</span>
-                            <span className="font-medium text-gray-900 break-all line-clamp-1">{activeAttachment.original_filename}</span>
+                            <span className="font-medium text-gray-900 break-words line-clamp-2" title={activeAttachment.original_filename}>
+                              {activeAttachment.original_filename}
+                            </span>
                           </div>
                           <div>
                             <span className="text-gray-500 block">Type</span>
@@ -3079,7 +3636,7 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
                         </div>
 
                         {/* Preview Area */}
-                        <div className="border rounded-lg bg-gray-100 h-[300px] flex items-center justify-center overflow-hidden relative">
+                        <div className="border rounded-lg bg-gray-100 h-48 sm:h-[300px] flex items-center justify-center overflow-hidden relative">
                           {activeAttachment.file_type?.startsWith("image/") ? (
                             <img
                               src={resolveAttachmentUrl(activeAttachment)}
@@ -3152,7 +3709,7 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
                         )}
 
                         {/* Preview thumbnails with delete option */}
-                        <div className="flex gap-1 mb-3 overflow-x-auto">
+                        <div className="flex gap-2 mb-3 overflow-x-auto no-scrollbar">
                           {batch.attachments?.slice(0, 4).map((attachment: any) => (
                             <div key={attachment.id} className="flex-shrink-0 relative group">
                               {attachment.file_type.startsWith('image/') ? (
@@ -3604,21 +4161,58 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
                           </span>
                         )}
                       </div>
-                      <button
-                        onClick={() => handleRunAIProcessing()}
-                        disabled={isOCRProcessing || (!attachmentId && availableImagesForAI.length === 0) || (availableImagesForAI.length > 1 && selectedImagesForAI.size === 0)}
-                        className="inline-flex items-center px-3 py-1.5 rounded-md bg-gradient-to-r from-purple-600 to-blue-600 text-white
-                                   disabled:from-gray-400 disabled:to-gray-400"
-                      >
-                        {isOCRProcessing ? "Analysing…" :
-                          availableImagesForAI.length > 1
-                            ? (selectedImagesForAI.size === availableImagesForAI.length
-                              ? "Analyze All Images"
-                              : `Analyze ${selectedImagesForAI.size} Image${selectedImagesForAI.size !== 1 ? 's' : ''}`)
-                            : "Process with AI"}
-                      </button>
+                      <div className="flex items-center gap-2">
+                        {/* Voice Input Button */}
+                        <button
+                          onClick={() => setShowVoiceInput(!showVoiceInput)}
+                          disabled={voiceAnalyzing}
+                          className={`inline-flex items-center px-3 py-1.5 rounded-md transition-colors ${
+                            showVoiceInput
+                              ? "bg-indigo-100 text-indigo-700 border border-indigo-300"
+                              : "bg-gray-100 text-gray-700 hover:bg-indigo-50 hover:text-indigo-600"
+                          }`}
+                          title="Voice Input"
+                        >
+                          <Mic className="h-4 w-4 mr-1" />
+                          Voice
+                        </button>
+                        {/* Image Analysis Button */}
+                        <button
+                          onClick={() => handleRunAIProcessing()}
+                          disabled={isOCRProcessing || (!attachmentId && availableImagesForAI.length === 0) || (availableImagesForAI.length > 1 && selectedImagesForAI.size === 0)}
+                          className="inline-flex items-center px-3 py-1.5 rounded-md bg-gradient-to-r from-purple-600 to-blue-600 text-white
+                                     disabled:from-gray-400 disabled:to-gray-400"
+                        >
+                          {isOCRProcessing ? "Analysing…" :
+                            availableImagesForAI.length > 1
+                              ? (selectedImagesForAI.size === availableImagesForAI.length
+                                ? "Analyze All Images"
+                                : `Analyze ${selectedImagesForAI.size} Image${selectedImagesForAI.size !== 1 ? 's' : ''}`)
+                              : "Process with AI"}
+                        </button>
+                      </div>
                     </div>
                   </div>
+
+                  {/* Voice Input Section */}
+                  {showVoiceInput && (
+                    <div className="mt-3 mb-3">
+                      <VoiceRecorder
+                        onRecordingComplete={(blob, duration) => {
+                          console.log(`Voice recording complete: ${duration}s`);
+                        }}
+                        onAnalyze={handleVoiceAnalyze}
+                        disabled={isOCRProcessing}
+                        analyzing={voiceAnalyzing}
+                      />
+                      {voiceTranscript && (
+                        <div className="mt-2 p-3 bg-gray-50 rounded-lg border border-gray-200">
+                          <p className="text-xs font-medium text-gray-500 mb-1">Last Transcript:</p>
+                          <p className="text-sm text-gray-700">{voiceTranscript}</p>
+                        </div>
+                      )}
+                    </div>
+                  )}
 
                   {/* Sliding AI console */}
                   <div className={`transition-all duration-300 ${aiPhase === "idle" ? "max-h-0 opacity-0" : "max-h-[340px] opacity-100"} overflow-hidden mt-3`}>
@@ -3718,7 +4312,7 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
                     <option value="">All Test Groups</option>
                     {testGroups.map((tg) => (
                       <option key={tg.test_group_id} value={tg.test_group_id}>
-                        {tg.test_group_name} ({tg.analytes.filter((a) => !a.existing_result).length} pending)
+                        {tg.test_group_name} ({tg.analytes.filter((a: any) => !a.existing_result && !a.is_calculated).length} pending)
                       </option>
                     ))}
                   </select>

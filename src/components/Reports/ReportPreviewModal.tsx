@@ -87,19 +87,19 @@ export const ReportPreviewModal: React.FC<ReportPreviewModalProps> = ({
     if (!isOpen) return null;
 
     return (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50 backdrop-blur-sm p-4 animate-in fade-in duration-200">
-            <div className="bg-white rounded-xl shadow-2xl w-full max-w-6xl h-[90vh] flex flex-col overflow-hidden animate-in zoom-in-95 duration-200">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50 backdrop-blur-sm p-3 sm:p-4 animate-in fade-in duration-200">
+            <div className="bg-white rounded-none sm:rounded-xl shadow-2xl w-full max-w-6xl h-[92vh] sm:h-[90vh] flex flex-col overflow-hidden animate-in zoom-in-95 duration-200">
 
                 {/* Header */}
-                <div className="flex items-center justify-between px-6 py-4 border-b bg-white">
-                    <div>
-                        <h3 className="text-xl font-bold text-gray-900">{patientName}</h3>
-                        <div className="flex items-center space-x-2 text-sm text-gray-500 mt-1">
+                <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between px-4 sm:px-6 py-4 border-b bg-white">
+                    <div className="min-w-0">
+                        <h3 className="text-lg sm:text-xl font-bold text-gray-900 truncate">{patientName}</h3>
+                        <div className="flex flex-wrap items-center gap-2 text-xs sm:text-sm text-gray-500 mt-1">
                             <span className="bg-blue-100 text-blue-800 px-2 py-0.5 rounded-full text-xs font-medium">
                                 {testNames.length} Test{testNames.length !== 1 ? 's' : ''}
                             </span>
                             <span>•</span>
-                            <span>{testNames.join(', ')}</span>
+                            <span className="line-clamp-2">{testNames.join(', ')}</span>
                         </div>
                     </div>
                     <button
@@ -111,25 +111,25 @@ export const ReportPreviewModal: React.FC<ReportPreviewModalProps> = ({
                 </div>
 
                 {/* Toolbar */}
-                <div className="flex flex-wrap items-center justify-between px-6 py-3 bg-gray-50 border-b gap-4">
-                    <div className="text-sm text-gray-500 hidden sm:block">
+                <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between px-4 sm:px-6 py-3 bg-gray-50 border-b">
+                    <div className="text-xs sm:text-sm text-gray-500">
                         Preview Mode • {doctorName ? `Ref: ${doctorName}` : 'Self Request'}
                     </div>
 
-                    <div className="flex items-center space-x-3 ml-auto">
+                    <div className="flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-3 sm:ml-auto w-full sm:w-auto">
                         <button
                             onClick={() => {
                                 const iframe = document.getElementById('report-preview-frame') as HTMLIFrameElement;
                                 iframe?.contentWindow?.print();
                             }}
-                            className="flex items-center space-x-2 px-4 py-2 text-sm font-medium bg-white border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 transition-colors shadow-sm"
+                            className="inline-flex items-center justify-center space-x-2 px-4 py-2 text-sm font-medium bg-white border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 transition-colors shadow-sm w-full sm:w-auto"
                             title="Print Report"
                         >
                             <Printer className="w-4 h-4" />
                             <span className="hidden sm:inline">Print</span>
                         </button>
 
-                        <div className="h-6 w-px bg-gray-300 mx-1"></div>
+                        <div className="hidden sm:block h-6 w-px bg-gray-300 mx-1"></div>
 
                         {/* Send to Doctor */}
                         {pdfUrl && (
@@ -141,7 +141,7 @@ export const ReportPreviewModal: React.FC<ReportPreviewModalProps> = ({
                                 doctorName={doctorName}
                                 mode="doctor"
                                 testName={testNames.join(', ')}
-                                buttonClassName="flex items-center space-x-2 px-4 py-2 text-sm font-medium bg-green-50 text-green-700 border border-green-200 rounded-lg hover:bg-green-100 transition-colors"
+                                buttonClassName="inline-flex items-center justify-center space-x-2 px-4 py-2 text-sm font-medium bg-green-50 text-green-700 border border-green-200 rounded-lg hover:bg-green-100 transition-colors w-full sm:w-auto"
                                 showIcon={true}
                                 label="Send to Dr."
                             />
@@ -155,7 +155,7 @@ export const ReportPreviewModal: React.FC<ReportPreviewModalProps> = ({
                                 patientName={patientName}
                                 patientPhone={patientPhone}
                                 testName={testNames.join(', ')}
-                                buttonClassName="flex items-center space-x-2 px-4 py-2 text-sm font-medium bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors shadow-sm"
+                                buttonClassName="inline-flex items-center justify-center space-x-2 px-4 py-2 text-sm font-medium bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors shadow-sm w-full sm:w-auto"
                                 showIcon={true}
                                 label="Send WhatsApp"
                             />

@@ -1907,7 +1907,7 @@ const Reports: React.FC = () => {
                         </button>
 
                         <button
-                          className="flex items-center space-x-1 px-2 py-1 text-xs bg-blue-100 text-blue-700 rounded hover:bg-blue-200 transition-colors"
+                          className="flex items-center space-x-1 px-2.5 py-1.5 text-xs bg-indigo-600 text-white rounded-md hover:bg-indigo-700 transition-colors shadow-sm"
                           onClick={() => setReportStudioOrderId(group.order_id)}
                           title="Design Report Layout"
                         >
@@ -2000,6 +2000,27 @@ const Reports: React.FC = () => {
                                   {smartReportLoadingId === group.order_id ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Sparkles className="w-3.5 h-3.5" />}
                                   <span>Smart</span>
                                 </button>
+
+                                {/* Smart Report WhatsApp */}
+                                {(() => {
+                                  const result = group.results[0] as ApprovedResult;
+                                  const smartReportUrl = result?.smart_report_url;
+                                  const customDomainSmartUrl = smartReportUrl ? convertToCustomDomain(smartReportUrl) : smartReportUrl;
+                                  if (customDomainSmartUrl) {
+                                    return (
+                                      <QuickSendReport
+                                        reportUrl={customDomainSmartUrl}
+                                        reportName={`Smart Report - ${group.patient_full_name} - ${group.test_names.join(', ')}`}
+                                        patientName={group.patient_full_name}
+                                        patientPhone={result?.phone}
+                                        testName={group.test_names.join(', ')}
+                                        label="Smart Report via WhatsApp"
+                                        onSent={(result) => alert(result.success ? 'Smart Report sent via WhatsApp!' : 'Failed: ' + result.message)}
+                                      />
+                                    );
+                                  }
+                                  return null;
+                                })()}
 
                                 {/* WhatsApp & Doctor */}
                                 {(() => {
@@ -2245,6 +2266,36 @@ const Reports: React.FC = () => {
                                     )}
                                     <span>Smart</span>
                                   </button>
+
+                                  {/* Smart Report WhatsApp Send Button for Mobile */}
+                                  {(() => {
+                                    const result = group.results[0] as ApprovedResult;
+                                    const smartReportUrl = result?.smart_report_url;
+                                    const customDomainSmartUrl = smartReportUrl ? convertToCustomDomain(smartReportUrl) : smartReportUrl;
+                                    if (customDomainSmartUrl) {
+                                      return (
+                                        <div className="flex-1">
+                                          <QuickSendReport
+                                            reportUrl={customDomainSmartUrl}
+                                            reportName={`Smart Report - ${group.patient_full_name} - ${group.test_names.join(', ')}`}
+                                            patientName={group.patient_full_name}
+                                            patientPhone={result?.phone}
+                                            testName={group.test_names.join(', ')}
+                                            label="Smart Report via WhatsApp"
+                                            onSent={(result) => {
+                                              if (result.success) {
+                                                alert('Smart Report sent successfully via WhatsApp!');
+                                              } else {
+                                                alert('Failed to send Smart Report: ' + result.message);
+                                              }
+                                            }}
+                                          />
+                                        </div>
+                                      );
+                                    }
+                                    return null;
+                                  })()}
+
                                   <button
                                     className="flex items-center justify-center px-3 py-2 text-sm bg-gray-600 text-white rounded-md hover:bg-gray-700 transition-colors"
                                     onClick={() => handleOpenPDFSettings(group.order_id)}
@@ -2408,7 +2459,7 @@ const Reports: React.FC = () => {
           onSuccess={(url) => {
             alert('Report Generated Successfully!');
             loadApprovedResults(); // Refresh list to show new report
-            // Optionally open Send modal
+            if (url) window.open(url, '_blank'); // Open the generated PDF
           }}
         />
       )}

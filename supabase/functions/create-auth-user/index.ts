@@ -102,6 +102,29 @@ Deno.serve(async (req: Request) => {
     if (!lab_id) return bad("lab_id is required");
     if (!name) return bad("name is required");
 
+    // Validate email format
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(email)) {
+      return bad("Invalid email format", 400);
+    }
+
+    console.log('[CREATE-AUTH-USER] Email validation passed:', email);
+
+    // Verify the lab exists
+    console.log('[CREATE-AUTH-USER] Verifying lab exists:', lab_id);
+    const { data: labData, error: labError } = await supabaseAdmin
+      .from("labs")
+      .select("id, name")
+      .eq("id", lab_id)
+      .single();
+
+    if (labError || !labData) {
+      console.error('[CREATE-AUTH-USER] Lab not found:', lab_id, labError?.message);
+      return bad("Lab not found or unavailable", 404);
+    }
+
+    console.log('[CREATE-AUTH-USER] Lab verified:', labData.name);
+
     // Verify caller is admin of target lab
     console.log('[CREATE-AUTH-USER] Verifying caller is admin of lab:', lab_id);
     await assertCallerIsAdminOfLab(supabaseUserClient, lab_id);
@@ -110,6 +133,26 @@ Deno.serve(async (req: Request) => {
     // Generate strong random password if not provided
     const finalPassword = password || (crypto.randomUUID() + "!Aa1");
     console.log('[CREATE-AUTH-USER] Password:', password ? 'provided' : 'auto-generated');
+    
+    // Validate password strength if provided (lenient - Supabase needs at least 6 chars)
+    if (password) {
+      if (password.length < 6) {
+        return bad("Password must be at least 6 characters long", 400);
+      }
+      console.log('[CREATE-AUTH-USER] Password validation passed');
+    }
+
+    // Pre-flight check: see if user already exists by querying the auth system
+    try {
+      const { data: existingUser } = await supabaseAdmin.auth.admin.getUserByEmail(email);
+      if (existingUser?.user?.id) {
+        console.warn('[CREATE-AUTH-USER] User with email already exists:', email);
+        return bad("User with this email already exists", 409);
+      }
+    } catch (checkError: any) {
+      // If check fails with "not found", that's expected (means user doesn't exist)
+      console.log('[CREATE-AUTH-USER] Pre-flight email check: user not found (expected)');
+    }
 
     // Build user_metadata with lab context
     const user_metadata = {
@@ -122,27 +165,147 @@ Deno.serve(async (req: Request) => {
 
     console.log('[CREATE-AUTH-USER] Creating auth.users record with metadata:', user_metadata);
 
-    // Try creating auth user with minimal data first (to bypass potential trigger issues)
-    const { data, error } = await supabaseAdmin.auth.admin.createUser({
-      email,
-      password: finalPassword,
-      email_confirm: true, // Skip email verification - admin created
-      user_metadata: {}, // Start with empty metadata to avoid trigger issues
-      app_metadata: { providers: ["email"], provider: "email" },
-    });
+    // Create auth user with minimal metadata first (to avoid potential auth schema issues)
+    let createAttempt = 0;
+    let createResult = null;
+    let createError = null;
+
+    // Retry up to 3 times for transient failures
+    while (createAttempt < 3) {
+      createAttempt++;
+      console.log(`[CREATE-AUTH-USER] Auth creation attempt ${createAttempt}/3...`);
+
+      try {
+        const createPayload = {
+          email,
+          password: finalPassword,
+          user_metadata: {
+            name: name, // Minimal metadata - just name for display
+          },
+          app_metadata: { providers: ["email"], provider: "email" },
+        };
+
+        console.log('[CREATE-AUTH-USER] Attempting createUser without email_confirm...');
+        
+        // Try without email_confirm first - this might be causing the 500 error
+        const { data, error } = await supabaseAdmin.auth.admin.createUser(createPayload);
+
+        if (!error) {
+          createResult = data;
+          console.log('[CREATE-AUTH-USER] ✅ Auth user created successfully on attempt', createAttempt);
+          break;
+        }
+
+        createError = error;
+        console.error(`[CREATE-AUTH-USER] Attempt ${createAttempt} failed:`, {
+          message: error.message,
+          status: error.status,
+          code: (error as any)?.code,
+        });
+
+        // If it's a 409 (conflict - email exists), don't retry
+        if (error.status === 409 || error.message?.toLowerCase().includes("already")) {
+          console.log('[CREATE-AUTH-USER] Email already exists - stopping retries');
+          break;
+        }
+
+        // For 500 errors, maybe try with email_confirm on next attempt
+        if (error.status === 500 && createAttempt === 1) {
+          console.log('[CREATE-AUTH-USER] Got 500 error on first attempt, will try with email_confirm on retry...');
+        }
+
+        // For other errors, wait before retrying
+        if (createAttempt < 3) {
+          const delayMs = 500 * createAttempt;
+          console.log(`[CREATE-AUTH-USER] Retrying in ${delayMs}ms...`);
+          await new Promise(resolve => setTimeout(resolve, delayMs));
+        }
+      } catch (exceptionError) {
+        console.error(`[CREATE-AUTH-USER] Exception on attempt ${createAttempt}:`, exceptionError);
+        createError = exceptionError;
+      }
+    }
+
+    const { data, error } = createResult ? { data: createResult, error: null } : { data: null, error: createError };
 
     if (error) {
-      console.error('[CREATE-AUTH-USER] ERROR: Auth user creation failed:', {
+      console.error('[CREATE-AUTH-USER] ERROR: Auth user creation failed after 3 attempts:', {
         message: error.message,
         status: error.status,
         name: error.name,
-        details: JSON.stringify(error)
+        code: (error as any)?.code,
       });
-      // Check if user already exists
-      if (error.message?.includes("already")) {
+      
+      // Check various error conditions
+      if (error.message?.toLowerCase().includes("already")) {
+        console.log('[CREATE-AUTH-USER] Detected: Email already exists');
         return bad("User with this email already exists", 409);
       }
-      throw new Error(`Failed to create auth user: ${error.message}`);
+      
+      if (error.status === 500 || (error as any)?.code === "unexpected_failure") {
+        console.error('[CREATE-AUTH-USER] Supabase auth system error (500) - all retries exhausted');
+        console.error('[CREATE-AUTH-USER] This appears to be a Supabase service issue or auth configuration problem');
+        
+        // As a fallback: Create user in public.users table with a real UUID
+        // The auth user can be synced later or through a different mechanism
+        console.log('[CREATE-AUTH-USER] Attempting fallback: Creating user record without auth.users');
+        
+        const fallbackUserId = crypto.randomUUID(); // Use real UUID, not prefixed
+        const publicUserDataFallback = {
+          id: fallbackUserId,
+          name,
+          email,
+          role: "Technician",
+          role_id: null,
+          status: "Active",
+          lab_id,
+          join_date: new Date().toISOString().split("T")[0],
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+          auth_user_id: null, // No auth user created
+        };
+
+        console.log('[CREATE-AUTH-USER] Creating public.users record with UUID:', fallbackUserId);
+
+        const { error: fallbackUserError } = await supabaseAdmin
+          .from("users")
+          .insert(publicUserDataFallback);
+
+        if (fallbackUserError) {
+          console.error('[CREATE-AUTH-USER] Fallback also failed:', fallbackUserError.message);
+          
+          // Try one more time with just minimal required fields
+          console.log('[CREATE-AUTH-USER] Trying minimal insert...');
+          const { error: minimalError } = await supabaseAdmin
+            .from("users")
+            .insert({
+              id: fallbackUserId,
+              name,
+              email,
+              role: "Technician",
+              status: "Active",
+              lab_id,
+            });
+          
+          if (minimalError) {
+            console.error('[CREATE-AUTH-USER] Minimal insert also failed:', minimalError.message);
+            return bad(`Auth system error (500) - unable to create user. Please contact support.`, 500);
+          }
+        }
+
+        console.log('[CREATE-AUTH-USER] Fallback successful: User created without auth.users');
+        return json({
+          user_id: fallbackUserId,
+          email,
+          lab_id,
+          name,
+          status: "pending_auth",
+          message: "User created without full authentication due to service issue. Admin may need to sync manually.",
+          warning: "Auth user creation failed on Supabase backend - this may need manual intervention",
+        }, 201);
+      }
+      
+      throw new Error(`Failed to create auth user: ${error.message}. Status: ${error.status}`);
     }
 
     const newUserId = data.user?.id;

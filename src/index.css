@@ -314,6 +314,7 @@ body > .ck.ck-reset_all {
       margin-left: var(--mobile-edge-margin);
       margin-right: var(--mobile-edge-margin);
       margin-bottom: 12px;
+      padding: var(--mobile-content-padding);
     }
 
     /* Full bleed sections on mobile */
@@ -322,6 +323,30 @@ body > .ck.ck-reset_all {
       margin-right: calc(-1 * var(--mobile-edge-margin));
       padding-left: var(--mobile-edge-margin);
       padding-right: var(--mobile-edge-margin);
+    }
+
+    /* Prevent mid-word wrapping on mobile for readability */
+    body,
+    p,
+    span,
+    div,
+    td,
+    th,
+    label,
+    input,
+    textarea {
+      word-break: normal;
+      overflow-wrap: break-word;
+    }
+
+    /* Improve label/input legibility on mobile */
+    label {
+      line-height: 1.4;
+    }
+
+    input,
+    textarea {
+      line-height: 1.5;
     }
   }
 
@@ -339,6 +364,9 @@ body > .ck.ck-reset_all {
     .btn-mobile {
       padding: 12px 16px;
       font-size: 16px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
     }
   }
 }

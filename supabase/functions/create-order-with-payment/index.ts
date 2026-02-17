@@ -179,6 +179,34 @@ Deno.serve(async (req) => {
 
     console.log('✅ Order tests linked');
 
+    // 2b. Auto-consume per_order and per_sample inventory items (non-blocking)
+    try {
+      const [perOrderResult, perSampleResult] = await Promise.all([
+        supabaseClient.rpc('fn_inventory_consume_general', {
+          p_lab_id: labId,
+          p_scope: 'per_order',
+          p_order_id: order.id,
+          p_reason: 'Order created',
+          p_user_id: user.id,
+        }),
+        supabaseClient.rpc('fn_inventory_consume_general', {
+          p_lab_id: labId,
+          p_scope: 'per_sample',
+          p_order_id: order.id,
+          p_reason: 'Sample collection',
+          p_user_id: user.id,
+        }),
+      ]);
+
+      const orderConsumed = perOrderResult.data?.items_consumed || 0;
+      const sampleConsumed = perSampleResult.data?.items_consumed || 0;
+      if (orderConsumed > 0 || sampleConsumed > 0) {
+        console.log(`📦 Inventory consumed: ${orderConsumed} per_order + ${sampleConsumed} per_sample items`);
+      }
+    } catch (invErr) {
+      console.warn('Inventory auto-consume on order creation failed (non-blocking):', invErr);
+    }
+
     // Get patient name for invoice
     const { data: patient } = await supabaseClient
       .from('patients')

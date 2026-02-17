@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { X, Plus, Trash2, Search, Percent, DollarSign, CreditCard } from 'lucide-react';
+import { X, Plus, Trash2, Search, Percent, DollarSign, CreditCard, Sparkles } from 'lucide-react';
 import { supabase } from '../../config/supabase';
 import { createOrderWithPayment, calculateDiscount, calculateFinalAmount } from '../../services/orderService';
 import { toast } from 'react-hot-toast';
@@ -15,6 +15,7 @@ interface TestGroup {
     id: string;
     name: string;
     price: number;
+    required_patient_inputs?: string[];
 }
 
 interface DashboardOrderFormProps {
@@ -37,8 +38,15 @@ export default function DashboardOrderForm({ onClose, onOrderCreated }: Dashboar
     const [paymentMethod, setPaymentMethod] = useState<'cash' | 'card' | 'upi' | 'online'>('cash');
     const [amountPaid, setAmountPaid] = useState<number>(0);
     const [paymentNotes, setPaymentNotes] = useState('');
+    const [autoFillPayableAmount, setAutoFillPayableAmount] = useState<boolean>(true);
 
+    const [additionalInputs, setAdditionalInputs] = useState<Record<string, string>>({});
     const [loading, setLoading] = useState(false);
+
+    // Compute required patient inputs from all selected tests
+    const requiredInfos = Array.from(
+        new Set(selectedTests.flatMap(t => t.required_patient_inputs || []))
+    );
 
     useEffect(() => {
         fetchPatients();
@@ -60,7 +68,7 @@ export default function DashboardOrderForm({ onClose, onOrderCreated }: Dashboar
     const fetchTests = async () => {
         const { data, error } = await supabase
             .from('test_groups')
-            .select('id, name, price')
+            .select('id, name, price, required_patient_inputs')
             .eq('is_active', true)
             .order('name');
 
@@ -90,6 +98,13 @@ export default function DashboardOrderForm({ onClose, onOrderCreated }: Dashboar
     const finalAmount = calculateFinalAmount(subtotal, discountType, discountValue);
     const balanceDue = finalAmount - amountPaid;
 
+    useEffect(() => {
+        if (autoFillPayableAmount) {
+            const payableAmount = Math.max(0, Number(finalAmount) || 0);
+            setAmountPaid(Number(payableAmount.toFixed(2)));
+        }
+    }, [autoFillPayableAmount, finalAmount]);
+
     const handleSubmit = async () => {
         if (!selectedPatient) {
             toast.error('Please select a patient');
@@ -98,6 +113,13 @@ export default function DashboardOrderForm({ onClose, onOrderCreated }: Dashboar
 
         if (selectedTests.length === 0) {
             toast.error('Please select at least one test');
+            return;
+        }
+
+        // Validate required patient inputs
+        const missingInputs = requiredInfos.filter(info => !additionalInputs[info]);
+        if (missingInputs.length > 0) {
+            toast.error(`Please fill required fields: ${missingInputs.map(i => i.replace(/_/g, ' ')).join(', ')}`);
             return;
         }
 
@@ -117,6 +139,12 @@ export default function DashboardOrderForm({ onClose, onOrderCreated }: Dashboar
                 payment_method: amountPaid > 0 ? paymentMethod : undefined,
                 amount_paid: amountPaid > 0 ? amountPaid : undefined,
                 notes: paymentNotes || undefined,
+                ...(requiredInfos.length > 0 ? {
+                    patient_context: {
+                        additional_inputs: additionalInputs,
+                        ...additionalInputs,
+                    }
+                } : {}),
             });
 
             toast.success(
@@ -235,6 +263,75 @@ export default function DashboardOrderForm({ onClose, onOrderCreated }: Dashboar
                         </div>
                     </div>
 
+                    {/* Required Patient Inputs */}
+                    {requiredInfos.length > 0 && (
+                        <div className="space-y-3 bg-purple-50 p-4 rounded-lg border border-purple-200">
+                            <h3 className="text-sm font-semibold text-purple-900 flex items-center gap-2">
+                                <Sparkles className="h-4 w-4" />
+                                Additional Patient Information
+                            </h3>
+                            <p className="text-xs text-purple-700">
+                                Required by selected tests for accurate results.
+                            </p>
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                                {requiredInfos.map(info => (
+                                    <div key={info}>
+                                        <label className="block text-xs font-medium text-purple-900 mb-1 capitalize">
+                                            {info.replace(/_/g, ' ')} <span className="text-red-500">*</span>
+                                        </label>
+                                        {info === 'pregnancy_status' ? (
+                                            <select
+                                                value={additionalInputs[info] || ''}
+                                                onChange={e => setAdditionalInputs(prev => ({ ...prev, [info]: e.target.value }))}
+                                                className="w-full px-3 py-2 border border-purple-300 rounded-md focus:ring-2 focus:ring-purple-500 bg-white text-sm"
+                                            >
+                                                <option value="">Select Status</option>
+                                                <option value="Not Pregnant">Not Pregnant</option>
+                                                <option value="Trimester 1">First Trimester (1-12 weeks)</option>
+                                                <option value="Trimester 2">Second Trimester (13-26 weeks)</option>
+                                                <option value="Trimester 3">Third Trimester (27+ weeks)</option>
+                                                <option value="Lactating">Lactating</option>
+                                            </select>
+                                        ) : info === 'lmp' ? (
+                                            <input
+                                                type="date"
+                                                value={additionalInputs[info] || ''}
+                                                onChange={e => setAdditionalInputs(prev => ({ ...prev, [info]: e.target.value }))}
+                                                className="w-full px-3 py-2 border border-purple-300 rounded-md focus:ring-2 focus:ring-purple-500 text-sm"
+                                            />
+                                        ) : info === 'consent_form' ? (
+                                            <label className="flex items-center gap-2 px-3 py-2 border border-purple-300 rounded-md bg-white cursor-pointer">
+                                                <input
+                                                    type="checkbox"
+                                                    checked={additionalInputs[info] === 'yes'}
+                                                    onChange={e => setAdditionalInputs(prev => ({ ...prev, [info]: e.target.checked ? 'yes' : '' }))}
+                                                    className="h-4 w-4 text-purple-600 rounded focus:ring-purple-500"
+                                                />
+                                                <span className="text-sm text-gray-700">Patient has signed consent form</span>
+                                            </label>
+                                        ) : info === 'id_document' ? (
+                                            <input
+                                                type="text"
+                                                value={additionalInputs[info] || ''}
+                                                onChange={e => setAdditionalInputs(prev => ({ ...prev, [info]: e.target.value }))}
+                                                className="w-full px-3 py-2 border border-purple-300 rounded-md focus:ring-2 focus:ring-purple-500 text-sm"
+                                                placeholder="Enter ID number (Aadhaar, etc.)"
+                                            />
+                                        ) : (
+                                            <input
+                                                type="text"
+                                                value={additionalInputs[info] || ''}
+                                                onChange={e => setAdditionalInputs(prev => ({ ...prev, [info]: e.target.value }))}
+                                                className="w-full px-3 py-2 border border-purple-300 rounded-md focus:ring-2 focus:ring-purple-500 text-sm"
+                                                placeholder={`Enter ${info.replace(/_/g, ' ')}...`}
+                                            />
+                                        )}
+                                    </div>
+                                ))}
+                            </div>
+                        </div>
+                    )}
+
                     {/* Discount Section */}
                     <div>
                         <label className="block text-sm font-medium text-gray-700 mb-2">
@@ -315,9 +412,20 @@ export default function DashboardOrderForm({ onClose, onOrderCreated }: Dashboar
                                     value={amountPaid}
                                     onChange={(e) => setAmountPaid(Number(e.target.value))}
                                     placeholder="Amount collected"
+                                    disabled={autoFillPayableAmount}
                                     className="flex-1 px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500"
                                 />
                             </div>
+
+                            <label className="flex items-center gap-2 text-sm text-gray-700">
+                                <input
+                                    type="checkbox"
+                                    checked={autoFillPayableAmount}
+                                    onChange={(e) => setAutoFillPayableAmount(e.target.checked)}
+                                    className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                                />
+                                Auto-fill collected amount with payable total
+                            </label>
 
                             {/* Payment Notes */}
                             <input

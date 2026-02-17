@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
-import { X, Save, AlertCircle } from 'lucide-react';
-import { database } from '../../utils/supabase';
+import { X, Save, AlertCircle, Flag } from 'lucide-react';
+import { database, supabase } from '../../utils/supabase';
 
 interface SimpleAnalyteEditorProps {
   analyte: {
@@ -27,6 +27,7 @@ interface SimpleAnalyteEditorProps {
     to_be_copied?: boolean;
     ref_range_knowledge?: any;
     expected_normal_values?: string[];
+    expected_value_flag_map?: Record<string, string>;
   };
   onSave: (analyte: any) => void;
   onCancel: () => void;
@@ -46,21 +47,36 @@ export const SimpleAnalyteEditor: React.FC<SimpleAnalyteEditorProps> = ({
   const [expectedNormalValuesText, setExpectedNormalValuesText] = useState(
     analyte.expected_normal_values?.join('\n') || ''
   );
+  // Flag mapping state
+  const [expectedValueFlagMap, setExpectedValueFlagMap] = useState<Record<string, string>>(
+    analyte.expected_value_flag_map || {}
+  );
+  const [labFlagOptions, setLabFlagOptions] = useState<Array<{value: string; label: string}>>([
+    { value: '', label: 'Normal' },
+    { value: 'H', label: 'High' },
+    { value: 'L', label: 'Low' },
+    { value: 'A', label: 'Abnormal' },
+    { value: 'C', label: 'Critical' },
+  ]);
 
   React.useEffect(() => {
-    const loadLabMethodOptions = async () => {
+    const loadLabOptions = async () => {
       try {
         const labId = await database.getCurrentUserLabId();
         if (!labId) return;
         const { data } = await database.labs.getById(labId);
         const options = Array.isArray(data?.method_options) ? data.method_options : [];
         setLabMethodOptions(options);
+        // Load lab flag options
+        if (data?.flag_options && Array.isArray(data.flag_options)) {
+          setLabFlagOptions(data.flag_options);
+        }
       } catch (loadError) {
-        console.error('Failed to load lab method options:', loadError);
+        console.error('Failed to load lab options:', loadError);
       }
     };
 
-    loadLabMethodOptions();
+    loadLabOptions();
   }, []);
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -108,12 +124,14 @@ export const SimpleAnalyteEditor: React.FC<SimpleAnalyteEditorProps> = ({
           ref_range_knowledge: formData.ref_range_knowledge,
           // Dropdown options for qualitative values
           expected_normal_values: expected_normal_values,
+          // Dropdown value → flag mapping
+          expected_value_flag_map: expectedValueFlagMap,
         }
       );
 
       if (updateError) throw updateError;
 
-      onSave({ ...formData, expected_normal_values });
+      onSave({ ...formData, expected_normal_values, expected_value_flag_map: expectedValueFlagMap });
     } catch (error) {
       console.error('Failed to update analyte:', error);
       setError(error instanceof Error ? error.message : 'Failed to update analyte');
@@ -342,6 +360,43 @@ export const SimpleAnalyteEditor: React.FC<SimpleAnalyteEditorProps> = ({
                         {val.trim()}
                       </span>
                     ))}
+                  </div>
+                )}
+                {/* Flag Mapping for each dropdown option */}
+                {expectedNormalValuesText && expectedNormalValuesText.split('\n').filter(v => v.trim()).length > 0 && (
+                  <div className="mt-3 bg-white border border-blue-200 rounded-lg p-3">
+                    <h5 className="text-sm font-medium text-gray-700 mb-2 flex items-center">
+                      <Flag className="h-4 w-4 mr-1.5 text-orange-500" />
+                      Flag Mapping (auto-set flag when value is selected)
+                    </h5>
+                    <div className="space-y-2">
+                      {expectedNormalValuesText.split('\n').filter(v => v.trim()).map((val, idx) => {
+                        const trimmed = val.trim();
+                        return (
+                          <div key={idx} className="flex items-center gap-3">
+                            <span className="text-sm text-gray-800 min-w-[140px] font-medium">{trimmed}</span>
+                            <span className="text-gray-400 text-xs">&rarr;</span>
+                            <select
+                              value={expectedValueFlagMap[trimmed] ?? ''}
+                              onChange={(e) => {
+                                setExpectedValueFlagMap(prev => ({
+                                  ...prev,
+                                  [trimmed]: e.target.value
+                                }));
+                              }}
+                              className="px-2 py-1.5 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                            >
+                              {labFlagOptions.map((opt, i) => (
+                                <option key={i} value={opt.value}>{opt.label}{opt.value ? ` (${opt.value})` : ''}</option>
+                              ))}
+                            </select>
+                          </div>
+                        );
+                      })}
+                    </div>
+                    <p className="text-xs text-gray-500 mt-2">
+                      When a user selects a dropdown value during result entry, the flag will auto-set to the mapped value.
+                    </p>
                   </div>
                 )}
               </div>

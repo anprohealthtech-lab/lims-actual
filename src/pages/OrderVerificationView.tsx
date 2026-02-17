@@ -98,6 +98,7 @@ interface OrderGroup {
   patientId: string;
   patientName: string;
   orderDate: string;
+  sortTimestamp: number;
   panels: PanelRow[];
   stats: {
     expected: number;
@@ -128,6 +129,7 @@ const OrderVerificationView: React.FC<OrderVerificationViewProps> = ({ onBackToP
   const [q, setQ] = useState("");
   const [stateFilter, setStateFilter] = useState<StateFilter>("all");
   const [panels, setPanels] = useState<PanelRow[]>([]);
+  const [orderSortTimestampById, setOrderSortTimestampById] = useState<Record<string, number>>({});
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [rowsByResult, setRowsByResult] = useState<Record<string, Analyte[]>>({});
@@ -171,12 +173,50 @@ const OrderVerificationView: React.FC<OrderVerificationViewProps> = ({ onBackToP
   const [patientSummaryTarget, setPatientSummaryTarget] = useState<{ orderId: string; patientName?: string; referringDoctor?: string } | null>(null);
   const [labPreferredLanguage, setLabPreferredLanguage] = useState<SupportedLanguage>('english');
 
+  const [isAdmin, setIsAdmin] = useState(false);
+
+  // Lab flag options for editable flag dropdowns
+  const [labFlagOptions, setLabFlagOptions] = useState([
+    { value: '', label: 'Normal' },
+    { value: 'H', label: 'High' },
+    { value: 'L', label: 'Low' },
+    { value: 'A', label: 'Abnormal' },
+    { value: 'C', label: 'Critical' },
+  ]);
+
   const aiIntelligence = useAIResultIntelligence();
+
+  // Check if current user is admin (for reopen-for-correction feature)
+  useEffect(() => {
+    const checkAdmin = async () => {
+      try {
+        const { data: { user } } = await supabase.auth.getUser();
+        if (!user) return;
+        const { data: userData } = await supabase
+          .from('users')
+          .select('role')
+          .eq('id', user.id)
+          .single();
+        const role = (userData?.role || '').toLowerCase();
+        setIsAdmin(['admin', 'super_admin', 'lab_admin'].includes(role));
+      } catch { /* ignore */ }
+    };
+    checkAdmin();
+  }, []);
 
   useEffect(() => {
     const fetchLabId = async () => {
       const labId = await database.getCurrentUserLabId();
       setCurrentLabId(labId);
+      // Also fetch lab flag options
+      if (labId) {
+        try {
+          const { data } = await supabase.from('labs').select('flag_options').eq('id', labId).single();
+          if (data?.flag_options && Array.isArray(data.flag_options) && data.flag_options.length > 0) {
+            setLabFlagOptions(data.flag_options);
+          }
+        } catch { /* use defaults */ }
+      }
     };
     fetchLabId();
   }, []);
@@ -206,7 +246,33 @@ const OrderVerificationView: React.FC<OrderVerificationViewProps> = ({ onBackToP
       setError(error.message);
       setPanels([]);
     } else {
-      setPanels((data || []) as PanelRow[]);
+      const panelRows = (data || []) as PanelRow[];
+      setPanels(panelRows);
+
+      // Build deterministic newest-first sort key from orders.created_at (fallback: order_date)
+      try {
+        const orderIds = Array.from(new Set(panelRows.map((row) => row.order_id).filter(Boolean)));
+        if (orderIds.length > 0) {
+          const { data: orderRows, error: orderFetchError } = await supabase
+            .from("orders")
+            .select("id, created_at, order_date")
+            .in("id", orderIds);
+
+          if (orderFetchError) throw orderFetchError;
+
+          const nextSortMap: Record<string, number> = {};
+          (orderRows || []).forEach((o: any) => {
+            const ts = new Date(o.created_at || o.order_date).getTime();
+            if (Number.isFinite(ts)) nextSortMap[o.id] = ts;
+          });
+          setOrderSortTimestampById(nextSortMap);
+        } else {
+          setOrderSortTimestampById({});
+        }
+      } catch (sortErr) {
+        console.warn("Unable to fetch order created_at for sort fallback:", sortErr);
+        setOrderSortTimestampById({});
+      }
     }
     setLoading(false);
   };
@@ -218,7 +284,10 @@ const OrderVerificationView: React.FC<OrderVerificationViewProps> = ({ onBackToP
   }, [from, to, currentLabId]);
 
   const groupByOrder = useMemo(() => {
-    const filtered = panels.filter(row => {
+    // Only show panels that have at least one result value entered
+    const filtered = (panels || []).filter(row => {
+      if ((row?.entered_analytes || 0) === 0) return false;
+
       const matchesSearch = q
         ? (row.patient_name || "").toLowerCase().includes(q.toLowerCase()) ||
         (row.test_group_name || "").toLowerCase().includes(q.toLowerCase()) ||
@@ -242,6 +311,7 @@ const OrderVerificationView: React.FC<OrderVerificationViewProps> = ({ onBackToP
           patientId: row.patient_id,
           patientName: row.patient_name,
           orderDate: row.order_date,
+          sortTimestamp: orderSortTimestampById[row.order_id] ?? new Date(row.order_date).getTime(),
           panels: [],
           stats: {
             expected: 0,
@@ -257,10 +327,18 @@ const OrderVerificationView: React.FC<OrderVerificationViewProps> = ({ onBackToP
       bucket[row.order_id].stats.entered += row.entered_analytes;
       bucket[row.order_id].stats.approved += row.approved_analytes;
       if (row.panel_ready) bucket[row.order_id].stats.readyPanels += 1;
+
+      const rowTs = orderSortTimestampById[row.order_id] ?? new Date(row.order_date).getTime();
+      if (Number.isFinite(rowTs)) {
+        bucket[row.order_id].sortTimestamp = Math.max(bucket[row.order_id].sortTimestamp, rowTs);
+      }
     });
 
-    return Object.values(bucket).sort((a, b) => new Date(b.orderDate).getTime() - new Date(a.orderDate).getTime());
-  }, [panels, q, stateFilter]);
+    return Object.values(bucket).sort((a, b) => {
+      if (b.sortTimestamp !== a.sortTimestamp) return b.sortTimestamp - a.sortTimestamp;
+      return b.orderId.localeCompare(a.orderId);
+    });
+  }, [panels, q, stateFilter, orderSortTimestampById]);
 
   const stats = useMemo(() => {
     const totalOrders = groupByOrder.length;
@@ -545,6 +623,133 @@ const OrderVerificationView: React.FC<OrderVerificationViewProps> = ({ onBackToP
     } finally {
       setBusyFor(panel.result_id, false);
       setSavingReportExtras(prev => ({ ...prev, [panel.order_id]: false }));
+    }
+  };
+
+  // Update flag on a result_value and update local state
+  const handleFlagChange = async (resultId: string, analyteId: string, newFlag: string) => {
+    try {
+      await supabase
+        .from('result_values')
+        .update({ flag: newFlag || null, flag_source: 'manual' })
+        .eq('id', analyteId);
+
+      // Update local state
+      setRowsByResult(prev => {
+        const rows = prev[resultId];
+        if (!rows) return prev;
+        return {
+          ...prev,
+          [resultId]: rows.map(a => a.id === analyteId ? { ...a, flag: newFlag || null, flag_source: 'manual' } : a)
+        };
+      });
+    } catch (err) {
+      console.error('Failed to update flag:', err);
+    }
+  };
+
+  const reopenPanelForCorrection = async (panel: PanelRow) => {
+    const reason = window.prompt("Reason for reopening this panel (required):");
+    if (!reason?.trim()) {
+      alert("A reason is required to reopen an approved panel.");
+      return;
+    }
+
+    const confirmed = window.confirm(
+      `Are you sure you want to reopen "${panel.test_group_name}" for correction?\n\n` +
+      `This will:\n` +
+      `- Reset all analyte approvals to Pending\n` +
+      `- Invalidate the current report PDF\n` +
+      `- Require re-approval after correction\n\n` +
+      `Reason: ${reason}`
+    );
+    if (!confirmed) return;
+
+    setBusyFor(panel.result_id, true);
+    try {
+      const now = new Date().toISOString();
+      const { data: { user } } = await supabase.auth.getUser();
+
+      // 1. Reset result_values for this panel
+      const { error: rvError } = await supabase
+        .from("result_values")
+        .update({
+          verify_status: "pending",
+          verified_at: null,
+          verified_by: null,
+          verify_note: null,
+        })
+        .eq("result_id", panel.result_id);
+      if (rvError) throw rvError;
+
+      // 2. Reset results row
+      const { error: resError } = await supabase
+        .from("results")
+        .update({
+          verification_status: "pending",
+          verified_at: null,
+          manually_verified: false,
+          report_extras: null,
+          is_locked: false,
+          locked_reason: null,
+          locked_at: null,
+          locked_by: null,
+        })
+        .eq("id", panel.result_id);
+      if (resError) throw resError;
+
+      // 3. Clear stale report PDF
+      await supabase
+        .from("reports")
+        .update({ pdf_url: null, status: "Draft" })
+        .eq("order_id", panel.order_id);
+
+      // 4. Downgrade order status if currently Completed
+      await supabase
+        .from("orders")
+        .update({
+          status: "Pending Approval",
+          status_updated_at: now,
+          status_updated_by: "Admin (Correction)",
+        })
+        .eq("id", panel.order_id)
+        .eq("status", "Completed");
+
+      // 5. Insert audit record
+      await supabase.from("result_verification_audit").insert({
+        result_id: panel.result_id,
+        action: "reopened_for_correction",
+        performed_by: user?.id || null,
+        performed_at: now,
+        previous_status: "approved",
+        new_status: "pending",
+        comment: reason,
+        metadata: {
+          order_id: panel.order_id,
+          test_group_name: panel.test_group_name,
+          test_group_id: panel.test_group_id,
+        },
+      });
+
+      // 6. Update local state
+      setRowsByResult(prev => ({
+        ...prev,
+        [panel.result_id]: (prev[panel.result_id] || []).map(a => ({
+          ...a,
+          verify_status: "pending" as const,
+          verified_at: null,
+          verified_by: null,
+          verify_note: null,
+        })),
+      }));
+
+      await loadPanels();
+      alert(`Panel "${panel.test_group_name}" reopened for correction.`);
+    } catch (err) {
+      console.error("Failed to reopen panel:", err);
+      alert("Failed to reopen panel. Please try again.");
+    } finally {
+      setBusyFor(panel.result_id, false);
     }
   };
 
@@ -1712,10 +1917,10 @@ ${summary.urgent_findings.map(f => `• ${f}`).join('\n')}` : ''}
                                   <h4 className="text-xl font-semibold text-gray-900">{panel.test_group_name}</h4>
                                   <p className="text-sm text-gray-500">{panel.expected_analytes} analytes</p>
                                 </div>
-                                <div className="flex flex-wrap gap-3 mt-4 md:mt-0">
+                                <div className="flex flex-wrap gap-2 mt-4 md:mt-0">
                                   <button
                                     onClick={() => togglePanel(panel.result_id)}
-                                    className="px-4 py-2 rounded-xl border border-gray-200 hover:bg-gray-50"
+                                    className="px-3 py-2 rounded-xl border border-gray-200 hover:bg-gray-50 text-sm"
                                   >
                                     {isPanelOpen ? "Hide Analytes" : "Show Analytes"}
                                   </button>
@@ -1726,10 +1931,10 @@ ${summary.urgent_findings.map(f => `• ${f}`).join('\n')}` : ''}
                                       await handleDeltaCheck(panel, analytesData);
                                     }}
                                     disabled={aiIntelligence.loading}
-                                    className="inline-flex items-center px-4 py-2 rounded-xl bg-gradient-to-r from-amber-500 to-orange-500 text-white disabled:opacity-50"
+                                    className="inline-flex items-center px-3 py-2 rounded-xl bg-gradient-to-r from-amber-500 to-orange-500 text-white disabled:opacity-50 text-sm"
                                     title="AI Delta Check - Compare current values with historical data to detect potential errors"
                                   >
-                                    {aiIntelligence.loading ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <Zap className="h-4 w-4 mr-2" />} AI Delta Check
+                                    {aiIntelligence.loading ? <Loader2 className="h-4 w-4 mr-1.5 animate-spin" /> : <Zap className="h-4 w-4 mr-1.5" />} AI Delta Check
                                   </button>
                                   {/* AI Summary button hidden - analysis now done in backend automatically */}
                                   <button
@@ -1739,26 +1944,36 @@ ${summary.urgent_findings.map(f => `• ${f}`).join('\n')}` : ''}
                                       await approvePanel(panel, analytesData);
                                     }}
                                     disabled={busy[panel.result_id]}
-                                    className="inline-flex items-center px-4 py-2 rounded-xl bg-gradient-to-r from-green-600 to-emerald-600 text-white disabled:opacity-50"
+                                    className="inline-flex items-center px-3 py-2 rounded-xl bg-gradient-to-r from-green-600 to-emerald-600 text-white disabled:opacity-50 text-sm"
                                   >
-                                    {busy[panel.result_id] ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <CheckSquare className="h-4 w-4 mr-2" />} Approve Panel
+                                    {busy[panel.result_id] ? <Loader2 className="h-4 w-4 mr-1.5 animate-spin" /> : <CheckSquare className="h-4 w-4 mr-1.5" />} Approve Panel
                                   </button>
+                                  {isAdmin && panel.panel_ready && (
+                                    <button
+                                      onClick={() => reopenPanelForCorrection(panel)}
+                                      disabled={busy[panel.result_id]}
+                                      className="inline-flex items-center px-3 py-2 rounded-xl bg-gradient-to-r from-orange-500 to-red-500 text-white disabled:opacity-50 text-sm"
+                                      title="Admin: Reopen this panel for value correction"
+                                    >
+                                      {busy[panel.result_id] ? <Loader2 className="h-4 w-4 mr-1.5 animate-spin" /> : <RefreshCcw className="h-4 w-4 mr-1.5" />} Reopen for Correction
+                                    </button>
+                                  )}
                                 </div>
                               </div>
                             </div>
 
                             {isPanelOpen && (
                               <div className="p-6">
-                                <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
+                                <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-x-auto">
                                   <table className="min-w-full">
                                     <thead className="bg-gradient-to-r from-gray-50 to-gray-100">
                                       <tr>
                                         <th className="px-4 py-3 text-left text-xs font-semibold text-gray-600">Analyte</th>
                                         <th className="px-4 py-3 text-left text-xs font-semibold text-gray-600">Value</th>
-                                        <th className="px-4 py-3 text-left text-xs font-semibold text-gray-600">Unit</th>
-                                        <th className="px-4 py-3 text-left text-xs font-semibold text-gray-600">Reference</th>
+                                        <th className="px-4 py-3 text-left text-xs font-semibold text-gray-600 hidden sm:table-cell">Unit</th>
+                                        <th className="px-4 py-3 text-left text-xs font-semibold text-gray-600 hidden sm:table-cell">Reference</th>
                                         <th className="px-4 py-3 text-left text-xs font-semibold text-gray-600">Flag</th>
-                                        <th className="px-4 py-3 text-left text-xs font-semibold text-gray-600">Status</th>
+                                        <th className="px-4 py-3 text-left text-xs font-semibold text-gray-600 hidden sm:table-cell">Status</th>
                                       </tr>
                                     </thead>
                                     <tbody className="divide-y divide-gray-100">
@@ -1794,34 +2009,39 @@ ${summary.urgent_findings.map(f => `• ${f}`).join('\n')}` : ''}
                                               Trend
                                             </button>
                                           </td>
-                                          <td className="px-4 py-4 text-lg font-bold text-gray-900">{analyte.value ?? "—"}</td>
-                                          <td className="px-4 py-4 text-gray-700">{analyte.unit}</td>
-                                          <td className="px-4 py-4 text-sm text-gray-600">{analyte.reference_range}</td>
-                                          <td className="px-4 py-4">
-                                            {analyte.flag && (
-                                              <div className="flex flex-col gap-1">
-                                                <span className={`inline-flex items-center px-2 py-1 text-xs rounded-full ${analyte.flag === 'H' || analyte.flag === 'high' || analyte.flag === 'critical_high'
-                                                  ? 'bg-red-100 text-red-800'
-                                                  : analyte.flag === 'L' || analyte.flag === 'low' || analyte.flag === 'critical_low'
-                                                    ? 'bg-blue-100 text-blue-800'
-                                                    : analyte.flag === 'abnormal' || analyte.flag === 'Positive'
-                                                      ? 'bg-amber-100 text-amber-800'
-                                                      : 'bg-gray-100 text-gray-800'
-                                                  }`}>
-                                                  {analyte.flag}
-                                                  {analyte.flag_source && (
-                                                    <span className="ml-1 opacity-60 text-[10px]">
-                                                      ({analyte.flag_source === 'ai' ? '🤖' : analyte.flag_source === 'rule' ? '📏' : '✋'})
-                                                    </span>
+                                          <td className="px-4 py-4 text-base sm:text-lg font-bold text-gray-900">{analyte.value ?? "—"}</td>
+                                          <td className="px-4 py-4 text-gray-700 hidden sm:table-cell">{analyte.unit}</td>
+                                          <td className="px-4 py-4 text-sm text-gray-600 hidden sm:table-cell">{analyte.reference_range}</td>
+                                          <td className="px-4 py-4 hidden sm:table-cell">
+                                            <div className="flex flex-col gap-1">
+                                              <select
+                                                value={analyte.flag || ''}
+                                                onChange={(e) => handleFlagChange(panel.result_id, analyte.id, e.target.value)}
+                                                className={`px-2 py-1 border rounded text-xs font-medium focus:outline-none focus:ring-2 focus:ring-blue-500 ${
+                                                  analyte.flag === 'H' || analyte.flag === 'high' || analyte.flag === 'critical_high'
+                                                    ? 'bg-red-100 text-red-800 border-red-300'
+                                                    : analyte.flag === 'L' || analyte.flag === 'low' || analyte.flag === 'critical_low'
+                                                      ? 'bg-blue-100 text-blue-800 border-blue-300'
+                                                      : analyte.flag === 'A' || analyte.flag === 'abnormal'
+                                                        ? 'bg-amber-100 text-amber-800 border-amber-300'
+                                                        : analyte.flag === 'C'
+                                                          ? 'bg-red-200 text-red-900 border-red-400'
+                                                          : 'bg-gray-50 text-gray-600 border-gray-300'
+                                                }`}
+                                              >
+                                                {labFlagOptions.map((opt, i) => (
+                                                  <option key={i} value={opt.value}>{opt.label}</option>
+                                                ))}
+                                              </select>
+                                              {analyte.flag_source && (
+                                                <span className="text-[10px] text-gray-400">
+                                                  {analyte.flag_source === 'ai' ? 'AI' : analyte.flag_source === 'rule' ? 'Rule' : analyte.flag_source === 'manual' ? 'Manual' : analyte.flag_source}
+                                                  {analyte.flag_confidence && analyte.flag_confidence < 0.8 && (
+                                                    <span className="ml-1 text-amber-500">({Math.round(analyte.flag_confidence * 100)}%)</span>
                                                   )}
                                                 </span>
-                                                {analyte.flag_confidence && analyte.flag_confidence < 0.8 && (
-                                                  <span className="text-[10px] text-amber-600">
-                                                    ⚠️ Low confidence ({Math.round(analyte.flag_confidence * 100)}%)
-                                                  </span>
-                                                )}
-                                              </div>
-                                            )}
+                                              )}
+                                            </div>
                                             {analyte.ai_interpretation && (
                                               <div className="mt-1 text-xs text-gray-500 italic max-w-[200px] truncate" title={analyte.ai_interpretation}>
                                                 {analyte.ai_interpretation}

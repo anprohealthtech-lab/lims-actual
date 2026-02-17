@@ -37,6 +37,7 @@ interface TestGroupOption {
   id: string;
   name: string;
   category?: string | null;
+  isActive?: boolean;
 }
 
 const REQUIRED_PLACEHOLDERS: Record<string, string> = {
@@ -786,6 +787,7 @@ const TemplateStudio: React.FC = () => {
           id: group.id,
           name: group.name,
           category: group.category ?? null,
+          isActive: group.is_active ?? true,
         }));
         setTestGroups(mapped);
       }
@@ -874,13 +876,13 @@ const TemplateStudio: React.FC = () => {
     return 'shared-web-project';
   }, [identityId, labId, templateMeta?.id]);
 
-  const attachedTestGroupName = useMemo(() => {
+  const attachedTestGroup = useMemo(() => {
     if (!templateMeta?.test_group_id) {
       return null;
     }
 
     const match = testGroups.find((group) => group.id === templateMeta.test_group_id);
-    return match?.name || null;
+    return match || null;
   }, [templateMeta?.test_group_id, testGroups]);
 
   const handleLoadProject = useCallback(async () => {
@@ -1727,7 +1729,9 @@ const TemplateStudio: React.FC = () => {
             <div className="mt-1 text-[0.65rem] text-gray-500 sm:text-xs">
               Linked Test Group:{' '}
               {templateMeta?.test_group_id
-                ? attachedTestGroupName || `ID ${templateMeta.test_group_id}`
+                ? attachedTestGroup
+                  ? `${attachedTestGroup.name} (Active: ${attachedTestGroup.isActive ? 'True' : 'False'})`
+                  : `ID ${templateMeta.test_group_id}`
                 : 'None' }
             </div>
           </div>
@@ -1872,6 +1876,7 @@ const TemplateStudio: React.FC = () => {
                   <option key={group.id} value={group.id}>
                     {group.name}
                     {group.category ? ` (${group.category})` : ''}
+                    {` - Active: ${group.isActive ? 'True' : 'False'}`}
                   </option>
                 ))}
               </select>

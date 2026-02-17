@@ -31,7 +31,9 @@ import {
   Loader2,
   UserCheck,
   Globe,
-  MessageSquare
+  MessageSquare,
+  Gift,
+  Star
 } from 'lucide-react';
 import { LANGUAGE_DISPLAY_NAMES, type SupportedLanguage } from '../hooks/useAIResultIntelligence';
 import { COUNTRY_CODE_OPTIONS } from '../utils/phoneFormatter';
@@ -111,6 +113,14 @@ interface LabSettings {
     low: string;
     normal: string;
   } | null;
+  default_template_style?: 'beautiful' | 'classic';
+  show_methodology?: boolean;
+  show_interpretation?: boolean;
+  flag_options?: Array<{ value: string; label: string }>;
+  loyalty_enabled?: boolean;
+  loyalty_conversion_rate?: number;
+  loyalty_min_redeem_points?: number;
+  loyalty_point_value?: number;
 }
 
 // Define UserForm component outside of Settings
@@ -560,6 +570,20 @@ const Settings: React.FC = () => {
             watermark_rotation: labData.watermark_rotation || 0,
             preferred_language: labData.preferred_language || 'english',
             country_code: (labData as any).country_code || '+91',
+            default_template_style: (labData as any).default_template_style || 'beautiful',
+            show_methodology: (labData as any).show_methodology ?? true,
+            show_interpretation: (labData as any).show_interpretation ?? false,
+            flag_options: (labData as any).flag_options || [
+              { value: '', label: 'Normal' },
+              { value: 'H', label: 'High' },
+              { value: 'L', label: 'Low' },
+              { value: 'A', label: 'Abnormal' },
+              { value: 'C', label: 'Critical' },
+            ],
+            loyalty_enabled: (labData as any).loyalty_enabled ?? false,
+            loyalty_conversion_rate: (labData as any).loyalty_conversion_rate ?? 0.1,
+            loyalty_min_redeem_points: (labData as any).loyalty_min_redeem_points ?? 100,
+            loyalty_point_value: (labData as any).loyalty_point_value ?? 1.0,
           });
         }
 
@@ -789,6 +813,14 @@ const Settings: React.FC = () => {
         watermark_rotation: labSettings.watermark_rotation,
         preferred_language: labSettings.preferred_language,
         country_code: labSettings.country_code || '+91',
+        default_template_style: labSettings.default_template_style || 'beautiful',
+        show_methodology: labSettings.show_methodology ?? true,
+        show_interpretation: labSettings.show_interpretation ?? false,
+        flag_options: labSettings.flag_options || null,
+        loyalty_enabled: labSettings.loyalty_enabled ?? false,
+        loyalty_conversion_rate: labSettings.loyalty_conversion_rate ?? 0.1,
+        loyalty_min_redeem_points: labSettings.loyalty_min_redeem_points ?? 100,
+        loyalty_point_value: labSettings.loyalty_point_value ?? 1.0,
       } as any);
 
       if (updateError) throw updateError;
@@ -1592,6 +1624,203 @@ const Settings: React.FC = () => {
                     </div>
                   </div>
 
+                  {/* Default Report Template Style */}
+                  <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6 lg:col-span-2">
+                    <h3 className="text-lg font-semibold text-gray-900 mb-4 flex items-center">
+                      <FileText className="h-5 w-5 mr-2 text-indigo-600" />
+                      Default Report Template Style
+                    </h3>
+                    <p className="text-sm text-gray-600 mb-4">
+                      Choose the default template style used when a test group has no custom HTML template assigned.
+                    </p>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                      <label
+                        className={`flex items-start p-4 border-2 rounded-lg cursor-pointer transition-all ${
+                          (labSettings.default_template_style || 'beautiful') === 'beautiful'
+                            ? 'border-indigo-500 bg-indigo-50'
+                            : 'border-gray-200 hover:border-gray-300'
+                        }`}
+                      >
+                        <input
+                          type="radio"
+                          name="template_style"
+                          value="beautiful"
+                          checked={(labSettings.default_template_style || 'beautiful') === 'beautiful'}
+                          onChange={() => setLabSettings(prev => prev ? { ...prev, default_template_style: 'beautiful' } : prev)}
+                          className="mt-1 mr-3 text-indigo-600"
+                        />
+                        <div>
+                          <span className="font-medium text-gray-900">Beautiful (3-Band Color)</span>
+                          <p className="text-xs text-gray-500 mt-1">
+                            Modern color-coded template with green/gold/red bands, flag badges, and method display.
+                          </p>
+                        </div>
+                      </label>
+                      <label
+                        className={`flex items-start p-4 border-2 rounded-lg cursor-pointer transition-all ${
+                          labSettings.default_template_style === 'classic'
+                            ? 'border-indigo-500 bg-indigo-50'
+                            : 'border-gray-200 hover:border-gray-300'
+                        }`}
+                      >
+                        <input
+                          type="radio"
+                          name="template_style"
+                          value="classic"
+                          checked={labSettings.default_template_style === 'classic'}
+                          onChange={() => setLabSettings(prev => prev ? { ...prev, default_template_style: 'classic' } : prev)}
+                          className="mt-1 mr-3 text-indigo-600"
+                        />
+                        <div>
+                          <span className="font-medium text-gray-900">Classic (Plain Table)</span>
+                          <p className="text-xs text-gray-500 mt-1">
+                            Traditional clean table layout with alternating rows and simple flag text colors.
+                          </p>
+                        </div>
+                      </label>
+                    </div>
+
+                    {/* Additional Template Display Options */}
+                    <div className="mt-6 pt-4 border-t border-gray-200">
+                      <h4 className="text-sm font-semibold text-gray-700 mb-3">Additional Display Options</h4>
+                      <p className="text-xs text-gray-500 mb-3">
+                        Control which extra columns appear in the default report template for each analyte row.
+                      </p>
+                      <div className="flex flex-col sm:flex-row gap-4">
+                        <label className="flex items-center cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={labSettings.show_methodology ?? true}
+                            onChange={(e) => setLabSettings(prev => prev ? { ...prev, show_methodology: e.target.checked } : prev)}
+                            className="h-4 w-4 text-indigo-600 focus:ring-indigo-500 border-gray-300 rounded mr-2"
+                          />
+                          <div>
+                            <span className="text-sm font-medium text-gray-700">Show Methodology</span>
+                            <p className="text-xs text-gray-400">Display the test method (e.g. Photometry, ELISA) below each analyte name.</p>
+                          </div>
+                        </label>
+                        <label className="flex items-center cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={labSettings.show_interpretation ?? false}
+                            onChange={(e) => setLabSettings(prev => prev ? { ...prev, show_interpretation: e.target.checked } : prev)}
+                            className="h-4 w-4 text-indigo-600 focus:ring-indigo-500 border-gray-300 rounded mr-2"
+                          />
+                          <div>
+                            <span className="text-sm font-medium text-gray-700">Show Interpretation</span>
+                            <p className="text-xs text-gray-400">Display low/normal/high interpretation text for each analyte based on its flag.</p>
+                          </div>
+                        </label>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Patient Loyalty Points Program */}
+                  <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6 lg:col-span-2">
+                    <h3 className="text-lg font-semibold text-gray-900 mb-4 flex items-center">
+                      <Gift className="h-5 w-5 mr-2 text-amber-600" />
+                      Patient Loyalty Points Program
+                    </h3>
+                    <p className="text-sm text-gray-600 mb-4">
+                      Reward repeat patients with loyalty points. Points are earned on every paid order and can be redeemed for discounts.
+                    </p>
+
+                    {/* Enable Toggle */}
+                    <div className="flex items-center mb-6">
+                      <label className="flex items-center cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={labSettings.loyalty_enabled ?? false}
+                          onChange={(e) => setLabSettings(prev => prev ? { ...prev, loyalty_enabled: e.target.checked } : prev)}
+                          className="h-4 w-4 text-amber-600 focus:ring-amber-500 border-gray-300 rounded mr-2"
+                        />
+                        <span className="text-sm font-medium text-gray-700">Enable Loyalty Points</span>
+                      </label>
+                    </div>
+
+                    {labSettings.loyalty_enabled && (
+                      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                        {/* Conversion Rate */}
+                        <div>
+                          <label className="block text-sm font-medium text-gray-700 mb-1">
+                            <Star className="h-4 w-4 inline mr-1 text-amber-500" />
+                            Points per {labSettings.country_code === '+91' ? '\u20B9' : '$'}1 spent
+                          </label>
+                          <input
+                            type="number"
+                            min="0.01"
+                            max="10"
+                            step="0.01"
+                            value={labSettings.loyalty_conversion_rate ?? 0.1}
+                            onChange={(e) => setLabSettings(prev => prev ? { ...prev, loyalty_conversion_rate: parseFloat(e.target.value) || 0.1 } : prev)}
+                            className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-amber-500"
+                          />
+                          <p className="text-xs text-gray-500 mt-1">
+                            {(() => {
+                              const rate = labSettings.loyalty_conversion_rate ?? 0.1;
+                              const symbol = labSettings.country_code === '+91' ? '\u20B9' : '$';
+                              return `${symbol}100 order = ${Math.floor(100 * rate)} points`;
+                            })()}
+                          </p>
+                        </div>
+
+                        {/* Point Value */}
+                        <div>
+                          <label className="block text-sm font-medium text-gray-700 mb-1">
+                            Redemption Value per Point
+                          </label>
+                          <div className="flex items-center gap-2">
+                            <span className="text-sm text-gray-500">{labSettings.country_code === '+91' ? '\u20B9' : '$'}</span>
+                            <input
+                              type="number"
+                              min="0.1"
+                              max="100"
+                              step="0.1"
+                              value={labSettings.loyalty_point_value ?? 1.0}
+                              onChange={(e) => setLabSettings(prev => prev ? { ...prev, loyalty_point_value: parseFloat(e.target.value) || 1.0 } : prev)}
+                              className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-amber-500"
+                            />
+                          </div>
+                          <p className="text-xs text-gray-500 mt-1">
+                            1 point = {labSettings.country_code === '+91' ? '\u20B9' : '$'}{labSettings.loyalty_point_value ?? 1.0} discount
+                          </p>
+                        </div>
+
+                        {/* Minimum Redeem Points */}
+                        <div>
+                          <label className="block text-sm font-medium text-gray-700 mb-1">
+                            Minimum Points to Redeem
+                          </label>
+                          <input
+                            type="number"
+                            min="1"
+                            max="10000"
+                            step="1"
+                            value={labSettings.loyalty_min_redeem_points ?? 100}
+                            onChange={(e) => setLabSettings(prev => prev ? { ...prev, loyalty_min_redeem_points: parseInt(e.target.value) || 100 } : prev)}
+                            className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-amber-500"
+                          />
+                          <p className="text-xs text-gray-500 mt-1">
+                            Patient must have at least this many points before they can redeem
+                          </p>
+                        </div>
+                      </div>
+                    )}
+
+                    {labSettings.loyalty_enabled && (
+                      <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 mt-4">
+                        <div className="text-xs text-amber-800 space-y-1">
+                          <p><strong>Example flow:</strong></p>
+                          <ul className="list-disc list-inside ml-2 space-y-0.5">
+                            <li>Patient pays {labSettings.country_code === '+91' ? '\u20B9' : '$'}500 for tests \u2192 earns {Math.floor(500 * (labSettings.loyalty_conversion_rate ?? 0.1))} points</li>
+                            <li>After accumulating {labSettings.loyalty_min_redeem_points ?? 100}+ points, patient can redeem at checkout</li>
+                            <li>{labSettings.loyalty_min_redeem_points ?? 100} points = {labSettings.country_code === '+91' ? '\u20B9' : '$'}{((labSettings.loyalty_min_redeem_points ?? 100) * (labSettings.loyalty_point_value ?? 1.0)).toFixed(0)} discount</li>
+                          </ul>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+
                   {/* Report Watermark Settings */}
                   <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6 lg:col-span-2">
                     <h3 className="text-lg font-semibold text-gray-900 mb-4 flex items-center">
@@ -1651,6 +1880,66 @@ const Settings: React.FC = () => {
                           className="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer disabled:opacity-50"
                         />
                       </div>
+                    </div>
+                  </div>
+
+                  {/* Flag Options Configuration */}
+                  <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6 lg:col-span-2">
+                    <h3 className="text-lg font-semibold text-gray-900 mb-4 flex items-center">
+                      <FileText className="h-5 w-5 mr-2 text-orange-600" />
+                      Result Flag Options
+                    </h3>
+                    <p className="text-sm text-gray-600 mb-4">
+                      Configure the flag options available during result entry, verification, and analyte dropdown mapping.
+                    </p>
+                    <div className="space-y-2">
+                      {(labSettings.flag_options || []).map((opt, idx) => (
+                        <div key={idx} className="flex items-center gap-3">
+                          <input
+                            type="text"
+                            value={opt.label}
+                            onChange={(e) => {
+                              const updated = [...(labSettings.flag_options || [])];
+                              updated[idx] = { ...updated[idx], label: e.target.value };
+                              setLabSettings(prev => prev ? { ...prev, flag_options: updated } : prev);
+                            }}
+                            placeholder="Label (e.g. High)"
+                            className="flex-1 px-3 py-2 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                          />
+                          <input
+                            type="text"
+                            value={opt.value}
+                            onChange={(e) => {
+                              const updated = [...(labSettings.flag_options || [])];
+                              updated[idx] = { ...updated[idx], value: e.target.value };
+                              setLabSettings(prev => prev ? { ...prev, flag_options: updated } : prev);
+                            }}
+                            placeholder="Code (e.g. H)"
+                            className="w-28 px-3 py-2 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                          />
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const updated = (labSettings.flag_options || []).filter((_, i) => i !== idx);
+                              setLabSettings(prev => prev ? { ...prev, flag_options: updated } : prev);
+                            }}
+                            className="p-2 text-red-500 hover:bg-red-50 rounded"
+                            title="Remove"
+                          >
+                            <XCircle className="h-4 w-4" />
+                          </button>
+                        </div>
+                      ))}
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const updated = [...(labSettings.flag_options || []), { value: '', label: '' }];
+                          setLabSettings(prev => prev ? { ...prev, flag_options: updated } : prev);
+                        }}
+                        className="inline-flex items-center px-3 py-2 text-sm text-blue-600 hover:bg-blue-50 rounded-md border border-blue-200"
+                      >
+                        + Add Flag Option
+                      </button>
                     </div>
                   </div>
 

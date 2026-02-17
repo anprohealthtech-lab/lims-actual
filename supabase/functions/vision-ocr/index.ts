@@ -349,7 +349,7 @@ async function getTestContext(orderId?: string, testGroupId?: string, analyteIds
     }
 
     if (testGroupId) {
-      const select = 'id,name,code,lab_id,test_group_analytes(analyte_id,analytes(id,name,unit,reference_range))';
+      const select = 'id,name,code,lab_id,default_ai_processing_type,test_group_analytes(analyte_id,analytes(id,name,unit,reference_range))';
       const tgParams = new URLSearchParams({
         id: `eq.${testGroupId}`,
         select,
@@ -369,6 +369,7 @@ async function getTestContext(orderId?: string, testGroupId?: string, analyteIds
             name: group.name,
             code: group.code,
             lab_id: group.lab_id,
+            ai_processing_type: group.default_ai_processing_type,
           };
 
           const analytesFromGroup = Array.isArray(group.test_group_analytes)
@@ -1067,15 +1068,15 @@ Deno.serve(async (req) => {
 
     // Determine which Vision AI features to use based on document/test type
     const needsText = analysisType === 'all' || analysisType === 'text' ||
-                     aiProcessingType === 'ocr_report' ||
+                     effectiveProcessingType === 'ocr_report' ||
                      ['instrument-screen', 'printed-report', 'handwritten', 'test-request-form'].includes(documentType || '');
     
     const needsObjects = analysisType === 'all' || analysisType === 'objects' ||
-                        aiProcessingType === 'vision_card' ||
+                        effectiveProcessingType === 'vision_card' ||
                         ['blood-group', 'covid-test', 'malaria-test', 'pregnancy-test', 'dengue-test'].includes(testType || '');
     
     const needsColors = analysisType === 'all' || analysisType === 'colors' ||
-                       aiProcessingType === 'vision_color' ||
+                       effectiveProcessingType === 'vision_color' ||
                        ['urine-strip', 'blood-group', 'pipette-validation'].includes(testType || documentType || '');
 
     // Execute Vision AI calls based on requirements

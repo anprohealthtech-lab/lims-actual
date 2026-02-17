@@ -2,12 +2,13 @@
 // ───────────────────────────────────────────────────────────────────────────────
 // BLOCK 0: Imports
 // Keep paths as-is for your repo structure.
-import { useEffect, useMemo, useState } from 'react'
-import { supabase } from '../../utils/supabase'
+import { useEffect, useMemo, useState, useCallback } from 'react'
+import { supabase, database } from '../../utils/supabase'
 import { useAuth } from '../../contexts/AuthContext'
 import { calculateFlagsForResults } from '../../utils/flagCalculation'
-import { CheckCircle, AlertTriangle, Sparkles } from 'lucide-react'
+import { CheckCircle, AlertTriangle, Sparkles, Calculator } from 'lucide-react'
 import { resolveReferenceRanges } from '../../utils/referenceRangeService'
+import { evaluate } from 'mathjs'
 
 // ───────────────────────────────────────────────────────────────────────────────
 // BLOCK 1: Types
@@ -21,6 +22,9 @@ interface Analyte {
   units?: string
   unit?: string
   reference_range?: string
+  is_calculated?: boolean
+  formula?: string
+  formula_variables?: string[]
   existing_result?: {
     id: string
     value: string | null
@@ -94,6 +98,9 @@ export function ResultIntake({ order, onResultProcessed }: Props) {
   // Editable entries keyed by analyte_id (only for NOT completed analytes)
   const [entries, setEntries] = useState<Record<string, Entry>>({})
 
+  // Dependency map for calculated analytes: calculated_analyte_id -> [{variable_name, source_analyte_id}]
+  const [depMap, setDepMap] = useState<Record<string, { variable_name: string; source_analyte_id: string }[]>>({})
+
   // ───────────────────────────────────────────────────────────────────────────
   // BLOCK 3A: Initialize editable entries from order (pending analytes only)
 
@@ -118,6 +125,93 @@ export function ResultIntake({ order, onResultProcessed }: Props) {
     })
     setEntries(next)
   }, [order])
+
+  // Fetch analyte_dependencies for all calculated analytes in this order
+  useEffect(() => {
+    const calculatedIds: string[] = []
+    order.test_groups.forEach(tg => {
+      tg.analytes.forEach(a => {
+        if (a.is_calculated && a.formula) calculatedIds.push(a.id)
+      })
+    })
+    if (calculatedIds.length === 0) return
+
+    const fetchDeps = async () => {
+      const { data } = await supabase
+        .from('analyte_dependencies')
+        .select('calculated_analyte_id, variable_name, source_analyte_id')
+        .in('calculated_analyte_id', calculatedIds)
+      if (!data) return
+      const map: Record<string, { variable_name: string; source_analyte_id: string }[]> = {}
+      data.forEach((d: { calculated_analyte_id: string; variable_name: string; source_analyte_id: string }) => {
+        if (!map[d.calculated_analyte_id]) map[d.calculated_analyte_id] = []
+        map[d.calculated_analyte_id].push({ variable_name: d.variable_name, source_analyte_id: d.source_analyte_id })
+      })
+      setDepMap(map)
+    }
+    fetchDeps()
+  }, [order])
+
+  // Auto-compute calculated analytes whenever entries change
+  const runCalculations = useCallback(() => {
+    const allAnalytes: Analyte[] = []
+    order.test_groups.forEach(tg => tg.analytes.forEach(a => allAnalytes.push(a)))
+
+    const calculated = allAnalytes.filter(a => a.is_calculated && a.formula)
+    if (calculated.length === 0) return
+
+    setEntries(prev => {
+      const next = { ...prev }
+      let changed = false
+
+      calculated.forEach(calc => {
+        if (!calc.formula || isCompleted(calc)) return
+        const deps = depMap[calc.id]
+        if (!deps || deps.length === 0) return
+
+        // Build scope from source analyte values
+        const scope: Record<string, number> = {}
+        let allPresent = true
+        for (const dep of deps) {
+          const sourceEntry = prev[dep.source_analyte_id]
+          const sourceAnalyte = allAnalytes.find(a => a.id === dep.source_analyte_id)
+          const rawValue = sourceEntry?.value || sourceAnalyte?.existing_result?.value
+          if (!rawValue || isNaN(parseFloat(rawValue))) {
+            allPresent = false
+            break
+          }
+          scope[dep.variable_name] = parseFloat(rawValue)
+        }
+
+        if (!allPresent) {
+          // Clear calculated value if deps are missing
+          if (next[calc.id] && next[calc.id].value !== '') {
+            next[calc.id] = { ...next[calc.id], value: '' }
+            changed = true
+          }
+          return
+        }
+
+        try {
+          const result = evaluate(calc.formula, scope)
+          const rounded = Math.round(result * 100) / 100
+          const strVal = String(rounded)
+          if (next[calc.id] && next[calc.id].value !== strVal) {
+            next[calc.id] = { ...next[calc.id], value: strVal }
+            changed = true
+          }
+        } catch {
+          // formula evaluation failed, leave empty
+        }
+      })
+
+      return changed ? next : prev
+    })
+  }, [order, depMap])
+
+  useEffect(() => {
+    runCalculations()
+  }, [entries, depMap, runCalculations])
 
   // ───────────────────────────────────────────────────────────────────────────
   // BLOCK 3B: Derived data per test group (pending vs completed, progress)
@@ -206,7 +300,7 @@ export function ResultIntake({ order, onResultProcessed }: Props) {
         return next;
       });
       setToast('AI Ranges Applied!');
-    } catch (err) {
+    } catch {
       setToast('AI Request Failed.');
     } finally {
       setAiLoadingGroup(null);
@@ -223,7 +317,8 @@ export function ResultIntake({ order, onResultProcessed }: Props) {
       return
     }
 
-    mode === 'draft' ? setSaving(true) : setSubmitting(true)
+    if (mode === 'draft') setSaving(true)
+    else setSubmitting(true)
     setToast(null)
 
     try {
@@ -292,24 +387,38 @@ export function ResultIntake({ order, onResultProcessed }: Props) {
         }))
         const withFlags = calculateFlagsForResults(forFlag)
 
-        const values = list.map((v, i) => ({
-          result_id: savedResult.id,
-          order_id: order.id,
-          lab_id: order.lab_id,
-          test_group_id: tgId,
-          analyte_id: v.analyte_id,
-          analyte_name: v.analyte_name,
-          parameter: v.analyte_name,
-          value: v.value,
-          unit: v.unit || '',
-          reference_range: v.reference || '',
-          flag: (v.flag || withFlags[i]?.flag || '') || null,
-          ...(v.order_test_group_id && { order_test_group_id: v.order_test_group_id }),
-          ...(v.order_test_id && { order_test_id: v.order_test_id }),
-        }))
+        const values = list.map((v, i) => {
+          const resolvedFlag = (v.flag || withFlags[i]?.flag || '') || null;
+          return {
+            result_id: savedResult.id,
+            order_id: order.id,
+            lab_id: order.lab_id,
+            test_group_id: tgId,
+            analyte_id: v.analyte_id,
+            analyte_name: v.analyte_name,
+            parameter: v.analyte_name,
+            value: v.value,
+            unit: v.unit || '',
+            reference_range: v.reference || '',
+            flag: resolvedFlag,
+            ...(v.flag && { flag_source: 'manual' }),
+            ...(v.order_test_group_id && { order_test_group_id: v.order_test_group_id }),
+            ...(v.order_test_id && { order_test_id: v.order_test_id }),
+          };
+        })
 
         const { error: valuesErr } = await supabase.from('result_values').insert(values)
         if (valuesErr) throw valuesErr
+
+        // Auto-consume inventory for non-outsourced tests (non-blocking)
+        if (!orderTest?.outsourced_lab_id) {
+          database.inventory.triggerAutoConsume({
+            labId: order.lab_id,
+            orderId: order.id,
+            resultId: savedResult.id,
+            testGroupId: tgId,
+          }).catch(err => console.warn('Inventory auto-consume failed (non-blocking):', err));
+        }
       }
 
       // Run AI flag analysis ONCE after ALL test groups are saved (optimization)
@@ -335,7 +444,8 @@ export function ResultIntake({ order, onResultProcessed }: Props) {
       console.error('Persist error:', err)
       setToast('Something went wrong. Please try again.')
     } finally {
-      mode === 'draft' ? setSaving(false) : setSubmitting(false)
+      if (mode === 'draft') setSaving(false)
+      else setSubmitting(false)
       // auto-hide toast
       setTimeout(() => setToast(null), 4000)
     }
@@ -420,14 +530,21 @@ export function ResultIntake({ order, onResultProcessed }: Props) {
                   {rows.map(analyte => {
                     const completedRow = isCompleted(analyte)
                     const entry = entries[analyte.id]
+                    const isCalc = analyte.is_calculated && !!analyte.formula
 
                     return (
-                      <tr key={analyte.id} className={completedRow ? 'bg-green-50/40' : ''}>
+                      <tr key={analyte.id} className={completedRow ? 'bg-green-50/40' : isCalc ? 'bg-blue-50/40' : ''}>
                         {/* Parameter */}
                         <td className="px-3 py-2 align-top">
                           <div className="text-sm font-medium text-gray-900">{analyte.name}</div>
                           {analyte.code && (
                             <div className="text-xs text-gray-500">({analyte.code})</div>
+                          )}
+                          {isCalc && (
+                            <div className="mt-1 inline-flex items-center text-xs text-blue-600">
+                              <Calculator className="h-3.5 w-3.5 mr-1" />
+                              Auto: {analyte.formula}
+                            </div>
                           )}
                           {completedRow && analyte.existing_result?.value != null && (
                             <div className="mt-1 inline-flex items-center text-xs text-green-700">
@@ -444,6 +561,13 @@ export function ResultIntake({ order, onResultProcessed }: Props) {
                               disabled
                               value={analyte.existing_result?.value ?? ''}
                               className="w-full px-2 py-1 bg-gray-100 border border-gray-200 rounded text-gray-600"
+                            />
+                          ) : isCalc ? (
+                            <input
+                              disabled
+                              value={entry?.value || ''}
+                              placeholder="Auto-calculated"
+                              className="w-full px-2 py-1 bg-blue-50 border border-blue-200 rounded text-blue-800 font-medium"
                             />
                           ) : (
                             <input

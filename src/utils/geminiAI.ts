@@ -31,6 +31,7 @@ export interface TestConfigurationResponse {
     name: string;
     unit: string;
     reference_range: string;
+    optimal_range?: string | null;
     low_critical: string | null;
     high_critical: string | null;
     interpretation_low: string;
@@ -43,6 +44,12 @@ export interface TestConfigurationResponse {
     group_ai_mode: string;
     is_global: boolean;
     to_be_copied: boolean;
+    is_calculated?: boolean;
+    formula?: string | null;
+    formula_variables?: string[];
+    formula_description?: string | null;
+    value_type?: string | null;
+    expected_normal_values?: string[];
   }>;
   test_group_analytes: Array<{
     test_group_code: string;
@@ -73,6 +80,32 @@ export interface DocumentAnalysisResponse {
 }
 
 class SecureGeminiAIService {
+  private normalizeAIProcessingType(type?: string | null): string {
+    const normalized = (type || '').trim().toUpperCase();
+    const aliasMap: Record<string, string> = {
+      GEMINI: 'THERMAL_SLIP_OCR',
+      OCR_REPORT: 'THERMAL_SLIP_OCR',
+      VISION_CARD: 'RAPID_CARD_LFA',
+      VISION_COLOR: 'COLOR_STRIP_MULTIPARAM',
+    };
+    const value = aliasMap[normalized] || normalized;
+    const valid = new Set([
+      'MANUAL_ENTRY_NO_VISION',
+      'THERMAL_SLIP_OCR',
+      'INSTRUMENT_SCREEN_OCR',
+      'RAPID_CARD_LFA',
+      'COLOR_STRIP_MULTIPARAM',
+      'SINGLE_WELL_COLORIMETRIC',
+      'AGGLUTINATION_CARD',
+      'MICROSCOPY_MORPHOLOGY',
+      'ZONE_OF_INHIBITION',
+      'MENISCUS_SCALE_READING',
+      'SAMPLE_QUALITY_TUBE_CHECK',
+      'UNKNOWN_NEEDS_REVIEW'
+    ]);
+    return valid.has(value) ? value : 'MANUAL_ENTRY_NO_VISION';
+  }
+
   /**
    * Generate test configuration suggestions using secure Edge Function
    */
@@ -221,14 +254,15 @@ class SecureGeminiAIService {
           sample_type: response.testGroup.sample_type || 'Serum',
           requires_fasting: response.testGroup.requires_fasting || false,
           is_active: true,
-          default_ai_processing_type: 'gemini',
-          group_level_prompt: null,
+          default_ai_processing_type: this.normalizeAIProcessingType(response.testGroup.default_ai_processing_type),
+          group_level_prompt: response.testGroup.group_level_prompt || 'Extract and validate results for listed analytes. Return structured, analyte-mapped output with confidence.',
           to_be_copied: false
         },
         analytes: (response.analytes || []).map((analyte: any) => ({
           name: analyte.name || '',
           unit: analyte.unit || '',
           reference_range: this.formatReferenceRange(analyte.reference_min, analyte.reference_max),
+          optimal_range: analyte.optimal_range || null,
           low_critical: analyte.critical_min?.toString() || null,
           high_critical: analyte.critical_max?.toString() || null,
           interpretation_low: `Low ${analyte.name || 'value'} may indicate underlying condition`,
@@ -236,11 +270,17 @@ class SecureGeminiAIService {
           interpretation_high: `High ${analyte.name || 'value'} may indicate inflammation or disease`,
           category: response.testGroup.category || 'General',
           is_active: true,
-          ai_processing_type: 'gemini',
+          ai_processing_type: this.normalizeAIProcessingType(analyte.ai_processing_type || response.testGroup.default_ai_processing_type),
           ai_prompt_override: null,
           group_ai_mode: 'individual',
           is_global: false,
-          to_be_copied: false
+          to_be_copied: false,
+          is_calculated: false,
+          formula: null,
+          formula_variables: [],
+          formula_description: null,
+          value_type: 'numeric',
+          expected_normal_values: []
         })),
         test_group_analytes: (response.analytes || []).map((analyte: any) => ({
           test_group_code: this.generateTestCode(response.testGroup.name || ''),

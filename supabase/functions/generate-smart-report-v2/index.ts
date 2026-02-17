@@ -11,8 +11,7 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 }
 
-// Fallback to hardcoded key if env var not set (same as generate-smart-report)
-const GAMMA_API_KEY = Deno.env.get('GAMMA_API_KEY') || 'sk-gamma-lTDqDYXVz6QTreO50hMEnyTnREmjGOMyqgcoYOwpvk'
+const GAMMA_API_KEY = Deno.env.get('GAMMA_API') || Deno.env.get('GAMMA_API_KEY') || ''
 const PDFCO_API_KEY = Deno.env.get('PDFCO_API_KEY') || ''
 const CUSTOM_REPORTS_DOMAIN = Deno.env.get('CUSTOM_STORAGE_DOMAIN') || ''
 
@@ -544,12 +543,127 @@ interface AnalyteData {
   referenceRange: string
   flag: string
   interpretation?: string
+  expectedNormalValues?: unknown
+  valueType?: string
 }
 
 interface TestGroupData {
   id: string
   name: string
   analytes: AnalyteData[]
+}
+
+interface RangeHint {
+  kind: 'between' | 'lte' | 'gte' | 'lt' | 'gt' | 'unknown'
+  min: number | null
+  max: number | null
+  raw: string
+}
+
+function normalizeFlag(flag: string): 'normal' | 'high' | 'low' | 'critical' | 'abnormal' {
+  const f = String(flag || '').trim().toLowerCase()
+  if (!f || f === 'n' || f === 'normal') return 'normal'
+  if (f === 'h' || f === 'high' || f === 'critical_h' || f === 'critical_high') return 'high'
+  if (f === 'l' || f === 'low' || f === 'critical_l' || f === 'critical_low') return 'low'
+  if (f === 'c' || f === 'critical') return 'critical'
+  return 'abnormal'
+}
+
+function parseNumericValue(value: string | number): number | null {
+  const parsed = parseFloat(String(value ?? '').replace(/,/g, '').trim())
+  return Number.isFinite(parsed) ? parsed : null
+}
+
+function extractRangeHint(referenceRange: string): RangeHint {
+  const raw = String(referenceRange || '').trim()
+  if (!raw) return { kind: 'unknown', min: null, max: null, raw: '' }
+
+  const between = raw.match(/(-?\d+(?:\.\d+)?)\s*(?:-|to)\s*(-?\d+(?:\.\d+)?)/i)
+  if (between) {
+    return {
+      kind: 'between',
+      min: parseFloat(between[1]),
+      max: parseFloat(between[2]),
+      raw
+    }
+  }
+
+  const lte = raw.match(/<=\s*(-?\d+(?:\.\d+)?)/)
+  if (lte) return { kind: 'lte', min: null, max: parseFloat(lte[1]), raw }
+
+  const lt = raw.match(/<\s*(-?\d+(?:\.\d+)?)/)
+  if (lt) return { kind: 'lt', min: null, max: parseFloat(lt[1]), raw }
+
+  const gte = raw.match(/>=\s*(-?\d+(?:\.\d+)?)/)
+  if (gte) return { kind: 'gte', min: parseFloat(gte[1]), max: null, raw }
+
+  const gt = raw.match(/>\s*(-?\d+(?:\.\d+)?)/)
+  if (gt) return { kind: 'gt', min: parseFloat(gt[1]), max: null, raw }
+
+  return { kind: 'unknown', min: null, max: null, raw }
+}
+
+function buildRangeModel(analyte: AnalyteData): string {
+  const hint = extractRangeHint(analyte.referenceRange)
+  const value = parseNumericValue(analyte.value)
+
+  const graphModel = {
+    parameter: analyte.parameter,
+    value: analyte.value,
+    value_numeric: value,
+    unit: analyte.unit || '',
+    value_type: analyte.valueType || 'numeric',
+    expected_normal_values: analyte.expectedNormalValues || [],
+    flag: analyte.flag || 'Normal',
+    flag_normalized: normalizeFlag(analyte.flag || ''),
+    reference_raw: hint.raw || 'Not provided',
+    range_model: {
+      kind: hint.kind,
+      normal_min: hint.min,
+      normal_max: hint.max
+    },
+    chart_hint: 'Render as bullet chart with low, normal, high zones and current value pointer.'
+  }
+
+  return '```json\n' + JSON.stringify(graphModel, null, 2) + '\n```\n'
+}
+
+function getBriefExplanation(analyte: AnalyteData, aiSummary: PatientSummaryResponse | null): string {
+  if (!aiSummary) return ''
+  const name = analyte.parameter.toLowerCase()
+
+  const abnormal = aiSummary.abnormal_findings?.find(f => f.test_name?.toLowerCase() === name)
+  if (abnormal?.explanation) return abnormal.explanation
+
+  const normal = aiSummary.normal_findings_detailed?.find(f => f.test_name?.toLowerCase() === name)
+  if (normal?.your_result_means) return normal.your_result_means
+
+  return ''
+}
+
+function buildVisualResultsDataset(testGroups: TestGroupData[], aiSummary: PatientSummaryResponse | null): string {
+  let inputText = '# Visual Result Dataset\n\n'
+  inputText += 'Render each analyte as a compact card with a gauge or bullet chart.\n\n'
+
+  for (const group of testGroups) {
+    inputText += `## ${group.name}\n\n`
+    for (const analyte of group.analytes) {
+      const normalized = normalizeFlag(analyte.flag || '')
+      inputText += `### ${analyte.parameter}\n\n`
+      inputText += `- Value: ${analyte.value} ${analyte.unit || ''}\n`
+      inputText += `- Status: ${(analyte.flag || 'Normal').toUpperCase()} (${normalized})\n`
+      inputText += `- Reference: ${analyte.referenceRange || 'Not specified'}\n\n`
+      inputText += `Graph model:\n${buildRangeModel(analyte)}`
+
+      const explanation = getBriefExplanation(analyte, aiSummary)
+      if (explanation) {
+        inputText += `Brief explanation (max 2 lines): ${explanation}\n\n`
+      }
+    }
+    inputText += '---\n\n'
+  }
+
+  return inputText
 }
 
 function buildEnhancedGammaInput(
@@ -560,188 +674,86 @@ function buildEnhancedGammaInput(
 ): string {
   let inputText = ''
 
-  // ===== SECTION 1: HEALTH OVERVIEW =====
   if (aiSummary?.health_status) {
     inputText += `# Health Overview\n\n`
     inputText += `${aiSummary.health_status}\n\n`
     inputText += `---\n\n`
   }
 
-  // ===== SECTION 2: KEY FINDINGS (Abnormal) =====
   if (aiSummary?.abnormal_findings && aiSummary.abnormal_findings.length > 0) {
-    inputText += `# ⚠️ Key Findings Requiring Attention\n\n`
-
+    inputText += `# Key Findings Requiring Attention\n\n`
     for (const finding of aiSummary.abnormal_findings) {
       inputText += `## ${finding.test_name}: ${finding.value}\n\n`
       inputText += `**Status:** ${finding.status.toUpperCase()}\n\n`
       inputText += `**What this test measures:** ${finding.what_it_measures}\n\n`
-      inputText += `**What your result means:** ${finding.explanation}\n\n`
+      inputText += `**What your result means (short):** ${finding.explanation}\n\n`
       inputText += `**Recommended action:** ${finding.what_to_do}\n\n`
-      if (finding.trend) {
-        inputText += `**Trend:** ${finding.trend}\n\n`
-      }
+      if (finding.trend) inputText += `**Trend:** ${finding.trend}\n\n`
       inputText += `---\n\n`
     }
   }
 
-  // ===== SECTION 3: TEST RESULTS WITH VISUAL INDICATORS =====
-  inputText += `# Detailed Test Results\n\n`
+  inputText += buildVisualResultsDataset(testGroups, aiSummary)
 
-  for (const group of testGroups) {
-    inputText += `## ${group.name}\n\n`
-
-    // Create visual result cards instead of plain table
-    for (const analyte of group.analytes) {
-      const isAbnormal = analyte.flag && !['Normal', 'N', 'normal', ''].includes(analyte.flag)
-      const statusIcon = isAbnormal ? '🔴' : '🟢'
-      const statusText = isAbnormal ? analyte.flag.toUpperCase() : 'NORMAL'
-
-      inputText += `### ${statusIcon} ${analyte.parameter}\n\n`
-      inputText += `- **Your Value:** ${analyte.value} ${analyte.unit || ''}\n`
-      inputText += `- **Reference Range:** ${analyte.referenceRange || 'Not specified'}\n`
-      inputText += `- **Status:** ${statusText}\n\n`
-
-      // Add AI explanation if available
-      if (aiSummary) {
-        const normalFinding = aiSummary.normal_findings_detailed?.find(
-          f => f.test_name.toLowerCase() === analyte.parameter.toLowerCase()
-        )
-        if (normalFinding) {
-          inputText += `> **What this measures:** ${normalFinding.what_it_measures}\n\n`
-          inputText += `> **Your result means:** ${normalFinding.your_result_means}\n\n`
-        }
-      }
-    }
-    inputText += `---\n\n`
-  }
-
-  // ===== SECTION 4: HEALTH RECOMMENDATIONS =====
   if (aiSummary?.health_tips && aiSummary.health_tips.length > 0) {
-    inputText += `# 💡 Personalized Health Recommendations\n\n`
-    for (const tip of aiSummary.health_tips) {
-      inputText += `- ${tip}\n`
-    }
+    inputText += `# Personalized Health Recommendations\n\n`
+    for (const tip of aiSummary.health_tips) inputText += `- ${tip}\n`
     inputText += `\n---\n\n`
   }
 
-  // ===== SECTION 5: CONSULTATION ADVICE =====
   if (aiSummary?.consultation_recommendation) {
-    inputText += `# 👨‍⚕️ Doctor's Consultation\n\n`
+    inputText += `# Doctor Consultation\n\n`
     inputText += `${aiSummary.consultation_recommendation}\n\n`
   }
 
-  // ===== SECTION 6: CLOSING MESSAGE =====
   if (aiSummary?.summary_message) {
     inputText += `---\n\n`
     inputText += `*${aiSummary.summary_message}*\n`
   }
 
-  // Patient context for any additional AI interpretation
   inputText += `\n---\n**Patient:** ${patientAge || 'Unknown'} year old ${patientGender || 'patient'}\n`
+  inputText += `\nUse concise wording. Prefer visuals over long paragraphs.\n`
 
   return inputText
 }
-
 // Fallback for when AI summary is not available
 function buildBasicGammaInput(testGroups: TestGroupData[], patientAge: string, patientGender: string): string {
   let inputText = '# Laboratory Test Results\n\n'
-
-  for (const group of testGroups) {
-    inputText += `## ${group.name}\n\n`
-
-    for (const analyte of group.analytes) {
-      const isAbnormal = analyte.flag && !['Normal', 'N', 'normal', ''].includes(analyte.flag)
-      const statusIcon = isAbnormal ? '🔴' : '🟢'
-      const statusText = isAbnormal ? analyte.flag.toUpperCase() : 'NORMAL'
-
-      inputText += `### ${statusIcon} ${analyte.parameter}\n`
-      inputText += `- **Value:** ${analyte.value} ${analyte.unit || ''}\n`
-      inputText += `- **Reference:** ${analyte.referenceRange || '-'}\n`
-      inputText += `- **Status:** ${statusText}\n\n`
-    }
-    inputText += `---\n\n`
-  }
+  inputText += buildVisualResultsDataset(testGroups, null)
 
   inputText += `\n**Patient:** ${patientAge || 'Unknown'} year old ${patientGender || 'patient'}\n`
-  inputText += `\nPlease provide clinical interpretation and health recommendations.\n`
+  inputText += `\nInclude brief interpretation and practical recommendations.\n`
 
   return inputText
 }
-
 const GAMMA_INSTRUCTIONS = `
-Create a VISUALLY STUNNING, INFOGRAPHIC-STYLE health report. This should look like a modern health app or premium medical report.
+Create a clean, premium health report with strong visuals and concise explanations.
 
-═══════════════════════════════════════════════════════════════
-DESIGN PHILOSOPHY: Think Fitbit Health Report + Apple Health Summary
-═══════════════════════════════════════════════════════════════
+MANDATORY OUTPUT STYLE:
+1. For each analyte, render a card with:
+   - large value
+   - status badge
+   - gauge or bullet chart using the provided range model
+2. Prefer charts and compact cards; avoid long paragraphs.
+3. Use at most 1-2 short explanation lines per analyte.
+4. Group cards by test group.
+5. Include a compact key findings section and action plan section.
 
-VISUAL ELEMENTS TO CREATE:
+VISUAL RULES:
+- Green for normal, amber for caution, red for abnormal.
+- Use clear spacing and modern card layout.
+- If numeric range is available, show pointer position on chart.
+- If only textual range is available, still show a 3-zone visual bar with status.
 
-1. **HEALTH OVERVIEW SECTION** (First Page)
-   - Large, welcoming header with gradient background
-   - Use a circular or semi-circular GAUGE/METER graphic showing overall health score
-   - Health status in large, friendly text
-   - Use calming colors: soft blues, greens, whites
-
-2. **KEY FINDINGS CARDS** (For abnormal results)
-   - Each abnormal finding gets its own VISUAL CARD
-   - Use orange/red warning colors for the card border
-   - Include a visual meter showing where the value falls on the reference range
-   - Like this:  [====🔴====|----Normal----] for high values
-   - Add icon indicators: ⚠️ for warnings, ❗ for critical
-
-3. **TEST RESULTS - VISUAL CARDS** (Not boring tables!)
-   For each test parameter, create a VISUAL CARD showing:
-   - Parameter name in bold
-   - Large value display (like "215 mg/dL" in big text)
-   - Visual range indicator/gauge:
-     ┌─────────────────────────────────────────┐
-     │  [Green Zone] [Yellow] [Red Zone]       │
-     │  ────────────────●────────────────────  │
-     │        Your Value: 215                  │
-     └─────────────────────────────────────────┘
-   - Status badge: 🟢 NORMAL or 🟠 BORDERLINE or 🔴 HIGH
-   - What this test measures (brief explanation)
-
-4. **HEALTH TIPS SECTION**
-   - Use colorful cards with icons
-   - Each tip in its own visually distinct box
-   - Use lifestyle icons: 🥗 🏃 💧 😴 🧘
-
-5. **CONSULTATION BOX**
-   - Distinct call-to-action card
-   - Use a light blue background with doctor icon
-   - Clear, actionable message
-
-VISUAL STYLING RULES:
-- Use LARGE typography for values (32pt+ for main numbers)
-- Use progress bars, gauges, meters - NOT plain tables
-- Color-code everything: Green=Good, Orange=Caution, Red=Attention
-- Round corners, soft shadows, modern card design
-- White space is important - don't crowd elements
-- Use emoji/icons generously but appropriately
-
-COLOR PALETTE:
-- Normal/Good: #10b981 (green)
-- Borderline: #f59e0b (amber)
-- High/Low: #ef4444 (red)
-- Info cards: #3b82f6 (blue)
-- Background: #f8fafc (light gray)
-- Text: #1f2937 (dark gray)
-
-ABSOLUTELY DO NOT INCLUDE:
-- Signatures or doctor names
-- Lab headers/footers
-- Page numbers
-- Stock photos
-- Background watermarks
-
-The content I'm sending is PRE-ANALYZED with AI insights.
-Render it beautifully with visual data representations.
-Make it look like a premium health app report!
+DO NOT INCLUDE:
+- Signatures, doctor names, headers, footers, page numbers, stock photos.
 `
 
 async function generateGammaContent(inputText: string): Promise<string> {
+  if (!GAMMA_API_KEY) {
+    throw new Error('Missing GAMMA_API_KEY secret in Edge Function environment')
+  }
+
   console.log('[GAMMA] Starting generation...')
   console.log('[GAMMA] Input length:', inputText.length)
 
@@ -758,7 +770,7 @@ async function generateGammaContent(inputText: string): Promise<string> {
       inputText: inputText,
       format: 'document',
       themeId: 'wbpgwj9c0ty5wbo', // Clean medical theme
-      cardSplit: 'inputTextBreaks',
+      cardSplit: 'auto',
       additionalInstructions: GAMMA_INSTRUCTIONS,
       exportAs: 'pdf',
       sharingOptions: {
@@ -946,6 +958,9 @@ serve(async (req) => {
     if (!orderId) {
       throw new Error('Missing required parameter: orderId')
     }
+    if (!GAMMA_API_KEY) {
+      throw new Error('Missing GAMMA_API_KEY secret. Set it in Supabase Edge Function secrets.')
+    }
 
     console.log('========================================')
     console.log('[SMART REPORT V2] Starting for order:', orderId)
@@ -1127,7 +1142,9 @@ serve(async (req) => {
         unit: analyte.unit || '',
         referenceRange: analyte.referenceRange || analyte.reference_range || '',
         flag: analyte.flag || 'Normal',
-        interpretation: analyte.interpretation
+        interpretation: analyte.interpretation,
+        expectedNormalValues: analyte.expected_normal_values || analyte.expectedNormalValues,
+        valueType: analyte.value_type || analyte.valueType
       })
     }
 
@@ -1154,7 +1171,9 @@ serve(async (req) => {
           value: a.value,
           unit: a.unit || '',
           referenceRange: a.referenceRange || a.reference_range || '',
-          flag: a.flag || 'Normal'
+          flag: a.flag || 'Normal',
+          expectedNormalValues: a.expected_normal_values || a.expectedNormalValues,
+          valueType: a.value_type || a.valueType
         }))
       })
     }

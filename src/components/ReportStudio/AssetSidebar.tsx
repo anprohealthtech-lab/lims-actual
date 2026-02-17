@@ -1,6 +1,11 @@
 import React from 'react';
 import { BrandingAsset, ReportConfig } from './types';
-import { Settings, Image, Layout, Palette, CheckSquare } from 'lucide-react';
+import { Settings, Image, Layout, Palette, CheckSquare, TestTube } from 'lucide-react';
+
+interface TestGroupInfo {
+    id: string;
+    name: string;
+}
 
 interface AssetSidebarProps {
     config: ReportConfig;
@@ -8,9 +13,10 @@ interface AssetSidebarProps {
     availableAssets: BrandingAsset[];
     visibleSections: Record<string, boolean>;
     setVisibleSections: React.Dispatch<React.SetStateAction<Record<string, boolean>>>;
+    testGroups?: TestGroupInfo[];
 }
 
-export const AssetSidebar: React.FC<AssetSidebarProps> = ({ config, setConfig, availableAssets, visibleSections, setVisibleSections }) => {
+export const AssetSidebar: React.FC<AssetSidebarProps> = ({ config, setConfig, availableAssets, visibleSections, setVisibleSections, testGroups = [] }) => {
     const headers = availableAssets.filter(a => a.asset_type === 'header');
     const footers = availableAssets.filter(a => a.asset_type === 'footer');
     const logos = availableAssets.filter(a => a.asset_type === 'logo');
@@ -103,8 +109,72 @@ export const AssetSidebar: React.FC<AssetSidebarProps> = ({ config, setConfig, a
                             />
                             <span className="text-sm text-gray-700">Patient Summary</span>
                         </label>
+                        <label className="flex items-center space-x-2 cursor-pointer">
+                            <input
+                                type="checkbox"
+                                checked={visibleSections.methodology !== false}
+                                onChange={(e) => toggleSection('methodology', e.target.checked)}
+                                className="rounded text-blue-600 focus:ring-blue-500"
+                            />
+                            <span className="text-sm text-gray-700">Methodology</span>
+                        </label>
                     </div>
                 </div>
+
+                {/* Test Group Toggles (only show when multiple groups) */}
+                {testGroups.length > 1 && (
+                    <>
+                        <hr className="border-gray-100" />
+                        <div className="space-y-3">
+                            <h3 className="text-sm font-semibold text-gray-700 flex items-center">
+                                <TestTube className="w-4 h-4 mr-2" /> Test Groups ({testGroups.length})
+                            </h3>
+                            <p className="text-xs text-gray-400">Toggle individual test groups on/off</p>
+                            <div className="space-y-2">
+                                {testGroups.map(g => {
+                                    const key = `testGroup_${g.id}`;
+                                    return (
+                                        <label key={g.id} className="flex items-center space-x-2 cursor-pointer">
+                                            <input
+                                                type="checkbox"
+                                                checked={visibleSections[key] !== false}
+                                                onChange={(e) => toggleSection(key, e.target.checked)}
+                                                className="rounded text-blue-600 focus:ring-blue-500"
+                                            />
+                                            <span className="text-sm text-gray-700 truncate" title={g.name}>{g.name}</span>
+                                        </label>
+                                    );
+                                })}
+                            </div>
+                            <div className="flex gap-2">
+                                <button
+                                    className="flex-1 text-xs px-2 py-1 bg-blue-50 text-blue-600 rounded hover:bg-blue-100 transition-colors"
+                                    onClick={() => {
+                                        setVisibleSections(prev => {
+                                            const updated = { ...prev };
+                                            testGroups.forEach(g => { updated[`testGroup_${g.id}`] = true; });
+                                            return updated;
+                                        });
+                                    }}
+                                >
+                                    Show All
+                                </button>
+                                <button
+                                    className="flex-1 text-xs px-2 py-1 bg-gray-50 text-gray-600 rounded hover:bg-gray-100 transition-colors"
+                                    onClick={() => {
+                                        setVisibleSections(prev => {
+                                            const updated = { ...prev };
+                                            testGroups.forEach(g => { updated[`testGroup_${g.id}`] = false; });
+                                            return updated;
+                                        });
+                                    }}
+                                >
+                                    Hide All
+                                </button>
+                            </div>
+                        </div>
+                    </>
+                )}
 
                 <hr className="border-gray-100" />
 
@@ -196,7 +266,8 @@ export const AssetSidebar: React.FC<AssetSidebarProps> = ({ config, setConfig, a
 
                     {[
                         { key: 'showSignature', label: 'Show Signature Block' },
-                        { key: 'showQrCode', label: 'Show QR Code' }
+                        { key: 'showQrCode', label: 'Show QR Code' },
+                        { key: 'showMethodology', label: 'Show Methodology' }
                     ].map(opt => (
                         <label key={opt.key} className="flex items-center space-x-2 cursor-pointer">
                             <input

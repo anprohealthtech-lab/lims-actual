@@ -34,6 +34,9 @@ Deno.serve(async (req) => {
       );
     }
 
+    // Reset per-request caches
+    _analytesCache = null;
+
     const payload = await req.json();
 
     const {
@@ -455,12 +458,116 @@ Deno.serve(async (req) => {
       }
       
     } catch (jsonError) {
-      console.warn('Gemini response was not valid JSON, returning raw text');
-      console.log('Cleaned response that failed to parse:', cleanedResponse);
+      console.warn('Gemini response was not valid JSON, attempting repair...');
+      console.log('Cleaned response that failed to parse:', cleanedResponse.substring(0, 500));
+
+      // ── STEP A: Try to repair truncated JSON ──
+      const repaired = tryRepairTruncatedJson(cleanedResponse);
+      if (repaired) {
+        console.log(`JSON repair succeeded! Recovered ${repaired.length} parameters`);
+
+        // Run the same matching + validation pipeline as the happy path
+        let enhancedParameters = await matchParametersToAnalytes(repaired);
+
+        if ((aiProcessingType === 'ocr_report' || documentType) && rawText && rawText.length > 10) {
+          const anthropicKey = Deno.env.get('ANTHROPIC_API_KEY');
+          if (anthropicKey) {
+            try {
+              const validated = await validateAndEnhanceWithClaude(
+                enhancedParameters, rawText, focusAnalyteNames, anthropicKey,
+              );
+              if (validated && validated.length > 0) {
+                enhancedParameters = await matchParametersToAnalytes(validated);
+              }
+            } catch (_e) { /* non-blocking */ }
+          }
+        }
+
+        if (focusAnalyteNames.length > 0) {
+          enhancedParameters = enhancedParameters.filter((param: any) => {
+            const pn = (param.parameter || '').toLowerCase();
+            return focusAnalyteNames.some(f => {
+              const fl = f.toLowerCase();
+              return pn.includes(fl) || fl.includes(pn) || pn === fl;
+            });
+          });
+        }
+
+        return new Response(
+          JSON.stringify({
+            extractedParameters: enhancedParameters,
+            metadata: {
+              documentType: documentType || aiProcessingType,
+              aiProcessingType: aiProcessingType || null,
+              customPromptUsed: !!aiPromptOverride,
+              processingMethod: 'Supabase Edge Functions + Gemini (JSON repaired)',
+              processingTimestamp: new Date().toISOString(),
+              matchedParameters: enhancedParameters.filter((p: any) => p.matched).length,
+              totalParameters: enhancedParameters.length,
+              jsonRepaired: true,
+            },
+          }),
+          { headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
+        );
+      }
+
+      // ── STEP B: Haiku fallback – send OCR text directly for primary extraction ──
+      const anthropicKey = Deno.env.get('ANTHROPIC_API_KEY');
+      if (anthropicKey && rawText && rawText.length > 10) {
+        console.log('JSON repair failed. Invoking Haiku fallback for primary extraction...');
+        try {
+          const haikuParams = await extractWithHaikuFallback(
+            rawText,
+            focusAnalyteNames,
+            extractionTargets,
+            prompt, // send original Gemini prompt as context
+            cleanedResponse, // send Gemini's broken response as context
+            anthropicKey,
+          );
+
+          if (haikuParams && haikuParams.length > 0) {
+            let enhancedParameters = await matchParametersToAnalytes(haikuParams);
+
+            if (focusAnalyteNames.length > 0) {
+              enhancedParameters = enhancedParameters.filter((param: any) => {
+                const pn = (param.parameter || '').toLowerCase();
+                return focusAnalyteNames.some(f => {
+                  const fl = f.toLowerCase();
+                  return pn.includes(fl) || fl.includes(pn) || pn === fl;
+                });
+              });
+            }
+
+            console.log(`Haiku fallback succeeded: ${enhancedParameters.length} parameters`);
+
+            return new Response(
+              JSON.stringify({
+                extractedParameters: enhancedParameters,
+                metadata: {
+                  documentType: documentType || aiProcessingType,
+                  aiProcessingType: aiProcessingType || null,
+                  customPromptUsed: !!aiPromptOverride,
+                  processingMethod: 'Supabase Edge Functions + Gemini (failed) + Haiku Fallback',
+                  processingTimestamp: new Date().toISOString(),
+                  matchedParameters: enhancedParameters.filter((p: any) => p.matched).length,
+                  totalParameters: enhancedParameters.length,
+                  haikuFallback: true,
+                },
+              }),
+              { headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
+            );
+          }
+        } catch (haikuError) {
+          console.error('Haiku fallback also failed:', haikuError.message);
+        }
+      }
+
+      // ── STEP C: All repair/fallback failed – return raw text ──
+      console.warn('All parsing strategies failed. Returning raw text.');
       return new Response(
-        JSON.stringify({ 
+        JSON.stringify({
           rawText: cleanedResponse,
-          extractedParameters: [], // Prevent .map() errors in frontend
+          extractedParameters: [],
           originalResponse: geminiResponse,
           metadata: {
             documentType: documentType || testType || aiProcessingType,
@@ -468,13 +575,11 @@ Deno.serve(async (req) => {
             customPromptUsed: !!aiPromptOverride,
             processingMethod: 'Supabase Edge Functions + Gemini',
             processingTimestamp: new Date().toISOString(),
-            parseError: true
+            parseError: true,
           },
-          message: 'Gemini response could not be parsed as JSON. Check if custom prompt properly instructs Gemini to return JSON only.' 
+          message: 'All parsing strategies failed (direct parse, JSON repair, Haiku fallback).'
         }),
-        { 
-          headers: { ...corsHeaders, 'Content-Type': 'application/json' } 
-        }
+        { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
     }
 
@@ -534,13 +639,143 @@ const PROMPT_TEMPLATES = {
 
   instructions: {
     ocr: `Extract lab parameters with these STRICT rules:
-- parameter: The test/analyte name (e.g., "WBC", "RBC", "HGB", "Hemoglobin")
-- value: ONLY the numeric value WITHOUT any unit or multiplier (e.g., "7.4" NOT "7.4 x10^3/uL", "15.1" NOT "15.1 g/dL")
+- parameter: Use the FULL analyte name from the mapping below (e.g., "Hemoglobin" NOT "HGB")
+- value: ONLY the numeric value WITHOUT any unit, multiplier, or flag letter (e.g., "11.1" NOT "11.1L", "7.4" NOT "7.4 x10^3/uL")
 - unit: The complete unit INCLUDING any multiplier (e.g., "x10^3/µL", "g/dL", "x10^6/µL", "%", "fL")
 - reference_range: The normal range (e.g., "4.5-11.0", "12.0-17.5")
-- flag: "Normal", "High", "Low", or "Abnormal" based on value vs reference range
+- flag: "Normal", "High", or "Low". If value has "H" suffix = "High", "L" suffix = "Low", red color = abnormal
 
-CRITICAL: The "value" field must contain ONLY the numeric portion. Never include units, multipliers (x10^3, x10^6), or any text in the value field.`,
+CRITICAL RULES:
+1. "value" must be NUMERIC ONLY. Strip flag letters (H/L/C) from values (e.g., "11.1L" → value:"11.1", flag:"Low")
+2. Never include units or multipliers in the value field
+3. Extract ALL parameters shown - do not skip any rows
+4. For percentage values in brackets like [19.5 %], extract as separate parameter with unit "%"
+
+HEMATOLOGY ANALYZER CODE MAPPING (use full names in output):
+| Analyzer Code | Full Parameter Name |
+|---------------|---------------------|
+| WBC | White Blood Cell Count |
+| RBC | Red Blood Cell Count |
+| HGB / Hb | Hemoglobin |
+| HCT / PCV | Hematocrit |
+| MCV | Mean Corpuscular Volume |
+| MCH | Mean Corpuscular Hemoglobin |
+| MCHC | Mean Corpuscular Hemoglobin Concentration |
+| PLT | Platelet Count |
+| RDW / RDW-CV | Red Cell Distribution Width |
+| RDW-SD | Red Cell Distribution Width SD |
+| MPV | Mean Platelet Volume |
+| PDW | Platelet Distribution Width |
+| PCT / P-LCR | Plateletcrit |
+| NEU / NEUT | Neutrophils |
+| LY / LYM | Lymphocytes |
+| MO / MON | Monocytes |
+| EOS / EO | Eosinophils |
+| BAS / BA | Basophils |
+| GR / GRAN | Granulocytes |
+| NEU% | Neutrophils % |
+| LY% / LYM% | Lymphocytes % |
+| MO% / MON% | Monocytes % |
+| EOS% | Eosinophils % |
+| BAS% | Basophils % |
+| GR% | Granulocytes % |
+| NEU# | Absolute Neutrophil Count |
+| LY# / LYM# | Absolute Lymphocyte Count |
+| MO# / MON# | Absolute Monocyte Count |
+| EOS# | Absolute Eosinophil Count |
+| BAS# | Absolute Basophil Count |
+| GR# | Absolute Granulocyte Count |
+| IG / IG% | Immature Granulocytes |
+| NRBC | Nucleated Red Blood Cells |
+| RET / RET% | Reticulocyte Count |
+
+3-PART DIFF ANALYZERS: Show LY, MO, GR (or LY%, MO%, GR%) - extract both absolute and % values.
+5-PART DIFF ANALYZERS: Show NEU, LY, MO, EOS, BAS - extract both absolute and % values.
+
+BIOCHEMISTRY ANALYZER CODE MAPPING:
+| Code | Full Name |
+|------|-----------|
+| GLU / FBS / RBS / PPBS | Blood Glucose |
+| BUN / UREA | Blood Urea / Urea |
+| CREAT / CR | Creatinine |
+| UA / URIC | Uric Acid |
+| CHOL / TC | Total Cholesterol |
+| TG / TRIG | Triglycerides |
+| HDL | HDL Cholesterol |
+| LDL | LDL Cholesterol |
+| VLDL | VLDL Cholesterol |
+| SGOT / AST | Aspartate Aminotransferase (SGOT) |
+| SGPT / ALT | Alanine Aminotransferase (SGPT) |
+| ALP | Alkaline Phosphatase |
+| GGT / GGTP | Gamma Glutamyl Transferase |
+| TBIL / T.BIL | Total Bilirubin |
+| DBIL / D.BIL | Direct Bilirubin |
+| TP | Total Protein |
+| ALB | Albumin |
+| GLOB | Globulin |
+| A/G | Albumin/Globulin Ratio |
+| NA / Na+ | Sodium |
+| K / K+ | Potassium |
+| CL / Cl- | Chloride |
+| CA / Ca++ | Calcium |
+| PHOS / PO4 | Phosphorus |
+| MG | Magnesium |
+| AMY / AMYL | Amylase |
+| LIP | Lipase |
+| CK / CPK | Creatine Kinase |
+| LDH | Lactate Dehydrogenase |
+| FE / IRON | Serum Iron |
+| TIBC | Total Iron Binding Capacity |
+| FERR | Ferritin |
+
+IMMUNOASSAY / HORMONE CODES:
+| Code | Full Name |
+|------|-----------|
+| TSH | Thyroid Stimulating Hormone |
+| T3 | Triiodothyronine (T3) |
+| T4 | Thyroxine (T4) |
+| FT3 | Free T3 |
+| FT4 | Free T4 |
+| HBA1C / A1C | Glycated Hemoglobin (HbA1c) |
+| PSA | Prostate Specific Antigen |
+| VIT D / 25OH | Vitamin D (25-Hydroxy) |
+| VIT B12 | Vitamin B12 |
+| FOL | Folate |
+| CRP / hsCRP | C-Reactive Protein |
+| ESR | Erythrocyte Sedimentation Rate |
+| RF | Rheumatoid Factor |
+| ASO | Anti-Streptolysin O |
+| PT | Prothrombin Time |
+| INR | International Normalized Ratio |
+| APTT / PTT | Activated Partial Thromboplastin Time |
+| D-DIMER | D-Dimer |
+| FIB | Fibrinogen |
+| HBsAg | Hepatitis B Surface Antigen |
+| HIV | HIV Antibody |
+| WIDAL | Widal Test |
+| VDRL / RPR | VDRL / Syphilis Screen |
+| βhCG / BHCG | Beta HCG |
+| PROLACTIN / PRL | Prolactin |
+| LH | Luteinizing Hormone |
+| FSH | Follicle Stimulating Hormone |
+| TESTO | Testosterone |
+| CORTISOL | Cortisol |
+| INSULIN | Insulin |
+
+URINALYSIS CODES:
+| Code | Full Name |
+|------|-----------|
+| SG / SP.GR | Specific Gravity |
+| PH | pH |
+| PRO | Protein (Urine) |
+| GLU (urine) | Glucose (Urine) |
+| KET | Ketones |
+| BIL (urine) | Bilirubin (Urine) |
+| UBG | Urobilinogen |
+| NIT | Nitrite |
+| LEU / WBC (urine) | Leukocytes (Urine) |
+| RBC (urine) | Red Blood Cells (Urine) |
+| EPI | Epithelial Cells |`,
     vision: "Analyze for diagnostic results focusing on: control/test lines, color changes, overall test validity",
     form: "Extract patient details and requested tests from form"
   }
@@ -673,7 +908,7 @@ Focus on:
  */
 async function callGemini(prompt: string, geminiApiKey: string, imageData?: string): Promise<any> {
   // Use updated Gemini models and API endpoint
-  const model = imageData ? 'gemini-2.5-flash' : 'gemini-2.5-flash';
+  const model = 'gemini-2.5-flash';
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${geminiApiKey}`;
 
   let requestBody;
@@ -701,26 +936,9 @@ async function callGemini(prompt: string, geminiApiKey: string, imageData?: stri
         temperature: 0.1,
         topK: 32,
         topP: 1,
-        maxOutputTokens: 4096,
+        maxOutputTokens: 8192,
+        responseMimeType: 'application/json',
       },
-      safetySettings: [
-        {
-          category: "HARM_CATEGORY_HARASSMENT",
-          threshold: "BLOCK_MEDIUM_AND_ABOVE"
-        },
-        {
-          category: "HARM_CATEGORY_HATE_SPEECH",
-          threshold: "BLOCK_MEDIUM_AND_ABOVE"
-        },
-        {
-          category: "HARM_CATEGORY_SEXUALLY_EXPLICIT",
-          threshold: "BLOCK_MEDIUM_AND_ABOVE"
-        },
-        {
-          category: "HARM_CATEGORY_DANGEROUS_CONTENT",
-          threshold: "BLOCK_MEDIUM_AND_ABOVE"
-        }
-      ]
     };
   } else {
     // For text-only requests
@@ -736,42 +954,65 @@ async function callGemini(prompt: string, geminiApiKey: string, imageData?: stri
         temperature: 0.1,
         topK: 32,
         topP: 1,
-        maxOutputTokens: 4096,
+        maxOutputTokens: 8192,
+        responseMimeType: 'application/json',
       }
     };
   }
 
   console.log(`Calling Gemini API with model: ${model}`);
   
-  const response = await fetch(url, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify(requestBody),
-  });
+  // Retry with exponential backoff for rate limiting (429)
+  const MAX_RETRIES = 3;
+  let lastError: Error | null = null;
 
-  if (!response.ok) {
-    const errorText = await response.text();
-    console.error('Gemini API Error Details:', errorText);
-    throw new Error(`Gemini API error: ${response.status} ${response.statusText} - ${errorText}`);
+  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+    if (attempt > 0) {
+      const delayMs = Math.min(1000 * Math.pow(2, attempt), 8000) + Math.random() * 1000;
+      console.log(`⏳ Gemini 429 retry ${attempt}/${MAX_RETRIES} after ${Math.round(delayMs)}ms...`);
+      await new Promise(r => setTimeout(r, delayMs));
+    }
+
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(requestBody),
+    });
+
+    if (response.status === 429) {
+      const errorText = await response.text();
+      console.warn(`Gemini API rate limited (attempt ${attempt + 1}/${MAX_RETRIES + 1}):`, errorText);
+      lastError = new Error(`Gemini API error: 429 Too Many Requests - ${errorText}`);
+      continue; // retry
+    }
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error('Gemini API Error Details:', errorText);
+      throw new Error(`Gemini API error: ${response.status} ${response.statusText} - ${errorText}`);
+    }
+
+    const result = await response.json();
+    
+    // Check for API errors in response
+    if (result.error) {
+      throw new Error(`Gemini API response error: ${result.error.message}`);
+    }
+    
+    const text = result.candidates?.[0]?.content?.parts?.[0]?.text;
+    
+    if (!text) {
+      console.error('No text in Gemini response:', JSON.stringify(result, null, 2));
+      throw new Error('No response from Gemini');
+    }
+
+    return text;
   }
 
-  const result = await response.json();
-  
-  // Check for API errors in response
-  if (result.error) {
-    throw new Error(`Gemini API response error: ${result.error.message}`);
-  }
-  
-  const text = result.candidates?.[0]?.content?.parts?.[0]?.text;
-  
-  if (!text) {
-    console.error('No text in Gemini response:', JSON.stringify(result, null, 2));
-    throw new Error('No response from Gemini');
-  }
-
-  return text;
+  // All retries exhausted
+  throw lastError || new Error('Gemini API rate limited after all retries');
 }
 
 /**
@@ -810,6 +1051,9 @@ function parseValueAndFlag(rawValue: string): { value: string; extractedFlag: st
   // No flag found or invalid format, return as-is
   return { value: trimmed, extractedFlag: null };
 }
+
+// Per-request cache for analytes to avoid duplicate DB fetches
+let _analytesCache: any[] | null = null;
 
 async function matchParametersToAnalytes(extractedParameters: any): Promise<any[]> {
   try {
@@ -859,32 +1103,39 @@ async function matchParametersToAnalytes(extractedParameters: any): Promise<any[
       return [];
     }
 
-    const supabaseUrl = Deno.env.get('SUPABASE_URL');
-    const supabaseServiceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY');
-    
-    if (!supabaseUrl || !supabaseServiceKey) {
-      console.warn('Supabase configuration missing, skipping analyte matching');
-      return extractedParameters;
-    }
+    // Use cached analytes if available (avoids duplicate DB fetch within same request)
+    let analytes = _analytesCache;
+    if (!analytes) {
+      const supabaseUrl = Deno.env.get('SUPABASE_URL');
+      const supabaseServiceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY');
 
-    // Fetch all analytes from database
-    const analytesResponse = await fetch(
-      supabaseUrl + '/rest/v1/analytes?select=id,name,unit,reference_range',
-      {
-        headers: {
-          'Authorization': 'Bearer ' + supabaseServiceKey,
-          'apikey': supabaseServiceKey,
-          'Content-Type': 'application/json',
-        },
+      if (!supabaseUrl || !supabaseServiceKey) {
+        console.warn('Supabase configuration missing, skipping analyte matching');
+        return extractedParameters;
       }
-    );
 
-    if (!analytesResponse.ok) {
-      console.warn('Failed to fetch analytes, skipping matching');
-      return extractedParameters;
+      const analytesResponse = await fetch(
+        supabaseUrl + '/rest/v1/analytes?select=id,name,unit,reference_range',
+        {
+          headers: {
+            'Authorization': 'Bearer ' + supabaseServiceKey,
+            'apikey': supabaseServiceKey,
+            'Content-Type': 'application/json',
+          },
+        }
+      );
+
+      if (!analytesResponse.ok) {
+        console.warn('Failed to fetch analytes, skipping matching');
+        return extractedParameters;
+      }
+
+      analytes = await analytesResponse.json();
+      _analytesCache = analytes;
+      console.log(`Fetched ${analytes.length} analytes from DB (cached for this request)`);
+    } else {
+      console.log(`Using cached analytes (${analytes.length} entries)`);
     }
-
-    const analytes = await analytesResponse.json();
 
     // Common medical abbreviations mapping
     // Includes standard analyzer codes (WBC, RBC, HGB, etc.) used by hematology analyzers
@@ -1323,4 +1574,172 @@ Return the complete validated array. Do not include explanatory text.`;
     console.error('Claude validation error:', error);
     throw error;
   }
+}
+
+/**
+ * Try to repair truncated JSON arrays.
+ * Gemini sometimes hits token limit and returns incomplete JSON like:
+ *   [{"parameter":"WBC","value":"10.5","unit":"x10^3/µL","reference_range":"","flag":"Normal"},{"parameter":"Hb","value":"11.1","unit":"g/dL","reference_range":"",
+ * We try to salvage the complete objects before the truncation point.
+ */
+function tryRepairTruncatedJson(text: string): any[] | null {
+  try {
+    let cleaned = text.trim();
+
+    // Remove markdown fences if leftover
+    if (cleaned.startsWith('```json')) {
+      cleaned = cleaned.replace(/^```json\s*/, '');
+    } else if (cleaned.startsWith('```')) {
+      cleaned = cleaned.replace(/^```\s*/, '');
+    }
+    cleaned = cleaned.replace(/\s*```$/, '');
+
+    // Must look like an array start
+    if (!cleaned.startsWith('[')) return null;
+
+    // Strategy 1: Find the last complete object by looking for "},"  or "}"
+    // and close the array there
+    const lastCompleteObj = cleaned.lastIndexOf('},');
+    const lastObj = cleaned.lastIndexOf('}');
+
+    let candidate = '';
+
+    if (lastCompleteObj > 0) {
+      // Cut after the last complete "}, " and close array
+      candidate = cleaned.substring(0, lastCompleteObj + 1) + ']';
+    } else if (lastObj > 0) {
+      // Try cutting after last "}"
+      candidate = cleaned.substring(0, lastObj + 1) + ']';
+    } else {
+      return null;
+    }
+
+    const parsed = JSON.parse(candidate);
+    if (Array.isArray(parsed) && parsed.length > 0) {
+      console.log(`tryRepairTruncatedJson: recovered ${parsed.length} items from truncated JSON`);
+      return parsed;
+    }
+
+    return null;
+  } catch (_e) {
+    // Strategy 2: progressively remove trailing characters until it parses
+    let cleaned = text.trim();
+    if (cleaned.startsWith('```json')) cleaned = cleaned.replace(/^```json\s*/, '');
+    else if (cleaned.startsWith('```')) cleaned = cleaned.replace(/^```\s*/, '');
+    cleaned = cleaned.replace(/\s*```$/, '');
+
+    if (!cleaned.startsWith('[')) return null;
+
+    for (let i = cleaned.length; i > 10; i--) {
+      const slice = cleaned.substring(0, i);
+      // Try closing as array
+      const attempts = [slice + ']', slice + '"}]', slice + '"}]', slice + '"} ]'];
+      for (const attempt of attempts) {
+        try {
+          const result = JSON.parse(attempt);
+          if (Array.isArray(result) && result.length > 0) {
+            console.log(`tryRepairTruncatedJson (progressive): recovered ${result.length} items`);
+            return result;
+          }
+        } catch { /* keep trying */ }
+      }
+    }
+
+    return null;
+  }
+}
+
+/**
+ * Haiku fallback: when Gemini fails to return valid JSON,
+ * send the original OCR text + Gemini context to Haiku for primary extraction.
+ */
+async function extractWithHaikuFallback(
+  ocrText: string,
+  focusAnalytes: string[],
+  extractionTargets: string[],
+  originalGeminiPrompt: string,
+  brokenGeminiResponse: string,
+  anthropicKey: string,
+): Promise<any[]> {
+  const truncatedOcr = ocrText.length > 4000
+    ? ocrText.substring(0, 4000) + '...[truncated]'
+    : ocrText;
+
+  // Include partial Gemini response as hint (first 1500 chars)
+  const geminiHint = brokenGeminiResponse.length > 1500
+    ? brokenGeminiResponse.substring(0, 1500) + '...[truncated]'
+    : brokenGeminiResponse;
+
+  const strictFilter = focusAnalytes.length > 0;
+
+  const fallbackPrompt = `You are a medical laboratory data extraction AI. Extract lab test parameters from OCR text.
+
+${strictFilter ? `STRICT FILTER: ONLY extract these parameters: ${focusAnalytes.join(', ')}
+DO NOT include any parameters not in this list.\n` : ''}
+OCR TEXT FROM LAB REPORT:
+${truncatedOcr}
+
+PARTIAL AI EXTRACTION (incomplete/broken, use as hints):
+${geminiHint}
+
+EXTRACTION RULES:
+1. Extract EVERY test parameter with: parameter name, numeric value (no units in value), unit, reference_range, flag
+2. "value" must be NUMERIC ONLY (e.g. "7.4" not "7.4 x10^3/uL")
+3. "unit" must include multipliers (e.g. "x10^3/µL", "g/dL")
+4. "flag" must be one of: "Normal", "High", "Low", "Abnormal"
+5. Use the partial extraction above as hints - it may have correct values even if the JSON was truncated
+
+Return ONLY a valid JSON array:
+[{"parameter": "Name", "value": "15.1", "unit": "g/dL", "reference_range": "12.0-17.5", "flag": "Normal"}]
+
+No markdown, no explanation, ONLY the JSON array.`;
+
+  const response = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: {
+      'x-api-key': anthropicKey,
+      'anthropic-version': '2023-06-01',
+      'content-type': 'application/json',
+    },
+    body: JSON.stringify({
+      model: 'claude-haiku-4-5-20251001',
+      max_tokens: 8000,
+      temperature: 0.1,
+      messages: [{ role: 'user', content: fallbackPrompt }],
+    }),
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(`Haiku fallback API error: ${response.status} - ${errorText}`);
+  }
+
+  const data = await response.json();
+  if (!data.content?.[0]?.text) {
+    throw new Error('Empty response from Haiku fallback');
+  }
+
+  let responseText = data.content[0].text.trim();
+
+  // Clean markdown
+  if (responseText.startsWith('```json')) {
+    responseText = responseText.replace(/^```json\s*/, '').replace(/\s*```$/, '');
+  } else if (responseText.startsWith('```')) {
+    responseText = responseText.replace(/^```\s*/, '').replace(/\s*```$/, '');
+  }
+
+  // Find JSON array boundaries
+  const jsonStart = responseText.indexOf('[');
+  const jsonEnd = responseText.lastIndexOf(']');
+  if (jsonStart !== -1 && jsonEnd !== -1 && jsonEnd > jsonStart) {
+    responseText = responseText.substring(jsonStart, jsonEnd + 1);
+  }
+
+  const parsed = JSON.parse(responseText);
+  if (!Array.isArray(parsed)) {
+    throw new Error('Haiku fallback did not return an array');
+  }
+
+  console.log(`Haiku fallback extracted ${parsed.length} parameters from OCR text`);
+  return parsed;
 }

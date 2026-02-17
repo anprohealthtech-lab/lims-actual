@@ -17,6 +17,8 @@ interface TestGroup {
   category: string;
   clinicalPurpose: string;
   methodology?: string;
+  description?: string;
+  department?: string;
   analytes: string[];
   price: number;
   turnaroundTime: string;
@@ -55,6 +57,8 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
     category: testGroup?.category || '',
     clinicalPurpose: testGroup?.clinicalPurpose || '',
     methodology: testGroup?.methodology || '',
+    description: testGroup?.description || '',
+    department: testGroup?.department || '',
     selectedAnalytes: testGroup?.analytes || [],
     price: testGroup?.price?.toString() || '',
     turnaroundTime: testGroup?.turnaroundTime || '',
@@ -308,20 +312,30 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
       // Get current user's lab_id
       const labId = await database.getCurrentUserLabId();
 
+      // Auto-sync legacy booleans from required_patient_inputs
+      const rpi = formData.required_patient_inputs;
+
       onSubmit({
         ...formData,
+        category: formData.category || null,
         analytes: formData.selectedAnalytes,
         price: parseFloat(formData.price),
         tat_hours: parseFloat(formData.tat_hours) || 3,
         default_ai_processing_type: formData.default_ai_processing_type,
         group_level_prompt: formData.group_level_prompt,
         methodology: formData.methodology || null,
-        lab_id: labId, // Add lab_id for lab-specific test group
-        to_be_copied: false, // Default to not template (owner will promote manually)
+        description: formData.description || null,
+        department: formData.department || null,
+        lab_id: labId,
+        to_be_copied: false,
         is_outsourced: formData.is_outsourced,
         default_outsourced_lab_id: formData.default_outsourced_lab_id || null,
         ref_range_ai_config: formData.ref_range_ai_config,
         required_patient_inputs: formData.required_patient_inputs,
+        // Auto-sync legacy boolean fields from required_patient_inputs
+        lmpRequired: rpi.includes('lmp'),
+        idRequired: rpi.includes('id_document'),
+        consentForm: rpi.includes('consent_form'),
       });
     } catch (error) {
       console.error('Error getting lab ID:', error);
@@ -345,6 +359,9 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
         : [...prev.selectedAnalytes, analyteId]
     }));
   };
+
+  // Provider-only controls: keep code in place but hidden from lab UI.
+  const showProviderOnlyFields = false;
 
   const aiProcessingTypes = [
     { value: 'MANUAL_ENTRY_NO_VISION', label: 'Manual Entry (No AI)', description: 'Manual data entry without AI vision processing' },
@@ -420,11 +437,10 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
               </div>
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">
-                  Category *
+                  Category
                 </label>
                 <select
                   name="category"
-                  required
                   value={formData.category}
                   onChange={handleChange}
                   className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
@@ -505,6 +521,36 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
               <div className="text-xs text-gray-500 mt-1">
                 Methods are saved per lab and available for all analytes and test groups.
               </div>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">
+                  Department
+                </label>
+                <input
+                  type="text"
+                  name="department"
+                  value={formData.department}
+                  onChange={handleChange}
+                  placeholder="e.g., Hematology, Biochemistry"
+                  className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                />
+              </div>
+            </div>
+
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">
+                Description
+              </label>
+              <textarea
+                name="description"
+                rows={2}
+                value={formData.description}
+                onChange={handleChange}
+                placeholder="Brief description of this test group"
+                className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+              />
             </div>
           </div>
 
@@ -670,61 +716,24 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
               </div>
             </div>
 
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              {/* Flabs ID */}
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">
-                  Flabs ID
-                </label>
-                <input
-                  type="text"
-                  name="flabsId"
-                  value={formData.flabsId}
-                  onChange={handleChange}
-                  placeholder="FLT0625"
-                  className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent"
-                />
+            {showProviderOnlyFields && (
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                {/* Flabs ID */}
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                    Flabs ID
+                  </label>
+                  <input
+                    type="text"
+                    name="flabsId"
+                    value={formData.flabsId}
+                    onChange={handleChange}
+                    placeholder="FLT0625"
+                    className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent"
+                  />
+                </div>
               </div>
-            </div>
-
-            {/* Required Fields */}
-            <div className="bg-blue-50 rounded-lg p-4">
-              <label className="block text-sm font-medium text-gray-900 mb-3">
-                Required Fields
-              </label>
-              <div className="flex flex-wrap gap-4">
-                <label className="flex items-center">
-                  <input
-                    type="checkbox"
-                    name="lmpRequired"
-                    checked={formData.lmpRequired}
-                    onChange={handleChange}
-                    className="h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded"
-                  />
-                  <span className="ml-2 text-sm text-gray-700">LMP Required</span>
-                </label>
-                <label className="flex items-center">
-                  <input
-                    type="checkbox"
-                    name="idRequired"
-                    checked={formData.idRequired}
-                    onChange={handleChange}
-                    className="h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded"
-                  />
-                  <span className="ml-2 text-sm text-gray-700">ID Required</span>
-                </label>
-                <label className="flex items-center">
-                  <input
-                    type="checkbox"
-                    name="consentForm"
-                    checked={formData.consentForm}
-                    onChange={handleChange}
-                    className="h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded"
-                  />
-                  <span className="ml-2 text-sm text-gray-700">Consent Form</span>
-                </label>
-              </div>
-            </div>
+            )}
 
             {/* Additional Options */}
             <div className="bg-amber-50 rounded-lg p-4">
@@ -836,11 +845,54 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
             </div>
           </div>
 
-          {/* AI Reference Range & Input Requirements */}
+          {/* Required Patient Inputs & Pre-Conditions */}
+          <div className="space-y-4 border-t border-gray-200 pt-6">
+            <h3 className="text-lg font-medium text-gray-900 flex items-center">
+              <AlertCircle className="h-5 w-5 mr-2 text-blue-600" />
+              Required Patient Inputs & Pre-Conditions
+            </h3>
+            <p className="text-sm text-gray-500 -mt-2">
+              When checked, the order form will require these inputs before submission.
+            </p>
+
+            <div className="bg-blue-50 rounded-lg p-4">
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                {[
+                  { key: 'pregnancy_status', label: 'Pregnancy Status' },
+                  { key: 'lmp', label: 'LMP (Last Menstrual Period)' },
+                  { key: 'weight', label: 'Weight' },
+                  { key: 'height', label: 'Height' },
+                  { key: 'blood_pressure', label: 'Blood Pressure' },
+                  { key: 'id_document', label: 'ID Document (Aadhaar etc.)' },
+                  { key: 'consent_form', label: 'Consent Form' },
+                ].map(({ key, label }) => (
+                  <label key={key} className="flex items-center px-3 py-2 border rounded-md bg-white hover:bg-blue-50 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={formData.required_patient_inputs.includes(key)}
+                      onChange={(e) => {
+                        const checked = e.target.checked;
+                        setFormData(prev => ({
+                          ...prev,
+                          required_patient_inputs: checked
+                            ? [...prev.required_patient_inputs, key]
+                            : prev.required_patient_inputs.filter(f => f !== key)
+                        }));
+                      }}
+                      className="h-4 w-4 text-blue-600 rounded"
+                    />
+                    <span className="ml-2 text-sm">{label}</span>
+                  </label>
+                ))}
+              </div>
+            </div>
+          </div>
+
+          {/* AI Reference Range Configuration */}
           <div className="space-y-4 border-t border-gray-200 pt-6">
             <h3 className="text-lg font-medium text-gray-900 flex items-center">
               <Brain className="h-5 w-5 mr-2 text-purple-600" />
-              AI Reference Ranges & Inputs
+              AI Reference Range Configuration
             </h3>
 
             <div className="bg-purple-50 rounded-lg p-4 space-y-4">
@@ -873,31 +925,6 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
                   </label>
                 </div>
               )}
-            </div>
-
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-2">Required Patient Inputs (for dynamic ranges)</label>
-              <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-                {['pregnancy_status', 'lmp', 'weight', 'height', 'blood_pressure'].map(field => (
-                  <label key={field} className="flex items-center px-3 py-2 border rounded-md bg-white">
-                    <input
-                      type="checkbox"
-                      checked={formData.required_patient_inputs.includes(field)}
-                      onChange={(e) => {
-                        const checked = e.target.checked;
-                        setFormData(prev => ({
-                          ...prev,
-                          required_patient_inputs: checked
-                            ? [...prev.required_patient_inputs, field]
-                            : prev.required_patient_inputs.filter(f => f !== field)
-                        }));
-                      }}
-                      className="h-4 w-4 text-blue-600 rounded"
-                    />
-                    <span className="ml-2 text-sm capitalize">{field.replace('_', ' ')}</span>
-                  </label>
-                ))}
-              </div>
             </div>
           </div>
 
@@ -1075,49 +1102,50 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
             </div>
           </div>
 
-          {/* AI Configuration */}
-          <div className="space-y-4">
-            <h3 className="text-lg font-medium text-gray-900 flex items-center">
-              <Brain className="h-5 w-5 mr-2 text-purple-600" />
-              AI Processing Configuration (for this Test Group)
-            </h3>
-
+          {showProviderOnlyFields && (
             <div className="space-y-4">
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">
-                  Default AI Processing Type
-                </label>
-                <select
-                  name="default_ai_processing_type"
-                  value={formData.default_ai_processing_type}
-                  onChange={handleChange}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                >
-                  {aiProcessingTypes.map(type => (
-                    <option key={type.value} value={type.value}>{type.label}</option>
-                  ))}
-                </select>
-                <div className="text-xs text-gray-500 mt-1">
-                  {aiProcessingTypes.find(t => t.value === formData.default_ai_processing_type)?.description}
+              <h3 className="text-lg font-medium text-gray-900 flex items-center">
+                <Brain className="h-5 w-5 mr-2 text-purple-600" />
+                AI Processing Configuration (for this Test Group)
+              </h3>
+
+              <div className="space-y-4">
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                    Default AI Processing Type
+                  </label>
+                  <select
+                    name="default_ai_processing_type"
+                    value={formData.default_ai_processing_type}
+                    onChange={handleChange}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                  >
+                    {aiProcessingTypes.map(type => (
+                      <option key={type.value} value={type.value}>{type.label}</option>
+                    ))}
+                  </select>
+                  <div className="text-xs text-gray-500 mt-1">
+                    {aiProcessingTypes.find(t => t.value === formData.default_ai_processing_type)?.description}
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                    Group-Level AI Prompt (Optional)
+                  </label>
+                  <textarea
+                    name="group_level_prompt"
+                    rows={4}
+                    value={formData.group_level_prompt}
+                    onChange={handleChange}
+                    placeholder="Enter a custom prompt for AI processing at the test group level. This overrides analyte-level prompts if group AI mode is 'group_only'."
+                    className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                  />
+                  <div className="text-xs text-gray-500 mt-1">This prompt will be used if the analyte's AI mode is 'group_only' or 'both'.</div>
                 </div>
               </div>
-
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">
-                  Group-Level AI Prompt (Optional)
-                </label>
-                <textarea
-                  name="group_level_prompt"
-                  rows={4}
-                  value={formData.group_level_prompt}
-                  onChange={handleChange}
-                  placeholder="Enter a custom prompt for AI processing at the test group level. This overrides analyte-level prompts if group AI mode is 'group_only'."
-                  className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                />
-                <div className="text-xs text-gray-500 mt-1">This prompt will be used if the analyte's AI mode is 'group_only' or 'both'.</div>
-              </div>
             </div>
-          </div>
+          )}
 
           {/* Form Actions */}
           <div className="flex items-center justify-end space-x-4 pt-6 border-t border-gray-200">
@@ -1153,9 +1181,8 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
         {editingAttachedAnalyte && (
             <SimpleAnalyteEditor
                 analyte={editingAttachedAnalyte}
-                isOpen={true}
-                onClose={() => setEditingAttachedAnalyte(null)}
                 onSave={handleUpdateAttachedAnalyte}
+                onCancel={() => setEditingAttachedAnalyte(null)}
             />
         )}
     </div >

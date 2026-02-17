@@ -1,5 +1,5 @@
 import React, { useState, useMemo, useRef, useEffect } from 'react';
-import { X, Beaker, AlertTriangle, Settings, Brain, Calculator, Search, Plus, Trash2, ChevronDown } from 'lucide-react';
+import { X, Beaker, AlertTriangle, Settings, Brain, Calculator, Search, Plus, Trash2, ChevronDown, Flag } from 'lucide-react';
 
 interface SourceAnalyte {
   id: string;
@@ -12,11 +12,17 @@ interface SelectedSourceAnalyte extends SourceAnalyte {
   variableName: string; // User-customizable slug for formula
 }
 
+interface FlagOption {
+  value: string;
+  label: string;
+}
+
 interface AnalyteFormProps {
   onClose: () => void;
   onSubmit: (data: any) => void;
   analyte?: Analyte | null;
   availableAnalytes?: SourceAnalyte[]; // List of analytes for formula picker
+  labFlagOptions?: FlagOption[]; // Lab-level flag options for mapping
 }
 
 interface Analyte {
@@ -43,11 +49,32 @@ interface Analyte {
   formula?: string;
   formulaVariables?: string[];
   formulaDescription?: string;
+  // Value type and identification
+  value_type?: string;
+  code?: string;
+  description?: string;
   // Dropdown options for qualitative values
   expected_normal_values?: string[];
+  // Map of dropdown value → flag code (e.g. {"Reactive":"A","Non-Reactive":""})
+  expected_value_flag_map?: Record<string, string>;
 }
 
-const AnalyteForm: React.FC<AnalyteFormProps> = ({ onClose, onSubmit, analyte, availableAnalytes = [] }) => {
+const DEFAULT_FLAG_OPTIONS: FlagOption[] = [
+  { value: '', label: 'Normal' },
+  { value: 'H', label: 'High' },
+  { value: 'L', label: 'Low' },
+  { value: 'A', label: 'Abnormal' },
+  { value: 'C', label: 'Critical' },
+];
+
+const AnalyteForm: React.FC<AnalyteFormProps> = ({ onClose, onSubmit, analyte, availableAnalytes = [], labFlagOptions }) => {
+  const flagOptions = labFlagOptions && labFlagOptions.length > 0 ? labFlagOptions : DEFAULT_FLAG_OPTIONS;
+
+  // Flag map state: { "Reactive": "A", "Non-Reactive": "" }
+  const [expectedValueFlagMap, setExpectedValueFlagMap] = useState<Record<string, string>>(
+    analyte?.expected_value_flag_map || {}
+  );
+
   const [formData, setFormData] = useState({
     name: analyte?.name || '',
     unit: analyte?.unit || '',
@@ -68,6 +95,10 @@ const AnalyteForm: React.FC<AnalyteFormProps> = ({ onClose, onSubmit, analyte, a
     formula: analyte?.formula || '',
     formulaVariables: analyte?.formulaVariables?.join(', ') || '',
     formulaDescription: analyte?.formulaDescription || '',
+    // Value type and identification
+    value_type: analyte?.value_type || 'numeric',
+    code: analyte?.code || '',
+    description: analyte?.description || '',
     // Dropdown options for qualitative values
     expectedNormalValues: analyte?.expected_normal_values?.join('\n') || '',
   });
@@ -264,10 +295,16 @@ const AnalyteForm: React.FC<AnalyteFormProps> = ({ onClose, onSubmit, analyte, a
       formulaVariables,
       // Include source dependencies for immediate creation
       sourceDependencies,
+      // Value type and identification
+      value_type: formData.value_type,
+      code: formData.code || undefined,
+      description: formData.description || undefined,
       // Parse expected normal values from newline-separated string
       expected_normal_values: formData.expectedNormalValues
         ? formData.expectedNormalValues.split('\n').map(v => v.trim()).filter(Boolean)
         : [],
+      // Dropdown value → flag mapping
+      expected_value_flag_map: expectedValueFlagMap,
     });
   };
 
@@ -351,6 +388,35 @@ const AnalyteForm: React.FC<AnalyteFormProps> = ({ onClose, onSubmit, analyte, a
               </div>
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">
+                  Analyte Code
+                </label>
+                <input
+                  type="text"
+                  name="code"
+                  value={formData.code}
+                  onChange={handleChange}
+                  placeholder="e.g., HGB, GLU, WBC"
+                  className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">
+                  Value Type
+                </label>
+                <select
+                  name="value_type"
+                  value={formData.value_type}
+                  onChange={handleChange}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                >
+                  <option value="numeric">Numeric</option>
+                  <option value="qualitative">Qualitative</option>
+                  <option value="semi_quantitative">Semi-Quantitative</option>
+                  <option value="descriptive">Descriptive</option>
+                </select>
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">
                   Reference Range *
                 </label>
                 <input
@@ -363,6 +429,21 @@ const AnalyteForm: React.FC<AnalyteFormProps> = ({ onClose, onSubmit, analyte, a
                   className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                 />
               </div>
+            </div>
+
+            {/* Description */}
+            <div className="md:col-span-2">
+              <label className="block text-sm font-medium text-gray-700 mb-1">
+                Description
+              </label>
+              <textarea
+                name="description"
+                rows={2}
+                value={formData.description}
+                onChange={handleChange}
+                placeholder="Brief description of this analyte, clinical significance, or notes"
+                className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+              />
             </div>
 
             {/* Expected Normal Values - Dropdown Options */}
@@ -388,6 +469,43 @@ const AnalyteForm: React.FC<AnalyteFormProps> = ({ onClose, onSubmit, analyte, a
                       {val.trim()}
                     </span>
                   ))}
+                </div>
+              )}
+              {/* Flag Mapping for each dropdown option */}
+              {formData.expectedNormalValues && formData.expectedNormalValues.split('\n').filter(v => v.trim()).length > 0 && (
+                <div className="mt-3 bg-gray-50 border border-gray-200 rounded-lg p-3">
+                  <h4 className="text-sm font-medium text-gray-700 mb-2 flex items-center">
+                    <Flag className="h-4 w-4 mr-1.5 text-orange-500" />
+                    Flag Mapping (auto-set flag when value is selected)
+                  </h4>
+                  <div className="space-y-2">
+                    {formData.expectedNormalValues.split('\n').filter(v => v.trim()).map((val, idx) => {
+                      const trimmed = val.trim();
+                      return (
+                        <div key={idx} className="flex items-center gap-3">
+                          <span className="text-sm text-gray-800 min-w-[140px] font-medium">{trimmed}</span>
+                          <span className="text-gray-400 text-xs">&rarr;</span>
+                          <select
+                            value={expectedValueFlagMap[trimmed] ?? ''}
+                            onChange={(e) => {
+                              setExpectedValueFlagMap(prev => ({
+                                ...prev,
+                                [trimmed]: e.target.value
+                              }));
+                            }}
+                            className="px-2 py-1.5 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                          >
+                            {flagOptions.map((opt, i) => (
+                              <option key={i} value={opt.value}>{opt.label}{opt.value ? ` (${opt.value})` : ''}</option>
+                            ))}
+                          </select>
+                        </div>
+                      );
+                    })}
+                  </div>
+                  <p className="text-xs text-gray-500 mt-2">
+                    When a user selects a dropdown value during result entry, the flag will auto-set to the mapped value.
+                  </p>
                 </div>
               )}
             </div>

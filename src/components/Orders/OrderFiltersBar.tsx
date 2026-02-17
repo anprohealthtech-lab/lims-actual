@@ -3,7 +3,7 @@ import { Calendar, Filter, Search, X } from "lucide-react";
 
 export interface OrderFilters {
   q?: string; // Search query for patient name, order ID, patient ID
-  status?: "All" | "Order Created" | "Sample Collection" | "In Progress" | "Pending Approval" | "Completed" | "Delivered";
+  status?: "All" | "Order Created" | "Sample Collection" | "In Progress" | "Pending Approval" | "Completed" | "Delivered" | "Re-Run Requests";
   priority?: "All" | "Normal" | "Urgent" | "STAT";
   from?: string; // Date from
   to?: string; // Date to
@@ -35,7 +35,8 @@ const OrderFiltersBar: React.FC<Props> = ({ value, onChange, orderCounts, locati
     "In Progress",
     "Pending Approval",
     "Completed",
-    "Delivered"
+    "Delivered",
+    "Re-Run Requests"
   ];
 
   const priorityOptions = ["All", "Normal", "Urgent", "STAT"];

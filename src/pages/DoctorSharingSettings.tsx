@@ -1,11 +1,12 @@
 import React, { useState, useEffect } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { 
+import {
     Settings, Save, Users, Percent, Search, Check, X,
     ChevronDown, ChevronRight, AlertCircle,
-    TestTube
+    TestTube, Mic
 } from 'lucide-react';
 import { supabase, database } from '../utils/supabase';
+import DoctorVoiceInput from '../components/Sharing/DoctorVoiceInput';
 
 interface Doctor {
     id: string;
@@ -57,6 +58,8 @@ const DoctorSharingSettings: React.FC = () => {
     const [loading, setLoading] = useState(true);
     const [saving, setSaving] = useState(false);
     const [showTestGrid, setShowTestGrid] = useState(false);
+    const [showVoiceInput, setShowVoiceInput] = useState(false);
+    const [labId, setLabId] = useState<string | null>(null);
     const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
 
     // Load doctors on mount
@@ -82,11 +85,12 @@ const DoctorSharingSettings: React.FC = () => {
 
     const loadDoctors = async () => {
         try {
-            const labId = await database.getCurrentUserLabId();
+            const currentLabId = await database.getCurrentUserLabId();
+            if (currentLabId) setLabId(currentLabId);
             const { data, error } = await supabase
                 .from('doctors')
                 .select('id, name, specialization, default_discount_percent')
-                .eq('lab_id', labId)
+                .eq('lab_id', currentLabId)
                 .eq('is_active', true)
                 .order('name');
             if (error) throw error;
@@ -239,7 +243,70 @@ const DoctorSharingSettings: React.FC = () => {
         });
     };
 
-    const filteredDoctors = doctors.filter(d => 
+    // Handle voice input results
+    const handleVoiceSuccess = async (actions: any[]) => {
+        setShowVoiceInput(false);
+
+        for (const action of actions) {
+            if (!action.matched_doctor_id) continue;
+
+            // If this is the currently selected doctor, update local state
+            if (action.matched_doctor_id === selectedDoctorId && settings) {
+                if (action.sharing_percent !== undefined) {
+                    setSettings(prev => prev ? {
+                        ...prev,
+                        default_sharing_percent: action.sharing_percent
+                    } : null);
+                }
+
+                if (action.discount_handling) {
+                    setSettings(prev => prev ? {
+                        ...prev,
+                        dr_discount_mode: action.discount_handling as AdjustmentMode
+                    } : null);
+                }
+
+                if (action.outsource_handling) {
+                    setSettings(prev => prev ? {
+                        ...prev,
+                        outsource_cost_mode: action.outsource_handling as 'none' | 'exclude_from_base' | 'deduct_from_commission'
+                    } : null);
+                }
+
+                // Handle test-specific sharing
+                if (action.test_sharing_percent !== undefined && action.matched_test_id) {
+                    handleTestSharingChange(action.matched_test_id, action.test_sharing_percent);
+                }
+            } else {
+                // Different doctor - save directly to database
+                try {
+                    const currentLabId = await database.getCurrentUserLabId();
+
+                    if (action.sharing_percent !== undefined) {
+                        await supabase
+                            .from('doctor_sharing')
+                            .upsert({
+                                lab_id: currentLabId,
+                                doctor_id: action.matched_doctor_id,
+                                default_sharing_percent: action.sharing_percent,
+                                sharing_type: 'percentage',
+                                dr_discount_mode: action.discount_handling || 'deduct_from_commission',
+                                outsource_cost_mode: action.outsource_handling || 'exclude_from_base',
+                                package_diff_mode: 'none',
+                                is_active: true,
+                                updated_at: new Date().toISOString()
+                            }, { onConflict: 'doctor_id' });
+                    }
+                } catch (err) {
+                    console.error('Error saving voice action:', err);
+                }
+            }
+        }
+
+        setMessage({ type: 'success', text: `Applied ${actions.length} sharing update(s) from voice input` });
+    };
+
+    const filteredDoctors = doctors.filter(d =>
         d.name.toLowerCase().includes(searchQuery.toLowerCase())
     );
 
@@ -248,9 +315,18 @@ const DoctorSharingSettings: React.FC = () => {
     return (
         <div className="space-y-6">
             {/* Page Header */}
-            <div>
-                <h1 className="text-2xl font-bold text-gray-900">Sharing Settings</h1>
-                <p className="text-gray-600 mt-1">Configure sharing percentages and calculation options per doctor</p>
+            <div className="flex items-center justify-between">
+                <div>
+                    <h1 className="text-2xl font-bold text-gray-900">Sharing Settings</h1>
+                    <p className="text-gray-600 mt-1">Configure sharing percentages and calculation options per doctor</p>
+                </div>
+                <button
+                    onClick={() => setShowVoiceInput(true)}
+                    className="inline-flex items-center gap-2 px-4 py-2 bg-gradient-to-r from-pink-500 to-rose-500 text-white rounded-lg hover:from-pink-600 hover:to-rose-600 transition-colors"
+                >
+                    <Mic className="h-4 w-4" />
+                    Voice Setup
+                </button>
             </div>
 
             {/* Message */}
@@ -651,6 +727,17 @@ const DoctorSharingSettings: React.FC = () => {
                     )}
                 </div>
             </div>
+
+            {/* Voice Input Modal */}
+            {showVoiceInput && labId && (
+                <DoctorVoiceInput
+                    labId={labId}
+                    doctors={doctors}
+                    tests={allTests}
+                    onClose={() => setShowVoiceInput(false)}
+                    onSuccess={handleVoiceSuccess}
+                />
+            )}
         </div>
     );
 };

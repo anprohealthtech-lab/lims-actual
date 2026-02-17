@@ -33,7 +33,8 @@ import {
   ClipboardList,
   Stethoscope,
   Mail,
-  Calculator
+  Calculator,
+  Undo2
 } from "lucide-react";
 import { supabase, database } from "../utils/supabase";
 import AttachmentSelector from "../components/Reports/AttachmentSelector";
@@ -122,6 +123,8 @@ const fmtDate = (iso: string) =>
     month: "short",
     year: "numeric",
   });
+
+const normalizeIdForSearch = (value: string) => value.replace(/-/g, "").toLowerCase();
 
 /* =========================================
    Attachment Item Component
@@ -397,6 +400,7 @@ const ResultVerificationConsole: React.FC = () => {
   // AI Delta Check results - quality control check comparing current vs historical values
   const [aiDeltaCheckResults, setAiDeltaCheckResults] = useState<Record<string, DeltaCheckResponse>>({});
   const [currentLabId, setCurrentLabId] = useState<string | null>(null);
+  const [isAdmin, setIsAdmin] = useState(false);
   const [trendData, setTrendData] = useState<Record<string, TrendData[]>>({});
   const [showTrendModal, setShowTrendModal] = useState(false);
   const [selectedAnalyteTrend, setSelectedAnalyteTrend] = useState<{ parameter: string; patientId: string } | null>(null);
@@ -446,13 +450,28 @@ const ResultVerificationConsole: React.FC = () => {
     }
   };
 
-  // Load current lab ID on mount
+  // Load current lab ID on mount + check admin role
   useEffect(() => {
     const loadLabId = async () => {
       const labId = await database.getCurrentUserLabId();
       setCurrentLabId(labId);
     };
     loadLabId();
+
+    const checkAdmin = async () => {
+      try {
+        const { data: { user } } = await supabase.auth.getUser();
+        if (!user) return;
+        const { data: userData } = await supabase
+          .from('users')
+          .select('role')
+          .eq('id', user.id)
+          .single();
+        const role = (userData?.role || '').toLowerCase();
+        setIsAdmin(['admin', 'super_admin', 'lab_admin'].includes(role));
+      } catch { /* ignore */ }
+    };
+    checkAdmin();
   }, []);
 
   /* ----------------- Load panels with lab filter ----------------- */
@@ -506,14 +525,18 @@ const ResultVerificationConsole: React.FC = () => {
   /* ----------------- Filter panels ----------------- */
   const filteredPanels = useMemo(() => {
     const k = q.trim().toLowerCase();
+    const normalizedSearchId = normalizeIdForSearch(k);
 
-    let list = panels;
+    // Only show panels that have at least one result value entered
+    let list = (panels || []).filter((r) => (r?.entered_analytes || 0) > 0);
+
     if (k) {
       list = list.filter(
         (r) =>
           (r.patient_name || "").toLowerCase().includes(k) ||
           (r.test_group_name || "").toLowerCase().includes(k) ||
-          (r.order_id || "").toLowerCase().includes(k)
+          (r.order_id || "").toLowerCase().includes(k) ||
+          normalizeIdForSearch(r.order_id || "").includes(normalizedSearchId)
       );
     }
 
@@ -684,6 +707,36 @@ const ResultVerificationConsole: React.FC = () => {
         const next = { ...s };
         for (const rid in next) {
           next[rid] = next[rid].map((a) => (a.id === rv_id ? { ...a, verify_status: "approved" } : a));
+        }
+        return next;
+      });
+      await loadPanels();
+    }
+  };
+
+  const unapproveAnalyte = async (rv_id: string) => {
+    if (!window.confirm("Revert this analyte back to pending? This will allow re-verification.")) return;
+    setBusyFor(rv_id, true);
+    const { error } = await supabase
+      .from("result_values")
+      .update({
+        verify_status: "pending",
+        verify_note: "Unapproved – sent back for re-verification",
+        verified_at: null,
+        verified_by: null,
+      })
+      .eq("id", rv_id);
+    setBusyFor(rv_id, false);
+
+    if (!error) {
+      setRowsByResult((s) => {
+        const next = { ...s };
+        for (const rid in next) {
+          next[rid] = next[rid].map((a) =>
+            a.id === rv_id
+              ? { ...a, verify_status: "pending", verify_note: "Unapproved – sent back for re-verification", verified_at: null, verified_by: null }
+              : a
+          );
         }
         return next;
       });
@@ -885,6 +938,37 @@ const ResultVerificationConsole: React.FC = () => {
       setBusyFor(row.result_id, false);
       setSavingReportExtras(prev => ({ ...prev, [row.order_id]: false }));
     }
+  };
+
+  const unapproveAllInPanel = async (row: PanelRow) => {
+    const list = rowsByResult[row.result_id] || [];
+    const approvedIds = list.filter((a) => a.verify_status === "approved").map((a) => a.id);
+    if (!approvedIds.length) return;
+    if (!window.confirm(`Revert ${approvedIds.length} approved analyte(s) back to pending?`)) return;
+
+    setBusyFor(row.result_id, true);
+    const { error } = await supabase
+      .from("result_values")
+      .update({
+        verify_status: "pending",
+        verify_note: "Unapproved – sent back for re-verification",
+        verified_at: null,
+        verified_by: null,
+      })
+      .in("id", approvedIds);
+
+    if (!error) {
+      setRowsByResult((s) => ({
+        ...s,
+        [row.result_id]: (s[row.result_id] || []).map((a) =>
+          a.verify_status === "approved"
+            ? { ...a, verify_status: "pending", verify_note: "Unapproved – sent back for re-verification", verified_at: null, verified_by: null }
+            : a
+        ),
+      }));
+      await loadPanels();
+    }
+    setBusyFor(row.result_id, false);
   };
 
   const bulkApproveSelected = async () => {
@@ -1176,10 +1260,23 @@ const ResultVerificationConsole: React.FC = () => {
                   </button>
                 </div>
               ) : status === "approved" ? (
-                <span className="inline-flex items-center px-4 py-2 rounded-lg text-sm font-semibold bg-gradient-to-r from-green-600 to-emerald-600 text-white shadow-sm">
-                  <CheckSquare className="h-4 w-4 mr-2" />
-                  Approved
-                </span>
+                <div className="flex items-center space-x-2">
+                  <span className="inline-flex items-center px-4 py-2 rounded-lg text-sm font-semibold bg-gradient-to-r from-green-600 to-emerald-600 text-white shadow-sm">
+                    <CheckSquare className="h-4 w-4 mr-2" />
+                    Approved
+                  </span>
+                  {isAdmin && (
+                    <button
+                      disabled={isBusy}
+                      onClick={() => unapproveAnalyte(a.id)}
+                      className="inline-flex items-center px-2.5 py-1.5 rounded-lg text-xs font-semibold bg-gradient-to-r from-orange-100 to-amber-100 text-orange-700 hover:from-orange-200 hover:to-amber-200 transition-all duration-200 shadow-sm disabled:opacity-50"
+                      title="Admin: Revert to pending for re-verification"
+                    >
+                      <Undo2 className="h-3.5 w-3.5 mr-1" />
+                      Unapprove
+                    </button>
+                  )}
+                </div>
               ) : status === "rejected" ? (
                 // Rejected state - show Edit and Re-run options
                 <div className="flex flex-col space-y-2">
@@ -1464,6 +1561,17 @@ const ResultVerificationConsole: React.FC = () => {
                   )}
                   <span className="hidden sm:inline">Approve All</span>
                 </button>
+                {isAdmin && row.approved_analytes > 0 && (
+                  <button
+                    disabled={busy[row.result_id]}
+                    onClick={() => unapproveAllInPanel(row)}
+                    className="inline-flex items-center px-3 py-2 sm:px-4 sm:py-2 bg-gradient-to-r from-orange-500 to-amber-500 text-white rounded-lg sm:rounded-xl hover:from-orange-600 hover:to-amber-600 transition-all duration-200 shadow-sm font-semibold disabled:opacity-50 text-xs sm:text-sm"
+                    title="Admin: Revert all approved analytes back to pending"
+                  >
+                    <Undo2 className="h-4 w-4 sm:mr-2" />
+                    <span className="hidden sm:inline">Unapprove All</span>
+                  </button>
+                )}
               </div>
             )}
           </div>
@@ -1607,6 +1715,17 @@ const ResultVerificationConsole: React.FC = () => {
                   )}
                   Approve All Analytes
                 </button>
+                {isAdmin && row.approved_analytes > 0 && (
+                  <button
+                    disabled={busy[row.result_id]}
+                    onClick={() => unapproveAllInPanel(row)}
+                    className="inline-flex items-center px-6 py-3 bg-gradient-to-r from-orange-500 to-amber-500 text-white rounded-xl hover:from-orange-600 hover:to-amber-600 transition-all duration-200 shadow-lg font-semibold disabled:opacity-50"
+                    title="Admin: Revert all approved analytes back to pending"
+                  >
+                    <Undo2 className="h-5 w-5 mr-2" />
+                    Unapprove All
+                  </button>
+                )}
               </div>
             </div>
 
@@ -2356,12 +2475,12 @@ const ResultVerificationConsole: React.FC = () => {
           </div>
 
           {/* Footer */}
-          <div className="border-t bg-gray-50 px-6 py-4 flex items-center justify-between">
+          <div className="border-t bg-gray-50 px-4 sm:px-6 py-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
             <p className="text-sm text-gray-600">
               <AlertCircle className="h-4 w-4 inline mr-1 text-amber-500" />
               Review the delta check findings before proceeding with verification.
             </p>
-            <div className="flex items-center gap-3">
+            <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3">
               <button
                 onClick={() => {
                   setShowDeltaCheckModal(false);
@@ -2379,7 +2498,7 @@ const ResultVerificationConsole: React.FC = () => {
                     alert('Delta check results copied to clipboard!');
                   });
                 }}
-                className="inline-flex items-center px-6 py-2 bg-gradient-to-r from-blue-600 to-indigo-600 text-white rounded-lg hover:from-blue-700 hover:to-indigo-700 transition-all duration-200 shadow-sm font-semibold"
+                className="inline-flex items-center justify-center px-6 py-2 bg-gradient-to-r from-blue-600 to-indigo-600 text-white rounded-lg hover:from-blue-700 hover:to-indigo-700 transition-all duration-200 shadow-sm font-semibold"
               >
                 <FileText className="h-5 w-5 mr-2" />
                 Copy to Clipboard
@@ -2402,16 +2521,16 @@ const ResultVerificationConsole: React.FC = () => {
     <div className="bg-gradient-to-br from-gray-50 to-blue-50">
       {/* Modern Header */}
       <div className="bg-white shadow-sm border-b">
-        <div className="max-w-7xl mx-auto px-6 py-8">
-          <div className="flex flex-col lg:flex-row items-start lg:items-center justify-between gap-6">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 py-6 sm:py-8">
+          <div className="flex flex-col lg:flex-row items-start lg:items-center justify-between gap-4 sm:gap-6">
             <div>
-              <h1 className="text-4xl font-bold text-gray-900 mb-2">
+              <h1 className="text-2xl sm:text-4xl font-bold text-gray-900 mb-2">
                 Result Verification Console
               </h1>
-              <p className="text-lg text-gray-600">
+              <p className="text-sm sm:text-lg text-gray-600">
                 High-performance analyte verification with intelligent workflows
               </p>
-              <div className="flex items-center space-x-4 mt-3">
+              <div className="flex flex-wrap items-center gap-2 sm:gap-4 mt-3">
                 <span className="inline-flex items-center px-3 py-1 rounded-full text-sm font-medium bg-blue-100 text-blue-800">
                   <Activity className="h-4 w-4 mr-2" />
                   Real-time Processing
@@ -2423,24 +2542,24 @@ const ResultVerificationConsole: React.FC = () => {
               </div>
             </div>
 
-            <div className="flex items-center space-x-4">
-              <div className="flex items-center bg-gray-100 rounded-full p-1">
+            <div className="flex flex-col gap-3 w-full lg:w-auto sm:flex-row sm:items-center sm:gap-4">
+              <div className="flex items-center bg-gray-100 rounded-full p-1 w-full sm:w-auto">
                 <button
                   onClick={() => setViewMode("panel")}
-                  className={`px-4 py-2 text-sm font-semibold rounded-full transition-colors ${viewMode === "panel" ? "bg-white shadow text-blue-600" : "text-gray-600"}`}
+                  className={`flex-1 sm:flex-none px-4 py-2 text-sm font-semibold rounded-full transition-colors ${viewMode === "panel" ? "bg-white shadow text-blue-600" : "text-gray-600"}`}
                 >
                   Panel View
                 </button>
                 <button
                   onClick={() => setViewMode("order")}
-                  className={`px-4 py-2 text-sm font-semibold rounded-full transition-colors ${viewMode === "order" ? "bg-white shadow text-blue-600" : "text-gray-600"}`}
+                  className={`flex-1 sm:flex-none px-4 py-2 text-sm font-semibold rounded-full transition-colors ${viewMode === "order" ? "bg-white shadow text-blue-600" : "text-gray-600"}`}
                 >
                   Order View
                 </button>
               </div>
               <button
                 onClick={loadPanels}
-                className="inline-flex items-center px-6 py-3 bg-white border-2 border-gray-300 rounded-xl hover:border-gray-400 hover:shadow-md transition-all duration-200 font-semibold"
+                className="inline-flex items-center justify-center px-4 py-3 bg-white border-2 border-gray-300 rounded-xl hover:border-gray-400 hover:shadow-md transition-all duration-200 font-semibold w-full sm:w-auto"
                 title="Refresh data"
               >
                 <RefreshCcw className={`h-5 w-5 mr-2 ${loading ? "animate-spin text-blue-600" : "text-gray-600"}`} />
@@ -2451,7 +2570,7 @@ const ResultVerificationConsole: React.FC = () => {
                 <button
                   onClick={bulkApproveSelected}
                   disabled={bulkProcessing}
-                  className="inline-flex items-center px-6 py-3 bg-gradient-to-r from-green-600 to-emerald-600 text-white rounded-xl hover:from-green-700 hover:to-emerald-700 transition-all duration-200 shadow-lg font-semibold disabled:opacity-50"
+                  className="inline-flex items-center justify-center px-5 py-3 bg-gradient-to-r from-green-600 to-emerald-600 text-white rounded-xl hover:from-green-700 hover:to-emerald-700 transition-all duration-200 shadow-lg font-semibold disabled:opacity-50 w-full sm:w-auto"
                 >
                   {bulkProcessing ? (
                     <Loader2 className="h-5 w-5 mr-2 animate-spin" />
@@ -2466,9 +2585,9 @@ const ResultVerificationConsole: React.FC = () => {
         </div>
       </div>
 
-      <div className="max-w-7xl mx-auto px-6 py-8 space-y-8">
+      <div className="max-w-7xl mx-auto px-4 sm:px-6 py-6 sm:py-8 space-y-6 sm:space-y-8">
         {/* Statistics Dashboard */}
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 sm:gap-6">
           <StatsBadge
             icon={BarChart3}
             label="Total Panels"
@@ -2505,8 +2624,8 @@ const ResultVerificationConsole: React.FC = () => {
 
         {/* Enhanced Filters */}
         <div className="bg-white rounded-2xl shadow-sm border border-gray-200 overflow-hidden">
-          <div className="p-6 border-b border-gray-100">
-            <div className="flex flex-col lg:flex-row gap-4">
+          <div className="p-4 sm:p-6 border-b border-gray-100">
+            <div className="flex flex-col lg:flex-row gap-3 sm:gap-4">
               {/* Search Bar */}
               <div className="flex-1 relative">
                 <Search className="absolute left-4 top-1/2 -translate-y-1/2 h-5 w-5 text-gray-400" />
@@ -2514,7 +2633,7 @@ const ResultVerificationConsole: React.FC = () => {
                   value={q}
                   onChange={(e) => setQ(e.target.value)}
                   placeholder="Search patients, tests, or order IDs..."
-                  className="w-full pl-12 pr-4 py-4 text-lg border-2 border-gray-200 rounded-xl focus:border-blue-500 focus:ring-4 focus:ring-blue-100 transition-all duration-200"
+                  className="w-full pl-12 pr-4 py-3 sm:py-4 text-base sm:text-lg border-2 border-gray-200 rounded-xl focus:border-blue-500 focus:ring-4 focus:ring-blue-100 transition-all duration-200"
                 />
                 {q && (
                   <button
@@ -2527,11 +2646,11 @@ const ResultVerificationConsole: React.FC = () => {
               </div>
 
               {/* Quick Filters */}
-              <div className="flex items-center space-x-3">
+              <div className="flex flex-col sm:flex-row sm:items-center gap-3">
                 <select
                   value={stateFilter}
                   onChange={(e) => setStateFilter(e.target.value as StateFilter)}
-                  className="px-4 py-4 border-2 border-gray-200 rounded-xl focus:border-blue-500 focus:ring-4 focus:ring-blue-100 text-lg font-medium"
+                  className="px-4 py-3 sm:py-4 border-2 border-gray-200 rounded-xl focus:border-blue-500 focus:ring-4 focus:ring-blue-100 text-base sm:text-lg font-medium"
                 >
                   <option value="all">All Status</option>
                   <option value="pending">Pending Only</option>
@@ -2541,7 +2660,7 @@ const ResultVerificationConsole: React.FC = () => {
 
                 <button
                   onClick={() => setShowAdvancedFilters(!showAdvancedFilters)}
-                  className={`inline-flex items-center px-4 py-4 border-2 rounded-xl transition-all duration-200 font-semibold ${showAdvancedFilters
+                  className={`inline-flex items-center justify-center px-4 py-3 sm:py-4 border-2 rounded-xl transition-all duration-200 font-semibold ${showAdvancedFilters
                     ? 'bg-blue-100 border-blue-300 text-blue-700'
                     : 'border-gray-300 text-gray-700 hover:border-gray-400 hover:bg-gray-50'
                     }`}
@@ -2662,22 +2781,22 @@ const ResultVerificationConsole: React.FC = () => {
 
         {/* Selection Summary */}
         {selectedPanels.size > 0 && (
-          <div className="bg-gradient-to-r from-blue-600 to-indigo-600 rounded-2xl p-6 text-white shadow-lg">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center space-x-4">
+          <div className="bg-gradient-to-r from-blue-600 to-indigo-600 rounded-2xl p-4 sm:p-6 text-white shadow-lg">
+            <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+              <div className="flex items-start gap-3">
                 <div className="bg-white/20 p-3 rounded-xl">
                   <CheckSquare className="h-6 w-6" />
                 </div>
                 <div>
-                  <div className="text-xl font-bold">
+                  <div className="text-lg sm:text-xl font-bold">
                     {selectedPanels.size} panel{selectedPanels.size !== 1 ? 's' : ''} selected
                   </div>
-                  <div className="text-blue-100">
+                  <div className="text-blue-100 text-sm sm:text-base">
                     Ready for bulk verification operations
                   </div>
                 </div>
               </div>
-              <div className="flex items-center space-x-3">
+              <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3">
                 <button
                   onClick={clearSelection}
                   className="px-4 py-2 bg-white/20 text-white rounded-lg hover:bg-white/30 transition-colors font-medium"
@@ -2687,7 +2806,7 @@ const ResultVerificationConsole: React.FC = () => {
                 <button
                   onClick={bulkApproveSelected}
                   disabled={bulkProcessing}
-                  className="px-6 py-3 bg-white text-blue-600 rounded-xl hover:bg-gray-50 transition-colors font-bold shadow-sm disabled:opacity-50"
+                  className="inline-flex items-center justify-center px-6 py-3 bg-white text-blue-600 rounded-xl hover:bg-gray-50 transition-colors font-bold shadow-sm disabled:opacity-50"
                 >
                   {bulkProcessing ? (
                     <Loader2 className="h-5 w-5 mr-2 animate-spin inline" />

@@ -815,6 +815,11 @@ export const database = {
       watermark_rotation?: number;
       preferred_language?: string;
       method_options?: string[];
+      pdf_letterhead_mode?: 'background' | 'header_footer';
+      loyalty_enabled?: boolean;
+      loyalty_conversion_rate?: number;
+      loyalty_min_redeem_points?: number;
+      loyalty_point_value?: number;
     }): Promise<{ data: any; error: any }> => {
       try {
         const { data, error } = await supabase
@@ -1585,6 +1590,234 @@ export const database = {
       .gte('created_at', today);
     
     return { count: count || 0, error };
+  },
+
+  // ========================================
+  // Loyalty Points System
+  // ========================================
+  loyaltyPoints: {
+    /**
+     * Get patient's loyalty balance for the current lab
+     */
+    getBalance: async (patientId: string): Promise<{ data: any; error: any }> => {
+      const lab_id = await database.getCurrentUserLabId();
+      if (!lab_id) return { data: null, error: new Error('No lab_id found') };
+
+      const { data, error } = await supabase
+        .from('patient_loyalty_points')
+        .select('*')
+        .eq('patient_id', patientId)
+        .eq('lab_id', lab_id)
+        .maybeSingle();
+
+      return { data: data || { current_balance: 0, total_earned: 0, total_redeemed: 0 }, error };
+    },
+
+    /**
+     * Get transaction history for a patient
+     */
+    getTransactions: async (patientId: string, limit = 50): Promise<{ data: any[]; error: any }> => {
+      const lab_id = await database.getCurrentUserLabId();
+      if (!lab_id) return { data: [], error: new Error('No lab_id found') };
+
+      const { data, error } = await supabase
+        .from('loyalty_transactions')
+        .select('*, orders(sample_id, patient_name)')
+        .eq('patient_id', patientId)
+        .eq('lab_id', lab_id)
+        .order('created_at', { ascending: false })
+        .limit(limit);
+
+      return { data: data || [], error };
+    },
+
+    /**
+     * Earn points from an order (called after order creation/payment)
+     * amount = the billable amount on which points are calculated
+     */
+    earnPoints: async (patientId: string, orderId: string, amount: number): Promise<{ data: any; error: any }> => {
+      const lab_id = await database.getCurrentUserLabId();
+      if (!lab_id) return { data: null, error: new Error('No lab_id found') };
+
+      // Fetch lab loyalty settings
+      const { data: lab } = await supabase
+        .from('labs')
+        .select('loyalty_enabled, loyalty_conversion_rate')
+        .eq('id', lab_id)
+        .single();
+
+      if (!lab?.loyalty_enabled) return { data: null, error: null }; // silently skip
+
+      const conversionRate = lab.loyalty_conversion_rate || 0.1;
+      const pointsEarned = Math.floor(amount * conversionRate);
+      if (pointsEarned <= 0) return { data: null, error: null };
+
+      // Upsert patient balance
+      const { data: existing } = await supabase
+        .from('patient_loyalty_points')
+        .select('id, current_balance, total_earned')
+        .eq('patient_id', patientId)
+        .eq('lab_id', lab_id)
+        .maybeSingle();
+
+      let newBalance: number;
+      let newTotalEarned: number;
+
+      if (existing?.id) {
+        newBalance = (existing.current_balance || 0) + pointsEarned;
+        newTotalEarned = (existing.total_earned || 0) + pointsEarned;
+        await supabase
+          .from('patient_loyalty_points')
+          .update({ current_balance: newBalance, total_earned: newTotalEarned, updated_at: new Date().toISOString() })
+          .eq('id', existing.id);
+      } else {
+        newBalance = pointsEarned;
+        newTotalEarned = pointsEarned;
+        await supabase
+          .from('patient_loyalty_points')
+          .insert({ patient_id: patientId, lab_id, current_balance: newBalance, total_earned: newTotalEarned });
+      }
+
+      // Record transaction
+      const { data: txn, error: txnError } = await supabase
+        .from('loyalty_transactions')
+        .insert({
+          patient_id: patientId,
+          lab_id,
+          order_id: orderId,
+          type: 'earned',
+          points: pointsEarned,
+          balance_after: newBalance,
+          description: `Earned ${pointsEarned} pts on order (₹${amount.toLocaleString()})`,
+        })
+        .select()
+        .single();
+
+      return { data: { pointsEarned, newBalance }, error: txnError };
+    },
+
+    /**
+     * Redeem points on an order — returns the discount amount
+     */
+    redeemPoints: async (patientId: string, orderId: string, pointsToRedeem: number): Promise<{ data: any; error: any }> => {
+      const lab_id = await database.getCurrentUserLabId();
+      if (!lab_id) return { data: null, error: new Error('No lab_id found') };
+
+      if (pointsToRedeem <= 0) return { data: null, error: new Error('Points must be positive') };
+
+      // Fetch lab settings
+      const { data: lab } = await supabase
+        .from('labs')
+        .select('loyalty_enabled, loyalty_point_value, loyalty_min_redeem_points')
+        .eq('id', lab_id)
+        .single();
+
+      if (!lab?.loyalty_enabled) return { data: null, error: new Error('Loyalty program not enabled') };
+
+      // Check balance
+      const { data: balance } = await supabase
+        .from('patient_loyalty_points')
+        .select('id, current_balance, total_redeemed')
+        .eq('patient_id', patientId)
+        .eq('lab_id', lab_id)
+        .maybeSingle();
+
+      if (!balance || balance.current_balance < pointsToRedeem) {
+        return { data: null, error: new Error('Insufficient points balance') };
+      }
+
+      if (balance.current_balance < (lab.loyalty_min_redeem_points || 100)) {
+        return { data: null, error: new Error(`Minimum ${lab.loyalty_min_redeem_points || 100} points required to redeem`) };
+      }
+
+      const pointValue = lab.loyalty_point_value || 1.0;
+      const discountAmount = pointsToRedeem * pointValue;
+      const newBalance = balance.current_balance - pointsToRedeem;
+      const newTotalRedeemed = (balance.total_redeemed || 0) + pointsToRedeem;
+
+      // Update balance
+      await supabase
+        .from('patient_loyalty_points')
+        .update({ current_balance: newBalance, total_redeemed: newTotalRedeemed, updated_at: new Date().toISOString() })
+        .eq('id', balance.id);
+
+      // Record transaction
+      await supabase
+        .from('loyalty_transactions')
+        .insert({
+          patient_id: patientId,
+          lab_id,
+          order_id: orderId,
+          type: 'redeemed',
+          points: -pointsToRedeem,
+          balance_after: newBalance,
+          description: `Redeemed ${pointsToRedeem} pts for ₹${discountAmount.toFixed(2)} discount`,
+        });
+
+      // Update order with loyalty info
+      await supabase
+        .from('orders')
+        .update({ loyalty_points_redeemed: pointsToRedeem, loyalty_discount_amount: discountAmount })
+        .eq('id', orderId);
+
+      return { data: { discountAmount, pointsRedeemed: pointsToRedeem, newBalance }, error: null };
+    },
+
+    /**
+     * Manually adjust points (admin action)
+     */
+    adjustPoints: async (patientId: string, points: number, reason: string): Promise<{ data: any; error: any }> => {
+      const lab_id = await database.getCurrentUserLabId();
+      if (!lab_id) return { data: null, error: new Error('No lab_id found') };
+
+      const { data: { user } } = await supabase.auth.getUser();
+
+      const { data: existing } = await supabase
+        .from('patient_loyalty_points')
+        .select('id, current_balance, total_earned, total_redeemed')
+        .eq('patient_id', patientId)
+        .eq('lab_id', lab_id)
+        .maybeSingle();
+
+      const currentBalance = existing?.current_balance || 0;
+      const newBalance = Math.max(0, currentBalance + points);
+
+      if (existing?.id) {
+        const updates: any = { current_balance: newBalance, updated_at: new Date().toISOString() };
+        if (points > 0) updates.total_earned = (existing.total_earned || 0) + points;
+        await supabase.from('patient_loyalty_points').update(updates).eq('id', existing.id);
+      } else {
+        await supabase.from('patient_loyalty_points').insert({
+          patient_id: patientId, lab_id, current_balance: newBalance,
+          total_earned: points > 0 ? points : 0, total_redeemed: 0
+        });
+      }
+
+      await supabase.from('loyalty_transactions').insert({
+        patient_id: patientId, lab_id,
+        type: 'adjusted', points, balance_after: newBalance,
+        description: reason || `Manual adjustment: ${points > 0 ? '+' : ''}${points} points`,
+        created_by: user?.id || null,
+      });
+
+      return { data: { newBalance, adjusted: points }, error: null };
+    },
+
+    /**
+     * Get lab loyalty settings
+     */
+    getLabSettings: async (): Promise<{ data: any; error: any }> => {
+      const lab_id = await database.getCurrentUserLabId();
+      if (!lab_id) return { data: null, error: new Error('No lab_id found') };
+
+      const { data, error } = await supabase
+        .from('labs')
+        .select('loyalty_enabled, loyalty_conversion_rate, loyalty_min_redeem_points, loyalty_point_value')
+        .eq('id', lab_id)
+        .single();
+
+      return { data, error };
+    },
   },
   
   reports: {
@@ -3479,6 +3712,15 @@ export const database = {
       ai_interpretation?: string;
       ai_audit_status?: 'pending' | 'approved' | 'rejected';
       ai_audit_notes?: string;
+      // Enriched analyte snapshot fields for PDF template
+      normal_range_min?: number | null;
+      normal_range_max?: number | null;
+      low_critical?: string | null;
+      high_critical?: string | null;
+      reference_range_male?: string | null;
+      reference_range_female?: string | null;
+      method?: string | null;
+      value_type?: string | null;
     }): Promise<{ data: any; error: any }> => {
       try {
         const { data, error } = await supabase
@@ -3505,6 +3747,15 @@ export const database = {
       flag_confidence?: number;
       ai_interpretation?: string;
       ai_audit_status?: 'pending' | 'approved' | 'rejected';
+      // Enriched analyte snapshot fields for PDF template
+      normal_range_min?: number | null;
+      normal_range_max?: number | null;
+      low_critical?: string | null;
+      high_critical?: string | null;
+      reference_range_male?: string | null;
+      reference_range_female?: string | null;
+      method?: string | null;
+      value_type?: string | null;
     }>): Promise<{ success: number; failed: number }> => {
       let successCount = 0;
       let failedCount = 0;
@@ -3518,6 +3769,15 @@ export const database = {
             flag_confidence: update.flag_confidence,
             ai_interpretation: update.ai_interpretation,
             ai_audit_status: update.ai_audit_status,
+            // Enriched analyte snapshot fields (only set if provided)
+            ...(update.normal_range_min !== undefined ? { normal_range_min: update.normal_range_min } : {}),
+            ...(update.normal_range_max !== undefined ? { normal_range_max: update.normal_range_max } : {}),
+            ...(update.low_critical !== undefined ? { low_critical: update.low_critical } : {}),
+            ...(update.high_critical !== undefined ? { high_critical: update.high_critical } : {}),
+            ...(update.reference_range_male !== undefined ? { reference_range_male: update.reference_range_male } : {}),
+            ...(update.reference_range_female !== undefined ? { reference_range_female: update.reference_range_female } : {}),
+            ...(update.method !== undefined ? { method: update.method } : {}),
+            ...(update.value_type !== undefined ? { value_type: update.value_type } : {}),
             updated_at: new Date().toISOString()
           })
           .eq('id', update.id);
@@ -4546,6 +4806,10 @@ export const database = {
           lab_specific_interpretation_normal,
           lab_specific_interpretation_high,
           expected_normal_values,
+          expected_value_flag_map,
+          value_type,
+          code,
+          description,
           analytes(*)
         `)
         .eq('lab_id', labId)
@@ -4577,6 +4841,16 @@ export const database = {
                 }
               }
               
+              // Parse expected_value_flag_map from lab_analytes
+              let expectedValueFlagMap = analyteObj.expected_value_flag_map || {};
+              if (item.expected_value_flag_map) {
+                if (typeof item.expected_value_flag_map === 'string') {
+                  try { expectedValueFlagMap = JSON.parse(item.expected_value_flag_map); } catch { /* keep global */ }
+                } else {
+                  expectedValueFlagMap = item.expected_value_flag_map;
+                }
+              }
+
               return {
                 ...analyteObj,
                 is_active: item.is_active,
@@ -4597,6 +4871,11 @@ export const database = {
                 },
                 ref_range_knowledge: item.ref_range_knowledge || analyteObj.ref_range_knowledge,
                 expected_normal_values: expectedNormalValues,
+                expected_value_flag_map: expectedValueFlagMap,
+                // Prioritize lab-specific value_type, code, description
+                value_type: item.value_type || analyteObj.value_type || 'numeric',
+                code: item.code || analyteObj.code || '',
+                description: item.description || analyteObj.description || '',
               };
             }
             return null;
@@ -4633,6 +4912,8 @@ export const database = {
       is_active?: boolean;
       ai_processing_type?: string;
       ai_prompt_override?: string;
+      group_ai_mode?: string;
+      ref_range_knowledge?: any;
       // Calculated parameter fields
       is_calculated?: boolean;
       formula?: string | null;
@@ -4641,6 +4922,7 @@ export const database = {
       // Flag determination fields
       value_type?: 'numeric' | 'qualitative' | 'semi_quantitative' | 'descriptive';
       expected_normal_values?: string[];
+      expected_value_flag_map?: Record<string, string>;
       flag_rules?: any;
       code?: string;
       description?: string;
@@ -4664,6 +4946,8 @@ export const database = {
           is_active: analyteData.is_active !== false, // Default to true
           ai_processing_type: analyteData.ai_processing_type,
           ai_prompt_override: analyteData.ai_prompt_override,
+          group_ai_mode: analyteData.group_ai_mode || 'individual',
+          ref_range_knowledge: analyteData.ref_range_knowledge || null,
           // Calculated parameter fields
           is_calculated: analyteData.is_calculated || false,
           formula: analyteData.formula || null,
@@ -4672,6 +4956,7 @@ export const database = {
           // Flag determination fields
           value_type: analyteData.value_type || 'numeric',
           expected_normal_values: analyteData.expected_normal_values || [],
+          expected_value_flag_map: analyteData.expected_value_flag_map || {},
           flag_rules: analyteData.flag_rules || null,
           code: analyteData.code || null,
           description: analyteData.description || null
@@ -5167,6 +5452,7 @@ export const database = {
       // Flag determination fields
       value_type?: 'numeric' | 'qualitative' | 'semi_quantitative' | 'descriptive';
       expected_normal_values?: string[];
+      expected_value_flag_map?: Record<string, string>;
       flag_rules?: any;
       code?: string;
       description?: string;
@@ -5318,7 +5604,7 @@ export const database = {
       if (!lab_id) {
         return { data: null, error: new Error('No lab_id found for current user') };
       }
-      
+
       const { data, error } = await supabase
           .from('test_groups')
           .select(`
@@ -5330,44 +5616,53 @@ export const database = {
             methodology,
             price,
             turnaround_time,
+            tat_hours,
             sample_type,
             requires_fasting,
             is_active,
-          created_at,
-          updated_at,
-          default_ai_processing_type,
-          group_level_prompt,
-          lab_id,
-          to_be_copied,
-          required_patient_inputs,
-          ref_range_ai_config,
-          test_group_analytes(
-            analyte_id,
-            analytes(
-              id,
-              name,
-              code,
-              unit,
-              reference_range,
-              ai_processing_type,
-              ai_prompt_override,
-              group_ai_mode,
-              ref_range_knowledge
+            created_at,
+            updated_at,
+            default_ai_processing_type,
+            group_level_prompt,
+            lab_id,
+            to_be_copied,
+            description,
+            department,
+            test_type,
+            gender,
+            sample_color,
+            barcode_suffix,
+            lmp_required,
+            id_required,
+            consent_form,
+            pre_collection_guidelines,
+            flabs_id,
+            only_female,
+            only_male,
+            only_billing,
+            start_from_next_page,
+            is_outsourced,
+            default_outsourced_lab_id,
+            required_patient_inputs,
+            ref_range_ai_config,
+            test_group_analytes(
+              analyte_id,
+              analytes(
+                id,
+                name,
+                code,
+                unit,
+                reference_range,
+                ai_processing_type,
+                ai_prompt_override,
+                group_ai_mode,
+                ref_range_knowledge
+              )
             )
-          )
         `)
         .eq('lab_id', lab_id)
         .eq('is_active', true)
         .order('name');
-      return { data, error };
-    },
-
-    getById: async (testGroupId: string) => {
-      const { data, error } = await supabase
-        .from('test_groups')
-        .select('id, name, category, code, lab_id')
-        .eq('id', testGroupId)
-        .single();
       return { data, error };
     },
 
@@ -5383,31 +5678,49 @@ export const database = {
             methodology,
             price,
             turnaround_time,
+            tat_hours,
             sample_type,
             requires_fasting,
             is_active,
-          created_at,
-          updated_at,
-          default_ai_processing_type,
-          group_level_prompt,
-          lab_id,
-          to_be_copied,
-          required_patient_inputs,
-          ref_range_ai_config,
-          test_group_analytes(
-            analyte_id,
-            analytes(
-              id,
-              name,
-              code,
-              unit,
-              reference_range,
-              ai_processing_type,
-              ai_prompt_override,
-              group_ai_mode,
-              ref_range_knowledge
+            created_at,
+            updated_at,
+            default_ai_processing_type,
+            group_level_prompt,
+            lab_id,
+            to_be_copied,
+            description,
+            department,
+            test_type,
+            gender,
+            sample_color,
+            barcode_suffix,
+            lmp_required,
+            id_required,
+            consent_form,
+            pre_collection_guidelines,
+            flabs_id,
+            only_female,
+            only_male,
+            only_billing,
+            start_from_next_page,
+            is_outsourced,
+            default_outsourced_lab_id,
+            required_patient_inputs,
+            ref_range_ai_config,
+            test_group_analytes(
+              analyte_id,
+              analytes(
+                id,
+                name,
+                code,
+                unit,
+                reference_range,
+                ai_processing_type,
+                ai_prompt_override,
+                group_ai_mode,
+                ref_range_knowledge
+              )
             )
-          )
         `)
         .eq('id', id)
         .single();
@@ -5426,28 +5739,49 @@ export const database = {
             methodology,
             price,
             turnaround_time,
+            tat_hours,
             sample_type,
             requires_fasting,
             is_active,
-          created_at,
-          updated_at,
-          default_ai_processing_type,
-          group_level_prompt,
-          lab_id,
-          to_be_copied,
-          test_group_analytes(
-            analyte_id,
-            analytes(
-              id,
-              name,
-              code,
-              unit,
-              reference_range,
-              ai_processing_type,
-              ai_prompt_override,
-              group_ai_mode
+            created_at,
+            updated_at,
+            default_ai_processing_type,
+            group_level_prompt,
+            lab_id,
+            to_be_copied,
+            description,
+            department,
+            test_type,
+            gender,
+            sample_color,
+            barcode_suffix,
+            lmp_required,
+            id_required,
+            consent_form,
+            pre_collection_guidelines,
+            flabs_id,
+            only_female,
+            only_male,
+            only_billing,
+            start_from_next_page,
+            is_outsourced,
+            default_outsourced_lab_id,
+            required_patient_inputs,
+            ref_range_ai_config,
+            test_group_analytes(
+              analyte_id,
+              analytes(
+                id,
+                name,
+                code,
+                unit,
+                reference_range,
+                ai_processing_type,
+                ai_prompt_override,
+                group_ai_mode,
+                ref_range_knowledge
+              )
             )
-          )
         `)
         .in('name', names)
         .eq('is_active', true);
@@ -5478,15 +5812,18 @@ export const database = {
           gender: testGroupData.gender || 'Both',
           sample_color: testGroupData.sampleColor || 'Red',
           barcode_suffix: testGroupData.barcodeSuffix || null,
-          lmp_required: testGroupData.lmpRequired || false,
-          id_required: testGroupData.idRequired || false,
-          consent_form: testGroupData.consentForm || false,
+          // Auto-sync legacy booleans from required_patient_inputs
+          lmp_required: (testGroupData.required_patient_inputs || []).includes('lmp') || testGroupData.lmpRequired || false,
+          id_required: (testGroupData.required_patient_inputs || []).includes('id_document') || testGroupData.idRequired || false,
+          consent_form: (testGroupData.required_patient_inputs || []).includes('consent_form') || testGroupData.consentForm || false,
           pre_collection_guidelines: testGroupData.preCollectionGuidelines || null,
           flabs_id: testGroupData.flabsId || null,
           only_female: testGroupData.onlyFemale || false,
           only_male: testGroupData.onlyMale || false,
           only_billing: testGroupData.onlyBilling || false,
           start_from_next_page: testGroupData.startFromNextPage || false,
+          description: testGroupData.description || null,
+          department: testGroupData.department || null,
           ref_range_ai_config: testGroupData.ref_range_ai_config || null,
           required_patient_inputs: testGroupData.required_patient_inputs || [],
           is_outsourced: testGroupData.is_outsourced || false,
@@ -5556,15 +5893,18 @@ export const database = {
             gender: updates.gender,
             sample_color: updates.sampleColor,
             barcode_suffix: updates.barcodeSuffix,
-            lmp_required: updates.lmpRequired,
-            id_required: updates.idRequired,
-            consent_form: updates.consentForm,
+            // Auto-sync legacy booleans from required_patient_inputs
+            lmp_required: (updates.required_patient_inputs || []).includes('lmp') || updates.lmpRequired || false,
+            id_required: (updates.required_patient_inputs || []).includes('id_document') || updates.idRequired || false,
+            consent_form: (updates.required_patient_inputs || []).includes('consent_form') || updates.consentForm || false,
             pre_collection_guidelines: updates.preCollectionGuidelines,
             flabs_id: updates.flabsId,
             only_female: updates.onlyFemale,
             only_male: updates.onlyMale,
             only_billing: updates.onlyBilling,
             start_from_next_page: updates.startFromNextPage,
+            description: updates.description ?? null,
+            department: updates.department ?? null,
             ref_range_ai_config: updates.ref_range_ai_config,
             required_patient_inputs: updates.required_patient_inputs,
             is_outsourced: updates.is_outsourced,
@@ -6969,7 +7309,7 @@ export const attachments = {
     return { data, error };
   },
 
-  getById: async (attachmentId: string) => {
+  getByIdWithProcessingStatus: async (attachmentId: string) => {
     const { data, error } = await supabase
       .from('attachments')
       .select('id, imagekit_url, processed_url, file_url, processing_status')
@@ -12811,6 +13151,44 @@ export interface InventoryDashboardStats {
   total_value: number;
 }
 
+export interface InventoryOrderItem {
+  item_id?: string;
+  name: string;
+  quantity: number;
+  unit: string;
+  unit_price?: number;
+  total?: number;
+}
+
+export interface InventoryOrder {
+  id: string;
+  lab_id: string;
+  order_number?: string;
+  order_date: string;
+  supplier_id?: string;
+  supplier_name?: string;
+  items: InventoryOrderItem[];
+  subtotal?: number;
+  tax_amount?: number;
+  total_amount?: number;
+  status: 'draft' | 'requested' | 'approved' | 'ordered' | 'received' | 'cancelled';
+  ai_suggested?: boolean;
+  request_source?: string;
+  requested_by?: string;
+  requested_at?: string;
+  approved_by?: string;
+  approved_at?: string;
+  approval_note?: string;
+  invoice_number?: string;
+  invoice_date?: string;
+  received_at?: string;
+  received_by?: string;
+  notes?: string;
+  created_at: string;
+  updated_at: string;
+  created_by?: string;
+}
+
 const inventory = {
   // ============================================================================
   // ITEMS CRUD
@@ -13240,7 +13618,7 @@ const inventory = {
         return { data: stats, error: null };
       }
 
-      const row = data?.[0] || null;
+      const row = Array.isArray(data) ? (data[0] || null) : (data || null);
       if (!row) return { data: null, error: null };
 
       const normalized: InventoryDashboardStats = {
@@ -13256,6 +13634,419 @@ const inventory = {
     } catch (err) {
       return { data: null, error: err };
     }
+  },
+
+  async triggerAutoConsume(params: {
+    labId: string;
+    orderId: string;
+    resultId?: string;
+    testGroupId: string;
+  }): Promise<{ data: any | null; error: any }> {
+    // Primary path: edge function (supports analyte-level logic and dedupe)
+    try {
+      const { data, error } = await supabase.functions.invoke('inventory-auto-consume', {
+        body: {
+          labId: params.labId,
+          orderId: params.orderId,
+          resultId: params.resultId || null,
+          testGroupId: params.testGroupId,
+        },
+      });
+
+      if (!error) {
+        return { data, error: null };
+      }
+    } catch (err) {
+      // Fall through to RPC fallback
+    }
+
+    // Fallback path: DB RPC so consumption still gets registered
+    try {
+      const { data: rpcData, error: rpcError } = await supabase.rpc('fn_inventory_auto_consume', {
+        p_lab_id: params.labId,
+        p_order_id: params.orderId,
+        p_result_id: params.resultId || null,
+        p_test_group_id: params.testGroupId,
+        p_user_id: null,
+      });
+
+      return { data: rpcData, error: rpcError };
+    } catch (rpcErr) {
+      return { data: null, error: rpcErr };
+    }
+  },
+
+  // ============================================================================
+  // STOCK WARNINGS (for result entry UI)
+  // ============================================================================
+
+  async getStockWarningsForTest(testGroupId: string, labId: string): Promise<{
+    data: Array<{
+      itemId: string;
+      itemName: string;
+      currentStock: number;
+      minStock: number;
+      unit: string;
+      status: 'out_of_stock' | 'low_stock';
+    }> | null;
+    error: any;
+  }> {
+    try {
+      const { data, error } = await supabase
+        .from('inventory_test_mapping')
+        .select(`
+          item_id,
+          inventory_items!inner (
+            id,
+            name,
+            current_stock,
+            min_stock,
+            unit,
+            is_active
+          )
+        `)
+        .eq('test_group_id', testGroupId)
+        .eq('lab_id', labId)
+        .eq('is_active', true);
+
+      if (error) return { data: null, error };
+
+      const warnings = (data || [])
+        .map((m: any) => {
+          const item = m.inventory_items;
+          if (!item || !item.is_active) return null;
+
+          if (item.current_stock <= 0) {
+            return {
+              itemId: item.id,
+              itemName: item.name,
+              currentStock: item.current_stock,
+              minStock: item.min_stock || 0,
+              unit: item.unit || 'pcs',
+              status: 'out_of_stock' as const,
+            };
+          }
+          if (item.min_stock > 0 && item.current_stock <= item.min_stock) {
+            return {
+              itemId: item.id,
+              itemName: item.name,
+              currentStock: item.current_stock,
+              minStock: item.min_stock,
+              unit: item.unit || 'pcs',
+              status: 'low_stock' as const,
+            };
+          }
+          return null;
+        })
+        .filter(Boolean);
+
+      return { data: warnings, error: null };
+    } catch (err) {
+      return { data: null, error: err };
+    }
+  },
+
+  // ============================================================================
+  // PURCHASE ORDER REQUESTS (Lean, AI-first)
+  // ============================================================================
+
+  async getPurchaseOrders(options?: {
+    status?: InventoryOrder['status'];
+    limit?: number;
+  }): Promise<{ data: InventoryOrder[] | null; error: any }> {
+    const labId = await database.getCurrentUserLabId();
+    if (!labId) return { data: null, error: new Error('No lab_id found') };
+
+    let query = supabase
+      .from('inventory_orders')
+      .select('*')
+      .eq('lab_id', labId)
+      .order('created_at', { ascending: false });
+
+    if (options?.status) {
+      query = query.eq('status', options.status);
+    }
+
+    if (options?.limit) {
+      query = query.limit(options.limit);
+    }
+
+    const { data, error } = await query;
+    return { data: data as InventoryOrder[] | null, error };
+  },
+
+  async createPurchaseOrder(input: {
+    supplier_id?: string;
+    supplier_name?: string;
+    items: InventoryOrderItem[];
+    tax_amount?: number;
+    notes?: string;
+    ai_suggested?: boolean;
+    request_source?: string;
+    status?: InventoryOrder['status'];
+  }): Promise<{ data: InventoryOrder | null; error: any }> {
+    const labId = await database.getCurrentUserLabId();
+    if (!labId) return { data: null, error: new Error('No lab_id found') };
+
+    const { data: { user } } = await supabase.auth.getUser();
+    let userId: string | null = null;
+    if (user?.id) {
+      const { data: appUserByAuth } = await supabase
+        .from('users')
+        .select('id')
+        .eq('auth_user_id', user.id)
+        .maybeSingle();
+
+      if (appUserByAuth?.id) {
+        userId = appUserByAuth.id;
+      } else if (user.email) {
+        const { data: appUserByEmail } = await supabase
+          .from('users')
+          .select('id')
+          .eq('email', user.email)
+          .maybeSingle();
+        userId = appUserByEmail?.id || null;
+      }
+    }
+
+    const cleanItems = (input.items || [])
+      .filter(item => item.name?.trim() && Number(item.quantity) > 0)
+      .map(item => {
+        const quantity = Number(item.quantity);
+        const unitPrice = Number(item.unit_price || 0);
+        return {
+          item_id: item.item_id || null,
+          name: item.name.trim(),
+          quantity,
+          unit: item.unit || 'pcs',
+          unit_price: unitPrice,
+          total: quantity * unitPrice,
+        };
+      });
+
+    if (cleanItems.length === 0) {
+      return { data: null, error: new Error('At least one item is required to create a PO request') };
+    }
+
+    const subtotal = cleanItems.reduce((sum, item) => sum + (item.total || 0), 0);
+    const taxAmount = Number(input.tax_amount || 0);
+    const totalAmount = subtotal + taxAmount;
+    const nowIso = new Date().toISOString();
+    const status = input.status || 'requested';
+    const orderNumber = `PO-${new Date().getFullYear()}-${Date.now().toString().slice(-6)}`;
+
+    const insertPayload: any = {
+      lab_id: labId,
+      order_number: orderNumber,
+      supplier_id: input.supplier_id || null,
+      supplier_name: input.supplier_name || null,
+      items: cleanItems,
+      subtotal: subtotal,
+      tax_amount: taxAmount,
+      total_amount: totalAmount,
+      status,
+      ai_suggested: Boolean(input.ai_suggested),
+      request_source: input.request_source || (input.ai_suggested ? 'low_stock_reorder' : 'manual'),
+      notes: input.notes || null,
+      created_by: userId,
+    };
+
+    if (status === 'requested') {
+      insertPayload.requested_by = userId;
+      insertPayload.requested_at = nowIso;
+    }
+
+    const { data, error } = await supabase
+      .from('inventory_orders')
+      .insert(insertPayload)
+      .select('*')
+      .single();
+
+    return { data: data as InventoryOrder | null, error };
+  },
+
+  async updatePurchaseOrder(
+    orderId: string,
+    input: {
+      supplier_id?: string;
+      supplier_name?: string;
+      items: InventoryOrderItem[];
+      tax_amount?: number;
+      notes?: string;
+    }
+  ): Promise<{ data: InventoryOrder | null; error: any }> {
+    const labId = await database.getCurrentUserLabId();
+    if (!labId) return { data: null, error: new Error('No lab_id found') };
+
+    const cleanItems = (input.items || [])
+      .filter(item => item.name?.trim() && Number(item.quantity) > 0)
+      .map(item => {
+        const quantity = Number(item.quantity);
+        const unitPrice = Number(item.unit_price || 0);
+        return {
+          item_id: item.item_id || null,
+          name: item.name.trim(),
+          quantity,
+          unit: item.unit || 'pcs',
+          unit_price: unitPrice,
+          total: quantity * unitPrice,
+        };
+      });
+
+    if (cleanItems.length === 0) {
+      return { data: null, error: new Error('At least one item is required in the PO') };
+    }
+
+    const subtotal = cleanItems.reduce((sum, item) => sum + (item.total || 0), 0);
+    const taxAmount = Number(input.tax_amount || 0);
+    const totalAmount = subtotal + taxAmount;
+
+    const payload: Record<string, any> = {
+      supplier_id: input.supplier_id || null,
+      supplier_name: input.supplier_name || null,
+      items: cleanItems,
+      subtotal,
+      tax_amount: taxAmount,
+      total_amount: totalAmount,
+      notes: input.notes || null,
+      updated_at: new Date().toISOString(),
+    };
+
+    const { data, error } = await supabase
+      .from('inventory_orders')
+      .update(payload)
+      .eq('id', orderId)
+      .eq('lab_id', labId)
+      .select('*')
+      .single();
+
+    return { data: data as InventoryOrder | null, error };
+  },
+
+  async updatePurchaseOrderStatus(
+    orderId: string,
+    status: InventoryOrder['status'],
+    options?: {
+      approvalNote?: string;
+      invoiceNumber?: string;
+      invoiceDate?: string;
+    }
+  ): Promise<{ data: InventoryOrder | null; error: any }> {
+    const { data: { user } } = await supabase.auth.getUser();
+    let userId: string | null = null;
+    if (user?.id) {
+      const { data: appUserByAuth } = await supabase
+        .from('users')
+        .select('id')
+        .eq('auth_user_id', user.id)
+        .maybeSingle();
+
+      if (appUserByAuth?.id) {
+        userId = appUserByAuth.id;
+      } else if (user.email) {
+        const { data: appUserByEmail } = await supabase
+          .from('users')
+          .select('id')
+          .eq('email', user.email)
+          .maybeSingle();
+        userId = appUserByEmail?.id || null;
+      }
+    }
+    const payload: Record<string, any> = {
+      status,
+      updated_at: new Date().toISOString(),
+    };
+
+    if (status === 'approved') {
+      payload.approved_by = userId;
+      payload.approved_at = new Date().toISOString();
+      payload.approval_note = options?.approvalNote || null;
+    }
+
+    if (status === 'received') {
+      payload.received_by = userId;
+      payload.received_at = new Date().toISOString();
+      payload.invoice_number = options?.invoiceNumber || null;
+      payload.invoice_date = options?.invoiceDate || null;
+    }
+
+    const { data, error } = await supabase
+      .from('inventory_orders')
+      .update(payload)
+      .eq('id', orderId)
+      .select('*')
+      .single();
+
+    return { data: data as InventoryOrder | null, error };
+  },
+
+  async receivePurchaseOrder(input: {
+    order: InventoryOrder;
+    invoiceNumber?: string;
+    invoiceDate?: string;
+    locationId?: string;
+  }): Promise<{ data: InventoryOrder | null; error: any }> {
+    const labId = await database.getCurrentUserLabId();
+    if (!labId) return { data: null, error: new Error('No lab_id found') };
+
+    const orderItems = Array.isArray(input.order.items) ? input.order.items : [];
+    if (orderItems.length === 0) {
+      return { data: null, error: new Error('PO has no items to receive') };
+    }
+
+    for (const line of orderItems) {
+      const quantity = Number(line.quantity || 0);
+      if (quantity <= 0) continue;
+
+      let itemId = line.item_id || null;
+
+      if (!itemId) {
+        const { data: existing } = await supabase
+          .from('inventory_items')
+          .select('id')
+          .eq('lab_id', labId)
+          .ilike('name', line.name)
+          .eq('is_active', true)
+          .limit(1)
+          .maybeSingle();
+
+        itemId = existing?.id || null;
+      }
+
+      if (!itemId) {
+        const { data: createdItem, error: createErr } = await this.createItem({
+          name: line.name,
+          unit: line.unit || 'pcs',
+          type: 'consumable',
+          current_stock: 0,
+          supplier_name: input.order.supplier_name || undefined,
+          location_id: input.locationId || null,
+        });
+        if (createErr) return { data: null, error: createErr };
+        itemId = createdItem?.id || null;
+      }
+
+      if (!itemId) {
+        return { data: null, error: new Error(`Unable to resolve inventory item for ${line.name}`) };
+      }
+
+      const { error: txErr } = await this.addStock({
+        itemId,
+        quantity,
+        reason: `PO Received: ${input.order.order_number || input.order.id}`,
+        reference: input.invoiceNumber || input.order.order_number || undefined,
+        unitPrice: Number(line.unit_price || 0) || undefined,
+        supplierName: input.order.supplier_name || undefined,
+        locationId: input.locationId,
+      });
+
+      if (txErr) return { data: null, error: txErr };
+    }
+
+    return this.updatePurchaseOrderStatus(input.order.id, 'received', {
+      invoiceNumber: input.invoiceNumber,
+      invoiceDate: input.invoiceDate,
+    });
   },
 
   // ============================================================================

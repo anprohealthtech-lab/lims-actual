@@ -13,7 +13,7 @@ const corsHeaders: Record<string, string> = {
   "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
 };
 
-const GEMINI_MODEL = "gemini-2.0-flash";
+const GEMINI_MODEL = "gemini-2.5-flash";
 
 interface AnalyteData {
   id: string;
@@ -761,6 +761,42 @@ ${i + 1}. ${r.analyte_name}
 ${related_test_results.map(r => `  - ${r.test_name} > ${r.analyte_name}: ${r.value} ${r.unit}${r.flag ? ` [${r.flag}]` : ''}`).join('\n')}`
     : '';
 
+  const differentialNamePatterns: Record<string, RegExp[]> = {
+    neutrophils: [/\bneutrophils?\b/i, /\bneut\b/i, /\bpoly\b/i],
+    lymphocytes: [/\blymphocytes?\b/i, /\blymph\b/i],
+    monocytes: [/\bmonocytes?\b/i, /\bmono\b/i],
+    eosinophils: [/\beosinophils?\b/i, /\beos\b/i],
+    basophils: [/\bbasophils?\b/i, /\bbaso\b/i],
+  };
+
+  const findDifferentialPercent = (patterns: RegExp[]): number | null => {
+    const row = result_values.find((r) => patterns.some((p) => p.test(r.analyte_name || '')));
+    if (!row) return null;
+    const value = parseFloat(String(row.value || '').replace('%', '').trim());
+    return Number.isFinite(value) ? value : null;
+  };
+
+  const neutrophilsPct = findDifferentialPercent(differentialNamePatterns.neutrophils);
+  const lymphocytesPct = findDifferentialPercent(differentialNamePatterns.lymphocytes);
+  const monocytesPct = findDifferentialPercent(differentialNamePatterns.monocytes);
+  const eosinophilsPct = findDifferentialPercent(differentialNamePatterns.eosinophils);
+  const basophilsPct = findDifferentialPercent(differentialNamePatterns.basophils);
+
+  const differentialValues = [neutrophilsPct, lymphocytesPct, monocytesPct, eosinophilsPct, basophilsPct]
+    .filter((v): v is number => v !== null);
+
+  const differentialSection = differentialValues.length >= 3
+    ? `
+CBC/WBC DIFFERENTIAL CHECK:
+- Neutrophils%: ${neutrophilsPct ?? 'NA'}
+- Lymphocytes%: ${lymphocytesPct ?? 'NA'}
+- Monocytes%: ${monocytesPct ?? 'NA'}
+- Eosinophils%: ${eosinophilsPct ?? 'NA'}
+- Basophils%: ${basophilsPct ?? 'NA'}
+- Calculated Differential Total: ${differentialValues.reduce((s, v) => s + v, 0).toFixed(1)}%
+`
+    : '';
+
   return `You are a senior clinical laboratory quality control specialist performing a DELTA CHECK on laboratory results.
 
 DELTA CHECK PURPOSE:
@@ -778,6 +814,7 @@ ${patientInfo}
 CURRENT RESULTS WITH HISTORICAL DATA:
 ${resultsSection}
 ${relatedTestsSection}
+${differentialSection}
 
 DELTA CHECK RULES:
 1. For numeric values, flag changes > 50% from last value as unusual (unless clinically expected)
@@ -792,6 +829,7 @@ DELTA CHECK RULES:
    - Liver: AST, ALT, ALP, GGT, Bilirubin should correlate
    - Kidney: Urea, Creatinine, eGFR should correlate
    - Hematology: RBC, Hb, Hct should correlate
+   - CBC/WBC Differential (% values): Neutrophils + Lymphocytes + Monocytes + Eosinophils + Basophils should be approximately 100% (acceptable tolerance: 98-102%; outside this should be flagged)
    - Lipids: Total cholesterol ≈ HDL + LDL + (TG/5)
 
 CONFIDENCE SCORING:
@@ -863,38 +901,61 @@ function extractJsonFromResponse(response: any): any {
   throw new Error('Could not extract JSON from Gemini response');
 }
 
-async function callGemini(prompt: string, apiKey: string): Promise<any> {
-  const response = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${apiKey}`,
-    {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        contents: [
-          {
-            role: 'user',
-            parts: [{ text: prompt }],
-          },
-        ],
-        generationConfig: {
-          temperature: 0.2, // Low temperature for consistent medical language
-          topP: 0.9,
-          maxOutputTokens: 8000,
-          responseMimeType: 'application/json',
-        },
-      }),
-    }
-  );
+async function callGemini(prompt: string, apiKey: string, maxRetries: number = 4): Promise<any> {
+  let lastError: Error | null = null;
 
-  if (!response.ok) {
+  for (let attempt = 0; attempt < maxRetries; attempt++) {
+    // Exponential backoff with jitter: 0s, ~2-3s, ~4-5s, ~8-9s
+    if (attempt > 0) {
+      const delayMs = Math.min(1000 * Math.pow(2, attempt), 10000) + Math.random() * 1000;
+      console.warn(`⏳ Gemini 429 retry ${attempt}/${maxRetries - 1} after ${Math.round(delayMs)}ms...`);
+      await new Promise(resolve => setTimeout(resolve, delayMs));
+    }
+
+    const response = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${apiKey}`,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          contents: [
+            {
+              role: 'user',
+              parts: [{ text: prompt }],
+            },
+          ],
+          generationConfig: {
+            temperature: 0.2, // Low temperature for consistent medical language
+            topP: 0.9,
+            maxOutputTokens: 8000,
+            responseMimeType: 'application/json',
+          },
+        }),
+      }
+    );
+
+    if (response.ok) {
+      const responseData = await response.json();
+      return extractJsonFromResponse(responseData);
+    }
+
+    // Retry on 429 (rate limit) and 503 (service unavailable)
+    if (response.status === 429 || response.status === 503) {
+      const errorText = await response.text();
+      lastError = new Error(`Gemini API error: ${response.status} - ${errorText}`);
+      console.warn(`Gemini API rate limited (attempt ${attempt + 1}/${maxRetries}), retrying...`);
+      continue;
+    }
+
+    // Non-retryable error - throw immediately
     const errorText = await response.text();
     throw new Error(`Gemini API error: ${response.status} - ${errorText}`);
   }
 
-  const responseData = await response.json();
-  return extractJsonFromResponse(responseData);
+  // All retries exhausted
+  throw lastError || new Error('Gemini API request failed after retries');
 }
 
 async function handler(req: Request): Promise<Response> {
@@ -1024,3 +1085,4 @@ async function handler(req: Request): Promise<Response> {
 
 export default handler;
 export const config = { runtime: 'edge' };
+

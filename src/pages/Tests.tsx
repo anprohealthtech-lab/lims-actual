@@ -67,6 +67,7 @@ interface Analyte {
   isGlobal?: boolean;
   toBeCopied?: boolean;
   expected_normal_values?: string[];
+  expected_value_flag_map?: Record<string, string>;
 }
 
 interface TestGroup {
@@ -78,6 +79,7 @@ interface TestGroup {
   methodology?: string;
   price?: number;
   turnaroundTime?: string;
+  tat_hours?: number;
   sampleType?: string;
   requiresFasting?: boolean;
   isActive?: boolean;
@@ -119,6 +121,32 @@ interface PackageType {
 const Tests: React.FC = () => {
   console.log('🔵 Tests.tsx page is opening/rendering');
 
+  const normalizeAIProcessingType = (type?: string | null): string => {
+    const normalized = (type || '').trim().toUpperCase();
+    const aliasMap: Record<string, string> = {
+      GEMINI: 'THERMAL_SLIP_OCR',
+      OCR_REPORT: 'THERMAL_SLIP_OCR',
+      VISION_CARD: 'RAPID_CARD_LFA',
+      VISION_COLOR: 'COLOR_STRIP_MULTIPARAM',
+    };
+    const value = aliasMap[normalized] || normalized;
+    const valid = new Set([
+      'MANUAL_ENTRY_NO_VISION',
+      'THERMAL_SLIP_OCR',
+      'INSTRUMENT_SCREEN_OCR',
+      'RAPID_CARD_LFA',
+      'COLOR_STRIP_MULTIPARAM',
+      'SINGLE_WELL_COLORIMETRIC',
+      'AGGLUTINATION_CARD',
+      'MICROSCOPY_MORPHOLOGY',
+      'ZONE_OF_INHIBITION',
+      'MENISCUS_SCALE_READING',
+      'SAMPLE_QUALITY_TUBE_CHECK',
+      'UNKNOWN_NEEDS_REVIEW'
+    ]);
+    return valid.has(value) ? value : 'MANUAL_ENTRY_NO_VISION';
+  };
+
   const [tests, setTests] = useState<Test[]>([]);
   const [testGroups, setTestGroups] = useState<TestGroup[]>([]);
   const [analytes, setAnalytes] = useState<Analyte[]>([]);
@@ -153,10 +181,34 @@ const Tests: React.FC = () => {
   // State for AI Configurator
   const [showAIConfigurator, setShowAIConfigurator] = useState(false);
 
+  // Lab-level flag options for analyte flag mapping
+  const [labFlagOptions, setLabFlagOptions] = useState<Array<{value: string; label: string}>>([]);
+
   console.log('✅ Tests component state initialized');
 
   const handleAIConfigurationGenerated = async (config: TestConfigurationResponse) => {
     try {
+      const toBoolean = (value: unknown): boolean => {
+        if (typeof value === 'boolean') return value;
+        if (typeof value === 'string') return value.trim().toLowerCase() === 'true';
+        return false;
+      };
+
+      const parseFormulaVariables = (value: unknown): string[] => {
+        if (Array.isArray(value)) return value.map(String).map((v) => v.trim()).filter(Boolean);
+        if (typeof value === 'string') {
+          const trimmed = value.trim();
+          if (!trimmed) return [];
+          try {
+            const parsed = JSON.parse(trimmed);
+            if (Array.isArray(parsed)) return parsed.map(String).map((v) => v.trim()).filter(Boolean);
+          } catch {
+            return trimmed.split(',').map((v) => v.trim()).filter(Boolean);
+          }
+        }
+        return [];
+      };
+
       const labId = await database.getCurrentUserLabId();
       if (!labId) {
         alert('Error: Could not determine your lab context. Please try again.');
@@ -190,7 +242,7 @@ const Tests: React.FC = () => {
         sample_type: config.test_group.sample_type,
         requires_fasting: config.test_group.requires_fasting,
         is_active: true,
-        default_ai_processing_type: config.test_group.default_ai_processing_type || 'gemini',
+        default_ai_processing_type: normalizeAIProcessingType(config.test_group.default_ai_processing_type),
         group_level_prompt: config.test_group.group_level_prompt,
         lab_id: labId,
         to_be_copied: false,
@@ -217,11 +269,14 @@ const Tests: React.FC = () => {
       // We process analytes sequentially
       for (const analyteData of config.analytes) {
         let analyteId = null;
+        const isCalculated = toBoolean((analyteData as any).is_calculated);
+        const formula = typeof (analyteData as any).formula === 'string' ? (analyteData as any).formula.trim() : '';
+        const formulaVariables = parseFormulaVariables((analyteData as any).formula_variables);
 
         // A. Check if analyte already exists (exact name match)
         const { data: existingAnalyte } = await supabase
           .from('analytes')
-          .select('id, name')
+          .select('id, name, is_calculated, formula')
           .ilike('name', analyteData.name.trim())
           .limit(1)
           .single();
@@ -243,8 +298,14 @@ const Tests: React.FC = () => {
             category: analyteData.category,
             is_active: true,
             is_global: false, // Lab specific
-            ai_processing_type: 'gemini',
-            group_ai_mode: analyteData.group_ai_mode || 'individual'
+            ai_processing_type: normalizeAIProcessingType(analyteData.ai_processing_type || config.test_group.default_ai_processing_type),
+            group_ai_mode: analyteData.group_ai_mode || 'individual',
+            is_calculated: isCalculated,
+            formula: formula || null,
+            formula_variables: formulaVariables,
+            formula_description: (analyteData as any).formula_description || null,
+            value_type: (analyteData as any).value_type || (isCalculated ? 'numeric' : null),
+            expected_normal_values: Array.isArray((analyteData as any).expected_normal_values) ? (analyteData as any).expected_normal_values : []
           };
 
           const { data: newAnalyte, error: analyteError } = await supabase
@@ -259,6 +320,27 @@ const Tests: React.FC = () => {
             console.log(`✨ Created new analyte: ${newAnalyte.name}`);
             analyteId = newAnalyte.id;
             createdAnalytesInfo.push(newAnalyte.name);
+          }
+        }
+
+        if (existingAnalyte && analyteId && isCalculated && formula && (!(existingAnalyte as any).is_calculated || !(existingAnalyte as any).formula)) {
+          const { error: updateExistingError } = await supabase
+            .from('analytes')
+            .update({
+              is_calculated: true,
+              formula,
+              formula_variables: formulaVariables,
+              formula_description: (analyteData as any).formula_description || null,
+              value_type: (analyteData as any).value_type || 'numeric',
+              reference_range: analyteData.reference_range || null,
+              interpretation_low: analyteData.interpretation_low || null,
+              interpretation_normal: analyteData.interpretation_normal || null,
+              interpretation_high: analyteData.interpretation_high || null
+            })
+            .eq('id', existingAnalyte.id);
+
+          if (updateExistingError) {
+            console.warn(`Failed to update existing calculated analyte ${existingAnalyte.name}:`, updateExistingError);
           }
         }
 
@@ -343,7 +425,8 @@ const Tests: React.FC = () => {
             toBeCopied: analyte.to_be_copied ?? false,
             ref_range_knowledge: analyte.ref_range_knowledge,
             // Dropdown options for qualitative values
-            expected_normal_values: analyte.expected_normal_values || []
+            expected_normal_values: analyte.expected_normal_values || [],
+            expected_value_flag_map: analyte.expected_value_flag_map || {},
           }));
           setAnalytes(transformedAnalytes);
         }
@@ -364,6 +447,7 @@ const Tests: React.FC = () => {
             methodology: group.methodology,
             price: group.price,
             turnaroundTime: group.turnaround_time,
+            tat_hours: group.tat_hours,
             sampleType: group.sample_type,
             requiresFasting: group.requires_fasting,
             isActive: group.is_active,
@@ -383,6 +467,10 @@ const Tests: React.FC = () => {
             onlyMale: group.only_male || false,
             onlyBilling: group.only_billing || false,
             startFromNextPage: group.start_from_next_page || false,
+            is_outsourced: group.is_outsourced || false,
+            default_outsourced_lab_id: group.default_outsourced_lab_id,
+            ref_range_ai_config: group.ref_range_ai_config,
+            required_patient_inputs: group.required_patient_inputs || [],
             analytes: group.test_group_analytes ? group.test_group_analytes.map(tga => tga.analyte_id) : []
           }));
           setTestGroups(transformedTestGroups);
@@ -395,18 +483,25 @@ const Tests: React.FC = () => {
           setPackages([]);
         } else {
           console.log('✅ Packages loaded:', dbPackagesData?.length || 0, 'records');
-          const transformedPackages = (dbPackagesData || []).map(pkg => ({
-            id: pkg.id,
-            name: pkg.name,
-            description: pkg.description || '',
-            price: pkg.price,
-            discountPercentage: pkg.discount_percentage || 0,
-            category: pkg.category || 'General',
-            validityDays: pkg.validity_days || 30,
-            isActive: pkg.is_active ?? true,
-            testGroupIds: pkg.package_test_groups?.map((ptg: any) => ptg.test_group_id) || [],
-            createdDate: pkg.created_at || new Date().toISOString()
-          }));
+          const transformedPackages = (dbPackagesData || []).map(pkg => {
+            // Handle package_test_groups relation - ensure it's an array
+            const ptg = pkg.package_test_groups || [];
+            const testGroupIds = Array.isArray(ptg) 
+              ? ptg.map((item: any) => item.test_group_id).filter(Boolean)
+              : [];
+            return {
+              id: pkg.id,
+              name: pkg.name,
+              description: pkg.description || '',
+              price: pkg.price,
+              discountPercentage: pkg.discount_percentage || 0,
+              category: pkg.category || 'General',
+              validityDays: pkg.validity_days || 30,
+              isActive: pkg.is_active ?? true,
+              testGroupIds,
+              createdDate: pkg.created_at || new Date().toISOString()
+            };
+          });
           setPackages(transformedPackages);
         }
 
@@ -423,32 +518,48 @@ const Tests: React.FC = () => {
     loadData().then(() => {
       console.log('✅ All data loaded successfully');
     });
+
+    // Fetch lab flag options for analyte flag mapping
+    const loadLabFlagOptions = async () => {
+      try {
+        const labId = await database.getCurrentUserLabId();
+        if (!labId) return;
+        const { data } = await supabase.from('labs').select('flag_options').eq('id', labId).single();
+        if (data?.flag_options && Array.isArray(data.flag_options)) {
+          setLabFlagOptions(data.flag_options);
+        }
+      } catch (err) {
+        console.error('Failed to load lab flag options:', err);
+      }
+    };
+    loadLabFlagOptions();
   }, []);
 
   const categories = ['All', 'Hematology', 'Biochemistry', 'Serology', 'Microbiology', 'Immunology'];
 
-  const filteredPackages = packages.filter(pkg => {
+  const filteredPackages = (packages || []).filter(pkg => {
     const matchesSearch = pkg.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
       pkg.description.toLowerCase().includes(searchTerm.toLowerCase());
     const matchesCategory = selectedCategory === 'All' || pkg.category === selectedCategory;
     return matchesSearch && matchesCategory;
   });
 
-  const filteredTestGroups = testGroups.filter(group => {
+  const filteredTestGroups = (testGroups || []).filter(group => {
+    const isVisible = group.isActive !== false;
     const matchesSearch = group.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
       (group.code?.toLowerCase().includes(searchTerm.toLowerCase()) ?? false);
     const matchesCategory = selectedCategory === 'All' || group.category === selectedCategory;
-    return matchesSearch && matchesCategory;
+    return isVisible && matchesSearch && matchesCategory;
   });
 
-  const filteredAnalytes = analytes.filter(analyte => {
+  const filteredAnalytes = (analytes || []).filter(analyte => {
     const matchesSearch = analyte.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
       analyte.id.toLowerCase().includes(searchTerm.toLowerCase());
     const matchesCategory = selectedCategory === 'All' || analyte.category === selectedCategory;
     return matchesSearch && matchesCategory;
   });
 
-  const filteredLegacyTests = tests.filter(test => {
+  const filteredLegacyTests = (tests || []).filter(test => {
     const matchesSearch = test.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
       test.id.toLowerCase().includes(searchTerm.toLowerCase());
     const matchesCategory = selectedCategory === 'All' || test.category === selectedCategory;
@@ -486,13 +597,24 @@ const Tests: React.FC = () => {
         interpretation_high: formData.interpretation?.high,
         category: formData.category,
         is_active: formData.isActive ?? true,
+        // AI processing fields
+        ai_processing_type: formData.aiProcessingType || undefined,
+        ai_prompt_override: formData.aiPromptOverride || undefined,
+        group_ai_mode: formData.groupAiMode || 'individual',
+        ref_range_knowledge: formData.ref_range_knowledge || null,
         // Calculated parameter fields
         is_calculated: formData.isCalculated || false,
         formula: formData.formula || null,
         formula_variables: formData.formulaVariables || [],
         formula_description: formData.formulaDescription || null,
+        // Flag determination fields
+        value_type: formData.value_type || 'numeric',
+        code: formData.code || undefined,
+        description: formData.description || undefined,
         // Dropdown options for qualitative values
         expected_normal_values: formData.expected_normal_values || [],
+        // Dropdown value → flag mapping
+        expected_value_flag_map: formData.expected_value_flag_map || {},
       });
 
       if (error) {
@@ -537,7 +659,8 @@ const Tests: React.FC = () => {
           isGlobal: newAnalyte.is_global ?? false,
           toBeCopied: newAnalyte.to_be_copied ?? false,
           ref_range_knowledge: newAnalyte.ref_range_knowledge,
-          expected_normal_values: newAnalyte.expected_normal_values || []
+          expected_normal_values: newAnalyte.expected_normal_values || [],
+          expected_value_flag_map: newAnalyte.expected_value_flag_map || {}
         };
 
         setAnalytes(prev => [...prev, transformedAnalyte]);
@@ -724,7 +847,8 @@ const Tests: React.FC = () => {
             description: labAnalyte.description || analyteSource?.description || analyte.description,
             isCritical: labAnalyte.is_critical ?? analyte.isCritical,
             ref_range_knowledge: labAnalyte.ref_range_knowledge || analyte.ref_range_knowledge,
-            expected_normal_values: labAnalyte.expected_normal_values || analyte.expected_normal_values || []
+            expected_normal_values: labAnalyte.expected_normal_values || analyte.expected_normal_values || [],
+            expected_value_flag_map: labAnalyte.expected_value_flag_map || (analyteSource as any)?.expected_value_flag_map || analyte.expected_value_flag_map || {}
           });
           setShowEditAnalyteModal(true);
           return;
@@ -821,32 +945,6 @@ const Tests: React.FC = () => {
         return;
       }
 
-      // 🔧 FIX: Update test_group_analytes links
-      // Delete existing analyte links
-      await supabase
-        .from('test_group_analytes')
-        .delete()
-        .eq('test_group_id', editingTestGroup.id);
-
-      // Insert new analyte links if any are selected
-      if (formData.analytes && formData.analytes.length > 0) {
-        const analyteLinks = formData.analytes.map((analyteId: string) => ({
-          test_group_id: editingTestGroup.id,
-          analyte_id: analyteId,
-          is_visible: true
-        }));
-
-        const { error: linkError } = await supabase
-          .from('test_group_analytes')
-          .insert(analyteLinks);
-
-        if (linkError) {
-          console.error('Error linking analytes:', linkError);
-          alert('Test group updated but failed to link analytes. Please try again.');
-          return;
-        }
-      }
-
       if (updatedTestGroup) {
         const transformedGroup: TestGroup = {
           id: updatedTestGroup.id,
@@ -854,8 +952,10 @@ const Tests: React.FC = () => {
           code: updatedTestGroup.code,
           category: updatedTestGroup.category,
           clinicalPurpose: updatedTestGroup.clinical_purpose,
+          methodology: updatedTestGroup.methodology,
           price: updatedTestGroup.price,
           turnaroundTime: updatedTestGroup.turnaround_time,
+          tat_hours: updatedTestGroup.tat_hours,
           sampleType: updatedTestGroup.sample_type,
           requiresFasting: updatedTestGroup.requires_fasting,
           isActive: updatedTestGroup.is_active,
@@ -948,8 +1048,14 @@ const Tests: React.FC = () => {
           lab_specific_interpretation_normal: interpretationNormal,
           lab_specific_interpretation_high: interpretationHigh,
           ref_range_knowledge: formData.ref_range_knowledge,
+          // Value type, code, description
+          value_type: formData.value_type || formData.valueType || undefined,
+          code: formData.code || undefined,
+          description: description,
           // Dropdown options for qualitative values
           expected_normal_values: formData.expected_normal_values || [],
+          // Dropdown value → flag mapping
+          expected_value_flag_map: formData.expected_value_flag_map || {},
         }
       );
 
@@ -990,7 +1096,8 @@ const Tests: React.FC = () => {
           isGlobal: updatedAnalyte.is_global ?? isGlobal,
           toBeCopied: updatedAnalyte.to_be_copied ?? toBeCopied,
           ref_range_knowledge: updatedAnalyte.ref_range_knowledge,
-          expected_normal_values: updatedAnalyte.expected_normal_values || formData.expected_normal_values || []
+          expected_normal_values: updatedAnalyte.expected_normal_values || formData.expected_normal_values || [],
+          expected_value_flag_map: updatedAnalyte.expected_value_flag_map || formData.expected_value_flag_map || {}
         };
 
         setAnalytes(prev => prev.map(a => a.id === editingAnalyte.id ? transformedAnalyte : a));
@@ -1298,15 +1405,28 @@ const Tests: React.FC = () => {
   };
 
   const handleDeleteTestGroup = async (group: TestGroup) => {
-    if (!window.confirm(`Are you sure you want to delete test group "${group.name}"? This cannot be undone.`)) return;
+    if (!window.confirm(`Are you sure you want to delete test group "${group.name}"? If linked with orders, it will be hidden (set inactive).`)) return;
 
     try {
       const { error } = await database.testGroups.delete(group.id);
       if (error) throw error;
       setTestGroups(prev => prev.filter(g => g.id !== group.id));
     } catch (e: any) {
-      console.error("Delete failed", e);
-      alert("Failed to delete test group. It may be used in existing orders.");
+      console.warn("Hard delete failed, trying soft hide (is_active=false):", e);
+      try {
+        const { error: hideError } = await database.testGroups.update(group.id, {
+          is_active: false,
+        });
+        if (hideError) throw hideError;
+
+        setTestGroups(prev =>
+          prev.map(g => (g.id === group.id ? { ...g, isActive: false } : g))
+        );
+        alert('Test group is used in existing orders. It was hidden by setting Is Active = false.');
+      } catch (hideErr: any) {
+        console.error("Soft hide failed", hideErr);
+        alert("Failed to delete/hide test group. It may be used in existing orders.");
+      }
     }
   };
 
@@ -1751,11 +1871,11 @@ const Tests: React.FC = () => {
             <div className="bg-white rounded-lg shadow-sm border border-gray-200 overflow-hidden">
               <div className="px-3 py-2 border-b border-gray-200 flex items-center justify-between">
                 <h3 className="text-sm font-semibold text-gray-900">
-                  Health Packages ({packages.length})
+                  Health Packages ({filteredPackages.length})
                 </h3>
               </div>
 
-              {packages.length === 0 ? (
+              {filteredPackages.length === 0 ? (
                 <div className="p-8 text-center text-gray-500">
                   <Package className="h-12 w-12 mx-auto mb-3 text-gray-300" />
                   <p>No health packages created yet.</p>
@@ -1780,7 +1900,7 @@ const Tests: React.FC = () => {
                       </tr>
                     </thead>
                     <tbody className="bg-white divide-y divide-gray-200">
-                      {packages.map((pkg) => (
+                      {filteredPackages.map((pkg) => (
                         <tr key={pkg.id} className="hover:bg-gray-50 transition-colors">
                           <td className="px-3 py-2">
                             <div>
@@ -1860,6 +1980,7 @@ const Tests: React.FC = () => {
                 unit: a.unit,
                 category: a.category
               }))}
+              labFlagOptions={labFlagOptions}
             />
           )
         }
@@ -1964,6 +2085,7 @@ const Tests: React.FC = () => {
                 is_active: editingAnalyte.isActive,
                 ref_range_knowledge: editingAnalyte.ref_range_knowledge,
                 expected_normal_values: editingAnalyte.expected_normal_values,
+                expected_value_flag_map: editingAnalyte.expected_value_flag_map,
                 ai_processing_type: editingAnalyte.aiProcessingType,
                 ai_prompt_override: editingAnalyte.aiPromptOverride,
                 group_ai_mode: editingAnalyte.groupAiMode,

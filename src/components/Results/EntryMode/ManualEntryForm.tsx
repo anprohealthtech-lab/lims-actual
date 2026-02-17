@@ -1,8 +1,9 @@
 import React, { useState, useEffect } from 'react';
-import { Save, CheckCircle } from 'lucide-react';
+import { Save, CheckCircle, AlertTriangle, PackageX } from 'lucide-react';
 import { database, supabase } from '../../../utils/supabase';
 import { useAuth } from '../../../contexts/AuthContext';
 import { calculateFlagsForResults } from '../../../utils/flagCalculation';
+import { toast } from 'react-hot-toast';
 import SectionEditor from '../SectionEditor';
 
 interface ManualEntryFormProps {
@@ -39,6 +40,14 @@ const ManualEntryForm: React.FC<ManualEntryFormProps> = ({ order, testGroup, onS
   const [sectionResultId, setSectionResultId] = useState<string | null>(null);
   const [hasTechnicianSections, setHasTechnicianSections] = useState(false);
   const [sectionLoading, setSectionLoading] = useState(false);
+  const [stockWarnings, setStockWarnings] = useState<Array<{
+    itemId: string;
+    itemName: string;
+    currentStock: number;
+    minStock: number;
+    unit: string;
+    status: 'out_of_stock' | 'low_stock';
+  }>>([]);
 
   // Helper to determine if analyte expects categorical values
   const getCategoricalOptions = (analyte: any): string[] | null => {
@@ -167,8 +176,22 @@ const ManualEntryForm: React.FC<ManualEntryFormProps> = ({ order, testGroup, onS
     }
   };
 
+  // Fetch stock warnings for this test's mapped inventory items
+  const fetchStockWarnings = async () => {
+    try {
+      const { data } = await database.inventory.getStockWarningsForTest(testGroup.id, order.lab_id);
+      if (data && data.length > 0) {
+        setStockWarnings(data);
+      }
+    } catch (err) {
+      // Non-blocking - don't break result entry if inventory check fails
+      console.warn('Stock warning check failed:', err);
+    }
+  };
+
   useEffect(() => {
     fetchAnalytes();
+    fetchStockWarnings();
   }, [testGroup.id]);
 
   useEffect(() => {
@@ -342,6 +365,43 @@ const ManualEntryForm: React.FC<ManualEntryFormProps> = ({ order, testGroup, onS
 
       if (valuesError) throw valuesError;
 
+      // Auto-consume inventory for non-outsourced tests
+      const { data: orderTest } = await supabase
+        .from('order_tests')
+        .select('outsourced_lab_id')
+        .eq('order_id', order.id)
+        .eq('test_group_id', testGroup.id)
+        .maybeSingle();
+
+      if (!orderTest?.outsourced_lab_id) {
+        try {
+          const { data: consumeResult } = await database.inventory.triggerAutoConsume({
+            labId: order.lab_id,
+            orderId: order.id,
+            resultId: resultId,
+            testGroupId: testGroup.id,
+          });
+
+          if (consumeResult && consumeResult.itemsConsumed > 0) {
+            if (consumeResult.alertsGenerated > 0) {
+              toast(`Inventory: ${consumeResult.itemsConsumed} items consumed | ${consumeResult.alertsGenerated} low stock alert${consumeResult.alertsGenerated > 1 ? 's' : ''}`, {
+                icon: '⚠️',
+                style: { background: '#FEF3C7', color: '#92400E' },
+                duration: 5000,
+              });
+            } else {
+              toast.success(`Inventory updated: ${consumeResult.itemsConsumed} item${consumeResult.itemsConsumed > 1 ? 's' : ''} consumed`);
+            }
+          }
+        } catch (err) {
+          console.warn('Inventory auto-consume failed (non-blocking):', err);
+          toast('Inventory update failed (results saved)', {
+            icon: '📦',
+            style: { background: '#FED7AA', color: '#9A3412' },
+          });
+        }
+      }
+
       onSubmit(resultsWithFlags);
       
     } catch (error) {
@@ -370,6 +430,34 @@ const ManualEntryForm: React.FC<ManualEntryFormProps> = ({ order, testGroup, onS
           Enter results for {analytes.length} parameters
         </p>
       </div>
+
+      {/* Stock warnings for mapped inventory items */}
+      {stockWarnings.length > 0 && (
+        <div className="space-y-2">
+          {stockWarnings.filter(w => w.status === 'out_of_stock').length > 0 && (
+            <div className="bg-red-50 border border-red-200 rounded-lg p-3 flex items-start gap-2">
+              <PackageX className="h-5 w-5 text-red-600 mt-0.5 flex-shrink-0" />
+              <div>
+                <p className="text-sm font-medium text-red-800">Out of Stock</p>
+                <p className="text-xs text-red-700 mt-0.5">
+                  {stockWarnings.filter(w => w.status === 'out_of_stock').map(w => `${w.itemName} (${w.currentStock} ${w.unit})`).join(', ')}
+                </p>
+              </div>
+            </div>
+          )}
+          {stockWarnings.filter(w => w.status === 'low_stock').length > 0 && (
+            <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-3 flex items-start gap-2">
+              <AlertTriangle className="h-5 w-5 text-yellow-600 mt-0.5 flex-shrink-0" />
+              <div>
+                <p className="text-sm font-medium text-yellow-800">Low Stock</p>
+                <p className="text-xs text-yellow-700 mt-0.5">
+                  {stockWarnings.filter(w => w.status === 'low_stock').map(w => `${w.itemName} (${w.currentStock} remaining, min: ${w.minStock})`).join(', ')}
+                </p>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
 
       <div className="space-y-4">
         {analytes.map(analyte => {

@@ -33,6 +33,7 @@ interface Invoice {
   subtotal: number;
   discount: number;
   tax: number;
+  tax_rate?: number;
   total: number;
   status: 'Draft' | 'Sent' | 'Paid' | 'Overdue';
   invoice_date: string;
@@ -976,8 +977,8 @@ const Billing: React.FC = () => {
                       </div>
                     )}
                     <div className="flex justify-between">
-                      <span>GST (18%):</span>
-                      <span>₹{selectedInvoice.tax}</span>
+                      <span>GST ({selectedInvoice.tax_rate ? `${selectedInvoice.tax_rate.toFixed(1)}` : selectedInvoice.subtotal > 0 && selectedInvoice.tax > 0 ? `${((selectedInvoice.tax / (selectedInvoice.subtotal - selectedInvoice.discount)) * 100).toFixed(1)}` : '18'}%):</span>
+                      <span>₹{selectedInvoice.tax.toFixed(2)}</span>
                     </div>
                     <div className="flex justify-between font-bold text-lg border-t border-gray-300 pt-2">
                       <span>Total:</span>

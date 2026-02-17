@@ -7,6 +7,10 @@ import {
   fetchFrontBackPages,
   fetchLetterheadBackground,
   fetchLetterheadBackgroundForOrder,
+  fetchHeaderFooterImages,
+  imageUrlToBase64,
+  buildHeaderHtml,
+  buildFooterHtml,
 } from "./headerFooterHelper.ts";
 
 const corsHeaders = {
@@ -291,7 +295,8 @@ const BASELINE_CSS = `
 }
 
 .patient-info {
-  page-break-inside: avoid;
+  page-break-inside: auto;
+  break-inside: auto;
 }
 
 /* Ensure tables are visible */
@@ -366,8 +371,8 @@ figure.table {
 
 /* Page break helpers */
 .avoid-break {
-  break-inside: avoid;
-  page-break-inside: avoid;
+  break-inside: auto;
+  page-break-inside: auto;
 }
 
 .page-break-before {
@@ -853,6 +858,7 @@ function generateAnalytePlaceholders(analytes: any[]): Record<string, any> {
       placeholders[`ANALYTE_${shortKey}_REFERENCE`] = analyte.reference_range ||
         "";
       placeholders[`ANALYTE_${shortKey}_FLAG`] = analyte.flag || "";
+      placeholders[`ANALYTE_${shortKey}_METHOD`] = analyte.method || "";
       placeholders[`ANALYTE_${shortKey}_DISPLAYFLAG`] = analyte.displayFlag ||
         "";
       // NEW: CSS class placeholders
@@ -876,6 +882,7 @@ function generateAnalytePlaceholders(analytes: any[]): Record<string, any> {
       placeholders[`${slug}_FLAG`] = analyte.flag || "";
       placeholders[`${slug}_DISPLAYFLAG`] = analyte.displayFlag || "";
       placeholders[`${slug}_NOTE`] = analyte.notes || analyte.comments || "";
+      placeholders[`${slug}_METHOD`] = analyte.method || "";
       // NEW: CSS class placeholders
       placeholders[`${slug}_FLAG_TEXT`] = flagText;
       placeholders[`${slug}_FLAG_CLASS`] = flagClass;
@@ -898,6 +905,7 @@ function generateAnalytePlaceholders(analytes: any[]): Record<string, any> {
       placeholders[`ANALYTE_${upperSnakeKey}_FLAG`] = analyte.flag || "";
       placeholders[`ANALYTE_${upperSnakeKey}_DISPLAYFLAG`] =
         analyte.displayFlag || "";
+      placeholders[`ANALYTE_${upperSnakeKey}_METHOD`] = analyte.method || "";
       placeholders[`ANALYTE_${upperSnakeKey}_FLAG_TEXT`] = flagText;
       placeholders[`ANALYTE_${upperSnakeKey}_FLAG_CLASS`] = flagClass;
       placeholders[`ANALYTE_${upperSnakeKey}_VALUE_CLASS`] = valueClass;
@@ -1237,19 +1245,19 @@ function generateDynamicCss(settings: any): string {
 }
 
 /**
- * Generate default template HTML when no custom template is found
- * Creates a structured report with patient info, test results tables, and signatory
+ * Classic default template - plain table with flag text styling.
+ * This is the original default template before the 3-band color matrix was added.
  */
-function generateDefaultTemplateHtml(
+function generateClassicDefaultTemplateHtml(
   context: any,
   testGroupNames: Map<string, string>,
   analytesByGroup: Map<string, any[]>,
   signatoryInfo: any,
   sectionContent?: Record<string, string>,
   includeSections = true,
+  showMethodology = true,
+  showInterpretation = false,
 ): string {
-  const patient = context.patient || {};
-  const order = context.order || {};
   const normalizedSectionContent =
     sectionContent && typeof sectionContent === "object" ? sectionContent : {};
 
@@ -1282,21 +1290,18 @@ function generateDefaultTemplateHtml(
     </div>
   `;
 
-  // Test Results Section - group by test group
+  // Test Results Section
   let testResultsHtml = '<div class="test-results">';
-  testResultsHtml +=
-    '<h3 style="font-size: 14px; font-weight: 600; color: #1e40af; margin-bottom: 8px; border-bottom: 2px solid #3b82f6; padding-bottom: 4px;">Test Results</h3>';
+  testResultsHtml += '<h3 style="font-size: 14px; font-weight: 600; color: #1e40af; margin-bottom: 8px; border-bottom: 2px solid #3b82f6; padding-bottom: 4px;">Test Results</h3>';
 
-  // Iterate through each test group
   for (const [groupId, analytes] of analytesByGroup) {
     if (!analytes || analytes.length === 0) continue;
 
-    const groupName = testGroupNames.get(groupId) || analytes[0]?.test_name ||
-      "Test Results";
+    const groupName = testGroupNames.get(groupId) || analytes[0]?.test_name || "Test Results";
 
     testResultsHtml += `
-      <div class="test-group-section" style="page-break-inside: avoid;">
-        <h4 style="font-size: 13px; font-weight: 600; color: #1e40af; padding: 6px 0; margin: 0;">${groupName}</h4>
+      <div class="test-group-section" style="margin-bottom: 16px;">
+        <h4 style="font-size: 16px; font-weight: 600; color: #1e40af; padding: 6px 0; margin: 0;">${groupName}</h4>
         <table class="report-table" style="width: 100%; border-collapse: collapse; font-size: 12px;">
           <thead>
             <tr style="background: #f1f5f9;">
@@ -1313,8 +1318,7 @@ function generateDefaultTemplateHtml(
     for (let i = 0; i < analytes.length; i++) {
       const analyte = analytes[i];
       const rowBg = i % 2 === 0 ? "#ffffff" : "#f8fafc";
-      const parameterName = analyte.parameter || analyte.name ||
-        analyte.test_name || "";
+      const parameterName = analyte.parameter || analyte.name || analyte.test_name || "";
       const value = analyte.value ?? "";
       const unit = analyte.unit || "";
       const refRange = analyte.reference_range || "";
@@ -1322,37 +1326,26 @@ function generateDefaultTemplateHtml(
 
       const unitText = String(unit || "").trim().toLowerCase();
       const refText = String(refRange || "").trim();
-      const hasNumericRef = /\d/.test(refText);
+      const hasNumericRef = /\\d/.test(refText);
       const isDescriptive =
         unitText === "n/a" || unitText === "na" || unitText === "-" ||
         unitText === "none" || unitText === "not applicable" ||
         (!unitText && refText && !hasNumericRef);
 
-      // Determine flag styling and CSS classes
       const flagLower = (flag || "").toString().toLowerCase().trim();
       let flagStyle = "";
       let flagClass = "";
 
-      if (
-        flagLower === "h" || flagLower === "high" ||
-        flagLower === "critical_high" || flagLower === "critical_h" ||
-        flagLower === "h*" || flagLower === "hh"
-      ) {
+      if (["h", "high", "critical_high", "critical_h", "h*", "hh"].includes(flagLower)) {
         flagStyle = "color: #dc2626; font-weight: bold;";
         flagClass = "result-high flag-high";
-      } else if (
-        flagLower === "l" || flagLower === "low" ||
-        flagLower === "critical_low" || flagLower === "critical_l" ||
-        flagLower === "l*" || flagLower === "ll"
-      ) {
+      } else if (["l", "low", "critical_low", "critical_l", "l*", "ll"].includes(flagLower)) {
         flagStyle = "color: #ea580c; font-weight: bold;";
         flagClass = "result-low flag-low";
       } else if (flagLower === "n" || flagLower === "normal") {
         flagStyle = "color: #16a34a;";
         flagClass = "result-normal flag-normal";
-      } else if (
-        flagLower === "c" || flagLower === "critical" || flagLower === "c*"
-      ) {
+      } else if (["c", "critical", "c*"].includes(flagLower)) {
         flagStyle = "color: #7c2d12; font-weight: bold;";
         flagClass = "result-critical flag-critical";
       } else if (flagLower === "a" || flagLower === "abnormal") {
@@ -1373,13 +1366,37 @@ function generateDefaultTemplateHtml(
 
       testResultsHtml += `
             <tr style="background: ${rowBg};">
-              <td style="padding: 8px 12px; border: 1px solid #e5e7eb;">${parameterName}</td>
+              <td style="padding: 8px 12px; border: 1px solid #e5e7eb;">
+                ${parameterName}
+                ${showMethodology && analyte.method ? `<div style="font-size: 9px; color: #9ca3af; margin-top: 2px;">${analyte.method}</div>` : ""}
+              </td>
               <td class="${flagClass}" style="padding: 8px 12px; border: 1px solid #e5e7eb; ${flagStyle}">${value}</td>
               <td style="padding: 8px 12px; border: 1px solid #e5e7eb;">${unit}</td>
               <td style="padding: 8px 12px; border: 1px solid #e5e7eb;">${refRange}</td>
               <td class="${flagClass}" style="padding: 8px 12px; border: 1px solid #e5e7eb; text-align: center; ${flagStyle}">${flag}</td>
             </tr>
       `;
+
+      // Interpretation row (shown below the analyte row if enabled)
+      if (showInterpretation) {
+        let classicInterpretation = "";
+        if (["h", "high", "critical_high", "critical_h", "h*", "hh"].includes(flagLower)) {
+          classicInterpretation = analyte.interpretation_high || "";
+        } else if (["l", "low", "critical_low", "critical_l", "l*", "ll"].includes(flagLower)) {
+          classicInterpretation = analyte.interpretation_low || "";
+        } else {
+          classicInterpretation = analyte.interpretation_normal || "";
+        }
+        if (classicInterpretation) {
+          testResultsHtml += `
+            <tr style="background: ${rowBg};">
+              <td colspan="5" style="padding: 2px 12px 6px 24px; border: 1px solid #e5e7eb; border-top: none; font-size: 11px; color: #6b7280; font-style: italic;">
+                <strong>Interpretation:</strong> ${classicInterpretation}
+              </td>
+            </tr>
+          `;
+        }
+      }
     }
 
     testResultsHtml += `
@@ -1391,29 +1408,499 @@ function generateDefaultTemplateHtml(
 
   testResultsHtml += "</div>";
 
-  // Signatory Section - QR will be injected by injectQrCode function
-  // Using class="signatures" so injectQrCode can find it and add QR on left
+  // Signatory Section
   const sigName = signatoryInfo?.signatoryName || "";
   const sigDesignation = signatoryInfo?.signatoryDesignation || "";
   const sigImageUrl = signatoryInfo?.signatoryImageUrl || "";
 
   const signatoryHtml = `
     <div class="signatures" style="margin-top: 20px; text-align: right; page-break-inside: avoid;">
-      ${
+      ${sigImageUrl ? `<img src="${sigImageUrl}" alt="Signature" style="max-height: 50px; max-width: 150px; margin-bottom: 5px;" />` : ""}
+      ${sigName ? `<p style="margin: 0; font-weight: 600; font-size: 14px;">${sigName}</p>` : ""}
+      ${sigDesignation ? `<p style="margin: 4px 0 0 0; color: #64748b; font-size: 12px;">${sigDesignation}</p>` : ""}
+    </div>
+  `;
+
+  const buildSectionLabel = (key: string) => {
+    const { rawKey } = normalizeSectionKey(key);
+    if (!rawKey) return "Report Section";
+    return rawKey
+      .replace(/[_-]+/g, " ")
+      .split(" ")
+      .filter(Boolean)
+      .map((part: string) => part.charAt(0).toUpperCase() + part.slice(1).toLowerCase())
+      .join(" ");
+  };
+
+  let reportSectionsHtml = "";
+  if (includeSections && Object.keys(normalizedSectionContent).length > 0) {
+    const sectionItems = Object.entries(normalizedSectionContent)
+      .filter(([, content]) => content && String(content).trim().length > 0)
+      .map(([key, content]) => {
+        const formatted = formatSectionContentToHtml(String(content));
+        if (!formatted) return "";
+        const heading = buildSectionLabel(key);
+        return `
+          <div style="margin-top: 12px;">
+            <h4 style="font-size: 13px; font-weight: 600; color: #111827; margin: 0 0 6px;">${heading}</h4>
+            ${formatted}
+          </div>
+        `;
+      })
+      .filter(Boolean)
+      .join("");
+
+    if (sectionItems) {
+      reportSectionsHtml = `
+        <div class="report-sections" style="margin-top: 18px;">
+          <h3 style="font-size: 14px; font-weight: 600; color: #111827; margin-bottom: 8px; border-bottom: 1px solid #e5e7eb; padding-bottom: 4px;">Report Sections</h3>
+          ${sectionItems}
+        </div>
+      `;
+    }
+  }
+
+  return `
+    <div class="default-report-template">
+      ${patientInfoHtml}
+      ${testResultsHtml}
+      ${reportSectionsHtml}
+      ${signatoryHtml}
+    </div>
+  `;
+}
+
+/**
+ * Generate default template HTML when no custom template is found.
+ * 
+ * Supports two styles controlled by lab setting `default_template_style`:
+ *   - "beautiful" (default): 3-band color matrix with colored cells
+ *   - "classic": Plain table with flag text styling
+ */
+function generateDefaultTemplateHtml(
+  context: any,
+  testGroupNames: Map<string, string>,
+  analytesByGroup: Map<string, any[]>,
+  signatoryInfo: any,
+  sectionContent?: Record<string, string>,
+  includeSections = true,
+  templateStyle: 'beautiful' | 'classic' = 'beautiful',
+  showMethodology = true,
+  showInterpretation = false,
+): string {
+  // Branch to classic template if requested
+  if (templateStyle === 'classic') {
+    return generateClassicDefaultTemplateHtml(
+      context, testGroupNames, analytesByGroup, signatoryInfo,
+      sectionContent, includeSections, showMethodology, showInterpretation,
+    );
+  }
+
+  const _patient = context.patient || {};
+  const _order = context.order || {};
+  const normalizedSectionContent =
+    sectionContent && typeof sectionContent === "object" ? sectionContent : {};
+
+  // ── Theme colors ──
+  const THEME = {
+    accent: "#5a7f3a",
+    normalBg: "#4a8c4a", normalText: "#ffffff",
+    borderlineBg: "#d4a84b", borderlineText: "#1f1f1f",
+    abnormalBg: "#c45454", abnormalText: "#ffffff",
+    headerBg: "#e8efe4", headerText: "#374151",
+  };
+
+  // ── Helper: classify a numeric value against structured ranges ──
+  function classifyValue(
+    numVal: number,
+    analyte: any,
+  ): { column: 1 | 2 | 3; semantic: "good" | "borderline" | "bad" } | null {
+    const minVal = analyte.normal_range_min != null
+      ? Number(analyte.normal_range_min)
+      : null;
+    const maxVal = analyte.normal_range_max != null
+      ? Number(analyte.normal_range_max)
+      : null;
+
+    if (minVal !== null && maxVal !== null && !isNaN(minVal) && !isNaN(maxVal)) {
+      if (numVal < minVal) return { column: 1, semantic: "bad" };
+      if (numVal > maxVal) return { column: 3, semantic: "bad" };
+      return { column: 2, semantic: "good" };
+    }
+
+    // Fallback: try parsing text reference_range "10 - 20" style
+    const refText = String(analyte.reference_range || "").trim();
+    const rangeMatch = refText.match(/([\d.]+)\s*[-–]\s*([\d.]+)/);
+    if (rangeMatch) {
+      const lo = parseFloat(rangeMatch[1]);
+      const hi = parseFloat(rangeMatch[2]);
+      if (!isNaN(lo) && !isNaN(hi)) {
+        if (numVal < lo) return { column: 1, semantic: "bad" };
+        if (numVal > hi) return { column: 3, semantic: "bad" };
+        return { column: 2, semantic: "good" };
+      }
+    }
+
+    return null; // no structured range available
+  }
+
+  // ── Helper: get color by semantic ──
+  function getColor(semantic: "good" | "borderline" | "bad") {
+    switch (semantic) {
+      case "good": return { bg: THEME.normalBg, text: THEME.normalText };
+      case "borderline": return { bg: THEME.borderlineBg, text: THEME.borderlineText };
+      case "bad": return { bg: THEME.abnormalBg, text: THEME.abnormalText };
+    }
+  }
+
+  // ── Helper: format reference range text for a column position ──
+  function formatRefForColumn(
+    analyte: any,
+    position: 1 | 2 | 3,
+  ): string {
+    const minVal = analyte.normal_range_min != null
+      ? Number(analyte.normal_range_min)
+      : null;
+    const maxVal = analyte.normal_range_max != null
+      ? Number(analyte.normal_range_max)
+      : null;
+
+    if (minVal !== null && maxVal !== null && !isNaN(minVal) && !isNaN(maxVal)) {
+      if (position === 1) return `< ${minVal}`;
+      if (position === 2) return `${minVal} – ${maxVal}`;
+      return `> ${maxVal}`;
+    }
+
+    // Fallback: parse text reference_range
+    const refText = String(analyte.reference_range || "").trim();
+    const rangeMatch = refText.match(/([\d.]+)\s*[-–]\s*([\d.]+)/);
+    if (rangeMatch) {
+      const lo = rangeMatch[1];
+      const hi = rangeMatch[2];
+      if (position === 1) return `< ${lo}`;
+      if (position === 2) return `${lo} – ${hi}`;
+      return `> ${hi}`;
+    }
+
+    if (position === 2) return refText || "";
+    return "";
+  }
+
+  // ── Helper: check if analyte has structured numeric range ──
+  function hasStructuredRange(analyte: any): boolean {
+    if (
+      analyte.normal_range_min != null && analyte.normal_range_max != null
+    ) return true;
+    const refText = String(analyte.reference_range || "").trim();
+    return /[\d.]+\s*[-–]\s*[\d.]+/.test(refText);
+  }
+
+  // ── Helper: check if value is numeric ──
+  function isNumericValue(val: any): boolean {
+    if (val == null || val === "") return false;
+    const str = String(val).trim();
+    return /^[<>≤≥]?\s*[\d.]+$/.test(str);
+  }
+
+  function extractNumericVal(val: any): number | null {
+    if (val == null || val === "") return null;
+    const str = String(val).trim();
+    const m = str.match(/([\d.]+)/);
+    return m ? parseFloat(m[1]) : null;
+  }
+
+  // ── Helper: check if analyte is descriptive (should be shown as full-width row) ──
+  function isDescriptiveAnalyte(analyte: any): boolean {
+    const unitText = String(analyte.unit || "").trim().toLowerCase();
+    const refText = String(analyte.reference_range || "").trim();
+    const hasNumericRef = /\d/.test(refText);
+    const vt = String(analyte.value_type || "").toLowerCase();
+
+    return (
+      vt === "descriptive" ||
+      unitText === "n/a" || unitText === "na" || unitText === "-" ||
+      unitText === "none" || unitText === "not applicable" ||
+      (!unitText && refText && !hasNumericRef && vt !== "numeric")
+    );
+  }
+
+  // ── Helper: get flag display + color for flat table badge ──
+  function getFlagBadge(flag: string): { text: string; bg: string } {
+    const f = (flag || "").toString().toLowerCase().trim();
+    if (f === "h" || f === "high" || f === "h*" || f === "hh" || f === "critical_high") {
+      return { text: f === "critical_high" || f === "h*" ? "H*" : "HIGH", bg: THEME.abnormalBg };
+    }
+    if (f === "l" || f === "low" || f === "l*" || f === "ll" || f === "critical_low") {
+      return { text: f === "critical_low" || f === "l*" ? "L*" : "LOW", bg: "#ea580c" };
+    }
+    if (f === "n" || f === "normal") {
+      return { text: "NORMAL", bg: THEME.normalBg };
+    }
+    if (f === "a" || f === "abnormal") {
+      return { text: "ABNORMAL", bg: THEME.abnormalBg };
+    }
+    if (f === "c" || f === "critical" || f === "c*") {
+      return { text: "CRITICAL", bg: "#7c2d12" };
+    }
+    return { text: flag || "", bg: "#6b7280" };
+  }
+
+  // ── Patient Information Section ──
+  const patientInfoHtml = `
+    <div class="patient-info" style="margin-bottom: 16px; padding: 12px 16px; background: #ffffff; border: 1px solid #d1d5db; border-radius: 4px; page-break-inside: avoid;">
+      <div style="display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 6px;">
+        <div style="font-size: 16px; font-weight: 700; color: ${THEME.accent};">
+          {{patientName}}
+        </div>
+        <div style="font-size: 11px; color: #6b7280;">
+          {{approvedAtFormatted}}
+        </div>
+      </div>
+      <div style="display: flex; flex-wrap: wrap; gap: 12px; font-size: 12px; color: #374151;">
+        <span><strong>Patient ID:</strong> {{patientId}}</span>
+        <span><strong>Age:</strong> {{patientAge}}</span>
+        <span><strong>Gender:</strong> {{patientGender}}</span>
+        <span><strong>Physician:</strong> {{referringDoctorName}}</span>
+        <span><strong>Collected:</strong> {{collectionDate}}</span>
+        <span><strong>Sample ID:</strong> {{sampleId}}</span>
+      </div>
+    </div>
+  `;
+
+  // ── Test Results Section - group by test group ──
+  let testResultsHtml = '<div class="test-results">';
+
+  for (const [groupId, analytes] of analytesByGroup) {
+    if (!analytes || analytes.length === 0) continue;
+
+    const groupName = testGroupNames.get(groupId) || analytes[0]?.test_name ||
+      "Test Results";
+
+    // Separate analytes into categories
+    const colorMatrixAnalytes: any[] = [];
+    const flatTableAnalytes: any[] = [];
+    const descriptiveAnalytes: any[] = [];
+
+    for (const analyte of analytes) {
+      if (isDescriptiveAnalyte(analyte)) {
+        descriptiveAnalytes.push(analyte);
+      } else if (isNumericValue(analyte.value) && hasStructuredRange(analyte)) {
+        colorMatrixAnalytes.push(analyte);
+      } else {
+        flatTableAnalytes.push(analyte);
+      }
+    }
+
+    testResultsHtml += `
+      <div class="test-group-section" style="margin-bottom: 20px; page-break-inside: auto;">
+        <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 10px; padding-bottom: 6px; border-bottom: 2px solid ${THEME.accent};">
+          <h3 style="font-size: 18px; font-weight: 600; color: ${THEME.accent}; margin: 0;">${groupName}</h3>
+        </div>
+    `;
+
+    // ── 3-Band Color Matrix Table (for numeric analytes with structured ranges) ──
+    if (colorMatrixAnalytes.length > 0) {
+      testResultsHtml += `
+        <table style="width: 100%; border-collapse: collapse; font-size: 13px; background: #ffffff; -webkit-print-color-adjust: exact; print-color-adjust: exact; margin-bottom: 12px;">
+          <thead>
+            <tr>
+              <th style="text-align: left; padding: 8px 12px; border: 1px solid #d1d5db; width: 180px; font-size: 10px; text-transform: uppercase; letter-spacing: 0.03em; color: ${THEME.headerText}; background-color: ${THEME.headerBg}; -webkit-print-color-adjust: exact; print-color-adjust: exact;">Test Name</th>
+              <th style="text-align: center; padding: 8px 12px; border: 1px solid #d1d5db; width: 130px; font-size: 10px; text-transform: uppercase; letter-spacing: 0.03em; color: ${THEME.headerText}; background-color: ${THEME.headerBg}; -webkit-print-color-adjust: exact; print-color-adjust: exact;">Low</th>
+              <th style="text-align: center; padding: 8px 12px; border: 1px solid #d1d5db; width: 130px; font-size: 10px; text-transform: uppercase; letter-spacing: 0.03em; color: ${THEME.headerText}; background-color: ${THEME.headerBg}; -webkit-print-color-adjust: exact; print-color-adjust: exact;">Normal</th>
+              <th style="text-align: center; padding: 8px 12px; border: 1px solid #d1d5db; width: 130px; font-size: 10px; text-transform: uppercase; letter-spacing: 0.03em; color: ${THEME.headerText}; background-color: ${THEME.headerBg}; -webkit-print-color-adjust: exact; print-color-adjust: exact;">High</th>
+            </tr>
+          </thead>
+          <tbody>
+      `;
+
+      for (const analyte of colorMatrixAnalytes) {
+        const paramName = analyte.parameter || analyte.name || analyte.test_name || "";
+        const value = analyte.value ?? "";
+        const unitStr = analyte.unit || "";
+        const method = analyte.method || "";
+        const numVal = extractNumericVal(value);
+        const classification = numVal !== null ? classifyValue(numVal, analyte) : null;
+
+        const ref1 = formatRefForColumn(analyte, 1);
+        const ref2 = formatRefForColumn(analyte, 2);
+        const ref3 = formatRefForColumn(analyte, 3);
+
+        const buildColorCell = (colNum: 1 | 2 | 3, refText: string) => {
+          const isActive = classification?.column === colNum;
+          if (isActive) {
+            const color = getColor(classification!.semantic);
+            return `
+              <td style="padding: 6px; border: 1px solid #d1d5db; text-align: center; vertical-align: middle; background-color: ${color.bg}; -webkit-print-color-adjust: exact; print-color-adjust: exact;">
+                <div style="font-size: 15px; font-weight: 700; color: ${color.text};">${value}</div>
+                ${unitStr ? `<div style="font-size: 10px; color: ${color.text}; opacity: 0.85; margin-top: 1px;">${unitStr}</div>` : ""}
+                ${refText ? `<div style="font-size: 10px; color: ${color.text}; opacity: 0.85; margin-top: 2px;">${refText}</div>` : ""}
+              </td>
+            `;
+          }
+          return `
+            <td style="padding: 6px; border: 1px solid #d1d5db; text-align: center; vertical-align: middle; background-color: transparent;">
+              <div style="font-size: 10px; color: #6b7280;">${refText}</div>
+            </td>
+          `;
+        };
+
+        testResultsHtml += `
+            <tr style="page-break-inside: avoid;">
+              <td style="font-weight: 600; padding: 10px 12px; border: 1px solid #d1d5db; color: #1f2937; width: 180px;">
+                ${paramName}
+                ${showMethodology && method ? `<div style="font-size: 9px; color: #9ca3af; margin-top: 2px;">${method}</div>` : ""}
+              </td>
+              ${buildColorCell(1, ref1)}
+              ${buildColorCell(2, ref2)}
+              ${buildColorCell(3, ref3)}
+            </tr>
+        `;
+
+        // Interpretation row (shown below the analyte row if enabled)
+        if (showInterpretation) {
+          const flagLower = (analyte.flag || "").toString().toLowerCase().trim();
+          let interpretationText = "";
+          if (["h", "high", "critical_high", "h*", "hh"].includes(flagLower)) {
+            interpretationText = analyte.interpretation_high || "";
+          } else if (["l", "low", "critical_low", "l*", "ll"].includes(flagLower)) {
+            interpretationText = analyte.interpretation_low || "";
+          } else {
+            interpretationText = analyte.interpretation_normal || "";
+          }
+          if (interpretationText) {
+            testResultsHtml += `
+            <tr style="page-break-inside: avoid;">
+              <td colspan="4" style="padding: 4px 12px 8px 24px; border: 1px solid #d1d5db; border-top: none; font-size: 11px; color: #6b7280; font-style: italic;">
+                <strong>Interpretation:</strong> ${interpretationText}
+              </td>
+            </tr>
+            `;
+          }
+        }
+      }
+
+      testResultsHtml += `
+          </tbody>
+        </table>
+      `;
+    }
+
+    // ── Flat Table with Flag Badges (for non-structured results) ──
+    if (flatTableAnalytes.length > 0) {
+      testResultsHtml += `
+        <table class="report-table" style="width: 100%; border-collapse: collapse; font-size: 13px; background: #ffffff; margin-bottom: 12px;">
+          <thead>
+            <tr>
+              <th style="text-align: left; padding: 8px 12px; border: 1px solid #d1d5db; font-size: 10px; text-transform: uppercase; letter-spacing: 0.03em; color: ${THEME.headerText}; background-color: ${THEME.headerBg}; -webkit-print-color-adjust: exact; print-color-adjust: exact;">Test</th>
+              <th style="text-align: center; padding: 8px 12px; border: 1px solid #d1d5db; font-size: 10px; text-transform: uppercase; letter-spacing: 0.03em; color: ${THEME.headerText}; background-color: ${THEME.headerBg}; -webkit-print-color-adjust: exact; print-color-adjust: exact;">Result</th>
+              <th style="text-align: center; padding: 8px 12px; border: 1px solid #d1d5db; font-size: 10px; text-transform: uppercase; letter-spacing: 0.03em; color: ${THEME.headerText}; background-color: ${THEME.headerBg}; -webkit-print-color-adjust: exact; print-color-adjust: exact;">Unit</th>
+              <th style="text-align: center; padding: 8px 12px; border: 1px solid #d1d5db; font-size: 10px; text-transform: uppercase; letter-spacing: 0.03em; color: ${THEME.headerText}; background-color: ${THEME.headerBg}; -webkit-print-color-adjust: exact; print-color-adjust: exact;">Ref. Range</th>
+              <th style="text-align: center; padding: 8px 12px; border: 1px solid #d1d5db; font-size: 10px; text-transform: uppercase; letter-spacing: 0.03em; color: ${THEME.headerText}; background-color: ${THEME.headerBg}; -webkit-print-color-adjust: exact; print-color-adjust: exact;">Flag</th>
+            </tr>
+          </thead>
+          <tbody>
+      `;
+
+      for (const analyte of flatTableAnalytes) {
+        const paramName = analyte.parameter || analyte.name || analyte.test_name || "";
+        const value = analyte.value ?? "";
+        const unit = analyte.unit || "";
+        const refRange = analyte.reference_range || "";
+        const flag = analyte.flag || "";
+        const method = analyte.method || "";
+        const badge = getFlagBadge(flag);
+        const isAbnormal = flag && !["n", "normal", ""].includes(flag.toString().toLowerCase().trim());
+
+        testResultsHtml += `
+            <tr style="page-break-inside: avoid;">
+              <td style="padding: 8px 12px; border: 1px solid #d1d5db; font-weight: 600; color: #1f2937;">
+                ${paramName}
+                ${showMethodology && method ? `<div style="font-size: 9px; color: #9ca3af;">${method}</div>` : ""}
+              </td>
+              <td style="padding: 8px 12px; border: 1px solid #d1d5db; text-align: center; font-weight: 700; color: ${isAbnormal ? badge.bg : "#374151"};">${value}</td>
+              <td style="padding: 8px 12px; border: 1px solid #d1d5db; text-align: center; color: #6b7280; font-size: 12px;">${unit}</td>
+              <td style="padding: 8px 12px; border: 1px solid #d1d5db; text-align: center; color: #6b7280; font-size: 12px;">${refRange}</td>
+              <td style="padding: 8px 12px; border: 1px solid #d1d5db; text-align: center;">
+                ${flag ? `<span style="display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 10px; font-weight: 600; color: white; background-color: ${badge.bg}; -webkit-print-color-adjust: exact; print-color-adjust: exact;">${badge.text}</span>` : ""}
+              </td>
+            </tr>
+        `;
+
+        // Interpretation row (shown below the analyte row if enabled)
+        if (showInterpretation) {
+          const flagLowerFlat = (flag || "").toString().toLowerCase().trim();
+          let interpretationTextFlat = "";
+          if (["h", "high", "critical_high", "h*", "hh"].includes(flagLowerFlat)) {
+            interpretationTextFlat = analyte.interpretation_high || "";
+          } else if (["l", "low", "critical_low", "l*", "ll"].includes(flagLowerFlat)) {
+            interpretationTextFlat = analyte.interpretation_low || "";
+          } else {
+            interpretationTextFlat = analyte.interpretation_normal || "";
+          }
+          if (interpretationTextFlat) {
+            testResultsHtml += `
+            <tr style="page-break-inside: avoid;">
+              <td colspan="5" style="padding: 4px 12px 8px 24px; border: 1px solid #d1d5db; border-top: none; font-size: 11px; color: #6b7280; font-style: italic;">
+                <strong>Interpretation:</strong> ${interpretationTextFlat}
+              </td>
+            </tr>
+            `;
+          }
+        }
+      }
+
+      testResultsHtml += `
+          </tbody>
+        </table>
+      `;
+    }
+
+    // ── Descriptive Rows ──
+    if (descriptiveAnalytes.length > 0) {
+      for (const analyte of descriptiveAnalytes) {
+        const paramName = analyte.parameter || analyte.name || analyte.test_name || "";
+        const value = analyte.value ?? "";
+        const refText = String(analyte.reference_range || "").trim();
+        testResultsHtml += `
+          <div style="padding: 8px 12px; border: 1px solid #e5e7eb; border-radius: 4px; margin-bottom: 6px; background: #f9fafb;">
+            <strong style="color: #1f2937;">${paramName}:</strong>
+            <span style="color: #374151; margin-left: 6px;">${value || refText || ""}</span>
+          </div>
+        `;
+      }
+    }
+
+    testResultsHtml += `
+      </div>
+    `;
+  }
+
+  testResultsHtml += "</div>";
+
+  // ── Signatory Section ──
+  const sigName = signatoryInfo?.signatoryName || "";
+  const sigDesignation = signatoryInfo?.signatoryDesignation || "";
+  const sigImageUrl = signatoryInfo?.signatoryImageUrl || "";
+
+  const signatoryHtml = `
+    <div class="signatures" style="margin-top: 30px; text-align: right; page-break-inside: avoid;">
+      <div style="display: inline-block; text-align: center; min-width: 200px;">
+        ${
     sigImageUrl
       ? `<img src="${sigImageUrl}" alt="Signature" style="max-height: 50px; max-width: 150px; margin-bottom: 5px;" />`
       : ""
   }
-      ${
+        ${
     sigName
-      ? `<p style="margin: 0; font-weight: 600; font-size: 14px;">${sigName}</p>`
+      ? `<div style="border-bottom: 1px solid #374151; padding-bottom: 4px; margin-bottom: 4px; font-size: 14px; font-weight: 600; color: #1f2937;">${sigName}</div>`
       : ""
   }
-      ${
+        ${
     sigDesignation
-      ? `<p style="margin: 4px 0 0 0; color: #64748b; font-size: 12px;">${sigDesignation}</p>`
+      ? `<div style="font-size: 11px; color: #6b7280;">${sigDesignation}</div>`
       : ""
   }
+      </div>
     </div>
   `;
 
@@ -1448,7 +1935,7 @@ function generateDefaultTemplateHtml(
 
     if (sectionItems) {
       reportSectionsHtml = `
-        <div class="report-sections" style="margin-top: 18px; page-break-inside: avoid;">
+        <div class="report-sections" style="margin-top: 18px;">
           <h3 style="font-size: 14px; font-weight: 600; color: #111827; margin-bottom: 8px; border-bottom: 1px solid #e5e7eb; padding-bottom: 4px;">Report Sections</h3>
           ${sectionItems}
         </div>
@@ -1456,7 +1943,7 @@ function generateDefaultTemplateHtml(
     }
   }
 
-  // Combine all sections
+  // ── Combine all sections ──
   return `
     <div class="default-report-template">
       ${patientInfoHtml}
@@ -1593,22 +2080,22 @@ function buildPdfBodyDocumentV2(
       background-color: transparent !important;
     }
     
-    /* Keep tables readable with semi-transparent background */
+    /* Keep tables readable with solid white background (no bleed-through) */
     .patient-info,
     .report-table,
     .tbl-meta,
     .tbl-results,
     .tbl-interpretation {
-      background: rgba(255, 255, 255, 0.88) !important;
+      background: #ffffff !important;
     }
-    
-    /* Keep table cells readable */
+
+    /* Solid white for table cells - prevent baseline CSS colors bleeding letterhead */
     .report-table tbody tr:nth-child(even),
     .tbl-results tbody tr:nth-child(even),
     .tbl-interpretation tbody tr:nth-child(even) {
-      background: rgba(248, 250, 252, 0.88) !important;
+      background: #f8fafc !important;
     }
-    
+
     /* Safe content area - spacing handled by HTML TABLE spacers now */
     .limsv2-report-body--pdf {
       padding: 0 20px !important;
@@ -1755,20 +2242,22 @@ function addFlagClassesToHtml(html: string): string {
     const lowerRow = rowHtml.toLowerCase();
 
     // Check for critical first (more specific)
-    if (lowerRow.includes("critical_h") || lowerRow.includes("criticalh")) {
+    if (lowerRow.includes("critical_h") || lowerRow.includes("criticalh") ||
+      lowerRow.includes(">h*<") || lowerRow.includes("> h* <")) {
       status = "critical_h";
     } else if (
-      lowerRow.includes("critical_l") || lowerRow.includes("criticall")
+      lowerRow.includes("critical_l") || lowerRow.includes("criticall") ||
+      lowerRow.includes(">l*<") || lowerRow.includes("> l* <")
     ) status = "critical_l";
     else if (lowerRow.includes("critical")) status = "critical";
     // High / Low
     else if (
       lowerRow.includes(">high<") || lowerRow.includes(">h<") ||
-      lowerRow.includes("> hh <")
+      lowerRow.includes("> hh <") || lowerRow.includes(">hh<")
     ) status = "high";
     else if (
       lowerRow.includes(">low<") || lowerRow.includes(">l<") ||
-      lowerRow.includes("> ll <")
+      lowerRow.includes("> ll <") || lowerRow.includes(">ll<")
     ) status = "low";
     // Qualitative Abnormal (Red)
     else if (
@@ -1803,11 +2292,11 @@ function addFlagClassesToHtml(html: string): string {
         // Is this the FLAG cell? (Matches the status text)
         const isFlagCell =
           (status === "critical_h" &&
-            (lowerText === "critical_h" || lowerText === "criticalh")) ||
+            (lowerText === "critical_h" || lowerText === "criticalh" || lowerText === "h*")) ||
           (status === "critical_l" &&
-            (lowerText === "critical_l" || lowerText === "criticall")) ||
-          (status === "high" && (lowerText === "high" || lowerText === "h")) ||
-          (status === "low" && (lowerText === "low" || lowerText === "l")) ||
+            (lowerText === "critical_l" || lowerText === "criticall" || lowerText === "l*")) ||
+          (status === "high" && (lowerText === "high" || lowerText === "h" || lowerText === "hh")) ||
+          (status === "low" && (lowerText === "low" || lowerText === "l" || lowerText === "ll")) ||
           (status === "abnormal" &&
             (lowerText.includes("detected") || lowerText === "positive" ||
               lowerText === "present" || lowerText === "reactive")) ||
@@ -2867,9 +3356,9 @@ function generateReportExtrasHtml(extras: {
     // Format clinical summary with proper HTML structure
     const formattedSummary = formatClinicalSummary(extras.clinical_summary);
     html +=
-      '<div class="report-extras-summary clinical-summary-section" style="margin-top: 30px; page-break-inside: avoid; border: 2px solid #3b82f6; border-radius: 8px; padding: 20px; background: #eff6ff;">';
+      '<div class="report-extras-summary clinical-summary-section" style="margin-top: 30px; border: 2px solid #3b82f6; border-radius: 8px; padding: 20px; background: #eff6ff;">';
     html +=
-      '<h2 class="clinical-summary-title" style="margin: 0 0 15px 0; color: #1e40af; font-size: 18px; font-weight: bold; text-align: center; border-bottom: 2px solid #3b82f6; padding-bottom: 10px;">AI Clinical Interpretation</h2>';
+      '<h2 class="clinical-summary-title" style="margin: 0 0 15px 0; color: #1e40af; font-size: 18px; font-weight: bold; text-align: center; border-bottom: 2px solid #3b82f6; padding-bottom: 10px; page-break-after: avoid; break-after: avoid;">AI Clinical Interpretation</h2>';
     html +=
       `<div class="clinical-summary-content" style="font-size: 13px; line-height: 1.6; color: #1f2937;">${formattedSummary}</div>`;
     html += "</div>";
@@ -2881,9 +3370,9 @@ function generateReportExtrasHtml(extras: {
       extras.ai_clinical_summary,
     );
     html +=
-      '<div class="report-ai-summary" style="margin-top: 30px; page-break-inside: avoid; border: 2px solid #3b82f6; border-radius: 8px; padding: 20px; background: #eff6ff;">';
+      '<div class="report-ai-summary" style="margin-top: 30px; border: 2px solid #3b82f6; border-radius: 8px; padding: 20px; background: #eff6ff;">';
     html +=
-      '<h2 style="margin: 0 0 15px 0; color: #1e40af; font-size: 18px; font-weight: bold; text-align: center; border-bottom: 2px solid #3b82f6; padding-bottom: 10px;">AI Clinical Interpretation</h2>';
+      '<h2 style="margin: 0 0 15px 0; color: #1e40af; font-size: 18px; font-weight: bold; text-align: center; border-bottom: 2px solid #3b82f6; padding-bottom: 10px; page-break-after: avoid; break-after: avoid;">AI Clinical Interpretation</h2>';
     html +=
       `<div style="font-size: 13px; line-height: 1.6; color: #1f2937;">${formattedAiSummary}</div>`;
     html += "</div>";
@@ -2892,8 +3381,8 @@ function generateReportExtrasHtml(extras: {
   // AI Doctor Summary from reports table
   if (extras.ai_doctor_summary) {
     html +=
-      '<div class="report-doctor-summary" style="margin-top: 20px; page-break-inside: avoid;">';
-    html += '<h3 style="margin-bottom: 10px;">Doctor\'s Summary</h3>';
+      '<div class="report-doctor-summary" style="margin-top: 20px;">';
+    html += '<h3 style="margin-bottom: 10px; page-break-after: avoid; break-after: avoid;">Doctor\'s Summary</h3>';
     html +=
       `<div style="padding: 10px; background: #f9fafb; border-radius: 4px;">${extras.ai_doctor_summary}</div>`;
     html += "</div>";
@@ -2914,9 +3403,9 @@ function generateReportExtrasHtml(extras: {
         : "";
 
       html +=
-        '<div class="report-patient-summary" style="margin-top: 30px; page-break-inside: avoid; border: 2px solid #db2777; border-radius: 8px; padding: 20px; background: #fdf2f8;">';
+        '<div class="report-patient-summary" style="margin-top: 30px; border: 2px solid #db2777; border-radius: 8px; padding: 20px; background: #fdf2f8;">';
       html +=
-        `<h2 style="margin: 0 0 15px 0; color: #be185d; font-size: 18px; font-weight: bold; text-align: center; border-bottom: 2px solid #db2777; padding-bottom: 10px;">Your Results Summary${languageLabel}</h2>`;
+        `<h2 style="margin: 0 0 15px 0; color: #be185d; font-size: 18px; font-weight: bold; text-align: center; border-bottom: 2px solid #db2777; padding-bottom: 10px; page-break-after: avoid; break-after: avoid;">Your Results Summary${languageLabel}</h2>`;
 
       // Health Status
       if (patientSummary.health_status) {
@@ -3131,9 +3620,9 @@ function generateReportExtrasHtml(extras: {
       // If JSON parsing fails, render as plain text
       console.log("Patient summary parsing failed, rendering as text:", e);
       html +=
-        '<div class="report-patient-summary" style="margin-top: 30px; page-break-inside: avoid; border: 2px solid #db2777; border-radius: 8px; padding: 20px; background: #fdf2f8;">';
+        '<div class="report-patient-summary" style="margin-top: 30px; border: 2px solid #db2777; border-radius: 8px; padding: 20px; background: #fdf2f8;">';
       html +=
-        '<h2 style="margin: 0 0 15px 0; color: #be185d; font-size: 18px; font-weight: bold; text-align: center; border-bottom: 2px solid #db2777; padding-bottom: 10px;">Your Results Summary</h2>';
+        '<h2 style="margin: 0 0 15px 0; color: #be185d; font-size: 18px; font-weight: bold; text-align: center; border-bottom: 2px solid #db2777; padding-bottom: 10px; page-break-after: avoid; break-after: avoid;">Your Results Summary</h2>';
       html +=
         `<div style="font-size: 13px; line-height: 1.6; color: #1f2937;">${extras.ai_patient_summary}</div>`;
       html += "</div>";
@@ -3146,6 +3635,42 @@ function generateReportExtrasHtml(extras: {
 // ============================================================
 // SECTION: Attachment Processing
 // ============================================================
+
+/**
+ * Apply ImageKit transformations to letterhead background for crisp A4 rendering.
+ * Requests 2480px wide (A4 @ 300dpi), high quality, PNG format to eliminate
+ * JPEG compression artifacts that cause brown/pixelated backgrounds.
+ */
+function applyLetterheadImageTransform(url: string): string {
+  if (!url) return url;
+  if (!url.includes("ik.imagekit.io")) return url;
+
+  try {
+    const urlObj = new URL(url);
+
+    // If transformations already exist, replace them for letterhead-quality
+    if (url.includes("/tr:")) {
+      return url.replace(/\/tr:[^/]+/, "/tr:w-2480,h-3508,c-force,q-95,f-png");
+    }
+    if (url.includes("?tr=")) {
+      return url.replace(/\?tr=[^&]+/, "?tr=w-2480,h-3508,c-force,q-95,f-png");
+    }
+
+    // Insert transformation path segment
+    const pathParts = urlObj.pathname.split("/");
+    const insertIndex = pathParts.findIndex((p: string) =>
+      p && !p.includes(".")
+    ) + 1;
+    pathParts.splice(insertIndex, 0, "tr:w-2480,h-3508,c-force,q-95,f-png");
+    urlObj.pathname = pathParts.join("/");
+
+    console.log("📸 Applied letterhead ImageKit transform: 2480x3508 q95 png");
+    return urlObj.toString();
+  } catch (e) {
+    console.log("⚠️ Could not apply letterhead transform:", e);
+    return url;
+  }
+}
 
 /**
  * Apply ImageKit transformations to resize attachment images for PDF
@@ -4009,53 +4534,131 @@ serve(async (req) => {
       // Step 5: Get Lab Settings (Header/Footer/PDF Settings/Watermark)
       // ========================================
       console.log("\n⚙️ Step 5: Fetching lab settings...");
-      const { data: labSettings } = await supabaseClient
+      const { data: labSettings, error: labSettingsError } = await supabaseClient
         .from("labs")
         .select(`
         name,
         default_report_header_html, 
         default_report_footer_html, 
         pdf_layout_settings,
+        pdf_letterhead_mode,
         watermark_enabled,
         watermark_image_url,
         watermark_opacity,
         watermark_position,
         watermark_size,
         watermark_rotation,
-        result_colors
+        default_template_style,
+        show_methodology,
+        show_interpretation
       `)
         .eq("id", job.lab_id)
         .single();
 
-      // FETCH LETTERHEAD BACKGROUND IMAGE (Full-page background approach)
-      // Priority: B2B Account > Location > Lab
-      console.log("  🖼️ Fetching letterhead background image...");
-      console.log("  📍 Order ID:", orderId, "| Lab ID:", job.lab_id);
-      const letterheadBackgroundUrl = await fetchLetterheadBackgroundForOrder(
-        supabaseClient,
-        orderId,
-        job.lab_id,
-      );
+      if (labSettingsError) {
+        console.error("  ❌ Lab settings query error:", labSettingsError.message);
+      }
 
-      console.log(
-        "  🎨 Letterhead Background URL:",
-        letterheadBackgroundUrl || "NOT FOUND",
-      );
-      if (letterheadBackgroundUrl) {
-        console.log(
-          "  ✅ Using letterhead background:",
-          letterheadBackgroundUrl,
+      const pdfLetterheadMode = labSettings?.pdf_letterhead_mode || 'background';
+      console.log("  📋 PDF Letterhead Mode:", pdfLetterheadMode);
+
+      // Variables for both modes
+      let letterheadUrl: string | null = null;
+      let headerFooterHtml: { headerHtml: string; footerHtml: string } = { headerHtml: '', footerHtml: '' };
+
+      if (pdfLetterheadMode === 'header_footer') {
+        // MODE: Separate Header/Footer Images
+        // Fetch header and footer separately, convert to base64 for PDF.co native header/footer
+        console.log("  🖼️ Fetching SEPARATE header/footer images (header_footer mode)...");
+        const { headerUrl, footerUrl } = await fetchHeaderFooterImages(
+          supabaseClient,
+          orderId,
+          job.lab_id,
         );
+
+        console.log("  📍 Header URL:", headerUrl ? "FOUND" : "NOT FOUND");
+        console.log("  📍 Footer URL:", footerUrl ? "FOUND" : "NOT FOUND");
+
+        // Convert to base64 for reliable rendering (with fallback to direct URL)
+        let headerSrc = headerUrl || '';
+        let footerSrc = footerUrl || '';
+
+        if (headerUrl) {
+          const headerBase64 = await imageUrlToBase64(headerUrl);
+          if (headerBase64) {
+            headerSrc = headerBase64;
+            console.log("  ✅ Header converted to base64");
+          } else {
+            console.log("  ⚠️ Header base64 failed, using direct URL");
+            // Apply ImageKit transform for quality if it's ImageKit URL
+            if (headerUrl.includes('ik.imagekit.io') && !headerUrl.includes('/tr:')) {
+              headerSrc = headerUrl.replace(/(ik\.imagekit\.io\/[^/]+)/, '$1/tr:w-2480,q-90');
+            }
+          }
+        }
+
+        if (footerUrl) {
+          const footerBase64 = await imageUrlToBase64(footerUrl);
+          if (footerBase64) {
+            footerSrc = footerBase64;
+            console.log("  ✅ Footer converted to base64");
+          } else {
+            console.log("  ⚠️ Footer base64 failed, using direct URL");
+            if (footerUrl.includes('ik.imagekit.io') && !footerUrl.includes('/tr:')) {
+              footerSrc = footerUrl.replace(/(ik\.imagekit\.io\/[^/]+)/, '$1/tr:w-2480,q-90');
+            }
+          }
+        }
+
+        // Build header/footer HTML for PDF.co
+        const pdfLayoutSettings = labSettings?.pdf_layout_settings || {};
+        const headerHeight = pdfLayoutSettings?.headerHeight || 90;
+        const footerHeight = pdfLayoutSettings?.footerHeight || 80;
+
+        headerFooterHtml = {
+          headerHtml: headerSrc ? buildHeaderHtml(headerSrc, headerHeight) : '',
+          footerHtml: footerSrc ? buildFooterHtml(footerSrc, footerHeight) : '',
+        };
+
+        console.log("  ✅ Header/Footer mode configured:",
+          "header:", headerFooterHtml.headerHtml.length, "chars,",
+          "footer:", headerFooterHtml.footerHtml.length, "chars");
+
+        // letterheadUrl stays null — no background image in this mode
       } else {
-        console.log("  ⚠️ No letterhead background found, using plain layout");
+        // MODE: Full-page Background (default/current behavior)
+        // FETCH LETTERHEAD BACKGROUND IMAGE (Full-page background approach)
+        // Priority: B2B Account > Location > Lab
+        console.log("  🖼️ Fetching letterhead background image (background mode)...");
+        console.log("  📍 Order ID:", orderId, "| Lab ID:", job.lab_id);
+        const letterheadBackgroundUrl = await fetchLetterheadBackgroundForOrder(
+          supabaseClient,
+          orderId,
+          job.lab_id,
+        );
+
+        // Apply ImageKit transforms for high-quality A4 rendering (2480x3508 @ 300dpi)
+        letterheadUrl = letterheadBackgroundUrl
+          ? applyLetterheadImageTransform(letterheadBackgroundUrl)
+          : null;
+
+        console.log(
+          "  🎨 Letterhead Background URL:",
+          letterheadUrl || "NOT FOUND",
+        );
+        if (letterheadUrl) {
+          console.log(
+            "  ✅ Using letterhead background:",
+            letterheadUrl,
+          );
+        } else {
+          console.log("  ⚠️ No letterhead background found, using plain layout");
+        }
       }
 
       const pdfSettings = labSettings?.pdf_layout_settings || {};
 
-      // Add result_colors to pdfSettings for dynamic CSS generation
-      if (labSettings?.result_colors) {
-        pdfSettings.resultColors = labSettings.result_colors;
-      }
+      // result_colors lives inside pdf_layout_settings.resultColors (not a separate column)
 
       // Watermark settings
       const watermarkSettings = {
@@ -4607,7 +5210,7 @@ serve(async (req) => {
       );
 
       // Note: Using letterhead background instead of separate header/footer
-      if (letterheadBackgroundUrl) {
+      if (letterheadUrl) {
         console.log("✅ Using letterhead background");
       }
       if (frontPage) console.log("✅ Using custom front page");
@@ -4830,6 +5433,10 @@ serve(async (req) => {
             analytesByGroup,
             signatoryInfo,
             fullContext?.sectionContent,
+            true,
+            labSettings?.default_template_style || 'beautiful',
+            labSettings?.show_methodology ?? true,
+            labSettings?.show_interpretation ?? false,
           );
           renderedHtml = renderTemplate(renderedHtml, fullContext); // Process placeholders
 
@@ -4868,7 +5475,7 @@ serve(async (req) => {
 
         console.log(
           "🔧 About to call buildPdfBodyDocumentV2 with letterhead:",
-          letterheadBackgroundUrl || "NONE",
+          letterheadUrl || "NONE",
         );
 
         const verifyUrl = `https://app.limsapp.in/verify?id=${
@@ -4878,7 +5485,7 @@ serve(async (req) => {
         bodyHtml = buildPdfBodyDocumentV2(
           renderedHtml,
           templateCss + "\n" + dynamicCss,
-          letterheadBackgroundUrl,
+          letterheadUrl,
           pdfSettings,
           verifyUrl,
         );
@@ -5010,6 +5617,9 @@ serve(async (req) => {
               signatoryInfo,
               groupFullContext?.sectionContent,
               renderedSections.length === 0,
+              labSettings?.default_template_style || 'beautiful',
+              labSettings?.show_methodology ?? true,
+              labSettings?.show_interpretation ?? false,
             );
             renderedHtml = renderTemplate(renderedHtml, groupFullContext);
 
@@ -5058,6 +5668,9 @@ serve(async (req) => {
             signatoryInfo,
             fullContext?.sectionContent,
             true,
+            labSettings?.default_template_style || 'beautiful',
+            labSettings?.show_methodology ?? true,
+            labSettings?.show_interpretation ?? false,
           );
           let renderedDefaultHtml = renderTemplate(defaultHtml, fullContext);
 
@@ -5087,7 +5700,7 @@ serve(async (req) => {
         const dynamicCss = generateDynamicCss(pdfSettings);
         console.log(
           "🔧 About to call buildPdfBodyDocumentV2 (multi-template) with letterhead:",
-          letterheadBackgroundUrl || "NONE",
+          letterheadUrl || "NONE",
         );
 
         const verifyUrl = `https://app.limsapp.in/verify?id=${
@@ -5096,7 +5709,7 @@ serve(async (req) => {
         bodyHtml = buildPdfBodyDocumentV2(
           renderedSections.join("\n"),
           templateCss + "\n" + dynamicCss,
-          letterheadBackgroundUrl,
+          letterheadUrl,
           pdfSettings,
           verifyUrl,
         );
@@ -5205,7 +5818,7 @@ serve(async (req) => {
       // so the background image is not pushed down. Content spacing is handled by CSS padding.
       let margins = DEFAULT_PDF_SETTINGS.margins;
 
-      if (letterheadBackgroundUrl) {
+      if (letterheadUrl) {
         // Letterhead Mode: 0px vertical margins (background full bleed), preserve side margins
         const sideMargin = pdfSettings?.margins?.left || 20;
         margins = `0px ${sideMargin}px 0px ${sideMargin}px`;
@@ -5340,6 +5953,10 @@ serve(async (req) => {
               analytesByGroup,
               signatoryInfo,
               printSectionContent,
+              true,
+              labSettings?.default_template_style || 'beautiful',
+              labSettings?.show_methodology ?? true,
+              labSettings?.show_interpretation ?? false,
             );
             printRenderedHtml = renderTemplate(
               printRenderedHtml,
@@ -5399,16 +6016,7 @@ serve(async (req) => {
           printHtml = printHtml.replace("</main>", `${printExtrasHtml}</main>`);
         }
 
-        // Inject attachments - INSIDE </main> not </body>
-        if (attachments && attachments.length > 0) {
-          const printAttachmentsHtml = generateAttachmentsHtml(attachments);
-          if (printAttachmentsHtml) {
-            printHtml = printHtml.replace(
-              "</main>",
-              `${printAttachmentsHtml}</main>`,
-            );
-          }
-        }
+        // NOTE: Attachments are NOT injected into print version (only in e-copy)
 
         // SKIP: Convert images to base64 (PDF.co can fetch directly)
         // printHtml = await convertHtmlImagesToBase64(printHtml)
@@ -5502,41 +6110,64 @@ serve(async (req) => {
       // PARALLEL PDF Generation - eCopy + Print simultaneously
       // ========================================
       console.log("📤 Preparing to send HTML to PDF.co...");
+      console.log("  � PDF Mode:", pdfLetterheadMode);
       console.log("  📄 Processed body length:", processedBody.length);
-      console.log(
-        "  🔍 Checking for letterhead in HTML:",
-        processedBody.includes("page-background") ? "✅ FOUND" : "❌ NOT FOUND",
-      );
-      console.log(
-        "  🔍 Checking for letterhead URL in HTML:",
-        processedBody.includes("background-image")
-          ? "✅ FOUND"
-          : "❌ NOT FOUND",
-      );
+      if (pdfLetterheadMode === 'header_footer') {
+        console.log("  🖼️ Header HTML length:", headerFooterHtml.headerHtml.length);
+        console.log("  🖼️ Footer HTML length:", headerFooterHtml.footerHtml.length);
+      } else {
+        console.log(
+          "  🔍 Checking for letterhead in HTML:",
+          processedBody.includes("page-background") ? "✅ FOUND" : "❌ NOT FOUND",
+        );
+        console.log(
+          "  🔍 Checking for letterhead URL in HTML:",
+          processedBody.includes("background-image")
+            ? "✅ FOUND"
+            : "❌ NOT FOUND",
+        );
+      }
+
+      // Build PDF.co options based on mode
+      const isHeaderFooterMode = pdfLetterheadMode === 'header_footer';
 
       const eCopyPromise = sendHtmlToPdfCo(
         processedBody,
         filename,
         PDFCO_API_KEY,
         {
-          headerHtml: processedHeader,
-          footerHtml: processedFooter,
-          margins,
-          headerHeight: letterheadBackgroundUrl
-            ? "0px"
-            : (pdfSettings?.headerHeight
+          headerHtml: isHeaderFooterMode ? headerFooterHtml.headerHtml : processedHeader,
+          footerHtml: isHeaderFooterMode ? headerFooterHtml.footerHtml : processedFooter,
+          margins: isHeaderFooterMode
+            ? (pdfSettings?.margins
+              ? `${pdfSettings.margins.top}px ${pdfSettings.margins.right}px ${pdfSettings.margins.bottom}px ${pdfSettings.margins.left}px`
+              : DEFAULT_PDF_SETTINGS.margins)
+            : margins,
+          headerHeight: isHeaderFooterMode
+            ? (pdfSettings?.headerHeight
               ? `${pdfSettings.headerHeight}px`
-              : DEFAULT_PDF_SETTINGS.headerHeight),
-          footerHeight: letterheadBackgroundUrl
-            ? "0px"
-            : (pdfSettings?.footerHeight
+              : DEFAULT_PDF_SETTINGS.headerHeight)
+            : (letterheadUrl
+              ? "0px"
+              : (pdfSettings?.headerHeight
+                ? `${pdfSettings.headerHeight}px`
+                : DEFAULT_PDF_SETTINGS.headerHeight)),
+          footerHeight: isHeaderFooterMode
+            ? (pdfSettings?.footerHeight
               ? `${pdfSettings.footerHeight}px`
-              : DEFAULT_PDF_SETTINGS.footerHeight),
+              : DEFAULT_PDF_SETTINGS.footerHeight)
+            : (letterheadUrl
+              ? "0px"
+              : (pdfSettings?.footerHeight
+                ? `${pdfSettings.footerHeight}px`
+                : DEFAULT_PDF_SETTINGS.footerHeight)),
           scale: pdfSettings?.scale ?? DEFAULT_PDF_SETTINGS.scale,
-          displayHeaderFooter: letterheadBackgroundUrl
-            ? false
-            : (pdfSettings?.displayHeaderFooter ??
-              DEFAULT_PDF_SETTINGS.displayHeaderFooter),
+          displayHeaderFooter: isHeaderFooterMode
+            ? true
+            : (letterheadUrl
+              ? false
+              : (pdfSettings?.displayHeaderFooter ??
+                DEFAULT_PDF_SETTINGS.displayHeaderFooter)),
           paperSize: DEFAULT_PDF_SETTINGS.paperSize,
           mediaType: DEFAULT_PDF_SETTINGS.mediaType,
           printBackground: DEFAULT_PDF_SETTINGS.printBackground,

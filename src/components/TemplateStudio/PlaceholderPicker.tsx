@@ -26,6 +26,7 @@ interface AnalyteGroup {
   reference?: PlaceholderOption;
   flag?: PlaceholderOption;
   note?: PlaceholderOption;
+  method?: PlaceholderOption;
 }
 
 interface PlaceholderPickerProps {
@@ -71,9 +72,9 @@ const PlaceholderPicker: React.FC<PlaceholderPickerProps> = ({ options, onInsert
       const placeholder = option.placeholder;
       // Detect if this is a variation (_UNIT, _REFERENCE, _REF_RANGE, _FLAG, _NOTE)
       // Support both _REFERENCE (new) and _REF_RANGE (legacy) for backwards compatibility
-      const suffixes = ['_UNIT', '_REFERENCE', '_REF_RANGE', '_FLAG', '_NOTE'];
+      const suffixes = ['_UNIT', '_REFERENCE', '_REF_RANGE', '_FLAG', '_NOTE', '_METHOD'];
       let basePlaceholder = placeholder;
-      let variationType: 'value' | 'unit' | 'reference' | 'flag' | 'note' = 'value';
+      let variationType: 'value' | 'unit' | 'reference' | 'flag' | 'note' | 'method' = 'value';
 
       for (const suffix of suffixes) {
         if (placeholder.endsWith(suffix + '}}')) {
@@ -82,6 +83,7 @@ const PlaceholderPicker: React.FC<PlaceholderPickerProps> = ({ options, onInsert
           else if (suffix === '_REFERENCE' || suffix === '_REF_RANGE') variationType = 'reference';
           else if (suffix === '_FLAG') variationType = 'flag';
           else if (suffix === '_NOTE') variationType = 'note';
+          else if (suffix === '_METHOD') variationType = 'method';
           break;
         }
       }
@@ -101,7 +103,8 @@ const PlaceholderPicker: React.FC<PlaceholderPickerProps> = ({ options, onInsert
             .replace(/ \(Unit\)$/i, '')
             .replace(/ \(Reference\)$/i, '')
             .replace(/ \(Flag\)$/i, '')
-            .replace(/ \(Note\)$/i, '');
+            .replace(/ \(Note\)$/i, '')
+            .replace(/ \(Method\)$/i, '');
         }
         groups.set(basePlaceholder, {
           baseName: basePlaceholder,
@@ -390,6 +393,12 @@ const PlaceholderPicker: React.FC<PlaceholderPickerProps> = ({ options, onInsert
                     'bg-rose-100 text-rose-700',
                     'hover:bg-rose-200'
                   )}
+                  {renderQuickButton(
+                    analyte.method,
+                    'Method',
+                    'bg-teal-100 text-teal-700',
+                    'hover:bg-teal-200'
+                  )}
                 </div>
               </div>
 
@@ -433,6 +442,14 @@ const PlaceholderPicker: React.FC<PlaceholderPickerProps> = ({ options, onInsert
                       <span className="text-gray-600">Note:</span>
                       <code className="bg-gray-100 text-gray-800 px-2 py-0.5 rounded text-[10px]">
                         {analyte.note.placeholder}
+                      </code>
+                    </div>
+                  )}
+                  {analyte.method && (
+                    <div className="flex items-center justify-between text-xs">
+                      <span className="text-gray-600">Methodology:</span>
+                      <code className="bg-teal-50 text-teal-800 px-2 py-0.5 rounded text-[10px]">
+                        {analyte.method.placeholder}
                       </code>
                     </div>
                   )}

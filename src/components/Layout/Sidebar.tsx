@@ -32,6 +32,7 @@ import {
   Truck,
   BarChart3,
   Shield,
+  Package,
 } from 'lucide-react';
 
 interface SidebarProps {
@@ -81,11 +82,11 @@ const navigation = [
   // Quality Control - AI-First QC Module
   { name: 'Quality Control', href: '/quality-control', icon: Shield, category: 'qc' },
 
+  // Inventory Management
+  { name: 'Inventory', href: '/inventory', icon: Package, category: 'inventory' },
+
   // AI Workflow Management
   { name: 'Workflow Management', href: '/workflows', icon: Workflow, category: 'workflows' },
-  { name: 'Workflow Configurator', href: '/workflow-configurator', icon: Cog, category: 'workflows' },
-  { name: 'Workflow Demo', href: '/workflow-demo', icon: Play, category: 'workflows' },
-  { name: 'Workflow Explainer Demo', href: '/workflow-explainer-demo', icon: Bot, category: 'workflows' },
 
   // Advanced Tools
   // { name: 'AI Tools', href: '/ai-tools', icon: Brain, category: 'tools' }, // Hidden
@@ -302,6 +303,37 @@ const Sidebar: React.FC<SidebarProps> = ({ isOpen, onToggle, isMobile = false, i
                     onClick={handleNavClick}
                   >
                     <item.icon className={`h-5 w-5 ${isCollapsed ? '' : 'mr-3'} ${isActive ? 'text-emerald-700' : 'text-gray-400'}`} />
+                    {!isCollapsed && item.name}
+                  </Link>
+                );
+              })}
+            </div>
+
+            {/* Inventory Management */}
+            <div className="mb-6">
+              {!isCollapsed && (
+                <h3 className="px-4 text-xs font-semibold text-gray-500 uppercase tracking-wider mb-3">
+                  📦 Inventory
+                </h3>
+              )}
+              {navigation.filter(item => item.category === 'inventory').map((item) => {
+                const isActive = location.pathname === item.href;
+                return (
+                  <Link
+                    key={item.name}
+                    to={item.href}
+                    className={`
+                    flex items-center rounded-lg text-sm font-medium transition-colors duration-200 mb-1
+                    border-l-4 border-l-cyan-500
+                    ${isCollapsed ? 'justify-center px-2 py-3' : 'px-4 py-3'}
+                    ${isActive
+                        ? 'bg-cyan-50 text-cyan-700 border-l-cyan-700'
+                        : 'text-gray-600 hover:bg-cyan-50 hover:text-cyan-700 border-l-transparent hover:border-l-cyan-300'
+                      }
+                  `}
+                    onClick={handleNavClick}
+                  >
+                    <item.icon className={`h-5 w-5 ${isCollapsed ? '' : 'mr-3'} ${isActive ? 'text-cyan-700' : 'text-gray-400'}`} />
                     {!isCollapsed && item.name}
                   </Link>
                 );

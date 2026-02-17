@@ -137,7 +137,10 @@ export default function OrderDetail() {
                   unit,
                   reference_range,
                   ai_processing_type,
-                  ai_prompt_override
+                  ai_prompt_override,
+                  is_calculated,
+                  formula,
+                  formula_variables
                 )
               )
             )
@@ -161,7 +164,10 @@ export default function OrderDetail() {
                   unit,
                   reference_range,
                   ai_processing_type,
-                  ai_prompt_override
+                  ai_prompt_override,
+                  is_calculated,
+                  formula,
+                  formula_variables
                 )
               )
             )

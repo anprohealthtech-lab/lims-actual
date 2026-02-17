@@ -1,6 +1,6 @@
 import React from 'react';
 import { useState, useEffect } from 'react';
-import { X, User, Phone, Mail, MapPin, Droplet, FileText, QrCode, Palette, Printer, Edit, Plus, Upload, ExternalLink, Calendar } from 'lucide-react';
+import { X, User, Phone, Mail, MapPin, Droplet, FileText, QrCode, Palette, Printer, Edit, Plus, Upload, ExternalLink, Calendar, Gift } from 'lucide-react';
 import { QRCodeCanvas } from 'qrcode.react';
 import { database, supabase, formatAge } from '../../utils/supabase';
 import ExternalReportUploadModal from './ExternalReportUploadModal';
@@ -57,6 +57,8 @@ const PatientDetails: React.FC<PatientDetailsProps> = ({
   const [testsError, setTestsError] = useState<string | null>(null);
   const [externalReports, setExternalReports] = useState<any[]>([]);
   const [loadingExternalReports, setLoadingExternalReports] = useState(true);
+  const [loyaltyBalance, setLoyaltyBalance] = useState<{ current_balance: number; total_earned: number; total_redeemed: number } | null>(null);
+  const [loyaltyEnabled, setLoyaltyEnabled] = useState(false);
 
   useEffect(() => {
     const fetchRecentTests = async () => {
@@ -141,8 +143,22 @@ const PatientDetails: React.FC<PatientDetailsProps> = ({
       }
     };
 
+    const fetchLoyaltyBalance = async () => {
+      try {
+        const settings = await database.loyaltyPoints.getLabSettings();
+        if (settings?.loyalty_enabled) {
+          setLoyaltyEnabled(true);
+          const balance = await database.loyaltyPoints.getBalance(patient.id);
+          setLoyaltyBalance(balance);
+        }
+      } catch (err) {
+        console.error('Error loading loyalty balance:', err);
+      }
+    };
+
     fetchRecentTests();
     fetchExternalReports();
+    fetchLoyaltyBalance();
   }, [patient.id]);
 
   const refreshExternalReports = async () => {
@@ -245,6 +261,17 @@ const PatientDetails: React.FC<PatientDetailsProps> = ({
                 <div className="font-medium">{new Date(patient.registration_date).toLocaleDateString()}</div>
                 <div className="text-sm text-gray-600 mt-1">Last visit</div>
                 <div className="font-medium">{new Date(patient.last_visit).toLocaleDateString()}</div>
+                {loyaltyEnabled && loyaltyBalance && (
+                  <div className="mt-3 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
+                    <div className="flex items-center justify-end text-amber-700 text-sm font-medium">
+                      <Gift className="h-4 w-4 mr-1" />
+                      {loyaltyBalance.current_balance} pts
+                    </div>
+                    <div className="text-xs text-amber-600 mt-0.5">
+                      Earned: {loyaltyBalance.total_earned} • Used: {loyaltyBalance.total_redeemed}
+                    </div>
+                  </div>
+                )}
               </div>
             </div>
           </div>

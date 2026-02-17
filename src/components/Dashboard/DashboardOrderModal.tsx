@@ -1060,13 +1060,6 @@ const DashboardOrderModal: React.FC<DashboardOrderModalProps> = ({
             <OrderStatusDisplay order={order as any} />
             <div className="flex items-center gap-1">
               <button
-                onClick={() => setShowReportStudio(true)}
-                className="flex items-center gap-1 px-3 py-1.5 bg-blue-100 text-blue-700 rounded-lg hover:bg-blue-200 text-xs font-medium transition-colors"
-              >
-                <Sparkles className="h-3.5 w-3.5" />
-                Design Report
-              </button>
-              <button
                 onClick={() => setShowSendReport(true)}
                 className="flex items-center gap-1 px-3 py-1.5 bg-green-100 text-green-700 rounded-lg hover:bg-green-200 text-xs font-medium transition-colors"
               >
@@ -1698,9 +1691,9 @@ const DashboardOrderModal: React.FC<DashboardOrderModalProps> = ({
               <div className="flex-1 bg-gray-50 rounded-xl p-4 border border-gray-200">
                 <span className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-3 block">Update Order Status</span>
                 <QuickStatusButtons
+                  orderId={order.id}
                   currentStatus={order.status}
-                  onUpdateStatus={(status) => onUpdateStatus(order.id, status)}
-                  disabled={false}
+                  onStatusChanged={() => onUpdateStatus(order.id, order.status)}
                 />
               </div>
 

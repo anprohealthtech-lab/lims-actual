@@ -239,6 +239,167 @@ function wrapImageInFullPageHTML(url: string): string {
 }
 
 /**
+ * Fetch separate header and footer image URLs for an order
+ * Used in 'header_footer' mode where header/footer are sent as separate images to PDF.co
+ * Priority: B2B Account > Location > Lab (same as letterhead)
+ */
+export async function fetchHeaderFooterImages(
+  supabase: any,
+  orderId: string,
+  labId: string
+): Promise<{ headerUrl: string | null; footerUrl: string | null }> {
+  try {
+    console.log('[HEADER_FOOTER] Fetching separate header/footer images for order:', orderId);
+
+    // Get order details for priority resolution
+    const { data: order } = await supabase
+      .from('orders')
+      .select('account_id, location_id')
+      .eq('id', orderId)
+      .single();
+
+    // Try B2B account-level first
+    if (order?.account_id) {
+      const accountHeader = await getAttachmentImageUrl(supabase, 'account', order.account_id);
+      if (accountHeader) {
+        // For account-level, only header is typically available; footer falls back to lab
+        const footerUrl = await fetchLabAssetUrl(supabase, labId, 'footer');
+        console.log('[HEADER_FOOTER] Using B2B account header + lab footer');
+        return { headerUrl: accountHeader, footerUrl };
+      }
+    }
+
+    // Try location-level
+    if (order?.location_id) {
+      const locationHeader = await getAttachmentImageUrl(supabase, 'location', order.location_id);
+      if (locationHeader) {
+        const footerUrl = await fetchLabAssetUrl(supabase, labId, 'footer');
+        console.log('[HEADER_FOOTER] Using location header + lab footer');
+        return { headerUrl: locationHeader, footerUrl };
+      }
+    }
+
+    // Fall back to lab-level header + footer
+    const headerUrl = await fetchLabAssetUrl(supabase, labId, 'header');
+    const footerUrl = await fetchLabAssetUrl(supabase, labId, 'footer');
+    console.log('[HEADER_FOOTER] Using lab-level header/footer:', { hasHeader: !!headerUrl, hasFooter: !!footerUrl });
+    return { headerUrl, footerUrl };
+
+  } catch (error) {
+    console.error('[HEADER_FOOTER] Error fetching header/footer images:', error);
+    return { headerUrl: null, footerUrl: null };
+  }
+}
+
+/**
+ * Fetch a specific asset URL from lab_branding_assets by type
+ */
+async function fetchLabAssetUrl(
+  supabase: any,
+  labId: string,
+  assetType: string
+): Promise<string | null> {
+  try {
+    const { data: asset, error } = await supabase
+      .from('lab_branding_assets')
+      .select('imagekit_url, file_url')
+      .eq('lab_id', labId)
+      .eq('asset_type', assetType)
+      .eq('is_active', true)
+      .eq('is_default', true)
+      .single();
+
+    if (error || !asset) return null;
+    return asset.imagekit_url || asset.file_url;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Convert an image URL to a base64 data URI with error handling and timeout
+ * Returns null if conversion fails (caller should fall back gracefully)
+ */
+export async function imageUrlToBase64(
+  url: string,
+  timeoutMs: number = 8000
+): Promise<string | null> {
+  if (!url) return null;
+
+  try {
+    console.log('[BASE64] Converting image to base64:', url.substring(0, 80) + '...');
+    
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+
+    const response = await fetch(url, { 
+      signal: controller.signal,
+      headers: { 'Accept': 'image/*' }
+    });
+    clearTimeout(timeoutId);
+
+    if (!response.ok) {
+      console.warn('[BASE64] Failed to fetch image:', response.status, response.statusText);
+      return null;
+    }
+
+    const contentType = response.headers.get('content-type') || 'image/png';
+    const arrayBuffer = await response.arrayBuffer();
+    
+    // Size check: skip if > 5MB (PDF.co header/footer has limits)
+    if (arrayBuffer.byteLength > 5 * 1024 * 1024) {
+      console.warn('[BASE64] Image too large for base64 conversion:', 
+        (arrayBuffer.byteLength / 1024 / 1024).toFixed(1) + 'MB');
+      return null;
+    }
+
+    // Convert to base64
+    const uint8Array = new Uint8Array(arrayBuffer);
+    let binary = '';
+    for (let i = 0; i < uint8Array.length; i++) {
+      binary += String.fromCharCode(uint8Array[i]);
+    }
+    const base64 = btoa(binary);
+    const dataUri = `data:${contentType};base64,${base64}`;
+
+    console.log('[BASE64] Conversion successful:', 
+      (arrayBuffer.byteLength / 1024).toFixed(0) + 'KB',
+      '→ data URI length:', dataUri.length);
+    return dataUri;
+
+  } catch (error: any) {
+    if (error.name === 'AbortError') {
+      console.warn('[BASE64] Image fetch timed out after', timeoutMs + 'ms');
+    } else {
+      console.warn('[BASE64] Image conversion failed:', error.message);
+    }
+    return null;
+  }
+}
+
+/**
+ * Build header HTML for PDF.co native header section
+ * Uses base64 data URI or falls back to direct URL
+ */
+export function buildHeaderHtml(imageUrl: string, height: number = 90): string {
+  if (!imageUrl) return '';
+  return `<div style="width: 100%; height: ${height}px; margin: 0; padding: 0; text-align: center;">
+    <img src="${imageUrl}" style="width: 100%; height: ${height}px; object-fit: contain; margin: 0; padding: 0;" />
+  </div>`;
+}
+
+/**
+ * Build footer HTML for PDF.co native footer section
+ * Uses base64 data URI or falls back to direct URL
+ */
+export function buildFooterHtml(imageUrl: string, height: number = 80): string {
+  if (!imageUrl) return '';
+  return `<div style="width: 100%; height: ${height}px; margin: 0; padding: 0; text-align: center;">
+    <img src="${imageUrl}" style="width: 100%; height: ${height}px; object-fit: contain; margin: 0; padding: 0;" />
+  </div>`;
+}
+
+/**
  * DEPRECATED: No longer fetching separate header/footer
  * Keeping for backward compatibility but returns null
  */

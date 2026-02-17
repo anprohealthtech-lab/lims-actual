@@ -35,7 +35,7 @@ interface WorkflowInstance {
   order_id: string;
   workflow_version_id: string;
   status: 'pending' | 'in_progress' | 'completed' | 'failed' | 'cancelled';
-  current_step: number | null;
+  current_step_id: string | null;
   total_steps: number | null;
   started_at: string | null;
   completed_at: string | null;
@@ -58,7 +58,6 @@ interface WorkflowResult {
   id: string;
   workflow_instance_id: string;
   step_id: string;
-  step_type: string;
   status: 'pending' | 'completed' | 'failed' | 'skipped';
   payload: any;
   review_status: 'pending' | 'approved' | 'rejected' | null;
@@ -115,7 +114,7 @@ export const WorkflowExecutionPanel: React.FC<WorkflowExecutionPanelProps> = ({
           order_id,
           workflow_version_id,
           status,
-          current_step,
+          current_step_id,
           total_steps,
           started_at,
           completed_at,
@@ -135,7 +134,6 @@ export const WorkflowExecutionPanel: React.FC<WorkflowExecutionPanelProps> = ({
             id,
             workflow_instance_id,
             step_id,
-            step_type,
             status,
             payload,
             review_status,
@@ -394,7 +392,7 @@ export const WorkflowExecutionPanel: React.FC<WorkflowExecutionPanelProps> = ({
                       {formatDateTime(instance.started_at || instance.created_at)}
                       {instance.total_steps && (
                         <span className="ml-2">
-                          • {instance.current_step || 0}/{instance.total_steps} steps
+                          • {instance.current_step_id || '0'}/{instance.total_steps} steps
                         </span>
                       )}
                     </div>
@@ -469,7 +467,7 @@ export const WorkflowExecutionPanel: React.FC<WorkflowExecutionPanelProps> = ({
                                 </div>
                                 <div>
                                   <div className="text-sm font-medium text-gray-900">
-                                    {result.step_type?.replace(/_/g, ' ') || `Step ${idx + 1}`}
+                                    {result.step_id?.replace(/_/g, ' ') || `Step ${idx + 1}`}
                                   </div>
                                   <div className="text-xs text-gray-500">
                                     {result.step_id}

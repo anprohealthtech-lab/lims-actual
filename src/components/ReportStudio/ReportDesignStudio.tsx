@@ -1,9 +1,14 @@
 import React, { useState, useEffect } from 'react';
 import { X, Save, RefreshCw } from 'lucide-react';
-import { supabase } from '../../utils/supabase'; // Assuming standard export
+import { database, supabase } from '../../utils/supabase'; // Assuming standard export
 import { prepareViewerReportData } from '../../utils/pdfViewerService';
 import { AssetSidebar } from './AssetSidebar';
 import { ReportConfig, ReportData, BrandingAsset } from './types';
+
+interface TestGroupInfo {
+    id: string;
+    name: string;
+}
 
 interface ReportDesignStudioProps {
     orderId: string;
@@ -16,6 +21,7 @@ const ReportDesignStudio: React.FC<ReportDesignStudioProps> = ({ orderId, onClos
     const [assets, setAssets] = useState<BrandingAsset[]>([]);
     const [isLoading, setIsLoading] = useState(true);
     const [isGenerating, setIsGenerating] = useState(false);
+    const [testGroups, setTestGroups] = useState<TestGroupInfo[]>([]);
 
     // Default Config
     const [config, setConfig] = useState<ReportConfig>({
@@ -24,6 +30,7 @@ const ReportDesignStudio: React.FC<ReportDesignStudioProps> = ({ orderId, onClos
         showAbnormalColors: true,
         showSignature: true,
         showQrCode: true,
+        showMethodology: true,
         headerHeight: 35,
         footerHeight: 20,
         extraAssets: []
@@ -35,6 +42,7 @@ const ReportDesignStudio: React.FC<ReportDesignStudioProps> = ({ orderId, onClos
         footer: true,
         clinicalSummary: true,
         interpretation: true,
+        methodology: true,
         graphs: true,
         patientSummary: true
     });
@@ -63,6 +71,8 @@ const ReportDesignStudio: React.FC<ReportDesignStudioProps> = ({ orderId, onClos
                 // 2. Map ViewerData to ReportData structure for components
                 // Group flat analytes by Test Name
                 const groupedResults: Record<string, any> = {};
+                const discoveredGroups: TestGroupInfo[] = [];
+                const seenGroupNames = new Set<string>();
 
                 (viewerData.testResults || []).forEach((r: any) => {
                     const tName = r.testName || 'Test Results';
@@ -71,6 +81,10 @@ const ReportDesignStudio: React.FC<ReportDesignStudioProps> = ({ orderId, onClos
                             id: tName, // Use name as ID for grouping
                             results: []
                         };
+                        if (!seenGroupNames.has(tName)) {
+                            seenGroupNames.add(tName);
+                            discoveredGroups.push({ id: tName, name: tName });
+                        }
                     }
 
                     groupedResults[tName].results.push({
@@ -82,6 +96,19 @@ const ReportDesignStudio: React.FC<ReportDesignStudioProps> = ({ orderId, onClos
                         is_abnormal: ['H', 'L', 'A', 'High', 'Low', 'Abnormal', 'Critical'].includes(r.flag || '')
                     });
                 });
+
+                setTestGroups(discoveredGroups);
+
+                // Initialize per-test-group visibility (all visible by default)
+                if (discoveredGroups.length > 0) {
+                    setVisibleSections(prev => {
+                        const updated = { ...prev };
+                        discoveredGroups.forEach(g => {
+                            updated[`testGroup_${g.id}`] = true;
+                        });
+                        return updated;
+                    });
+                }
 
                 const processedTests = Object.values(groupedResults);
 
@@ -105,23 +132,31 @@ const ReportDesignStudio: React.FC<ReportDesignStudioProps> = ({ orderId, onClos
                     extras: viewerData.extras || undefined // Pass extras to ReportData
                 });
 
-                // 3. Fetch Branding Assets
-                const { data: assetsData, error: assetsError } = await supabase
-                    .from('lab_branding_assets')
-                    .select('id, lab_id, asset_type, url:file_url, name:asset_name, is_default')
-                    .eq('lab_id', viewerData.lab.id);
+                // 3. Fetch Branding Assets (lab-scoped)
+                const { data: assetsDataRaw, error: assetsError } = await database.labBrandingAssets.getAll(viewerData.lab.id);
 
                 if (assetsError) {
                     console.warn('Error fetching branding assets:', assetsError);
                     setAssets([]);
                 } else {
-                    setAssets(assetsData || []);
+                    const mappedAssets = (assetsDataRaw || []).map((asset: any) => {
+                        const bestUrl = asset?.imagekit_url || asset?.processed_url || asset?.variants?.optimized || asset?.variants?.optimized_url || asset?.file_url;
+                        return {
+                            id: asset.id,
+                            lab_id: asset.lab_id,
+                            asset_type: asset.asset_type,
+                            url: bestUrl,
+                            name: asset.asset_name,
+                            is_default: asset.is_default,
+                        } as BrandingAsset;
+                    });
+                    setAssets(mappedAssets);
                 }
 
                 // Pre-select defaults
-                if (assetsData) {
-                    const defHeader = assetsData.find((a: any) => a.asset_type === 'header' && a.is_default);
-                    const defFooter = assetsData.find((a: any) => a.asset_type === 'footer' && a.is_default);
+                if (assetsDataRaw) {
+                    const defHeader = assetsDataRaw.find((a: any) => a.asset_type === 'header' && a.is_default);
+                    const defFooter = assetsDataRaw.find((a: any) => a.asset_type === 'footer' && a.is_default);
 
                     setConfig(prev => ({
                         ...prev,
@@ -204,7 +239,76 @@ const ReportDesignStudio: React.FC<ReportDesignStudioProps> = ({ orderId, onClos
             if (funcError) throw funcError;
 
             if (funcData?.success) {
-                alert('PDF Generated Successfully!');
+                // Save report record in the reports table so WhatsApp/status works
+                try {
+                    const now = new Date().toISOString();
+                    const labId = data.lab?.id || await database.getCurrentUserLabId();
+                    const patientId = data.patient?.id;
+
+                    if (patientId && labId) {
+                        const { data: existingReport } = await supabase
+                            .from('reports')
+                            .select('id')
+                            .eq('order_id', orderId)
+                            .maybeSingle();
+
+                        if (existingReport) {
+                            await supabase
+                                .from('reports')
+                                .update({
+                                    pdf_url: funcData.pdfUrl,
+                                    pdf_generated_at: now,
+                                    status: 'completed',
+                                    report_status: 'completed',
+                                    report_type: 'final',
+                                    updated_at: now
+                                })
+                                .eq('id', existingReport.id);
+                        } else {
+                            await supabase
+                                .from('reports')
+                                .insert({
+                                    order_id: orderId,
+                                    patient_id: patientId,
+                                    lab_id: labId,
+                                    doctor: data.order?.doctor_name || '',
+                                    pdf_url: funcData.pdfUrl,
+                                    pdf_generated_at: now,
+                                    generated_date: now,
+                                    status: 'completed',
+                                    report_status: 'completed',
+                                    report_type: 'final',
+                                    updated_at: now
+                                });
+                        }
+                        console.log('✅ Report record saved/updated in reports table');
+                    }
+
+                    // Mark any pending/processing pdf_generation_queue job as completed
+                    // so the auto-generation progress badge doesn't re-appear
+                    await supabase
+                        .from('pdf_generation_queue')
+                        .update({
+                            status: 'completed',
+                            completed_at: new Date().toISOString(),
+                            result_url: funcData.pdfUrl
+                        })
+                        .eq('order_id', orderId)
+                        .in('status', ['pending', 'processing']);
+
+                    // Also update order report_generation_status
+                    await supabase
+                        .from('orders')
+                        .update({
+                            report_generation_status: 'completed',
+                            report_auto_generated_at: new Date().toISOString()
+                        })
+                        .eq('id', orderId);
+
+                } catch (reportSaveErr) {
+                    console.error('⚠️ Failed to save report record (PDF still generated):', reportSaveErr);
+                }
+
                 if (onSuccess && funcData.pdfUrl) onSuccess(funcData.pdfUrl);
                 onClose();
             } else {
@@ -268,15 +372,25 @@ const ReportDesignStudio: React.FC<ReportDesignStudioProps> = ({ orderId, onClos
 
 
         // Inject Header/Footer styles for Preview (simulating PDF layout)
-        const headerH = serverHtml.settings?.headerHeight || '35mm';
-        const footerH = serverHtml.settings?.footerHeight || '20mm';
+        const headerH = `${config.headerHeight ?? 35}mm`;
+        const footerH = `${config.footerHeight ?? 20}mm`;
 
         // Combine into a single view with ID wrappers for visibility control
         const headerDiv = `<div id="preview-header-container" style="height: ${headerH}; overflow: hidden; margin-bottom: 20px;">${effectiveHeader}</div>`;
         const footerDiv = `<div id="preview-footer-container" style="height: ${footerH}; overflow: hidden; margin-top: 20px;">${effectiveFooter}</div>`;
 
         // Inject Styles for Toggle Visibility
-        const visibilityStyles = `
+                const testGroupCss = testGroups.map(g => {
+                    const key = `testGroup_${g.id}`;
+                    const visible = visibleSections[key] !== false; // default true
+                    if (!visible) {
+                        // Hide the entire test-group-section by matching data attribute or the group name in header
+                        return `.test-group-section[data-test-group-id="${g.id}"] { display: none !important; }`;
+                    }
+                    return '';
+                }).filter(Boolean).join('\n');
+
+                const visibilityStyles = `
             <style>
                 #preview-header-container { display: ${visibleSections.header ? 'block' : 'none'} !important; }
                 #preview-footer-container { display: ${visibleSections.footer ? 'block' : 'none'} !important; }
@@ -284,8 +398,38 @@ const ReportDesignStudio: React.FC<ReportDesignStudioProps> = ({ orderId, onClos
                 .report-extras-trends, .report-trend-graph, .trend-chart { display: ${visibleSections.graphs ? 'block' : 'none'} !important; }
                 .report-patient-summary { display: ${visibleSections.patientSummary ? 'block' : 'none'} !important; }
                 .section-content, .report-doctor-summary { display: ${visibleSections.interpretation ? 'block' : 'none'} !important; }
+                ${!visibleSections.methodology ? '.methodology, .analyte-method, [class*="methodology"] { display: none !important; }' : ''}
+                ${testGroupCss}
+                                ${config.showSignature ? '' : '.signature-section, [class*="signature"], [id*="signature"] { display: none !important; }'}
+                                ${config.showQrCode ? '' : '.qr-code, .qrcode, .report-qr, .report-qr-code, #qr-code, #qrcode, [data-qr] { display: none !important; }'}
+                                ${config.showMethodology ? '' : '.methodology, .analyte-method, [class*="methodology"] { display: none !important; }'}
+                                ${config.showAbnormalColors ? '' : `
+                                    .result-abnormal, .abnormal, .flag-abnormal,
+                                    .result-high, .flag-high, .result-critical_high,
+                                    .result-low, .flag-low, .result-critical_low {
+                                        color: #111827 !important;
+                                        font-weight: 500 !important;
+                                    }
+                                `}
+                                .report-extra-assets { position: absolute; top: 0; left: 0; right: 0; bottom: 0; pointer-events: none; }
+                                .report-extra-asset { position: absolute; }
             </style>
         `;
+
+                const extraAssetsHtml = config.extraAssets.length
+                        ? `
+                                <div class="report-extra-assets">
+                                    ${config.extraAssets.map((asset) => `
+                                        <div
+                                            class="report-extra-asset"
+                                            style="left:${asset.position.x}mm; top:${asset.position.y}mm; width:${asset.size.width}mm; height:${asset.size.height}mm;"
+                                        >
+                                            <img src="${asset.url}" alt="Asset" style="width:100%; height:100%; object-fit:contain;" />
+                                        </div>
+                                    `).join('')}
+                                </div>
+                            `
+                        : '';
 
         // Inject styles into head
         if (doc.includes('</head>')) {
@@ -299,7 +443,7 @@ const ReportDesignStudio: React.FC<ReportDesignStudioProps> = ({ orderId, onClos
         // Note: doc contains <body ...> content </body>
         // We replace body content wrapper
 
-        doc = doc.replace('<body class="limsv2-report">', `<body class="limsv2-report" style="padding: 20px; box-sizing: border-box;">${headerDiv}<div style="min-height: 800px;">`);
+        doc = doc.replace('<body class="limsv2-report">', `<body class="limsv2-report" style="padding: 20px; box-sizing: border-box; position: relative;">${headerDiv}${extraAssetsHtml}<div style="min-height: 800px;">`);
         doc = doc.replace('</body>', `</div>${footerDiv}</body>`);
 
         return doc;
@@ -314,6 +458,11 @@ const ReportDesignStudio: React.FC<ReportDesignStudioProps> = ({ orderId, onClos
                     <span className="ml-4 px-3 py-1 bg-green-50 text-green-700 text-xs rounded-full font-medium">
                         Server-Side Preview
                     </span>
+                    {testGroups.length > 1 && (
+                        <span className="ml-2 px-3 py-1 bg-blue-50 text-blue-700 text-xs rounded-full font-medium">
+                            {testGroups.length} Test Groups
+                        </span>
+                    )}
                 </div>
                 <div className="flex items-center space-x-4">
                     <button onClick={onClose} className="p-2 text-gray-500 hover:bg-gray-200 rounded-full transition-colors">
@@ -339,6 +488,7 @@ const ReportDesignStudio: React.FC<ReportDesignStudioProps> = ({ orderId, onClos
                     availableAssets={assets}
                     visibleSections={visibleSections}
                     setVisibleSections={setVisibleSections}
+                    testGroups={testGroups}
                 />
 
                 {/* Canvas Area - Iframe Preview */}

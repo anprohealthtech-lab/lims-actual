@@ -4,7 +4,43 @@ export interface PromptOptions {
   labId?: string;
   testGroupId?: string;
   analyteId?: string;
-  processingType: 'nlp_extraction' | 'ocr_report' | 'vision_card' | 'vision_color';
+  processingType:
+    | 'nlp_extraction'
+    | 'ocr_report'
+    | 'vision_card'
+    | 'vision_color'
+    | 'THERMAL_SLIP_OCR'
+    | 'INSTRUMENT_SCREEN_OCR'
+    | 'RAPID_CARD_LFA'
+    | 'COLOR_STRIP_MULTIPARAM'
+    | 'SINGLE_WELL_COLORIMETRIC'
+    | 'AGGLUTINATION_CARD'
+    | 'MICROSCOPY_MORPHOLOGY'
+    | 'ZONE_OF_INHIBITION'
+    | 'MANUAL_ENTRY_NO_VISION'
+    | 'UNKNOWN_NEEDS_REVIEW';
+}
+
+function normalizePromptType(type: string): string {
+  const normalized = type.trim().toUpperCase();
+  const map: Record<string, string> = {
+    THERMAL_SLIP_OCR: 'ocr_report',
+    INSTRUMENT_SCREEN_OCR: 'ocr_report',
+    RAPID_CARD_LFA: 'vision_card',
+    AGGLUTINATION_CARD: 'vision_card',
+    COLOR_STRIP_MULTIPARAM: 'vision_color',
+    SINGLE_WELL_COLORIMETRIC: 'vision_color',
+    MANUAL_ENTRY_NO_VISION: 'nlp_extraction',
+    UNKNOWN_NEEDS_REVIEW: 'nlp_extraction',
+    MICROSCOPY_MORPHOLOGY: 'vision_card',
+    ZONE_OF_INHIBITION: 'vision_card',
+  };
+
+  if (normalized === 'OCR_REPORT' || normalized === 'VISION_CARD' || normalized === 'VISION_COLOR' || normalized === 'NLP_EXTRACTION') {
+    return normalized.toLowerCase();
+  }
+
+  return map[normalized] || 'nlp_extraction';
 }
 
 /**
@@ -17,7 +53,8 @@ export interface PromptOptions {
  * 6. Hardcoded default prompt
  */
 export async function getAIPrompt(options: PromptOptions): Promise<string> {
-  const { labId, testGroupId, analyteId, processingType } = options;
+  const { labId, testGroupId, analyteId } = options;
+  const processingType = normalizePromptType(options.processingType);
 
   console.log('🔍 Fetching AI prompt:', { labId, testGroupId, analyteId, processingType });
 

@@ -1480,6 +1480,16 @@ id,
             )}
           </div>
 
+          {mobile.isMobile && (
+            <button
+              onClick={() => setShowOrderForm(true)}
+              className="w-full inline-flex items-center justify-center gap-2 rounded-lg bg-blue-600 text-white px-4 py-3 text-sm font-semibold shadow-sm hover:bg-blue-700 transition-colors"
+            >
+              <Plus className="h-5 w-5" />
+              Create Order
+            </button>
+          )}
+
           {!mobile.isMobile && (
             <div className="flex items-center gap-2">
               <button className="inline-flex items-center gap-2 px-4 py-2 bg-blue-50 text-blue-700 border border-blue-200 rounded-lg font-medium shadow-sm transition-all">
@@ -1499,48 +1509,48 @@ id,
             {/* Overview cards */}
             <div className={`grid ${mobile.gridCols} ${mobile.isMobile ? "gap-3" : mobile.gap}`}>
               <div className={`bg-green-50 border border-green-200 rounded-lg ${mobile.isMobile ? "p-4" : mobile.cardPadding} shadow-sm transition-all hover:shadow-md`}>
-                <div className="flex items-center justify-between">
-                  <div>
-                    <div className="text-2xl font-bold text-green-900">{summary.allDone}</div>
-                    <div className={`${mobile.isMobile ? "text-sm" : mobile.textSize} text-green-700 font-medium`}>All Done</div>
+                <div className="flex items-center justify-between gap-3">
+                  <div className="min-w-0">
+                    <div className="text-2xl font-bold text-green-900 leading-tight">{summary.allDone}</div>
+                    <div className={`${mobile.isMobile ? "text-sm" : mobile.textSize} text-green-700 font-medium whitespace-nowrap`}>All Done</div>
                   </div>
-                  <div className="bg-green-500 p-2 rounded-lg shadow-sm">
+                  <div className="bg-green-500 p-2.5 rounded-lg shadow-sm shrink-0">
                     <CheckCircle className="h-5 w-5 text-white" />
                   </div>
                 </div>
               </div>
 
               <div className={`bg-blue-50 border border-blue-200 rounded-lg ${mobile.isMobile ? "p-4" : mobile.cardPadding} shadow-sm transition-all hover:shadow-md`}>
-                <div className="flex items-center justify-between">
-                  <div>
-                    <div className="text-2xl font-bold text-blue-900">{summary.mostlyDone}</div>
-                    <div className={`${mobile.isMobile ? "text-sm" : mobile.textSize} text-blue-700 font-medium`}>Mostly Done</div>
+                <div className="flex items-center justify-between gap-3">
+                  <div className="min-w-0">
+                    <div className="text-2xl font-bold text-blue-900 leading-tight">{summary.mostlyDone}</div>
+                    <div className={`${mobile.isMobile ? "text-sm" : mobile.textSize} text-blue-700 font-medium whitespace-nowrap`}>Mostly Done</div>
                   </div>
-                  <div className="bg-blue-500 p-2 rounded-lg shadow-sm">
+                  <div className="bg-blue-500 p-2.5 rounded-lg shadow-sm shrink-0">
                     <TrendingUp className="h-5 w-5 text-white" />
                   </div>
                 </div>
               </div>
 
               <div className={`bg-yellow-50 border border-yellow-200 rounded-lg ${mobile.isMobile ? "p-4" : mobile.cardPadding} shadow-sm transition-all hover:shadow-md`}>
-                <div className="flex items-center justify-between">
-                  <div>
-                    <div className="text-2xl font-bold text-yellow-900">{summary.pending}</div>
-                    <div className={`${mobile.isMobile ? "text-sm" : mobile.textSize} text-yellow-700 font-medium`}>Pending</div>
+                <div className="flex items-center justify-between gap-3">
+                  <div className="min-w-0">
+                    <div className="text-2xl font-bold text-yellow-900 leading-tight">{summary.pending}</div>
+                    <div className={`${mobile.isMobile ? "text-sm" : mobile.textSize} text-yellow-700 font-medium whitespace-nowrap`}>Pending</div>
                   </div>
-                  <div className="bg-yellow-500 p-2 rounded-lg shadow-sm">
+                  <div className="bg-yellow-500 p-2.5 rounded-lg shadow-sm shrink-0">
                     <ClockIcon className="h-5 w-5 text-white" />
                   </div>
                 </div>
               </div>
 
               <div className={`bg-orange-50 border border-orange-200 rounded-lg ${mobile.isMobile ? "p-4" : mobile.cardPadding} shadow-sm transition-all hover:shadow-md`}>
-                <div className="flex items-center justify-between">
-                  <div>
-                    <div className="text-2xl font-bold text-orange-900">{summary.awaitingApproval}</div>
-                    <div className={`${mobile.isMobile ? "text-sm" : mobile.textSize} text-orange-700 font-medium`}>Awaiting Approval</div>
+                <div className="flex items-center justify-between gap-3">
+                  <div className="min-w-0">
+                    <div className="text-2xl font-bold text-orange-900 leading-tight">{summary.awaitingApproval}</div>
+                    <div className={`${mobile.isMobile ? "text-sm" : mobile.textSize} text-orange-700 font-medium whitespace-nowrap`}>Awaiting Approval</div>
                   </div>
-                  <div className="bg-orange-500 p-2 rounded-lg shadow-sm">
+                  <div className="bg-orange-500 p-2.5 rounded-lg shadow-sm shrink-0">
                     <AlertTriangle className="h-5 w-5 text-white" />
                   </div>
                 </div>
@@ -1788,6 +1798,11 @@ id,
                     <div className="space-y-2">
                       {g.orders.map((o) => {
                         const pct = o.expectedTotal > 0 ? Math.round((o.enteredTotal / o.expectedTotal) * 100) : 0;
+                        const visiblePanels = mobile.isMobile ? o.panels.slice(0, 2) : o.panels;
+                        const hiddenPanelCount = Math.max(0, o.panels.length - visiblePanels.length);
+                        const fallbackTests = o.tests.filter((t) => !t.test_name?.startsWith("📦"));
+                        const visibleFallbackTests = mobile.isMobile ? fallbackTests.slice(0, 2) : fallbackTests;
+                        const hiddenFallbackTestCount = Math.max(0, fallbackTests.length - visibleFallbackTests.length);
 
                         return (
                           <div
@@ -1900,6 +1915,11 @@ id,
                     <div className="space-y-4">
                       {g.orders.map((o) => {
                         const pct = o.expectedTotal > 0 ? Math.round((o.enteredTotal / o.expectedTotal) * 100) : 0;
+                        const visiblePanels = mobile.isMobile ? o.panels.slice(0, 2) : o.panels;
+                        const hiddenPanelCount = Math.max(0, o.panels.length - visiblePanels.length);
+                        const fallbackTests = o.tests.filter((t) => !t.test_name?.startsWith("📦"));
+                        const visibleFallbackTests = mobile.isMobile ? fallbackTests.slice(0, 2) : fallbackTests;
+                        const hiddenFallbackTestCount = Math.max(0, fallbackTests.length - visibleFallbackTests.length);
 
                         return (
                           <div key={o.id} className="w-full p-4 border-2 rounded-lg hover:shadow-lg transition-all border-gray-200 bg-white">
@@ -2021,7 +2041,7 @@ id,
 
                             {/* Details */}
                             <div className="mt-3">
-                              <div className="flex flex-wrap items-center gap-x-4 gap-y-1 px-3 py-2 bg-blue-50 rounded-lg text-sm border border-blue-100">
+                              <div className="flex flex-wrap items-center gap-x-3 gap-y-1 px-3 py-2 bg-blue-50 rounded-lg text-xs sm:text-sm border border-blue-100">
                                 {o.patient?.mobile && (
                                   <div className="flex items-center gap-1.5 text-blue-800">
                                     <span className="text-base">📱</span>
@@ -2029,7 +2049,7 @@ id,
                                   </div>
                                 )}
                                 {o.patient?.email && (
-                                  <div className="flex items-center gap-1.5 text-blue-700">
+                                  <div className="hidden sm:flex items-center gap-1.5 text-blue-700">
                                     <span className="text-base">✉️</span>
                                     <span>{o.patient.email}</span>
                                   </div>
@@ -2089,7 +2109,7 @@ id,
 
                                           <div className="flex flex-wrap gap-2">
                                             {o.panels.length > 0
-                                              ? o.panels.map((p, i) => {
+                                              ? visiblePanels.map((p, i) => {
                                                 const progress = p.expected > 0 ? (p.entered / p.expected) * 100 : 0;
 
                                                 return (
@@ -2116,13 +2136,21 @@ id,
                                                   </div>
                                                 );
                                               })
-                                              : o.tests
-                                                .filter((t) => !t.test_name?.startsWith("📦"))
-                                                .map((t, i) => (
+                                              : visibleFallbackTests.map((t, i) => (
                                                   <span key={i} className="px-2 py-0.5 rounded text-xs bg-blue-100 text-blue-800">
                                                     {t.test_name}
                                                   </span>
                                                 ))}
+                                            {o.panels.length > 0 && hiddenPanelCount > 0 && (
+                                              <span className="px-2 py-0.5 rounded text-xs bg-gray-100 text-gray-700 border border-gray-200">
+                                                +{hiddenPanelCount} more
+                                              </span>
+                                            )}
+                                            {o.panels.length === 0 && hiddenFallbackTestCount > 0 && (
+                                              <span className="px-2 py-0.5 rounded text-xs bg-gray-100 text-gray-700 border border-gray-200">
+                                                +{hiddenFallbackTestCount} more
+                                              </span>
+                                            )}
                                           </div>
                                         </>
                                       );
@@ -2163,7 +2191,7 @@ id,
                               </div>
 
                               {/* Additional Info */}
-                              <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1 px-3 text-sm text-gray-600">
+                              <div className="mt-3 hidden sm:flex flex-wrap items-center gap-x-4 gap-y-1 px-3 text-sm text-gray-600">
                                 {o.collected_by && (
                                   <div className="flex items-center gap-1">
                                     <span className="font-medium text-gray-700">Collected by:</span>
@@ -2179,14 +2207,14 @@ id,
                               </div>
 
                               {/* Actions */}
-                              <div className="mt-3 flex flex-wrap gap-2 justify-end px-3 py-2 bg-gray-50 rounded-lg border-t-2 border-blue-200">
+                              <div className="mt-3 grid grid-cols-2 sm:flex gap-2 justify-end px-3 py-2 bg-gray-50 rounded-lg border-t-2 border-blue-200">
                                 {!o.sample_collected_at && (
                                   <button
                                     onClick={(e) => {
                                       e.stopPropagation();
                                       handleOpenCollectionModal(o);
                                     }}
-                                    className="inline-flex items-center px-3 py-1.5 text-sm font-medium bg-amber-500 text-white rounded-lg hover:bg-amber-600 transition-colors shadow-sm"
+                                    className="inline-flex items-center justify-center px-3 py-1.5 text-sm font-medium bg-amber-500 text-white rounded-lg hover:bg-amber-600 transition-colors shadow-sm"
                                     title="Mark Sample Collected"
                                   >
                                     <TestTube className="h-4 w-4 mr-1.5" />
@@ -2199,7 +2227,7 @@ id,
                                     e.stopPropagation();
                                     openDetails(o);
                                   }}
-                                  className="inline-flex items-center px-3 py-1.5 text-sm font-medium bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
+                                  className="inline-flex items-center justify-center px-3 py-1.5 text-sm font-medium bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
                                 >
                                   <Eye className="h-4 w-4 mr-1.5" />
                                   View
@@ -2211,7 +2239,7 @@ id,
                                     handleInformDoctor(o);
                                   }}
                                   disabled={!o.doctor_phone}
-                                  className={`inline-flex items-center px-3 py-1.5 text-sm font-medium rounded-lg text-white transition-colors ${o.doctor_phone ? "bg-green-600 hover:bg-green-700" : "bg-gray-300 cursor-not-allowed"}`}
+                                  className={`inline-flex items-center justify-center px-3 py-1.5 text-sm font-medium rounded-lg text-white transition-colors ${o.doctor_phone ? "bg-green-600 hover:bg-green-700" : "bg-gray-300 cursor-not-allowed"}`}
                                   title={o.doctor_phone ? `Inform ${o.doctor || ""} ` : "Doctor phone not available"}
                                 >
                                   <MessageCircle className="h-4 w-4 mr-1.5" />
@@ -2224,7 +2252,7 @@ id,
                                     handleSendReport(o, "whatsapp");
                                   }}
                                   disabled={!o.report_url || !!isSendingReport}
-                                  className={`inline-flex items-center px-3 py-1.5 text-sm font-medium rounded-lg text-white transition-colors ${o.report_url ? "bg-green-600 hover:bg-green-700" : "bg-gray-300 cursor-not-allowed"}`}
+                                  className={`hidden sm:inline-flex items-center px-3 py-1.5 text-sm font-medium rounded-lg text-white transition-colors ${o.report_url ? "bg-green-600 hover:bg-green-700" : "bg-gray-300 cursor-not-allowed"}`}
                                   title={o.report_url ? "Send Report via WhatsApp" : "Report not generated yet"}
                                 >
                                   <Send className="h-4 w-4 mr-1.5" />
@@ -2237,7 +2265,7 @@ id,
                                     handleSendReport(o, "email");
                                   }}
                                   disabled={!o.report_url || !!isSendingReport}
-                                  className={`inline-flex items-center px-3 py-1.5 text-sm font-medium rounded-lg text-white transition-colors ${o.report_url ? "bg-blue-500 hover:bg-blue-600" : "bg-gray-300 cursor-not-allowed"}`}
+                                  className={`hidden sm:inline-flex items-center px-3 py-1.5 text-sm font-medium rounded-lg text-white transition-colors ${o.report_url ? "bg-blue-500 hover:bg-blue-600" : "bg-gray-300 cursor-not-allowed"}`}
                                   title={o.report_url ? "Send Report via Email" : "Report not generated yet"}
                                 >
                                   <Mail className="h-4 w-4 mr-1.5" />
@@ -2251,7 +2279,7 @@ id,
                                       handleSendInvoice(o);
                                     }}
                                     disabled={!!isSendingInvoice}
-                                    className="inline-flex items-center px-3 py-1.5 text-sm font-medium rounded-lg text-white bg-purple-600 hover:bg-purple-700 transition-colors"
+                                    className="inline-flex items-center justify-center px-3 py-1.5 text-sm font-medium rounded-lg text-white bg-purple-600 hover:bg-purple-700 transition-colors"
                                     title="Generate & Send Invoice via WhatsApp"
                                   >
                                     <Receipt className="h-4 w-4 mr-1.5" />
@@ -2383,7 +2411,7 @@ id,
                                       Approved: <strong>{o.approvedAnalytes}</strong>
                                     </span>
                                   </div>
-                                  <div className="inline-flex items-center bg-white rounded px-1.5 py-0.5 border border-blue-200 justify-end">
+                                  <div className="hidden sm:inline-flex items-center bg-white rounded px-1.5 py-0.5 border border-blue-200 justify-end">
                                     <span
                                       className={`font - bold text - xs ${pct < 25 ? "text-red-600" : pct < 50 ? "text-orange-600" : pct < 75 ? "text-yellow-600" : pct < 100 ? "text-lime-600" : "text-green-600"
                                         } `}

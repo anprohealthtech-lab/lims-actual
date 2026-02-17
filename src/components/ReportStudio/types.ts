@@ -13,6 +13,7 @@ export interface ReportConfig {
   showAbnormalColors: boolean;
   showSignature: boolean;
   showQrCode: boolean;
+  showMethodology: boolean;
   headerHeight: number; // in mm
   footerHeight: number; // in mm
   extraAssets: ExtraAsset[];

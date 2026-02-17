@@ -360,14 +360,19 @@ function determineNumericFlag(
 
 /**
  * Determine flag for qualitative values (Positive/Negative, etc.)
+ *
+ * Priority order:
+ * 1. expected_normal_values (exact match only)
+ * 2. reference_range comparison (for qualitative refs like "Non-Reactive")
+ * 3. Pattern matching (NORMAL/ABNORMAL text patterns)
  */
 function determineQualitativeFlag(value: string, config: AnalyteConfig): FlagResult {
   const lower = value.toLowerCase().trim();
-  
-  // Check against expected normal values from config
+
+  // 1. Check against expected normal values from config (EXACT match only)
   if (config.expected_normal_values && config.expected_normal_values.length > 0) {
-    const normalValues = config.expected_normal_values.map(v => v.toLowerCase());
-    if (normalValues.some(nv => lower === nv || lower.includes(nv))) {
+    const normalValues = config.expected_normal_values.map(v => v.toLowerCase().trim());
+    if (normalValues.some(nv => lower === nv)) {
       return { flag: 'normal', source: 'auto_text', confidence: 0.95, needsReview: false };
     }
     // If we have expected values and this doesn't match, it's abnormal
@@ -379,12 +384,34 @@ function determineQualitativeFlag(value: string, config: AnalyteConfig): FlagRes
       auditNotes: `Value "${value}" not in expected normal values: ${config.expected_normal_values.join(', ')}`
     };
   }
-  
-  // Fall back to pattern matching
+
+  // 2. Compare against reference_range for qualitative references
+  //    e.g. reference_range = "Non-Reactive" and value = "Reactive" → abnormal
+  if (config.reference_range) {
+    const refLower = config.reference_range.toLowerCase().trim();
+    const isQualitativeRef = isTextQualitative(refLower);
+
+    if (isQualitativeRef) {
+      // Exact match with reference = normal
+      if (lower === refLower) {
+        return { flag: 'normal', source: 'auto_rule', confidence: 0.95, needsReview: false };
+      }
+      // Value doesn't match the qualitative reference → abnormal
+      return {
+        flag: 'abnormal',
+        source: 'auto_rule',
+        confidence: 0.95,
+        needsReview: false,
+        interpretation: `Qualitative result "${value}" does not match expected "${config.reference_range}"`
+      };
+    }
+  }
+
+  // 3. Fall back to pattern matching
   if (NORMAL_TEXT_PATTERNS.some(pattern => pattern.test(lower))) {
     return { flag: 'normal', source: 'auto_text', confidence: 0.9, needsReview: false };
   }
-  
+
   if (ABNORMAL_TEXT_PATTERNS.some(pattern => pattern.test(lower))) {
     return {
       flag: 'abnormal',
@@ -394,7 +421,7 @@ function determineQualitativeFlag(value: string, config: AnalyteConfig): FlagRes
       interpretation: `Qualitative result "${value}" indicates abnormal finding`
     };
   }
-  
+
   // Unknown text value - needs review
   return {
     flag: null,
@@ -403,6 +430,15 @@ function determineQualitativeFlag(value: string, config: AnalyteConfig): FlagRes
     needsReview: true,
     auditNotes: `Unknown qualitative value "${value}" - needs manual review`
   };
+}
+
+/**
+ * Check if a string looks like a qualitative value (not numeric)
+ */
+function isTextQualitative(text: string): boolean {
+  return NORMAL_TEXT_PATTERNS.some(p => p.test(text)) ||
+    ABNORMAL_TEXT_PATTERNS.some(p => p.test(text)) ||
+    /^(non[\s-]?reactive|negative|not[\s-]?detected|absent|nil|no[\s-]?growth|positive|reactive|detected|present)$/i.test(text);
 }
 
 /**

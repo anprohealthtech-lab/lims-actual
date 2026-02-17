@@ -13,9 +13,11 @@ import {
     User,
     IndianRupee,
     ChevronRight,
-    ArrowLeft
+    ArrowLeft,
+    Mic
 } from 'lucide-react';
 import PricingGrid from '../components/Pricing/PricingGrid';
+import OutsourcedVoiceInput from '../components/Pricing/OutsourcedVoiceInput';
 
 interface OutsourcedLab {
     id: string;
@@ -26,6 +28,12 @@ interface OutsourcedLab {
     is_active: boolean;
 }
 
+interface TestGroup {
+    id: string;
+    name: string;
+    code?: string;
+}
+
 const OutsourcedLabsSettings: React.FC = () => {
     const [labs, setLabs] = useState<OutsourcedLab[]>([]);
     const [loading, setLoading] = useState(true);
@@ -33,24 +41,48 @@ const OutsourcedLabsSettings: React.FC = () => {
     const [isNew, setIsNew] = useState(false);
     const [saving, setSaving] = useState(false);
     const [selectedLabForPricing, setSelectedLabForPricing] = useState<OutsourcedLab | null>(null);
+    const [showVoiceInput, setShowVoiceInput] = useState(false);
+    const [labId, setLabId] = useState<string | null>(null);
+    const [tests, setTests] = useState<TestGroup[]>([]);
 
     useEffect(() => {
         fetchLabs();
+        fetchTests();
     }, []);
 
     const fetchLabs = async () => {
         setLoading(true);
+        try {
+            const currentLabId = await database.getCurrentUserLabId();
+            if (currentLabId) setLabId(currentLabId);
+
+            const { data, error } = await supabase
+                .from('outsourced_labs')
+                .select('*')
+                .order('name');
+
+            if (error) {
+                console.error('Error fetching labs:', error);
+            } else {
+                setLabs(data || []);
+            }
+        } finally {
+            setLoading(false);
+        }
+    };
+
+    const fetchTests = async () => {
+        const currentLabId = await database.getCurrentUserLabId();
         const { data, error } = await supabase
-            .from('outsourced_labs')
-            .select('*')
+            .from('test_groups')
+            .select('id, name, code')
+            .eq('lab_id', currentLabId)
+            .eq('is_active', true)
             .order('name');
 
-        if (error) {
-            console.error('Error fetching labs:', error);
-        } else {
-            setLabs(data || []);
+        if (!error && data) {
+            setTests(data);
         }
-        setLoading(false);
     };
 
     const handleSave = async (e: React.FormEvent) => {
@@ -126,14 +158,23 @@ const OutsourcedLabsSettings: React.FC = () => {
                         <ArrowLeft className="h-4 w-4" />
                         Back to Labs
                     </button>
-                    <div className="flex items-center gap-3">
-                        <div className="p-3 bg-green-50 rounded-lg text-green-600">
-                            <IndianRupee className="h-6 w-6" />
+                    <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-3">
+                            <div className="p-3 bg-green-50 rounded-lg text-green-600">
+                                <IndianRupee className="h-6 w-6" />
+                            </div>
+                            <div>
+                                <h1 className="text-2xl font-bold text-gray-900">Test Costs - {selectedLabForPricing.name}</h1>
+                                <p className="text-sm text-gray-500">Set costs for tests outsourced to this lab (for margin calculation)</p>
+                            </div>
                         </div>
-                        <div>
-                            <h1 className="text-2xl font-bold text-gray-900">Test Costs - {selectedLabForPricing.name}</h1>
-                            <p className="text-sm text-gray-500">Set costs for tests outsourced to this lab (for margin calculation)</p>
-                        </div>
+                        <button
+                            onClick={() => setShowVoiceInput(true)}
+                            className="inline-flex items-center gap-2 px-4 py-2 bg-gradient-to-r from-pink-500 to-rose-500 text-white rounded-lg hover:from-pink-600 hover:to-rose-600 transition-colors"
+                        >
+                            <Mic className="h-4 w-4" />
+                            Voice Entry
+                        </button>
                     </div>
                 </div>
 
@@ -143,6 +184,24 @@ const OutsourcedLabsSettings: React.FC = () => {
                     entityName={selectedLabForPricing.name}
                     showCost={true}
                 />
+
+                {/* Voice Input Modal */}
+                {showVoiceInput && labId && (
+                    <OutsourcedVoiceInput
+                        labId={labId}
+                        outsourcedLabId={selectedLabForPricing.id}
+                        outsourcedLabName={selectedLabForPricing.name}
+                        tests={tests}
+                        onClose={() => setShowVoiceInput(false)}
+                        onSuccess={(updates) => {
+                            setShowVoiceInput(false);
+                            // Trigger refresh of PricingGrid by forcing re-render
+                            const currentLab = selectedLabForPricing;
+                            setSelectedLabForPricing(null);
+                            setTimeout(() => setSelectedLabForPricing(currentLab), 100);
+                        }}
+                    />
+                )}
             </div>
         );
     }

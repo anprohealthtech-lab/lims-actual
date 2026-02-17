@@ -17,7 +17,8 @@ import {
   AlertCircle,
   Loader,
   Clock as ClockIcon,
-  DollarSign
+  DollarSign,
+  Gift
 } from 'lucide-react';
 import { database, supabase, formatAge } from '../../utils/supabase';
 import { SampleTypeIndicator } from '../Common/SampleTypeIndicator';
@@ -214,6 +215,15 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
   const [discountValue, setDiscountValue] = useState<number>(0);
   const [paymentMethod, setPaymentMethod] = useState<'cash' | 'card' | 'upi' | 'online'>('cash');
   const [amountPaid, setAmountPaid] = useState<number>(0);
+  const [takeFullPayment, setTakeFullPayment] = useState<boolean>(false);
+
+  // Loyalty Points
+  const [loyaltyEnabled, setLoyaltyEnabled] = useState<boolean>(false);
+  const [loyaltyBalance, setLoyaltyBalance] = useState<number>(0);
+  const [loyaltyMinRedeem, setLoyaltyMinRedeem] = useState<number>(100);
+  const [loyaltyPointValue, setLoyaltyPointValue] = useState<number>(1.0);
+  const [loyaltyPointsToRedeem, setLoyaltyPointsToRedeem] = useState<number>(0);
+  const [loyaltyRedeemEnabled, setLoyaltyRedeemEnabled] = useState<boolean>(false);
 
   /**
    * Resolve the price for a test/package based on priority:
@@ -1223,6 +1233,12 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
       if (testsPayload) orderData.tests = testsPayload;
       if (testRequestFile) orderData.testRequestFile = testRequestFile;
 
+      // Include loyalty redemption data in order
+      if (loyaltyRedeemEnabled && loyaltyPointsToRedeem > 0) {
+        orderData.loyalty_points_redeemed = loyaltyPointsToRedeem;
+        orderData.loyalty_discount_amount = loyaltyDiscountAmount;
+      }
+
       setSubmissionProgress('Saving order...');
       const result = await onSubmit(orderData);
       // Auto-create invoice and payment if discount or payment is provided
@@ -1401,6 +1417,27 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
             await Promise.all(parallelOps);
           }
 
+          // Handle loyalty points: redeem & earn
+          if (loyaltyEnabled && selectedPatient?.id && orderId) {
+            try {
+              // Redeem points if used
+              if (loyaltyRedeemEnabled && loyaltyPointsToRedeem > 0) {
+                setSubmissionProgress('Redeeming loyalty points...');
+                await database.loyaltyPoints.redeemPoints(selectedPatient.id, orderId, loyaltyPointsToRedeem);
+                console.log(`✅ Redeemed ${loyaltyPointsToRedeem} loyalty points`);
+              }
+
+              // Earn points on the paid amount (excluding loyalty discount)
+              if (amountPaid > 0) {
+                setSubmissionProgress('Awarding loyalty points...');
+                await database.loyaltyPoints.earnPoints(selectedPatient.id, orderId, amountPaid);
+                console.log(`✅ Earned loyalty points on ${currencySymbol}${amountPaid} payment`);
+              }
+            } catch (loyaltyErr) {
+              console.error('Loyalty points processing error (non-critical):', loyaltyErr);
+            }
+          }
+
           setSubmissionProgress('Order, invoice, and payment created successfully!');
 
           // Close after short delay
@@ -1413,6 +1450,17 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
           onClose();
         }
       } else {
+        // No invoice created, but still handle loyalty redemption if applicable
+        const orderId = result?.id || result;
+        if (loyaltyEnabled && selectedPatient?.id && orderId && loyaltyRedeemEnabled && loyaltyPointsToRedeem > 0) {
+          try {
+            setSubmissionProgress('Redeeming loyalty points...');
+            await database.loyaltyPoints.redeemPoints(selectedPatient.id, orderId, loyaltyPointsToRedeem);
+            console.log(`✅ Redeemed ${loyaltyPointsToRedeem} loyalty points (no invoice)`);
+          } catch (loyaltyErr) {
+            console.error('Loyalty points redemption error (non-critical):', loyaltyErr);
+          }
+        }
         setSubmissionProgress('Order created successfully!');
         setTimeout(() => {
           onClose();
@@ -1439,8 +1487,46 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
   const discountAmount = discountValue > 0
     ? (discountType === 'percentage' ? (totalAmount * discountValue) / 100 : Math.min(discountValue, totalAmount))
     : 0;
-  const finalAmount = totalAmount - discountAmount;
+  const loyaltyDiscountAmount = loyaltyRedeemEnabled && loyaltyPointsToRedeem > 0
+    ? loyaltyPointsToRedeem * loyaltyPointValue
+    : 0;
+  const finalAmount = Math.max(0, totalAmount - discountAmount - loyaltyDiscountAmount);
   const balanceDue = finalAmount - amountPaid;
+
+  useEffect(() => {
+    if (!takeFullPayment) return;
+    const payableAmount = Math.max(0, Number(finalAmount) || 0);
+    setAmountPaid(Number(payableAmount.toFixed(2)));
+  }, [takeFullPayment, finalAmount]);
+
+  // Fetch loyalty balance when patient is selected
+  useEffect(() => {
+    const fetchLoyalty = async () => {
+      if (!selectedPatient?.id) {
+        setLoyaltyEnabled(false);
+        setLoyaltyBalance(0);
+        setLoyaltyPointsToRedeem(0);
+        setLoyaltyRedeemEnabled(false);
+        return;
+      }
+      try {
+        const settings = await database.loyaltyPoints.getLabSettings();
+        if (settings?.loyalty_enabled) {
+          setLoyaltyEnabled(true);
+          setLoyaltyMinRedeem(settings.loyalty_min_redeem_points ?? 100);
+          setLoyaltyPointValue(settings.loyalty_point_value ?? 1.0);
+          const balance = await database.loyaltyPoints.getBalance(selectedPatient.id);
+          setLoyaltyBalance(balance.current_balance);
+        } else {
+          setLoyaltyEnabled(false);
+        }
+      } catch (err) {
+        console.error('Error fetching loyalty info:', err);
+        setLoyaltyEnabled(false);
+      }
+    };
+    fetchLoyalty();
+  }, [selectedPatient?.id]);
 
 
   return ReactDOM.createPortal(
@@ -1985,6 +2071,24 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
                         onChange={e => setAdditionalInputs(prev => ({ ...prev, [info]: e.target.value }))}
                         className="w-full px-3 py-2 border border-purple-300 rounded-md focus:ring-2 focus:ring-purple-500"
                       />
+                    ) : info === 'consent_form' ? (
+                      <label className="flex items-center gap-2 px-3 py-2 border border-purple-300 rounded-md bg-white cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={additionalInputs[info] === 'yes'}
+                          onChange={e => setAdditionalInputs(prev => ({ ...prev, [info]: e.target.checked ? 'yes' : '' }))}
+                          className="h-4 w-4 text-purple-600 rounded focus:ring-purple-500"
+                        />
+                        <span className="text-sm text-gray-700">Patient has signed consent form</span>
+                      </label>
+                    ) : info === 'id_document' ? (
+                      <input
+                        type="text"
+                        value={additionalInputs[info] || ''}
+                        onChange={e => setAdditionalInputs(prev => ({ ...prev, [info]: e.target.value }))}
+                        className="w-full px-3 py-2 border border-purple-300 rounded-md focus:ring-2 focus:ring-purple-500"
+                        placeholder="Enter ID number (Aadhaar, etc.)"
+                      />
                     ) : (
                       <input
                         type="text"
@@ -2350,6 +2454,72 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
                   </div>
                 )}
 
+                {/* Loyalty Points Redemption */}
+                {loyaltyEnabled && selectedPatient && (
+                  <div className="border-t pt-2 space-y-2">
+                    <div className="flex items-center justify-between">
+                      <label className="flex items-center gap-2 text-sm cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={loyaltyRedeemEnabled}
+                          onChange={(e) => {
+                            setLoyaltyRedeemEnabled(e.target.checked);
+                            if (!e.target.checked) setLoyaltyPointsToRedeem(0);
+                          }}
+                          disabled={loyaltyBalance < loyaltyMinRedeem}
+                          className="rounded border-gray-300 text-amber-600 focus:ring-amber-500"
+                        />
+                        <Gift className="h-4 w-4 text-amber-600" />
+                        <span className="text-gray-700 font-medium">Use Loyalty Points</span>
+                      </label>
+                      <span className="text-xs text-amber-700 bg-amber-50 px-2 py-0.5 rounded-full">
+                        {loyaltyBalance} pts available
+                      </span>
+                    </div>
+
+                    {loyaltyBalance < loyaltyMinRedeem && (
+                      <p className="text-xs text-gray-500 ml-6">
+                        Minimum {loyaltyMinRedeem} points required to redeem
+                      </p>
+                    )}
+
+                    {loyaltyRedeemEnabled && loyaltyBalance >= loyaltyMinRedeem && (
+                      <div className="flex items-center gap-3 ml-6">
+                        <input
+                          type="number"
+                          min={loyaltyMinRedeem}
+                          max={Math.min(loyaltyBalance, Math.floor((totalAmount - discountAmount) / loyaltyPointValue))}
+                          value={loyaltyPointsToRedeem}
+                          onChange={(e) => {
+                            const val = parseInt(e.target.value) || 0;
+                            const maxRedeemable = Math.min(loyaltyBalance, Math.floor((totalAmount - discountAmount) / loyaltyPointValue));
+                            setLoyaltyPointsToRedeem(Math.min(val, maxRedeemable));
+                          }}
+                          placeholder="Points to redeem"
+                          className="flex-1 px-3 py-1.5 text-sm border border-amber-300 rounded-md focus:ring-2 focus:ring-amber-500 bg-amber-50"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const maxRedeemable = Math.min(loyaltyBalance, Math.floor((totalAmount - discountAmount) / loyaltyPointValue));
+                            setLoyaltyPointsToRedeem(maxRedeemable);
+                          }}
+                          className="px-2 py-1.5 text-xs bg-amber-100 text-amber-700 border border-amber-300 rounded-md hover:bg-amber-200"
+                        >
+                          Max
+                        </button>
+                      </div>
+                    )}
+
+                    {loyaltyDiscountAmount > 0 && (
+                      <div className="flex justify-between text-sm text-amber-700">
+                        <span>Loyalty Discount ({loyaltyPointsToRedeem} pts)</span>
+                        <span>-{currencySymbol}{loyaltyDiscountAmount.toLocaleString()}</span>
+                      </div>
+                    )}
+                  </div>
+                )}
+
                 <div className="flex justify-between text-base font-semibold border-t pt-2">
                   <span>Final Amount</span>
                   <span className="text-blue-600">{currencySymbol}{finalAmount.toLocaleString()}</span>
@@ -2380,10 +2550,21 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
                       value={amountPaid}
                       onChange={(e) => setAmountPaid(Number(e.target.value))}
                       placeholder="Amount received"
+                      disabled={takeFullPayment}
                       className="w-full px-3 py-2 text-sm border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500"
                     />
                   </div>
                 </div>
+
+                <label className="mt-2 inline-flex items-center gap-2 text-sm text-gray-700">
+                  <input
+                    type="checkbox"
+                    checked={takeFullPayment}
+                    onChange={(e) => setTakeFullPayment(e.target.checked)}
+                    className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                  />
+                  Take Full Payment (Auto-fill net payable)
+                </label>
 
                 {amountPaid > 0 && (
                   <div className="mt-2 p-2 bg-blue-50 rounded text-sm">

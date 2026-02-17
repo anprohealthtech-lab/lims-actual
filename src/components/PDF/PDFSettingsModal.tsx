@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { X, Settings, RotateCcw, Save, Loader2, Download } from 'lucide-react';
+import { X, Settings, RotateCcw, Save, Loader2, Download, Image, Layers } from 'lucide-react';
 import { supabase } from '../../utils/supabase';
 
 // PDF rendering settings that can be adjusted by users
@@ -192,18 +192,29 @@ const PDFSettingsModal: React.FC<PDFSettingsModalProps> = ({
   const [settings, setSettings] = useState<PDFRenderSettings>(PDF_PRESETS.standard);
   const [selectedPreset, setSelectedPreset] = useState<string>('custom');
   const [isSaving, setIsSaving] = useState(false);
+  const [letterheadMode, setLetterheadMode] = useState<'background' | 'header_footer'>('background');
 
-  // Load settings from database when modal opens
+  // Load settings + letterhead mode from database when modal opens
   useEffect(() => {
     if (isOpen && labId) {
       loadSavedPDFSettings(labId).then((savedSettings) => {
         if (savedSettings) {
-          // Merge with defaults to ensure all properties exist
           setSettings({ ...PDF_PRESETS.standard, ...savedSettings });
         } else if (currentSettings) {
           setSettings({ ...PDF_PRESETS.standard, ...currentSettings });
         }
       });
+      // Load letterhead mode
+      supabase
+        .from('labs')
+        .select('pdf_letterhead_mode')
+        .eq('id', labId)
+        .single()
+        .then(({ data }) => {
+          if (data?.pdf_letterhead_mode) {
+            setLetterheadMode(data.pdf_letterhead_mode as 'background' | 'header_footer');
+          }
+        });
     } else if (isOpen && currentSettings) {
       setSettings({ ...PDF_PRESETS.standard, ...currentSettings });
     }
@@ -238,10 +249,19 @@ const PDFSettingsModal: React.FC<PDFSettingsModalProps> = ({
     }
 
     setIsSaving(true);
+    
+    // Save PDF layout settings
     const success = await savePDFSettingsToDatabase(labId, settings);
+    
+    // Also save letterhead mode
+    const { error: modeError } = await supabase
+      .from('labs')
+      .update({ pdf_letterhead_mode: letterheadMode, updated_at: new Date().toISOString() })
+      .eq('id', labId);
+    
     setIsSaving(false);
 
-    if (success) {
+    if (success && !modeError) {
       alert('Lab PDF settings saved successfully! These settings will be used for all PDFs in this lab.');
     } else {
       alert('Failed to save settings. Please try again.');
@@ -301,6 +321,52 @@ const PDFSettingsModal: React.FC<PDFSettingsModalProps> = ({
                 </span>
               )}
             </div>
+          </div>
+
+          {/* Letterhead Mode */}
+          <div className="space-y-3">
+            <label className="block text-sm font-medium text-gray-700">Letterhead Mode</label>
+            <p className="text-xs text-gray-500">How header/footer images are applied to your PDF reports</p>
+            <div className="grid grid-cols-2 gap-3">
+              <button
+                onClick={() => setLetterheadMode('background')}
+                className={`flex flex-col items-center gap-2 p-4 rounded-xl border-2 transition-all ${
+                  letterheadMode === 'background'
+                    ? 'border-blue-500 bg-blue-50 ring-1 ring-blue-200'
+                    : 'border-gray-200 hover:border-gray-300 bg-white'
+                }`}
+              >
+                <Layers className={`w-6 h-6 ${letterheadMode === 'background' ? 'text-blue-600' : 'text-gray-400'}`} />
+                <span className={`text-sm font-medium ${letterheadMode === 'background' ? 'text-blue-700' : 'text-gray-700'}`}>
+                  Full Letterhead
+                </span>
+                <span className="text-xs text-gray-500 text-center leading-tight">
+                  Single A4 image as background. Best for complete letterhead designs.
+                </span>
+              </button>
+              <button
+                onClick={() => setLetterheadMode('header_footer')}
+                className={`flex flex-col items-center gap-2 p-4 rounded-xl border-2 transition-all ${
+                  letterheadMode === 'header_footer'
+                    ? 'border-blue-500 bg-blue-50 ring-1 ring-blue-200'
+                    : 'border-gray-200 hover:border-gray-300 bg-white'
+                }`}
+              >
+                <Image className={`w-6 h-6 ${letterheadMode === 'header_footer' ? 'text-blue-600' : 'text-gray-400'}`} />
+                <span className={`text-sm font-medium ${letterheadMode === 'header_footer' ? 'text-blue-700' : 'text-gray-700'}`}>
+                  Separate Header/Footer
+                </span>
+                <span className="text-xs text-gray-500 text-center leading-tight">
+                  Header &amp; footer images placed in dedicated sections. Cleaner content area.
+                </span>
+              </button>
+            </div>
+            {letterheadMode === 'header_footer' && (
+              <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 text-xs text-amber-700">
+                <strong>Note:</strong> Uses &quot;header&quot; and &quot;footer&quot; images from Lab Branding Assets. 
+                Make sure both are uploaded in Branding Settings. Content area will have an opaque white background.
+              </div>
+            )}
           </div>
 
           {/* Scale */}

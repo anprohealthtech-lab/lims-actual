@@ -60,12 +60,14 @@ interface TestGroupOption {
   id: string;
   name: string;
   category?: string | null;
+  isActive?: boolean;
 }
 
 type RawTestGroupRow = {
   id: string;
   name: string;
   category?: string | null;
+  is_active?: boolean | null;
 };
 
 interface AuditTestGroup {
@@ -857,18 +859,19 @@ const TemplateStudioCKE: React.FC = () => {
   );
 
   // Section content placeholders (doctor-filled content)
-  const SECTION_PLACEHOLDER_OPTIONS: PlaceholderOption[] = useMemo(
-    () => [
-      { id: 'impression', label: 'Impression / Interpretation Summary', placeholder: '{{impression}}', group: 'section' },
-      { id: 'findings', label: 'Findings / Observations', placeholder: '{{findings}}', group: 'section' },
-      { id: 'conclusion', label: 'Conclusion', placeholder: '{{conclusion}}', group: 'section' },
-      { id: 'recommendation', label: 'Recommendation / Suggestions', placeholder: '{{recommendation}}', group: 'section' },
-      { id: 'clinical_history', label: 'Clinical History', placeholder: '{{clinical_history}}', group: 'section' },
-      { id: 'technique', label: 'Technique / Methodology', placeholder: '{{technique}}', group: 'section' },
-      { id: 'comments', label: 'Comments / Notes', placeholder: '{{comments}}', group: 'section' },
-    ],
-    []
-  );
+    const SECTION_PLACEHOLDER_OPTIONS: PlaceholderOption[] = useMemo(
+      () => [
+        { id: 'impression', label: 'Impression / Interpretation Summary', placeholder: '{{impression}}', group: 'section' },
+        { id: 'findings', label: 'Findings / Observations', placeholder: '{{findings}}', group: 'section' },
+        { id: 'conclusion', label: 'Conclusion', placeholder: '{{conclusion}}', group: 'section' },
+        { id: 'recommendation', label: 'Recommendation / Suggestions', placeholder: '{{recommendation}}', group: 'section' },
+        { id: 'clinical_history', label: 'Clinical History', placeholder: '{{clinical_history}}', group: 'section' },
+        { id: 'technique', label: 'Technique / Methodology', placeholder: '{{technique}}', group: 'section' },
+        { id: 'methodology', label: 'Methodology (Alias)', placeholder: '{{methodology}}', group: 'section' },
+        { id: 'comments', label: 'Comments / Notes', placeholder: '{{comments}}', group: 'section' },
+      ],
+      []
+    );
 
   // Signatory placeholders
   const SIGNATORY_PLACEHOLDER_OPTIONS: PlaceholderOption[] = useMemo(
@@ -1234,6 +1237,7 @@ const TemplateStudioCKE: React.FC = () => {
                 { suffix: '_UNIT', labelSuffix: 'Unit', sample: item.unit },
                 { suffix: '_REFERENCE', labelSuffix: 'Reference', sample: item.referenceRange },
                 { suffix: '_FLAG', labelSuffix: 'Flag', sample: 'High/Low' },
+                { suffix: '_METHOD', labelSuffix: 'Method', sample: item.method || 'Photometry' },
               ];
 
             const extras = variations.map((v) => ({
@@ -1772,6 +1776,7 @@ const TemplateStudioCKE: React.FC = () => {
           id: group.id,
           name: group.name,
           category: group.category ?? null,
+          isActive: group.is_active ?? true,
         }));
         setTestGroups(mapped);
       }
@@ -2403,8 +2408,8 @@ const TemplateStudioCKE: React.FC = () => {
     );
   }
 
-  const attachedTestGroupName = templateMeta?.test_group_id
-    ? testGroups.find((group) => group.id === templateMeta.test_group_id)?.name || null
+  const attachedTestGroup = templateMeta?.test_group_id
+    ? testGroups.find((group) => group.id === templateMeta.test_group_id) || null
     : null;
 
   return (
@@ -2740,9 +2745,9 @@ const TemplateStudioCKE: React.FC = () => {
         />
       )}
 
-      <div className="flex w-full flex-1 overflow-auto relative bg-slate-50">
+      <div className="flex w-full flex-1 overflow-hidden relative bg-slate-50">
         {/* Main Editor Area - Full Width if sidebar is collapsed */}
-        <main className="flex-1 relative px-8 py-10 transition-all duration-300 min-w-0">
+        <main className="flex-1 relative px-8 py-10 transition-all duration-300 min-w-0 overflow-auto">
           {saveError ? (
             <div className="mb-4 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
               {saveError}
@@ -2800,7 +2805,7 @@ const TemplateStudioCKE: React.FC = () => {
 
         {/* Push-out Settings Panel */}
         <div
-          className={`shrink-0 border-l border-gray-200 bg-white shadow-xl transition-all duration-300 ease-in-out relative z-30 ${sidebarCollapsed ? 'w-0' : 'w-80'
+          className={`shrink-0 overflow-hidden border-l border-gray-200 bg-white shadow-xl transition-all duration-300 ease-in-out relative z-30 ${sidebarCollapsed ? 'w-0' : 'w-80'
             }`}
         >
           <div className={`w-80 h-full flex flex-col transition-opacity duration-300 ${sidebarCollapsed ? 'opacity-0' : 'opacity-100'}`}>
@@ -2910,9 +2915,20 @@ const TemplateStudioCKE: React.FC = () => {
                                 >
                                   {({ selected, active }) => (
                                     <>
-                                      <span className={`block truncate ${selected ? 'font-medium' : 'font-normal'}`}>
-                                        {group.name}
-                                      </span>
+                                      <div className="flex items-center justify-between gap-2">
+                                        <span className={`block truncate ${selected ? 'font-medium' : 'font-normal'}`}>
+                                          {group.name}
+                                        </span>
+                                        <span
+                                          className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-medium ${
+                                            group.isActive
+                                              ? (active ? 'bg-white/20 text-white' : 'bg-emerald-100 text-emerald-700')
+                                              : (active ? 'bg-white/20 text-white' : 'bg-rose-100 text-rose-700')
+                                          }`}
+                                        >
+                                          Active: {group.isActive ? 'True' : 'False'}
+                                        </span>
+                                      </div>
                                       {selected ? (
                                         <span className={`absolute inset-y-0 left-0 flex items-center pl-3 ${active ? 'text-white' : 'text-blue-600'}`}>
                                           <CheckCircle2 className="h-4 w-4" aria-hidden="true" />
@@ -2927,8 +2943,10 @@ const TemplateStudioCKE: React.FC = () => {
                         </Transition>
                       </div>
                     </Combobox>
-                    {attachedTestGroupName && (
-                      <p className="mt-1 text-[10px] text-blue-600">Currently linked to: {attachedTestGroupName}</p>
+                    {attachedTestGroup && (
+                      <p className="mt-1 text-[10px] text-blue-600">
+                        Currently linked to: {attachedTestGroup.name} (Active: {attachedTestGroup.isActive ? 'True' : 'False'})
+                      </p>
                     )}
                   </div>
 
@@ -3336,11 +3354,13 @@ const TemplateStudioCKE: React.FC = () => {
                                 labEmail: labDetails?.email || 'results@citydiagnostics.com',
                                 labWebsite: labDetails?.website || 'www.citydiagnostics.com',
 
-                                // Dynamic Content Placeholders
-                                crpResult: '66',
-                                crpUnit: 'mg/L',
-                                crpRefRange: '< 5',
-                                crpRemarks: 'Elevated levels indicating inflammation.',
+                                  // Dynamic Content Placeholders
+                                  crpResult: '66',
+                                  crpUnit: 'mg/L',
+                                  crpRefRange: '< 5',
+                                  crpRemarks: 'Elevated levels indicating inflammation.',
+                                  technique: 'Photometry (Enzymatic)',
+                                  methodology: 'Photometry (Enzymatic)',
 
                                 // Analytes shown in user feedback
                                 ANALYTE_EOS_VALUE: '0.45',
@@ -3394,12 +3414,14 @@ const TemplateStudioCKE: React.FC = () => {
                                 result = result.replace(/\{\{ANALYTE_[A-Z0-9_]+_REFERENCE_RANGE\}\}/g, '10.0 - 40.0');
                                 result = result.replace(/\{\{ANALYTE_[A-Z0-9_]+_REFERENCE\}\}/g, '10.0 - 40.0');
                                 result = result.replace(/\{\{ANALYTE_[A-Z0-9_]+_FLAG\}\}/g, 'Normal');
+                                result = result.replace(/\{\{ANALYTE_[A-Z0-9_]+_METHOD\}\}/g, 'Photometry');
 
                                 // 5. Generic fallback for new suffixes
                                 result = result.replace(/\{\{[A-Za-z0-9_]+_UNIT\}\}/g, 'mg/dL');
                                 result = result.replace(/\{\{[A-Za-z0-9_]+_REF_RANGE\}\}/g, '10 - 40');
                                 result = result.replace(/\{\{[A-Za-z0-9_]+_FLAG\}\}/g, 'Normal');
                                 result = result.replace(/\{\{[A-Za-z0-9_]+_NOTE\}\}/g, 'Sample note');
+                                result = result.replace(/\{\{[A-Za-z0-9_]+_METHOD\}\}/g, 'Photometry');
 
                                 return result;
                               };

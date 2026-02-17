@@ -11,6 +11,9 @@ interface TestConfigurationRequest {
   description?: string;
   labContext?: string;
   existingTests?: string[];
+  sampleType?: string;
+  requiresFasting?: boolean;
+  insert?: boolean;
 }
 
 serve(async (req) => {
@@ -51,7 +54,15 @@ serve(async (req) => {
       .single()
 
     // Parse request body
-    const { testName, description, labContext, existingTests }: TestConfigurationRequest = await req.json()
+    const {
+      testName,
+      description,
+      labContext,
+      existingTests,
+      sampleType,
+      requiresFasting,
+      insert
+    }: TestConfigurationRequest = await req.json()
 
     if (!testName?.trim()) {
       throw new Error('Test name is required')
@@ -65,8 +76,13 @@ serve(async (req) => {
       p_lab_id: userData?.lab_id || null
     })
 
-    // Always use the updated default prompt for now to ensure consistency
-    const systemPrompt = getDefaultTestConfigurationPrompt()
+    const resolvedPrompt = Array.isArray(promptData) && promptData.length > 0
+      ? promptData[0]?.prompt
+      : null
+
+    const systemPrompt = (typeof resolvedPrompt === 'string' && resolvedPrompt.trim().length > 0)
+      ? resolvedPrompt
+      : getDefaultTestConfigurationPrompt()
 
     // Build the complete prompt
     const fullPrompt = `${systemPrompt}
@@ -75,7 +91,10 @@ ${existingTests ? `EXISTING TESTS TO AVOID DUPLICATING: ${existingTests.join(', 
 
 TEST TO ANALYZE: ${testName}
 ${description ? `DESCRIPTION: ${description}` : ''}
+${sampleType ? `SAMPLE TYPE OVERRIDE (STRICT): ${sampleType}` : ''}
+${typeof requiresFasting === 'boolean' ? `REQUIRES FASTING OVERRIDE (STRICT): ${requiresFasting}` : ''}
 LAB CONTEXT: ${labContext || `User: ${user.email}, Lab: ${userData?.lab_id || 'Default'}`}
+REQUEST MODE: ${insert ? 'INSERT' : 'PREVIEW'}
 
 Return ONLY valid JSON with no additional text.`
 
@@ -152,7 +171,8 @@ Return ONLY valid JSON with no additional text.`
     return new Response(
       JSON.stringify({
         success: true,
-        data: parsedResponse
+        data: parsedResponse,
+        inserted: false
       }),
       {
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },
@@ -192,14 +212,14 @@ REQUIREMENTS:
     "sample_type": "string (MUST be one of the valid types below)",
     "requires_fasting": boolean,
     "is_active": true,
-    "default_ai_processing_type": "gemini",
-    "group_level_prompt": null,
+    "default_ai_processing_type": "string (MUST be one of the VALID AI PROCESSING TYPES below)",
+    "group_level_prompt": "string (MANDATORY: concise but specific extraction guidance for this test group)",
     "to_be_copied": false
   },
   "analytes": [{
     "name": "string",
     "unit": "string",
-    "reference_range": "string (e.g., '3.5-5.0')",
+    "reference_range": "string (e.g., '3.5-5.0' or 'Low: <3.5 | Optimal: 3.5-5.0 | High: >5.0' when user asks for low/optimal/high)",
     "low_critical": "string or null",
     "high_critical": "string or null", 
     "interpretation_low": "string",
@@ -207,11 +227,17 @@ REQUIREMENTS:
     "interpretation_high": "string",
     "category": "string",
     "is_active": true,
-    "ai_processing_type": "gemini",
+    "ai_processing_type": "string (MUST be one of the VALID AI PROCESSING TYPES below)",
     "ai_prompt_override": null,
     "group_ai_mode": "individual",
     "is_global": false,
-    "to_be_copied": false
+    "to_be_copied": false,
+    "is_calculated": "boolean",
+    "formula": "string or null (required when is_calculated=true; example: 'LDL/5')",
+    "formula_variables": "array of strings (required when is_calculated=true; example: ['LDL'])",
+    "formula_description": "string or null",
+    "value_type": "numeric | text | null",
+    "expected_normal_values": "array of strings for qualitative analytes"
   }],
   "test_group_analytes": [{
     "test_group_code": "string (matches test_group.code)",
@@ -238,12 +264,29 @@ REQUIREMENTS:
    Other:
    - "Other" (use only if none of the above fit)
 
+2b. VALID AI PROCESSING TYPES (choose the closest fit):
+   - "MANUAL_ENTRY_NO_VISION"
+   - "THERMAL_SLIP_OCR"
+   - "INSTRUMENT_SCREEN_OCR"
+   - "RAPID_CARD_LFA"
+   - "COLOR_STRIP_MULTIPARAM"
+   - "SINGLE_WELL_COLORIMETRIC"
+   - "AGGLUTINATION_CARD"
+   - "MICROSCOPY_MORPHOLOGY"
+   - "ZONE_OF_INHIBITION"
+   - "MENISCUS_SCALE_READING"
+   - "SAMPLE_QUALITY_TUBE_CHECK"
+   - "UNKNOWN_NEEDS_REVIEW"
+
 3. Use medically accurate reference ranges and units
 4. Provide realistic prices in decimal format ($15.00-$500.00)
 5. Include relevant analytes for the test type
 6. Always include confidence score (0-1) and reasoning
 7. Generate unique, meaningful codes for test groups (3-8 characters)
 8. Create test_group_analytes mapping for each analyte
+9. group_level_prompt must be present and actionable (never null)
+10. If an analyte is derived (e.g., VLDL from LDL/5), mark it as calculated and provide formula/formula_variables.
+11. If user prompt specifies low/optimal/high style ranges, encode that in reference_range text and keep interpretation_low/normal/high clinically meaningful.
 
 CONTEXT:
 - This is for a clinical laboratory information system

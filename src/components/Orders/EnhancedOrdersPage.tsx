@@ -211,7 +211,7 @@ const PatientVisitCard: React.FC<PatientVisitCardProps> = ({
 
       {/* Order Chain (when expanded) */}
       {expanded && (
-        <div className="px-6 py-4">
+        <div className="px-4 py-3 md:px-6 md:py-4">
           <h4 className="text-sm font-medium text-gray-700 mb-3 flex items-center">
             <Users className="h-4 w-4 mr-2" />
             Order Chain ({sortedOrders.length} orders)
@@ -219,30 +219,30 @@ const PatientVisitCard: React.FC<PatientVisitCardProps> = ({
 
           <div className="space-y-3">
             {sortedOrders.map((order, index) => (
-              <div key={order.id} className="w-full p-4 bg-white rounded-lg border-2 border-gray-200 hover:border-blue-300 hover:shadow-md transition-all duration-200">
+              <div key={order.id} className="w-full p-3 sm:p-4 bg-white rounded-lg border-2 border-gray-200 hover:border-blue-300 hover:shadow-md transition-all duration-200">
                 {/* Full Width Horizontal Layout */}
-                <div className="flex items-center justify-between w-full">
+                <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between w-full">
                   {/* Left Section: Sequence & Order Info */}
-                  <div className="flex items-center space-x-4">
+                  <div className="flex items-start gap-3 md:items-center md:gap-4">
                     {/* Sequence Number */}
                     <div className="flex items-center justify-center w-8 h-8 bg-blue-100 text-blue-700 rounded-full font-bold text-sm border-2 border-blue-200">
                       {index + 1}
                     </div>
 
                     {/* Order Icon & ID */}
-                    <div className="flex items-center space-x-3">
+                    <div className="flex items-start gap-3 md:items-center">
                       <span className="text-2xl">{getOrderTypeIcon(order.order_type)}</span>
                       <div>
-                        <div className="text-lg font-bold text-gray-900">
+                        <div className="text-base md:text-lg font-bold text-gray-900">
                           Order #{order.id.substring(0, 8)}
                         </div>
-                        <div className="flex items-center gap-2 mt-0.5">
+                        <div className="flex flex-wrap items-center gap-2 mt-0.5">
                           <SampleTypeIndicator
                             sampleType={order.sample_type || 'Blood'}
                             sampleColor={order.color_name}
                             size="sm"
                           />
-                          <div className="text-sm text-gray-600 flex items-center space-x-2">
+                          <div className="text-sm text-gray-600 flex flex-wrap items-center gap-2">
                             <span className="capitalize font-medium">{order.order_type}</span>
                             {order.sample_id && (
                               <>
@@ -268,8 +268,8 @@ const PatientVisitCard: React.FC<PatientVisitCardProps> = ({
                   </div>
 
                   {/* Center Section: Tests & Details */}
-                  <div className="flex-1 px-6">
-                    <div className="text-right">
+                  <div className="flex-1 md:px-6">
+                    <div className="text-left md:text-right">
                       <div className="text-lg font-bold text-gray-900">
                         ₹{order.total_amount.toLocaleString()}
                       </div>
@@ -277,7 +277,7 @@ const PatientVisitCard: React.FC<PatientVisitCardProps> = ({
                         {order.tests.length} test{order.tests.length !== 1 ? 's' : ''}
                       </div>
                       {order.tests.length > 0 && (
-                        <div className="text-xs text-blue-600 mt-1 max-w-xs truncate">
+                        <div className="text-xs text-blue-600 mt-1 max-w-full md:max-w-xs line-clamp-2 md:line-clamp-1">
                           {order.tests.slice(0, 3).join(', ')}
                           {order.tests.length > 3 && (
                             <span className="text-gray-500"> +{order.tests.length - 3} more</span>
@@ -310,7 +310,7 @@ const PatientVisitCard: React.FC<PatientVisitCardProps> = ({
                   </div>
 
                   {/* Right Section: Status & Actions */}
-                  <div className="flex items-center space-x-3">
+                  <div className="flex flex-col items-start gap-2 md:flex-row md:items-center md:gap-3">
                     <OrderStatusDisplay order={order} compact={true} />
 
                     {order.can_add_tests && (

@@ -13,6 +13,7 @@ import OrderFiltersBar, { OrderFilters } from "../components/Orders/OrderFilters
 import { useRealtimeOrders } from "../hooks/useRealtimeOrders";
 import { SampleTypeGroup } from "../components/Common/SampleTypeIndicator";
 import { TATStatusBadge } from "../components/Orders/TATStatusBadge";
+import { useMobileOptimizations } from "../utils/platformHelper";
 
 /* ===========================
    Types
@@ -75,6 +76,7 @@ type CardOrder = {
   order_date: string;
   expected_date: string;
   total_amount: number;
+  final_amount?: number;
   doctor: string | null;
 
   order_number?: number | null;
@@ -112,6 +114,7 @@ type CardOrder = {
 
 const Orders: React.FC = () => {
   const { user } = useAuth();
+  const mobile = useMobileOptimizations();
 
   const [orders, setOrders] = useState<CardOrder[]>([]);
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
@@ -256,7 +259,7 @@ const Orders: React.FC = () => {
       const { data: fullOrderData } = await supabase
         .from("orders")
         .select(`
-          id, lab_id, patient_id, patient_name, status, priority, order_date, expected_date, total_amount, doctor,
+          id, lab_id, patient_id, patient_name, status, priority, order_date, expected_date, total_amount, final_amount, doctor,
           order_number, sample_id, color_code, color_name, sample_collected_at, sample_collected_by,
           patients(name, age, gender),
           order_tests(id, test_group_id, test_name, outsourced_lab_id, outsourced_labs(name))
@@ -279,6 +282,7 @@ const Orders: React.FC = () => {
           order_date: orderRow.order_date,
           expected_date: orderRow.expected_date,
           total_amount: orderRow.total_amount,
+          final_amount: orderRow.final_amount || orderRow.total_amount,
           doctor: orderRow.doctor,
           order_number: orderRow.order_number ?? null,
           sample_id: orderRow.sample_id,
@@ -504,7 +508,7 @@ const Orders: React.FC = () => {
     let query = supabase
       .from("orders")
       .select(`
-        id, lab_id, location_id, patient_id, patient_name, status, priority, order_date, expected_date, total_amount, doctor,
+        id, lab_id, location_id, patient_id, patient_name, status, priority, order_date, expected_date, total_amount, final_amount, doctor,
         order_number, sample_id, color_code, color_name, sample_collected_at, sample_collected_by,
         patients(name, age, gender),
         order_tests(
@@ -551,9 +555,31 @@ const Orders: React.FC = () => {
       byOrder.set(r.order_id, arr);
     });
 
-    // 3) shape cards with new buckets
+    // 3) invoice aggregation (aligned with Dashboard amount logic)
+    const invoicePromises = orderIds.map(async (orderId) => {
+      const { data: invoices } = await database.invoices.getAllByOrderId(orderId);
+      if (!invoices || invoices.length === 0) {
+        return { orderId, totalInvoiced: 0 };
+      }
+
+      let totalInvoiced = 0;
+      for (const inv of invoices) {
+        totalInvoiced += Number(inv.total_after_discount || inv.total || inv.subtotal || 0);
+      }
+
+      return { orderId, totalInvoiced };
+    });
+    const invoiceData = await Promise.all(invoicePromises);
+    const invoiceMap = new Map(invoiceData.map((d) => [d.orderId, d]));
+
+    // 4) shape cards with new buckets
     const cards: CardOrder[] = orderRows.map((o) => {
       const rows = byOrder.get(o.id) || [];
+      const invoiceInfo = invoiceMap.get(o.id);
+      const orderAmount = o.final_amount || o.total_amount || 0;
+      const effectiveDisplayAmount = invoiceInfo?.totalInvoiced
+        ? Math.max(invoiceInfo.totalInvoiced, orderAmount)
+        : orderAmount;
 
       // Calculate dynamic expected date based on TAT
       let calculatedExpectedDateMs = 0;
@@ -651,6 +677,7 @@ const Orders: React.FC = () => {
         order_date: o.order_date,
         expected_date: dynamicExpectedDate,
         total_amount: o.total_amount,
+        final_amount: effectiveDisplayAmount,
         doctor: o.doctor,
 
         order_number: o.order_number ?? null,
@@ -715,7 +742,8 @@ const Orders: React.FC = () => {
         (o.doctor || "").toLowerCase().includes(q);
 
       // Status filter
-      const matchesStatus = !filters.status || filters.status === "All" || o.status === filters.status;
+      const matchesStatus = !filters.status || filters.status === "All" || 
+        (filters.status === "Re-Run Requests" ? rerunByOrder.has(o.id) : o.status === filters.status);
 
       // Priority filter
       const matchesPriority = !filters.priority || filters.priority === "All" || o.priority === filters.priority;
@@ -782,7 +810,7 @@ const Orders: React.FC = () => {
       patient_id: order.patient_id,
       patient_name: order.patient_name,
       status: order.status,
-      total_amount: order.total_amount,
+      total_amount: order.final_amount ?? order.total_amount,
       order_date: order.order_date,
       created_at: order.order_date,
       sample_id: order.sample_id || undefined,
@@ -937,7 +965,7 @@ const Orders: React.FC = () => {
         const { data: newOrderData, error: fetchError } = await supabase
           .from("orders")
           .select(`
-    id, lab_id, patient_id, patient_name, status, priority, order_date, expected_date, total_amount, doctor,
+    id, lab_id, patient_id, patient_name, status, priority, order_date, expected_date, total_amount, final_amount, doctor,
       order_number, sample_id, color_code, color_name, sample_collected_at, sample_collected_by,
       patients(name, age, gender),
       order_tests(id, test_group_id, test_name, outsourced_lab_id, outsourced_labs(name))
@@ -996,6 +1024,7 @@ const Orders: React.FC = () => {
             order_date: orderRow.order_date,
             expected_date: orderRow.expected_date,
             total_amount: orderRow.total_amount,
+            final_amount: orderRow.final_amount || orderRow.total_amount,
             doctor: orderRow.doctor,
             order_number: orderRow.order_number ?? null,
             sample_id: orderRow.sample_id,
@@ -1169,13 +1198,6 @@ const Orders: React.FC = () => {
             </button>
           </div>
         </div>
-        <button
-          onClick={() => setShowOrderForm(true)}
-          className="hidden sm:inline-flex items-center px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
-        >
-          <Plus className="h-5 w-5 mr-2" />
-          Create Order
-        </button>
       </div>
 
       {/* Overview cards */}
@@ -1210,7 +1232,9 @@ const Orders: React.FC = () => {
           <AlertTriangle className="absolute right-2 bottom-2 h-8 w-8 text-orange-500/20 md:static md:h-5 md:w-5 md:text-white md:bg-orange-500 md:p-1 md:rounded-lg md:opacity-100" />
         </div>
         {/* RE-RUN Requests Card */}
-        <div className={`border rounded-lg p-3 md:p-4 relative overflow-hidden ${totalRerunCount > 0 ? 'bg-red-50 border-red-300 ring-2 ring-red-400 ring-opacity-50' : 'bg-gray-50 border-gray-200'}`}>
+        <div 
+          onClick={() => totalRerunCount > 0 && setFilters(f => ({ ...f, status: filters.status === 'Re-Run Requests' ? 'All' : 'Re-Run Requests' }))}
+          className={`border rounded-lg p-3 md:p-4 relative overflow-hidden cursor-pointer transition-all ${totalRerunCount > 0 ? 'bg-red-50 border-red-300 ring-2 ring-red-400 ring-opacity-50' : 'bg-gray-50 border-gray-200'} ${filters.status === 'Re-Run Requests' ? 'ring-2 ring-red-600 ring-opacity-80' : ''}`}>
           <div className="relative z-10">
             <div className={`text-xl md:text-2xl font-bold ${totalRerunCount > 0 ? 'text-red-900 animate-pulse' : 'text-gray-600'}`}>
               {totalRerunCount}
@@ -1260,6 +1284,10 @@ const Orders: React.FC = () => {
                   {g.orders.map((o) => {
                     const pct = o.expectedTotal > 0 ? Math.round((o.enteredTotal / o.expectedTotal) * 100) : 0;
                     const canAddTests = !['Completed', 'Delivered'].includes(o.status);
+                    const visiblePanels = mobile.isMobile ? o.panels.slice(0, 2) : o.panels;
+                    const hiddenPanelCount = Math.max(0, o.panels.length - visiblePanels.length);
+                    const visibleTests = mobile.isMobile ? o.tests.slice(0, 2) : o.tests;
+                    const hiddenTestCount = Math.max(0, o.tests.length - visibleTests.length);
 
                     // Debug logging
                     if (pct === 0 && o.expectedTotal > 0) {
@@ -1286,7 +1314,8 @@ const Orders: React.FC = () => {
                                   {o.patient?.name || o.patient_name}
                                 </div>
                                 <div className="text-xs md:text-base text-gray-700">
-                                  {formatAge(o.patient?.age, (o.patient as any)?.age_unit)} • {o.patient?.gender || "N/A"} • ID: {o.patient_id}
+                                  {formatAge(o.patient?.age, (o.patient as any)?.age_unit)} • {o.patient?.gender || "N/A"}
+                                  <span className="hidden sm:inline"> • ID: {o.patient_id}</span>
                                 </div>
                               </div>
                             </div>
@@ -1338,7 +1367,7 @@ const Orders: React.FC = () => {
                             </div>
 
                             {o.sample_id && (
-                              <div className="flex items-center gap-2">
+                              <div className="hidden sm:flex items-center gap-2">
                                 <div
                                   className="w-8 h-8 rounded-full border-2 border-white shadow-md flex items-center justify-center text-white font-bold text-xs"
                                   style={{ backgroundColor: o.color_code || "#8B5CF6" }}
@@ -1373,7 +1402,7 @@ const Orders: React.FC = () => {
                               </div>
                               <div className="flex flex-wrap gap-3">
                                 {o.panels.length > 0
-                                  ? o.panels.map((p, i) => {
+                                  ? visiblePanels.map((p, i) => {
                                     const progress = p.expected > 0 ? (p.entered / p.expected) * 100 : 0;
 
                                     // Modern minimalistic colors based on progress
@@ -1434,7 +1463,7 @@ const Orders: React.FC = () => {
                                       </div>
                                     );
                                   })
-                                  : o.tests.map((t, i) => {
+                                  : visibleTests.map((t, i) => {
                                     // Find corresponding order_test to check outsourcing status
                                     const orderTests = (o as any).order_tests || [];
                                     const orderTest = orderTests.find((ot: any) => ot.test_name === t);
@@ -1452,21 +1481,33 @@ const Orders: React.FC = () => {
                                       </span>
                                     );
                                   })}
+                                {o.panels.length > 0 && hiddenPanelCount > 0 && (
+                                  <span className="px-2 py-1 rounded text-xs bg-gray-100 text-gray-700 border border-gray-200">
+                                    +{hiddenPanelCount} more
+                                  </span>
+                                )}
+                                {o.panels.length === 0 && hiddenTestCount > 0 && (
+                                  <span className="px-2 py-1 rounded text-xs bg-gray-100 text-gray-700 border border-gray-200">
+                                    +{hiddenTestCount} more
+                                  </span>
+                                )}
                               </div>
                             </div>
                           </div>
 
                           <div className="text-right">
                             <div className="text-xl sm:text-2xl font-bold text-green-600">
-                              ₹{Number(o.total_amount || 0).toLocaleString()}
+                              ₹{Number(o.final_amount ?? o.total_amount ?? 0).toLocaleString()}
                             </div>
                             <div className="text-sm text-gray-600">
                               <div>Ordered: {new Date(o.order_date).toLocaleDateString()}</div>
-                              <div className={`${new Date(o.expected_date) < new Date() ? "text-red-600 font-bold" : ""} `}>
-                                Expected: {new Date(o.expected_date).toLocaleString(undefined, { year: 'numeric', month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
-                                {new Date(o.expected_date) < new Date() && " ⚠️ OVERDUE"}
+                                <div className={`${new Date(o.expected_date) < new Date() ? "text-red-600 font-bold" : ""} `}>
+                                  Expected: {mobile.isMobile
+                                    ? new Date(o.expected_date).toLocaleDateString()
+                                    : new Date(o.expected_date).toLocaleString(undefined, { year: 'numeric', month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
+                                  {new Date(o.expected_date) < new Date() && " ⚠️ OVERDUE"}
+                                </div>
                               </div>
-                            </div>
 
                             {/* Updated button section with Add Tests functionality */}
                             <div className="mt-3 flex flex-col sm:flex-row gap-2">
@@ -1487,7 +1528,7 @@ const Orders: React.FC = () => {
                                     e.stopPropagation();
                                     handleAddTests(o.id);
                                   }}
-                                  className="inline-flex items-center px-3 py-1.5 text-sm bg-green-600 text-white rounded-lg hover:bg-green-700"
+                                  className="hidden sm:inline-flex items-center px-3 py-1.5 text-sm bg-green-600 text-white rounded-lg hover:bg-green-700"
                                 >
                                   <Plus className="h-4 w-4 mr-1" />
                                   Add Tests
@@ -1781,17 +1822,8 @@ const Orders: React.FC = () => {
         </div>
       )}
 
-      {/* Floating Action Button for Mobile */}
-      <button
-        onClick={() => setShowOrderForm(true)}
-        className="sm:hidden fixed bottom-20 right-4 h-14 w-14 bg-blue-600 text-white rounded-full shadow-lg flex items-center justify-center hover:bg-blue-700 z-40 transition-transform active:scale-95"
-        aria-label="Create Order"
-      >
-        <Plus className="h-8 w-8" />
-      </button>
-
-      {/* Bottom spacer for FAB */}
-      <div className="h-20 sm:hidden"></div>
+      {/* Bottom spacer for mobile */}
+      <div className="h-4 sm:hidden"></div>
 
       {/* Order Details Modal */}
       {selectedOrder && (

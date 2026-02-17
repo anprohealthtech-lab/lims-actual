@@ -12,6 +12,8 @@ export interface CreateOrderWithPaymentData {
   notes?: string;
   // Outsourcing config: { test_id: outsourced_lab_id | 'inhouse' }
   test_outsourcing?: Record<string, string>;
+  // Patient context for AI reference range resolution
+  patient_context?: Record<string, any>;
 }
 
 export interface OrderCreationResponse {

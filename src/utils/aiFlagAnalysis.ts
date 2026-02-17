@@ -65,6 +65,18 @@ export interface PatientContext {
   dob?: string;
 }
 
+/** Snapshot of analyte/lab_analyte fields to persist on result_values for PDF templates */
+export interface EnrichedAnalyteSnapshot {
+  normal_range_min?: number | null;
+  normal_range_max?: number | null;
+  low_critical?: string | null;
+  high_critical?: string | null;
+  reference_range_male?: string | null;
+  reference_range_female?: string | null;
+  method?: string | null;
+  value_type?: string | null;
+}
+
 export interface AIFlagAnalysisResult {
   resultValueId: string;
   originalFlag?: string;
@@ -76,6 +88,8 @@ export interface AIFlagAnalysisResult {
   auditNotes?: string;
   changed: boolean;
   valueType?: string;
+  /** Enriched analyte fields to snapshot onto result_values for PDF template use */
+  enrichedSnapshot?: EnrichedAnalyteSnapshot;
 }
 
 export interface BatchAnalysisResult {
@@ -149,6 +163,28 @@ async function callAIFlagService(
 // ============================================================================
 // Core Functions
 // ============================================================================
+
+/**
+ * Normalize flag from display format to internal format
+ * Display format: 'H', 'L', 'H*', 'L*', 'A', '' (from flagToDisplayString)
+ * Internal format: 'high', 'low', 'critical_high', 'critical_low', 'abnormal', 'normal', ''
+ */
+function normalizeFlag(flag: string): string {
+  if (!flag) return '';
+  // If already in internal format, return as-is
+  const internalFlags = ['normal', 'high', 'low', 'critical_high', 'critical_low', 'abnormal'];
+  if (internalFlags.includes(flag)) return flag;
+  // Map display format → internal format
+  const displayToInternal: Record<string, string> = {
+    'H': 'high',
+    'L': 'low',
+    'H*': 'critical_high',
+    'L*': 'critical_low',
+    'A': 'abnormal',
+    '': '',
+  };
+  return displayToInternal[flag] ?? flag;
+}
 
 /**
  * Calculate age from date of birth
@@ -325,8 +361,10 @@ export async function analyzeResultValue(
       : undefined;
 
     // Determine if flag changed (compare normalized flag values)
+    // Must normalize display-format flags ('A','H','L','H*','L*','') to internal format
+    // since initial save uses display format but determineFlag returns internal format
     const normalizedNewFlag = flagResult.flag || '';
-    const normalizedOldFlag = resultValue.flag || '';
+    const normalizedOldFlag = normalizeFlag(resultValue.flag || '');
     const changed = normalizedOldFlag !== normalizedNewFlag;
 
     // Use confidence from flag result
@@ -457,6 +495,18 @@ export async function analyzeOrderResults(
         } : undefined;
         const analyteContext = mergeAnalyteWithLabOverride(baseAnalyte, labOverride) || baseAnalyte;
 
+        // Build enriched snapshot for PDF template persistence
+        const enrichedSnapshot: EnrichedAnalyteSnapshot = {
+          normal_range_min: labOverride?.normal_range_min ?? null,
+          normal_range_max: labOverride?.normal_range_max ?? null,
+          low_critical: analyteContext?.low_critical ?? null,
+          high_critical: analyteContext?.high_critical ?? null,
+          reference_range_male: analyteContext?.reference_range_male ?? null,
+          reference_range_female: analyteContext?.reference_range_female ?? null,
+          method: labOverride?.lab_specific_method || labOverride?.method || rv.analytes?.method || null,
+          value_type: analyteContext?.value_type ?? null,
+        };
+
         const result = await analyzeResultValue(
           {
             id: rv.id,
@@ -469,6 +519,9 @@ export async function analyzeOrderResults(
           analyteContext,
           patient
         );
+
+        // Attach enriched snapshot so applyFlagAnalysis can persist it
+        result.enrichedSnapshot = enrichedSnapshot;
 
         results.push(result);
       } catch (error) {
@@ -503,14 +556,25 @@ export async function applyFlagAnalysis(
   }
 ): Promise<{ success: number; failed: number }> {
   const updates = analysisResults
-    .filter(r => !options?.onlyChanged || r.changed)
+    .filter(r => !options?.onlyChanged || r.changed || r.enrichedSnapshot)
     .map(r => ({
       id: r.resultValueId,
       flag: r.newFlag?.substring(0, 10), // Truncate to 10 chars for DB constraint
       flag_source: r.flagSource as any,
       flag_confidence: r.flagConfidence,
       ai_interpretation: r.interpretation,
-      ai_audit_status: r.auditStatus as any
+      ai_audit_status: r.auditStatus as any,
+      // Enriched analyte snapshot fields for PDF template
+      ...(r.enrichedSnapshot ? {
+        normal_range_min: r.enrichedSnapshot.normal_range_min,
+        normal_range_max: r.enrichedSnapshot.normal_range_max,
+        low_critical: r.enrichedSnapshot.low_critical,
+        high_critical: r.enrichedSnapshot.high_critical,
+        reference_range_male: r.enrichedSnapshot.reference_range_male,
+        reference_range_female: r.enrichedSnapshot.reference_range_female,
+        method: r.enrichedSnapshot.method,
+        value_type: r.enrichedSnapshot.value_type,
+      } : {})
     }));
 
   const result = await database.resultValues.bulkUpdateWithAIFlags(updates);
