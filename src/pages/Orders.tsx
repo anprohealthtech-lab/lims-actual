@@ -121,6 +121,7 @@ const Orders: React.FC = () => {
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const [showOrderForm, setShowOrderForm] = useState(false);
   const [selectedOrder, setSelectedOrder] = useState<CardOrder | null>(null);
+  const [openOnResults, setOpenOnResults] = useState(false);
   const [viewMode, setViewMode] = useState<'standard' | 'enhanced'>('standard');
 
   // Filter state
@@ -861,7 +862,8 @@ const Orders: React.FC = () => {
       }));
   }, [filtered]);
 
-  const openDetails = (o: CardOrder) => setSelectedOrder(o);
+  const openDetails = (o: CardOrder) => { setOpenOnResults(false); setSelectedOrder(o); };
+  const openResultEntry = (o: CardOrder) => { setOpenOnResults(true); setSelectedOrder(o); };
 
   // Enhanced view handlers
   const handleAddOrder = async (orderData: any) => {
@@ -1166,12 +1168,14 @@ const Orders: React.FC = () => {
               sample_collected_at: selectedOrder.sample_collected_at || undefined,
               sample_collected_by: selectedOrder.sample_collected_by || undefined
             }}
-            onClose={() => setSelectedOrder(null)}
+            initialTab={openOnResults ? "results" : "details"}
+            onClose={() => { setSelectedOrder(null); setOpenOnResults(false); }}
             onUpdateStatus={handleUpdateStatus}
             onSubmitResults={async (_orderId: string, _resultsData: any[]) => {
               console.log('onSubmitResults called');
               await fetchOrders();
               setSelectedOrder(null);
+              setOpenOnResults(false);
             }}
           />
         )}
@@ -1533,7 +1537,18 @@ const Orders: React.FC = () => {
                                 className="inline-flex items-center px-3 py-1.5 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700"
                               >
                                 <Eye className="h-4 w-4 mr-1" />
-                                View Full Details
+                                View Details
+                              </button>
+
+                              <button
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  openResultEntry(o);
+                                }}
+                                className="inline-flex items-center px-3 py-1.5 text-sm bg-green-600 text-white rounded-lg hover:bg-green-700"
+                              >
+                                <TestTube className="h-4 w-4 mr-1" />
+                                Enter Results
                               </button>
 
                               {canAddTests && (
@@ -1685,7 +1700,8 @@ const Orders: React.FC = () => {
             sample_collected_at: selectedOrder.sample_collected_at || undefined,
             sample_collected_by: selectedOrder.sample_collected_by || undefined
           }}
-          onClose={() => setSelectedOrder(null)}
+          initialTab={openOnResults ? "results" : "details"}
+          onClose={() => { setSelectedOrder(null); setOpenOnResults(false); }}
           onUpdateStatus={handleUpdateStatus}
           onSubmitResults={async (_orderId: string, _resultsData: any[]) => {
             console.log('onSubmitResults called');

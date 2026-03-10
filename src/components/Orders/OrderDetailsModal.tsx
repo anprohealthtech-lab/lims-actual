@@ -119,6 +119,7 @@ interface OrderDetailsModalProps {
   onSubmitResults?: (orderId: string, resultsData: ExtractedValue[]) => void;
   onAfterSubmit?: () => void | Promise<void>;
   onAfterSaveDraft?: () => void | Promise<void>;
+  initialTab?: "details" | "results";
 }
 
 interface TestGroupResult {
@@ -375,13 +376,14 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
   onSubmitResults,
   onAfterSubmit,
   onAfterSaveDraft,
+  initialTab,
 }) => {
   // =========================================================
   // #region State
   // =========================================================
   const { user } = useAuth();
 
-  const [activeTab, setActiveTab] = useState<"details" | "results">("details");
+  const [activeTab, setActiveTab] = useState<"details" | "results">(initialTab ?? "details");
 
   // Multi-Image Upload / AI
   const [uploadedFile, setUploadedFile] = useState<File | null>(null);
