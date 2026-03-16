@@ -1,8 +1,8 @@
 import type { CapacitorConfig } from '@capacitor/cli';
 
 const config: CapacitorConfig = {
-  appId: 'com.anpro.lims',
-  appName: 'AnPro LIMS',
+  appId: 'com.lims.builder',
+  appName: 'LIMS Builder',
   webDir: 'dist',
   server: {
     androidScheme: 'https',

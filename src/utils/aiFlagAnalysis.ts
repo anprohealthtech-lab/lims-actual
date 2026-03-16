@@ -88,6 +88,8 @@ export interface AIFlagAnalysisResult {
   auditNotes?: string;
   changed: boolean;
   valueType?: string;
+  /** The gender-resolved reference range used for flag determination */
+  resolvedReferenceRange?: string;
   /** Enriched analyte fields to snapshot onto result_values for PDF template use */
   enrichedSnapshot?: EnrichedAnalyteSnapshot;
 }
@@ -376,6 +378,7 @@ export async function analyzeResultValue(
       newFlag: normalizedNewFlag,
       flagSource: flagResult.source === 'manual' ? 'manual' : 'auto_rule',
       flagConfidence: confidence,
+      resolvedReferenceRange: referenceRange,
       interpretation,
       auditStatus: changed ? 'pending' : 'approved',
       auditNotes: changed 
@@ -564,6 +567,8 @@ export async function applyFlagAnalysis(
       flag_confidence: r.flagConfidence,
       ai_interpretation: r.interpretation,
       ai_audit_status: r.auditStatus as any,
+      // Update reference_range to the gender-resolved range so display matches the flag
+      ...(r.resolvedReferenceRange ? { reference_range: r.resolvedReferenceRange } : {}),
       // Enriched analyte snapshot fields for PDF template
       ...(r.enrichedSnapshot ? {
         normal_range_min: r.enrichedSnapshot.normal_range_min,

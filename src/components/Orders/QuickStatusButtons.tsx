@@ -115,7 +115,7 @@ export const QuickStatusButtons: React.FC<QuickStatusButtonsProps> = ({
               <div className="flex items-center gap-2">
                 <button
                   onClick={handleMarkSampleCollected}
-                  disabled={isUpdating || !selectedPhlebotomistId}
+                  disabled={isUpdating}
                   className="inline-flex items-center px-4 py-2 bg-green-600 text-white text-sm rounded-md hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
                 >
                   <Package className="h-4 w-4 mr-2" />

@@ -8,6 +8,7 @@ import { useAuth } from "../contexts/AuthContext";
 import { database, supabase, formatAge } from "../utils/supabase";
 import OrderForm from "../components/Orders/OrderForm";
 import OrderDetailsModal from "../components/Orders/OrderDetailsModal";
+import QuickResultEntryModal from "../components/Orders/QuickResultEntryModal";
 import EnhancedOrdersPage from "../components/Orders/EnhancedOrdersPage";
 import OrderFiltersBar, { OrderFilters } from "../components/Orders/OrderFiltersBar";
 import { useRealtimeOrders } from "../hooks/useRealtimeOrders";
@@ -122,6 +123,7 @@ const Orders: React.FC = () => {
   const [showOrderForm, setShowOrderForm] = useState(false);
   const [selectedOrder, setSelectedOrder] = useState<CardOrder | null>(null);
   const [openOnResults, setOpenOnResults] = useState(false);
+  const [quickEntryOrder, setQuickEntryOrder] = useState<CardOrder | null>(null);
   const [viewMode, setViewMode] = useState<'standard' | 'enhanced'>('standard');
 
   // Filter state
@@ -602,7 +604,9 @@ const Orders: React.FC = () => {
       const dynamicExpectedDate = calculatedExpectedDateMs > 0
         ? new Date(calculatedExpectedDateMs).toISOString()
         : o.expected_date;
-      const tatStarted = hasTatStartTime;
+      // TAT is considered started if the view has a tat_start_time (sample collected + tat_hours set),
+      // OR if the sample was collected at all (even if no tat_hours configured for any test)
+      const tatStarted = hasTatStartTime || !!o.sample_collected_at;
       const panels: Panel[] = rows.map((r) => {
         // Check if this test group is outsourced
         const outsourcedTest = (o.order_tests || []).find((t: any) => t.test_group_id === r.test_group_id);
@@ -863,7 +867,7 @@ const Orders: React.FC = () => {
   }, [filtered]);
 
   const openDetails = (o: CardOrder) => { setOpenOnResults(false); setSelectedOrder(o); };
-  const openResultEntry = (o: CardOrder) => { setOpenOnResults(true); setSelectedOrder(o); };
+  const openResultEntry = (o: CardOrder) => { setQuickEntryOrder(o); };
 
   // Enhanced view handlers
   const handleAddOrder = async (orderData: any) => {
@@ -894,26 +898,20 @@ const Orders: React.FC = () => {
 
       console.log('Order created successfully:', order);
 
-      // Update any pending TRF attachments to link to this order - ONLY for current user + lab + recent uploads
-      const PENDING_ORDER_UUID = '00000000-0000-0000-0000-000000000000';
-      const { data: currentUser } = await supabase.auth.getUser();
-      const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000).toISOString();
-      
-      const { error: updateError } = await supabase
-        .from('attachments')
-        .update({ related_id: order.id, order_id: order.id })
-        .eq('related_table', 'orders')
-        .eq('related_id', PENDING_ORDER_UUID)
-        .eq('description', 'Test Request Form for order creation')
-        .eq('uploaded_by', currentUser?.user?.id) // Only current user's uploads
-        .eq('lab_id', labId) // Only current lab
-        .gte('upload_timestamp', oneHourAgo); // Only recent uploads (within 1 hour)
+      // Link TRF attachment to this order — only if a specific attachment ID was provided
+      const trfAttachmentId = orderData.trfAttachmentId;
+      if (trfAttachmentId) {
+        const { error: updateError } = await supabase
+          .from('attachments')
+          .update({ related_id: order.id, order_id: order.id })
+          .eq('id', trfAttachmentId)
+          .eq('lab_id', labId); // Safety: only update attachments from this lab
 
-      if (updateError) {
-        console.warn('Failed to update TRF attachment:', updateError);
-        // Non-critical error, continue with order creation
-      } else {
-        console.log('Updated TRF attachment to link to order:', order.id);
+        if (updateError) {
+          console.warn('Failed to link TRF attachment to order:', updateError);
+        } else {
+          console.log('Linked TRF attachment', trfAttachmentId, 'to order:', order.id);
+        }
       }
 
       // ✅ AUTO-CREATE SAMPLES: Generate samples based on test group requirements
@@ -1168,7 +1166,7 @@ const Orders: React.FC = () => {
               sample_collected_at: selectedOrder.sample_collected_at || undefined,
               sample_collected_by: selectedOrder.sample_collected_by || undefined
             }}
-            initialTab={openOnResults ? "results" : "details"}
+            initialTab="details"
             onClose={() => { setSelectedOrder(null); setOpenOnResults(false); }}
             onUpdateStatus={handleUpdateStatus}
             onSubmitResults={async (_orderId: string, _resultsData: any[]) => {
@@ -1177,6 +1175,13 @@ const Orders: React.FC = () => {
               setSelectedOrder(null);
               setOpenOnResults(false);
             }}
+          />
+        )}
+        {quickEntryOrder && (
+          <QuickResultEntryModal
+            order={quickEntryOrder}
+            onClose={() => setQuickEntryOrder(null)}
+            onSubmitted={() => { fetchOrders(); setQuickEntryOrder(null); }}
           />
         )}
       </div>
@@ -1353,15 +1358,17 @@ const Orders: React.FC = () => {
                           </div>
                         </div>
 
-                        {/* TAT Badge (New) */}
-                        <div className="mt-1 flex justify-end">
-                          <TATStatusBadge
-                            hoursUntilBreach={o.hours_until_tat_breach ?? null}
-                            isBreached={o.is_tat_breached ?? null}
-                            tatHours={o.tat_hours ?? null}
-                            compact={true}
-                          />
-                        </div>
+                        {/* TAT Badge — only for in-progress orders */}
+                        {!['Report Ready', 'Completed', 'Delivered'].includes(o.status) && (
+                          <div className="mt-1 flex justify-end">
+                            <TATStatusBadge
+                              hoursUntilBreach={o.hours_until_tat_breach ?? null}
+                              isBreached={o.is_tat_breached ?? null}
+                              tatHours={o.tat_hours ?? null}
+                              compact={true}
+                            />
+                          </div>
+                        )}
 
                         {/* Middle: sample + tests */}
                         <div className="mt-3 flex flex-col lg:flex-row lg:items-center lg:justify-between gap-3 bg-gray-50 rounded-lg p-3">
@@ -1437,8 +1444,8 @@ const Orders: React.FC = () => {
                                         <div className="font-medium text-sm mb-1 flex items-center gap-1">
                                           {p.isOutsourced && <span>🏥</span>}
                                           {p.name}
-                                          {/* TAT indicator per panel */}
-                                          {p.tat_hours && !p.isOutsourced && (
+                                          {/* TAT indicator per panel — hide for completed orders */}
+                                          {p.tat_hours && !p.isOutsourced && !['Report Ready', 'Completed', 'Delivered'].includes(o.status) && (
                                             <span 
                                               className={`ml-1 text-xs px-1 py-0.5 rounded ${
                                                 p.is_tat_breached 
@@ -1517,14 +1524,18 @@ const Orders: React.FC = () => {
                                   <div className="text-amber-600 font-medium text-xs">
                                     ⏳ TAT starts after collection
                                   </div>
-                                ) : (
-                                  <div className={`${new Date(o.expected_date) < new Date() ? "text-red-600 font-bold" : ""} `}>
+                                ) : o.expected_date && !isNaN(new Date(o.expected_date).getTime()) ? (
+                                  <div className={`${new Date(o.expected_date) < new Date() && !['Report Ready', 'Completed', 'Delivered'].includes(o.status) ? "text-red-600 font-bold" : ""} `}>
                                     Expected: {mobile.isMobile
                                       ? new Date(o.expected_date).toLocaleDateString()
                                       : new Date(o.expected_date).toLocaleString(undefined, { year: 'numeric', month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
-                                    {new Date(o.expected_date) < new Date() && " ⚠️ OVERDUE"}
+                                    {new Date(o.expected_date) < new Date() && !['Report Ready', 'Completed', 'Delivered'].includes(o.status) && " ⚠️ OVERDUE"}
                                   </div>
-                                )}
+                                ) : o.sample_collected_at ? (
+                                  <div className="text-xs text-green-700">
+                                    Collected: {new Date(o.sample_collected_at).toLocaleString(undefined, { year: 'numeric', month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
+                                  </div>
+                                ) : null}
                               </div>
 
                             {/* Updated button section with Add Tests functionality */}
@@ -1700,7 +1711,7 @@ const Orders: React.FC = () => {
             sample_collected_at: selectedOrder.sample_collected_at || undefined,
             sample_collected_by: selectedOrder.sample_collected_by || undefined
           }}
-          initialTab={openOnResults ? "results" : "details"}
+          initialTab="details"
           onClose={() => { setSelectedOrder(null); setOpenOnResults(false); }}
           onUpdateStatus={handleUpdateStatus}
           onSubmitResults={async (_orderId: string, _resultsData: any[]) => {
@@ -1708,6 +1719,13 @@ const Orders: React.FC = () => {
             await fetchOrders();
             setSelectedOrder(null);
           }}
+        />
+      )}
+      {quickEntryOrder && (
+        <QuickResultEntryModal
+          order={quickEntryOrder}
+          onClose={() => setQuickEntryOrder(null)}
+          onSubmitted={() => { fetchOrders(); setQuickEntryOrder(null); }}
         />
       )}
 

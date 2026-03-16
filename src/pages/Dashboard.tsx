@@ -27,6 +27,8 @@ import {
   Briefcase,
   Trash2,
   X,
+  Download,
+  Printer,
 } from "lucide-react";
 import { useAuth } from "../contexts/AuthContext";
 import { supabase, database, formatAge } from "../utils/supabase";
@@ -199,6 +201,7 @@ type CardOrder = {
 
   // Report info
   report_url?: string | null;
+  report_print_url?: string | null;
   report_status?: string | null;
 
   // Delivery tracking (Reports)
@@ -407,6 +410,7 @@ id, patient_id, patient_name, status, priority, order_date, expected_date, total
       string,
       {
         pdf_url: string | null;
+        print_pdf_url: string | null;
         status: string | null;
         whatsapp_sent_at: string | null;
         whatsapp_sent_via: string | null;
@@ -419,13 +423,14 @@ id, patient_id, patient_name, status, priority, order_date, expected_date, total
 
     const { data: reportsData } = await supabase
       .from("reports")
-      .select("order_id, pdf_url, status, report_type, whatsapp_sent_at, whatsapp_sent_via, email_sent_at, email_sent_via, doctor_informed_at, doctor_sent_via")
+      .select("order_id, pdf_url, print_pdf_url, status, report_type, whatsapp_sent_at, whatsapp_sent_via, email_sent_at, email_sent_via, doctor_informed_at, doctor_sent_via")
       .in("order_id", orderIds)
       .eq("report_type", "final");
 
     (reportsData || []).forEach((r: any) => {
       reportMap.set(r.order_id, {
         pdf_url: r.pdf_url,
+        print_pdf_url: r.print_pdf_url ?? null,
         status: r.status,
         whatsapp_sent_at: r.whatsapp_sent_at,
         whatsapp_sent_via: r.whatsapp_sent_via,
@@ -457,7 +462,8 @@ id, patient_id, patient_name, status, priority, order_date, expected_date, total
 
       // TAT only starts after sample receipt — no fallback calculation before that
       const dynamicExpectedDate = calculatedExpectedDateMs > 0 ? new Date(calculatedExpectedDateMs).toISOString() : o.expected_date;
-      const tatStarted = hasTatStartTime;
+      // TAT is considered started if view has tat_start_time (tat_hours configured) OR sample was collected
+      const tatStarted = hasTatStartTime || !!o.sample_collected_at;
 
       const panels: Panel[] = rows.map((r) => ({
         name: r.test_group_name || "Test",
@@ -590,6 +596,7 @@ id, patient_id, patient_name, status, priority, order_date, expected_date, total
         approvedAnalytes,
 
         report_url: reportInfo?.pdf_url,
+        report_print_url: reportInfo?.print_pdf_url ?? null,
         report_status: reportInfo?.status,
         whatsapp_sent_at: reportInfo?.whatsapp_sent_at,
         whatsapp_sent_via: reportInfo?.whatsapp_sent_via,
@@ -2187,6 +2194,18 @@ id,
                                         );
                                       }
 
+                                      const completedStatuses = ['Report Ready', 'Completed', 'Delivered'];
+                                      const isCompleted = completedStatuses.includes(o.status);
+
+                                      // If no valid expected date (no tat_hours configured), show collection time
+                                      if (!o.expected_date || isNaN(new Date(o.expected_date).getTime())) {
+                                        return o.sample_collected_at ? (
+                                          <span className="text-xs text-green-700">
+                                            Collected: {new Date(o.sample_collected_at).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })}
+                                          </span>
+                                        ) : null;
+                                      }
+
                                       const now = new Date();
                                       const exp = new Date(o.expected_date);
                                       const isStartOfDay = (exp.getHours() === 0 && exp.getMinutes() === 0) ||
@@ -2197,7 +2216,7 @@ id,
                                         cutoff.setHours(23, 59, 59, 999);
                                       }
 
-                                      const isOverdue = cutoff < now;
+                                      const isOverdue = !isCompleted && cutoff < now;
                                       const showTime = !isStartOfDay;
 
                                       return (
@@ -2267,6 +2286,34 @@ id,
                                   <MessageCircle className="h-4 w-4 mr-1.5" />
                                   Inform Dr.
                                 </button>
+
+                                {o.report_url && (
+                                  <button
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      window.open(o.report_url!, "_blank");
+                                    }}
+                                    className="inline-flex items-center justify-center px-3 py-1.5 text-sm font-medium rounded-lg text-white bg-emerald-600 hover:bg-emerald-700 transition-colors"
+                                    title="Download Report PDF"
+                                  >
+                                    <Download className="h-4 w-4 mr-1.5" />
+                                    Download
+                                  </button>
+                                )}
+
+                                {o.report_url && (
+                                  <button
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      if (o.report_print_url) window.open(o.report_print_url, "_blank");
+                                      else window.open(o.report_url!, "_blank");
+                                    }}
+                                    className="inline-flex items-center justify-center px-2 py-1.5 text-sm font-medium rounded-lg text-white bg-emerald-700 hover:bg-emerald-800 transition-colors"
+                                    title={o.report_print_url ? "Print PDF (print version)" : "Print (opens report PDF)"}
+                                  >
+                                    <Printer className="h-4 w-4" />
+                                  </button>
+                                )}
 
                                 <button
                                   onClick={(e) => {

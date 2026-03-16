@@ -740,6 +740,18 @@ const Reports: React.FC = () => {
     }
   }, [generatePDF, loadApprovedResults]);
 
+  const handleRetryStuckJob = useCallback(async (orderId: string, forceDraft = false) => {
+    try {
+      await supabase.from('pdf_generation_queue').delete().eq('order_id', orderId);
+      setPdfQueueStatus(prev => { const next = new Map(prev); next.delete(orderId); return next; });
+      setGeneratingOrderId(null);
+      await handleDownload(orderId, forceDraft);
+    } catch (error) {
+      console.error('Retry stuck job failed:', error);
+      alert('Retry failed: ' + (error instanceof Error ? error.message : 'Unknown error'));
+    }
+  }, [handleDownload]);
+
   // Generate Smart Report (forceRegenerate=true bypasses cache, used for right-click regenerate)
   const handleSmartReport = async (orderId: string, forceRegenerate = false) => {
     try {
@@ -1946,6 +1958,22 @@ const Reports: React.FC = () => {
                                   )}
                                   <span>Generate</span>
                                 </button>
+                                {(() => {
+                                  const job = pdfQueueStatus.get(group.order_id);
+                                  const isStuck = job && (job.status === 'processing' || job.status === 'pending') &&
+                                    Date.now() - new Date(job.started_at ?? job.created_at).getTime() > 60_000;
+                                  if (!isStuck) return null;
+                                  return (
+                                    <button
+                                      className="flex items-center space-x-1 px-2 py-1 text-xs bg-red-100 text-red-700 rounded hover:bg-red-200 transition-colors border border-red-300"
+                                      onClick={() => handleRetryStuckJob(group.order_id, false)}
+                                      title="Job appears stuck — click to delete and retry"
+                                    >
+                                      <RefreshCw className="w-3 h-3" />
+                                      <span>Retry</span>
+                                    </button>
+                                  );
+                                })()}
                                 <button
                                   className="flex items-center px-1.5 py-1 text-xs bg-gray-200 text-gray-700 rounded hover:bg-gray-300 transition-colors"
                                   onClick={() => handleOpenPDFSettings(group.order_id)}
@@ -2065,15 +2093,33 @@ const Reports: React.FC = () => {
                             )}
                           </>
                         ) : (
-                          <button
-                            className={`flex items-center space-x-1 px-2 py-1 text-xs bg-amber-600 text-white rounded hover:bg-amber-700 transition-colors ${(generatingOrderId === group.order_id || pdfQueueStatus.get(group.order_id)?.status === 'processing') ? 'opacity-50 cursor-not-allowed' : ''}`}
-                            onClick={() => handleDownload(group.order_id, true)}
-                            disabled={generatingOrderId === group.order_id || pdfQueueStatus.get(group.order_id)?.status === 'processing'}
-                            title="Generate draft report"
-                          >
-                            {(generatingOrderId === group.order_id || pdfQueueStatus.get(group.order_id)?.status === 'processing') ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Download className="w-3.5 h-3.5" />}
-                            <span>Draft</span>
-                          </button>
+                          <>
+                            <button
+                              className={`flex items-center space-x-1 px-2 py-1 text-xs bg-amber-600 text-white rounded hover:bg-amber-700 transition-colors ${(generatingOrderId === group.order_id || pdfQueueStatus.get(group.order_id)?.status === 'processing') ? 'opacity-50 cursor-not-allowed' : ''}`}
+                              onClick={() => handleDownload(group.order_id, true)}
+                              disabled={generatingOrderId === group.order_id || pdfQueueStatus.get(group.order_id)?.status === 'processing'}
+                              title="Generate draft report"
+                            >
+                              {(generatingOrderId === group.order_id || pdfQueueStatus.get(group.order_id)?.status === 'processing') ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Download className="w-3.5 h-3.5" />}
+                              <span>Draft</span>
+                            </button>
+                            {(() => {
+                              const job = pdfQueueStatus.get(group.order_id);
+                              const isStuck = job && (job.status === 'processing' || job.status === 'pending') &&
+                                Date.now() - new Date(job.started_at ?? job.created_at).getTime() > 60_000;
+                              if (!isStuck) return null;
+                              return (
+                                <button
+                                  className="flex items-center space-x-1 px-2 py-1 text-xs bg-red-100 text-red-700 rounded hover:bg-red-200 transition-colors border border-red-300"
+                                  onClick={() => handleRetryStuckJob(group.order_id, true)}
+                                  title="Job appears stuck — click to delete and retry"
+                                >
+                                  <RefreshCw className="w-3 h-3" />
+                                  <span>Retry</span>
+                                </button>
+                              );
+                            })()}
+                          </>
                         )}
 
                         {(group.results[0] as ApprovedResult)?.has_report && (
@@ -2189,6 +2235,22 @@ const Reports: React.FC = () => {
                                     )}
                                     <span>{(generatingOrderId === group.order_id || pdfQueueStatus.get(group.order_id)?.status === 'processing') ? 'Gen...' : 'Final'}</span>
                                   </button>
+                                  {(() => {
+                                    const job = pdfQueueStatus.get(group.order_id);
+                                    const isStuck = job && (job.status === 'processing' || job.status === 'pending') &&
+                                      Date.now() - new Date(job.started_at ?? job.created_at).getTime() > 60_000;
+                                    if (!isStuck) return null;
+                                    return (
+                                      <button
+                                        className="flex items-center justify-center space-x-1 px-3 py-2 text-sm bg-red-100 text-red-700 rounded-md hover:bg-red-200 transition-colors border border-red-300"
+                                        onClick={() => handleRetryStuckJob(group.order_id, false)}
+                                        title="Job appears stuck — click to delete and retry"
+                                      >
+                                        <RefreshCw className="w-4 h-4" />
+                                        <span>Retry</span>
+                                      </button>
+                                    );
+                                  })()}
                                   {false && (
                                     <>
                                       <button
@@ -2366,26 +2428,44 @@ const Reports: React.FC = () => {
                               )}
                             </>
                           ) : (
-                            <button
-                              className={`flex-1 flex items-center justify-center space-x-1 px-3 py-2 text-sm bg-amber-600 text-white rounded-md hover:bg-amber-700 transition-colors ${(generatingOrderId === group.order_id || pdfQueueStatus.get(group.order_id)?.status === 'processing')
-                                ? 'opacity-50 cursor-not-allowed'
-                                : ''
-                                }`}
-                              onClick={() => handleDownload(group.order_id, true)}
-                              disabled={generatingOrderId === group.order_id || pdfQueueStatus.get(group.order_id)?.status === 'processing'}
-                            >
-                              {(generatingOrderId === group.order_id || pdfQueueStatus.get(group.order_id)?.status === 'processing') ? (
-                                <div className="flex items-center space-x-1">
-                                  <Loader2 className="w-4 h-4 animate-spin" />
-                                  {pdfQueueStatus.get(group.order_id)?.progress_percent && (
-                                    <span className="text-xs">{pdfQueueStatus.get(group.order_id).progress_percent}%</span>
-                                  )}
-                                </div>
-                              ) : (
-                                <Download className="w-4 h-4" />
-                              )}
-                              <span>{(generatingOrderId === group.order_id || pdfQueueStatus.get(group.order_id)?.status === 'processing') ? 'Gen...' : 'Draft'}</span>
-                            </button>
+                            <>
+                              <button
+                                className={`flex-1 flex items-center justify-center space-x-1 px-3 py-2 text-sm bg-amber-600 text-white rounded-md hover:bg-amber-700 transition-colors ${(generatingOrderId === group.order_id || pdfQueueStatus.get(group.order_id)?.status === 'processing')
+                                  ? 'opacity-50 cursor-not-allowed'
+                                  : ''
+                                  }`}
+                                onClick={() => handleDownload(group.order_id, true)}
+                                disabled={generatingOrderId === group.order_id || pdfQueueStatus.get(group.order_id)?.status === 'processing'}
+                              >
+                                {(generatingOrderId === group.order_id || pdfQueueStatus.get(group.order_id)?.status === 'processing') ? (
+                                  <div className="flex items-center space-x-1">
+                                    <Loader2 className="w-4 h-4 animate-spin" />
+                                    {pdfQueueStatus.get(group.order_id)?.progress_percent && (
+                                      <span className="text-xs">{pdfQueueStatus.get(group.order_id).progress_percent}%</span>
+                                    )}
+                                  </div>
+                                ) : (
+                                  <Download className="w-4 h-4" />
+                                )}
+                                <span>{(generatingOrderId === group.order_id || pdfQueueStatus.get(group.order_id)?.status === 'processing') ? 'Gen...' : 'Draft'}</span>
+                              </button>
+                              {(() => {
+                                const job = pdfQueueStatus.get(group.order_id);
+                                const isStuck = job && (job.status === 'processing' || job.status === 'pending') &&
+                                  Date.now() - new Date(job.started_at ?? job.created_at).getTime() > 60_000;
+                                if (!isStuck) return null;
+                                return (
+                                  <button
+                                    className="flex items-center justify-center space-x-1 px-3 py-2 text-sm bg-red-100 text-red-700 rounded-md hover:bg-red-200 transition-colors border border-red-300"
+                                    onClick={() => handleRetryStuckJob(group.order_id, true)}
+                                    title="Job appears stuck — click to delete and retry"
+                                  >
+                                    <RefreshCw className="w-4 h-4" />
+                                    <span>Retry</span>
+                                  </button>
+                                );
+                              })()}
+                            </>
                           )}
                           {(group.results[0] as ApprovedResult)?.has_report && (
                             <button

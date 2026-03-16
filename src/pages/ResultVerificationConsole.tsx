@@ -1916,11 +1916,11 @@ const ResultVerificationConsole: React.FC = () => {
 
                             // Also fetch external/outsourced results if available
                             const { data: externalData } = await supabase
-                              .from('external_report_values')
-                              .select('value, flag, report_date, lab_name')
-                              .eq('patient_id', patientId)
-                              .ilike('parameter_name', `%${a.parameter}%`)
-                              .order('report_date', { ascending: false })
+                              .from('external_result_values')
+                              .select('value, original_analyte_name, created_at, external_reports!fk_erv_report(patient_id)')
+                              .eq('external_reports.patient_id', patientId)
+                              .ilike('original_analyte_name', `%${a.parameter}%`)
+                              .order('created_at', { ascending: false })
                               .limit(5);
 
                             const historicalValues = [
@@ -1931,11 +1931,10 @@ const ResultVerificationConsole: React.FC = () => {
                                 source: 'internal' as const,
                               })),
                               ...(externalData || []).map((e: any) => ({
-                                date: new Date(e.report_date).toLocaleDateString(),
+                                date: new Date(e.created_at).toLocaleDateString(),
                                 value: e.value,
-                                flag: e.flag,
+                                flag: null,
                                 source: 'external' as const,
-                                lab_name: e.lab_name,
                               })),
                             ].sort((x, y) => new Date(y.date).getTime() - new Date(x.date).getTime());
 

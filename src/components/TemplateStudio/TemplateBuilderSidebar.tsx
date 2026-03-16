@@ -3,9 +3,6 @@ import {
   Sparkles,
   Send,
   Loader2,
-  CheckCircle2,
-  AlertCircle,
-  XCircle,
   ChevronRight,
   ChevronDown,
   LayoutTemplate,
@@ -57,13 +54,6 @@ interface AnalyteGroup {
   note?: PlaceholderOption;
 }
 
-interface LiveAuditStatus {
-  patientInfo: { complete: boolean; present: string[]; missing: string[] };
-  testResults: { complete: boolean; coverage: number; total: number; missing: string[] };
-  clinicalFindings: { complete: boolean; present: string[] };
-  signature: { complete: boolean; present: string[]; missing: string[] };
-  overallStatus: 'complete' | 'partial' | 'minimal';
-}
 
 interface ChatMessage {
   id: string;
@@ -98,85 +88,6 @@ interface TemplateBuilderSidebarProps {
 // HELPER FUNCTIONS
 // ============================================
 
-const REQUIRED_PATIENT_PLACEHOLDERS = ['patientName', 'patientId', 'patientAge', 'patientGender', 'sampleId'];
-const REQUIRED_SIGNATURE_PLACEHOLDERS = ['approverName'];
-const OPTIONAL_SIGNATURE_PLACEHOLDERS = ['approverSignature', 'approverRole', 'approvedAtFormatted'];
-const CLINICAL_PLACEHOLDERS = ['impression', 'findings', 'recommendation', 'conclusion', 'clinical_history'];
-
-function runLiveAudit(html: string, analyteGroups: AnalyteGroup[]): LiveAuditStatus {
-  const foundPlaceholders = extractPlaceholders(html).map((p) => p.toLowerCase());
-
-  // Patient info check
-  const patientPresent = REQUIRED_PATIENT_PLACEHOLDERS.filter((p) =>
-    foundPlaceholders.includes(p.toLowerCase())
-  );
-  const patientMissing = REQUIRED_PATIENT_PLACEHOLDERS.filter(
-    (p) => !foundPlaceholders.includes(p.toLowerCase())
-  );
-
-  // Test results check
-  const totalAnalytes = analyteGroups.length;
-  let analytesWithValue = 0;
-  const missingAnalytes: string[] = [];
-
-  analyteGroups.forEach((ag) => {
-    const valueKey = `analyte_${ag.code}_value`.toLowerCase();
-    if (foundPlaceholders.includes(valueKey)) {
-      analytesWithValue++;
-    } else {
-      missingAnalytes.push(ag.baseLabel);
-    }
-  });
-
-  // Clinical findings check
-  const clinicalPresent = CLINICAL_PLACEHOLDERS.filter((p) =>
-    foundPlaceholders.includes(p.toLowerCase())
-  );
-
-  // Signature check
-  const sigPresent = [...REQUIRED_SIGNATURE_PLACEHOLDERS, ...OPTIONAL_SIGNATURE_PLACEHOLDERS].filter(
-    (p) => foundPlaceholders.includes(p.toLowerCase())
-  );
-  const sigMissing = REQUIRED_SIGNATURE_PLACEHOLDERS.filter(
-    (p) => !foundPlaceholders.includes(p.toLowerCase())
-  );
-
-  // Overall status
-  let overallStatus: 'complete' | 'partial' | 'minimal' = 'minimal';
-  const patientComplete = patientMissing.length === 0;
-  const resultsComplete = totalAnalytes > 0 ? analytesWithValue === totalAnalytes : true;
-  const sigComplete = sigMissing.length === 0;
-
-  if (patientComplete && resultsComplete && sigComplete) {
-    overallStatus = 'complete';
-  } else if (patientPresent.length > 0 || analytesWithValue > 0 || sigPresent.length > 0) {
-    overallStatus = 'partial';
-  }
-
-  return {
-    patientInfo: {
-      complete: patientComplete,
-      present: patientPresent,
-      missing: patientMissing,
-    },
-    testResults: {
-      complete: resultsComplete,
-      coverage: analytesWithValue,
-      total: totalAnalytes,
-      missing: missingAnalytes,
-    },
-    clinicalFindings: {
-      complete: clinicalPresent.length > 0,
-      present: clinicalPresent,
-    },
-    signature: {
-      complete: sigComplete,
-      present: sigPresent,
-      missing: sigMissing,
-    },
-    overallStatus,
-  };
-}
 
 // ============================================
 // COMPONENT
@@ -200,7 +111,6 @@ const TemplateBuilderSidebar: React.FC<TemplateBuilderSidebarProps> = ({
   const [expandedCategories, setExpandedCategories] = useState<Set<string>>(
     new Set(['results', 'patient'])
   );
-  const [liveAudit, setLiveAudit] = useState<LiveAuditStatus | null>(null);
   const [lastInsertedBlock, setLastInsertedBlock] = useState<string | null>(null);
 
   // Placeholder state
@@ -280,27 +190,6 @@ const TemplateBuilderSidebar: React.FC<TemplateBuilderSidebarProps> = ({
 
     return Array.from(groups.values());
   }, [grouped.test]);
-
-  // Run live audit when editor content changes
-  useEffect(() => {
-    if (!editor || !open) return;
-
-    const updateAudit = () => {
-      try {
-        const html = editor.getHtml?.() || '';
-        const audit = runLiveAudit(html, analyteGroups);
-        setLiveAudit(audit);
-      } catch (err) {
-        console.warn('Failed to run live audit:', err);
-      }
-    };
-
-    updateAudit();
-
-    // Listen for editor changes
-    const interval = setInterval(updateAudit, 2000);
-    return () => clearInterval(interval);
-  }, [editor, open, analyteGroups]);
 
   // Insert HTML into editor
   const insertHtml = useCallback(
@@ -570,53 +459,6 @@ const TemplateBuilderSidebar: React.FC<TemplateBuilderSidebarProps> = ({
         ))}
       </div>
 
-      {/* Live Audit Status Bar */}
-      {liveAudit && (
-        <div className="border-b border-gray-200 bg-gray-50 px-4 py-2 shrink-0">
-          <div className="flex items-center gap-3 text-[11px]">
-            <span
-              className={clsx(
-                'flex items-center gap-1',
-                liveAudit.patientInfo.complete ? 'text-emerald-600' : 'text-amber-600'
-              )}
-            >
-              {liveAudit.patientInfo.complete ? (
-                <CheckCircle2 className="h-3 w-3" />
-              ) : (
-                <AlertCircle className="h-3 w-3" />
-              )}
-              Patient
-            </span>
-            <span
-              className={clsx(
-                'flex items-center gap-1',
-                liveAudit.testResults.complete ? 'text-emerald-600' : 'text-amber-600'
-              )}
-            >
-              {liveAudit.testResults.complete ? (
-                <CheckCircle2 className="h-3 w-3" />
-              ) : (
-                <AlertCircle className="h-3 w-3" />
-              )}
-              Results {liveAudit.testResults.total > 0 && `(${liveAudit.testResults.coverage}/${liveAudit.testResults.total})`}
-            </span>
-            <span
-              className={clsx(
-                'flex items-center gap-1',
-                liveAudit.signature.complete ? 'text-emerald-600' : 'text-red-600'
-              )}
-            >
-              {liveAudit.signature.complete ? (
-                <CheckCircle2 className="h-3 w-3" />
-              ) : (
-                <XCircle className="h-3 w-3" />
-              )}
-              Signature
-            </span>
-          </div>
-        </div>
-      )}
-
       {/* Tab Content */}
       <div className="flex-1 overflow-y-auto">
         {/* BUILDER TAB */}
@@ -678,7 +520,6 @@ const TemplateBuilderSidebar: React.FC<TemplateBuilderSidebarProps> = ({
                 <div className="space-y-1.5 max-h-64 overflow-y-auto">
                   {analyteGroups.map((analyte) => {
                     const isInserted = lastInsertedBlock === `analyte-${analyte.code}`;
-                    const isCovered = liveAudit?.testResults.missing.includes(analyte.baseLabel) === false;
                     return (
                       <div
                         key={analyte.baseName}
@@ -686,24 +527,18 @@ const TemplateBuilderSidebar: React.FC<TemplateBuilderSidebarProps> = ({
                           'flex items-center gap-2 rounded-lg border px-3 py-2 text-xs',
                           isInserted
                             ? 'border-emerald-400 bg-emerald-50'
-                            : isCovered
-                            ? 'border-emerald-200 bg-emerald-50/50'
                             : 'border-gray-200 bg-white'
                         )}
                       >
                         <span className="flex-1 truncate font-medium text-gray-900">
                           {analyte.baseLabel}
                         </span>
-                        {isCovered ? (
-                          <CheckCircle2 className="h-3.5 w-3.5 text-emerald-500 shrink-0" />
-                        ) : (
-                          <button
-                            onClick={() => insertAnalyteRow(analyte)}
-                            className="rounded bg-blue-100 px-2 py-0.5 text-[10px] font-medium text-blue-700 hover:bg-blue-200"
+                        <button
+                          onClick={() => insertAnalyteRow(analyte)}
+                          className="rounded bg-blue-100 px-2 py-0.5 text-[10px] font-medium text-blue-700 hover:bg-blue-200"
                           >
                             + Row
                           </button>
-                        )}
                       </div>
                     );
                   })}

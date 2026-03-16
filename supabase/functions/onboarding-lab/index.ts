@@ -68,7 +68,7 @@ serve(async (req) => {
           .upsert(labAnalytesPayload.slice(i, i + ANALYTE_CHUNK), { onConflict: 'lab_id,analyte_id', ignoreDuplicates: true });
         if (laError) console.error(`Error hydrating analytes (chunk ${i}):`, laError);
       }
-      console.log(`   ✅ Upserted ${labAnalytesPayload.length} analytes into lab_analytes`);
+      console.log(`   ✅ Upserted ${labAnalytesPayload.length} is_global analytes into lab_analytes`);
     }
 
     // --- B. Handle RESET Mode - Delete ALL test groups first ---
@@ -235,19 +235,114 @@ serve(async (req) => {
         console.log(`   ✅ Created batch ${Math.floor(i/CHUNK)+1}: ${(newGroups||[]).length} test groups`);
       }
 
+      // Helper: global_test_catalog stores analytes as a JSON string OR native array
+      const parseAnalyteIds = (raw: unknown): string[] => {
+        if (Array.isArray(raw)) return raw as string[];
+        if (typeof raw === 'string') {
+          try { const parsed = JSON.parse(raw); return Array.isArray(parsed) ? parsed : []; } catch { return []; }
+        }
+        return [];
+      };
+
+      // --- Ensure ALL analyte IDs referenced in the catalog exist in lab_analytes ---
+      // Many catalog entries reference analytes that are NOT is_global=true (from source labs).
+      // We must hydrate them before inserting test_group_analytes (FK constraint).
+      const allCatalogAnalyteIds = new Set<string>();
+      for (const gtg of globalTestGroups) {
+        for (const aid of parseAnalyteIds(gtg.analytes)) allCatalogAnalyteIds.add(aid);
+      }
+      // validAnalyteIdsSet: only IDs that actually exist in the analytes table (safe to FK-reference)
+      let validAnalyteIdsSet = new Set<string>();
+      if (allCatalogAnalyteIds.size > 0) {
+        // Verify these analyte IDs actually exist in the analytes table
+        const catalogIds = [...allCatalogAnalyteIds];
+        // Supabase .in() supports up to 1500 items; chunk if needed
+        let existingIds: string[] = [];
+        for (let i = 0; i < catalogIds.length; i += 1000) {
+          const { data: existingAnalytes } = await supabaseClient
+            .from('analytes')
+            .select('id')
+            .in('id', catalogIds.slice(i, i + 1000));
+          existingIds = existingIds.concat((existingAnalytes || []).map((a: any) => a.id));
+        }
+        validAnalyteIdsSet = new Set(existingIds);
+        const missing = catalogIds.length - existingIds.length;
+        console.log(`   ℹ️ Catalog analyte check: ${existingIds.length} found, ${missing} missing (will fallback to source-lab lookup)`);
+
+        // --- FALLBACK: for catalog analyte IDs that don't exist, look up from source lab test groups ---
+        // The global_test_catalog.source_lab_id's test_group_analytes has the CURRENT valid analyte IDs.
+        if (missing > 0) {
+          const missingSet = new Set(catalogIds.filter(id => !validAnalyteIdsSet.has(id)));
+          // Build map: catalog_analyte_id → source_lab_id for groups that reference missing IDs
+          const sourceLabIds = new Set<string>();
+          const catalogCodeToSourceLab = new Map<string, string>();
+          for (const gtg of globalTestGroups) {
+            if (!gtg.source_lab_id) continue;
+            const ids = parseAnalyteIds(gtg.analytes);
+            if (ids.some(id => missingSet.has(id))) {
+              sourceLabIds.add(gtg.source_lab_id);
+              catalogCodeToSourceLab.set(gtg.code, gtg.source_lab_id);
+            }
+          }
+          // For each source lab, fetch its test_group_analytes (with analyte id + name)
+          const sourceLabAnalyteMap = new Map<string, string[]>(); // source_lab test_group code → analyte IDs
+          for (const srcLabId of sourceLabIds) {
+            const { data: srcGroups } = await supabaseClient
+              .from('test_groups')
+              .select('code, test_group_analytes(analyte_id)')
+              .eq('lab_id', srcLabId);
+            for (const sg of (srcGroups || [])) {
+              const aids = (sg.test_group_analytes || []).map((tga: any) => tga.analyte_id);
+              if (aids.length > 0) sourceLabAnalyteMap.set(sg.code, aids);
+            }
+          }
+          // Merge valid source-lab analyte IDs into validAnalyteIdsSet
+          let fallbackCount = 0;
+          for (const [code, aids] of sourceLabAnalyteMap) {
+            for (const aid of aids) {
+              if (!validAnalyteIdsSet.has(aid)) {
+                // Verify this ID exists in the analytes table
+                const { data: check } = await supabaseClient.from('analytes').select('id').eq('id', aid).maybeSingle();
+                if (check) { validAnalyteIdsSet.add(aid); fallbackCount++; }
+              }
+            }
+            // Also remap: gtg.analytes missing IDs → replace with source lab's current IDs
+            // Store in a per-code override map used during link building
+          }
+          // Build override map: catalog code → resolved analyte IDs (mix of catalog + fallback)
+          for (const gtg of globalTestGroups) {
+            const srcIds = sourceLabAnalyteMap.get(gtg.code);
+            if (srcIds && srcIds.length > 0) {
+              // Store on a side-channel map keyed by code
+              (gtg as any)._resolvedAnalyteIds = srcIds.filter(id => validAnalyteIdsSet.has(id));
+            }
+          }
+          console.log(`   🔄 Fallback resolved ${fallbackCount} additional analyte IDs from source labs`);
+        }
+
+        const allValidIds = [...validAnalyteIdsSet];
+        const catalogLabPayload = allValidIds.map(aid => ({
+          lab_id: lab_id, analyte_id: aid, is_active: true, visible: true
+        }));
+        for (let i = 0; i < catalogLabPayload.length; i += 500) {
+          const { error: cErr } = await supabaseClient
+            .from('lab_analytes')
+            .upsert(catalogLabPayload.slice(i, i + 500), { onConflict: 'lab_id,analyte_id', ignoreDuplicates: true });
+          if (cErr) console.error(`Error hydrating catalog analytes (chunk ${i}):`, cErr);
+        }
+        console.log(`   ✅ Ensured ${allValidIds.length} catalog analytes in lab_analytes`);
+        stats.analytesHydrated += allValidIds.length;
+      }
+
       // --- BATCH INSERT analyte links for newly created groups ---
-      // NOTE: trg_auto_link_new_test_group fires on INSERT and may have already linked
-      // analytes from global_test_catalog. We use upsert (ignoreDuplicates) to avoid
-      // errors when the trigger already inserted the same rows.
       const analyteLinksPayload: { test_group_id: string; analyte_id: string; is_visible: boolean }[] = [];
       for (const gtg of toCreate) {
         const newId = createdMap.get(gtg.code);
         if (!newId) continue;
-        const analyteIds = gtg.analytes;
-        if (Array.isArray(analyteIds) && analyteIds.length > 0) {
-          for (const aid of analyteIds) {
-            analyteLinksPayload.push({ test_group_id: newId, analyte_id: aid, is_visible: true });
-          }
+        // Use fallback-resolved IDs if available, otherwise use catalog IDs filtered to valid set
+        const analyteIds: string[] = (gtg as any)._resolvedAnalyteIds || parseAnalyteIds(gtg.analytes).filter(id => validAnalyteIdsSet.has(id));
+        for (const aid of analyteIds) {
+          analyteLinksPayload.push({ test_group_id: newId, analyte_id: aid, is_visible: true });
         }
       }
       if (analyteLinksPayload.length > 0) {
@@ -260,26 +355,30 @@ serve(async (req) => {
         console.log(`   🔗 Linked ${analyteLinksPayload.length} analyte associations`);
       }
 
-      // --- UPDATE existing test groups in sync/reset mode (batched per-row updates) ---
-      for (const { gtg, existingId } of toUpdate) {
-        const { error: updateError } = await supabaseClient
-          .from('test_groups')
-          .update({
-            code: gtg.code,
-            default_ai_processing_type: gtg.default_ai_processing_type,
-            group_level_prompt: gtg.group_level_prompt || null,
-            ai_config: gtg.ai_config || {},
-            sample_type: gtg.specimen_type_default || 'EDTA Blood',
-            category: gtg.department_default || 'General'
-          })
-          .eq('id', existingId);
-        if (updateError) {
-          console.error(`Failed to update test group ${gtg.code}:`, updateError);
-        } else {
-          stats.testsUpdated++;
-        }
+      // --- UPDATE existing test groups in sync/reset mode (parallel updates) ---
+      if (toUpdate.length > 0) {
+        const updateResults = await Promise.all(
+          toUpdate.map(({ gtg, existingId }) =>
+            supabaseClient
+              .from('test_groups')
+              .update({
+                code: gtg.code,
+                default_ai_processing_type: gtg.default_ai_processing_type,
+                group_level_prompt: gtg.group_level_prompt || null,
+                ai_config: gtg.ai_config || {},
+                sample_type: gtg.specimen_type_default || 'EDTA Blood',
+                category: gtg.department_default || 'General'
+              })
+              .eq('id', existingId)
+              .then(({ error }) => {
+                if (error) console.error(`Failed to update test group ${gtg.code}:`, error);
+                return !error;
+              })
+          )
+        );
+        stats.testsUpdated = updateResults.filter(Boolean).length;
+        console.log(`   🔄 Updated ${stats.testsUpdated} test groups (parallel)`);
       }
-      if (stats.testsUpdated > 0) console.log(`   🔄 Updated ${stats.testsUpdated} test groups`);
 
       // Re-sync analyte links for updated groups in sync/reset mode
       if ((isSync || isReset) && toUpdate.length > 0) {
@@ -287,18 +386,24 @@ serve(async (req) => {
         await supabaseClient.from('test_group_analytes').delete().in('test_group_id', updatedIds);
         const resyncPayload: { test_group_id: string; analyte_id: string; is_visible: boolean }[] = [];
         for (const { gtg, existingId } of toUpdate) {
-          const analyteIds = gtg.analytes;
-          if (Array.isArray(analyteIds) && analyteIds.length > 0) {
-            for (const aid of analyteIds) {
-              resyncPayload.push({ test_group_id: existingId, analyte_id: aid, is_visible: true });
-            }
+          // Use fallback-resolved IDs if available, otherwise use catalog IDs filtered to valid set
+          const analyteIds: string[] = (gtg as any)._resolvedAnalyteIds || parseAnalyteIds(gtg.analytes).filter(id => validAnalyteIdsSet.has(id));
+          for (const aid of analyteIds) {
+            resyncPayload.push({ test_group_id: existingId, analyte_id: aid, is_visible: true });
           }
         }
         if (resyncPayload.length > 0) {
+          let resyncLinked = 0;
           for (let i = 0; i < resyncPayload.length; i += 500) {
-            await supabaseClient.from('test_group_analytes').insert(resyncPayload.slice(i, i + 500));
+            const { error: rsErr } = await supabaseClient
+              .from('test_group_analytes')
+              .upsert(resyncPayload.slice(i, i + 500), { onConflict: 'test_group_id,analyte_id', ignoreDuplicates: true });
+            if (rsErr) console.error(`Re-sync analyte link error (chunk ${i}):`, rsErr);
+            else resyncLinked += resyncPayload.slice(i, i + 500).length;
           }
-          console.log(`   🔗 Re-synced ${resyncPayload.length} analyte links for updated groups`);
+          console.log(`   🔗 Re-synced ${resyncLinked}/${resyncPayload.length} analyte links for updated groups`);
+        } else {
+          console.warn(`   ⚠️ resyncPayload is empty — no valid analyte IDs found for ${toUpdate.length} updated groups`);
         }
       }
 
@@ -361,13 +466,15 @@ serve(async (req) => {
     
     if (globalPackages) {
       console.log(`   Found ${globalPackages.length} global packages.`);
+      // Pre-fetch all existing package names for this lab in ONE query (avoids N+1)
+      const { data: existingPkgs } = await supabaseClient
+        .from('packages')
+        .select('id, name')
+        .eq('lab_id', lab_id);
+      const existingPkgNames = new Set((existingPkgs || []).map(p => p.name));
+
       for (const gp of globalPackages) {
-         const { data: existingPkg } = await supabaseClient
-            .from('packages')
-            .select('id')
-            .eq('lab_id', lab_id)
-            .eq('name', gp.name) // Assuming Name is unique identifier for package syncing
-            .maybeSingle();
+         const existingPkg = existingPkgNames.has(gp.name);
 
          if (!existingPkg) {
             const { data: newPkg, error: pkgError } = await supabaseClient

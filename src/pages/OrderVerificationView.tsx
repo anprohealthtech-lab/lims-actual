@@ -1272,10 +1272,10 @@ const OrderVerificationView: React.FC<OrderVerificationViewProps> = ({ onBackToP
 
       // Get external/outsourced historical results
       const { data: externalData } = await supabase
-        .from('external_report_values')
+        .from('external_result_values')
         .select(`
-          id, analyte_name, value, unit, reference_range, flag, created_at,
-          external_reports!inner(patient_id)
+          id, original_analyte_name, value, unit, reference_range, created_at,
+          external_reports!fk_erv_report(patient_id)
         `)
         .eq('external_reports.patient_id', patientId)
         .order('created_at', { ascending: false })
@@ -1298,11 +1298,11 @@ const OrderVerificationView: React.FC<OrderVerificationViewProps> = ({ onBackToP
           test_date: e.created_at,
           source: 'external' as const,
           analytes: [{
-            name: e.analyte_name,
+            name: e.original_analyte_name,
             value: e.value,
             unit: e.unit,
             reference_range: e.reference_range,
-            flag: e.flag
+            flag: null
           }]
         }))
       ];

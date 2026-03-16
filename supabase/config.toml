@@ -358,3 +358,15 @@ entrypoint = "./functions/create-html-preview/index.ts"
 # Specifies static files to be bundled with the function. Supports glob patterns.
 # For example, if you want to serve static HTML pages in your function:
 # static_files = [ "./functions/create-html-preview/*.html" ]
+
+# Public entrypoint for new-lab signup — no user JWT exists at this point
+[functions.create-lab-with-admin]
+enabled = true
+verify_jwt = false
+entrypoint = "./functions/create-lab-with-admin/index.ts"
+
+# Internal server-to-server function — creates its own service-role client internally
+[functions.onboarding-lab]
+enabled = true
+verify_jwt = false
+entrypoint = "./functions/onboarding-lab/index.ts"

@@ -2,7 +2,7 @@ import React from 'react';
 import { useState, useEffect } from 'react';
 import { X, User, Phone, Mail, MapPin, Droplet, FileText, QrCode, Palette, Printer, Edit, Plus, Upload, ExternalLink, Calendar, Gift } from 'lucide-react';
 import { QRCodeCanvas } from 'qrcode.react';
-import { database, supabase, formatAge } from '../../utils/supabase';
+import { database, supabase, formatAge, LabPatientFieldConfig } from '../../utils/supabase';
 import ExternalReportUploadModal from './ExternalReportUploadModal';
 
 interface Patient {
@@ -59,6 +59,29 @@ const PatientDetails: React.FC<PatientDetailsProps> = ({
   const [loadingExternalReports, setLoadingExternalReports] = useState(true);
   const [loyaltyBalance, setLoyaltyBalance] = useState<{ current_balance: number; total_earned: number; total_redeemed: number } | null>(null);
   const [loyaltyEnabled, setLoyaltyEnabled] = useState(false);
+  const [customFieldConfigs, setCustomFieldConfigs] = useState<LabPatientFieldConfig[]>([]);
+  const [customFieldValues, setCustomFieldValues] = useState<Record<string, any>>({});
+
+  useEffect(() => {
+    const loadCustomFields = async () => {
+      const { data: configs } = await database.labPatientFieldConfigs.getAll();
+      if (configs && configs.length > 0) {
+        setCustomFieldConfigs(configs);
+        let raw = (patient as any).custom_fields;
+        if (raw === undefined) {
+          const { data: full } = await database.patients.getById(patient.id);
+          raw = full?.custom_fields;
+        }
+        if (raw) {
+          const parsed = typeof raw === 'string'
+            ? (() => { try { return JSON.parse(raw); } catch { return {}; } })()
+            : raw;
+          setCustomFieldValues(parsed || {});
+        }
+      }
+    };
+    loadCustomFields();
+  }, [patient.id]);
 
   useEffect(() => {
     const fetchRecentTests = async () => {
@@ -449,6 +472,26 @@ const PatientDetails: React.FC<PatientDetailsProps> = ({
                 </div>
               </div>
             </div>
+
+            {/* Custom Fields */}
+            {customFieldConfigs.length > 0 && (
+              <div className="bg-white border border-gray-200 rounded-lg p-6">
+                <h4 className="text-lg font-semibold text-gray-900 mb-4 flex items-center">
+                  <FileText className="h-5 w-5 mr-2 text-purple-500" />
+                  Additional Information
+                </h4>
+                <div className="space-y-3">
+                  {customFieldConfigs.map((field) => (
+                    <div key={field.id} className="flex items-center justify-between">
+                      <span className="text-gray-600">{field.label}:</span>
+                      <span className="font-medium text-gray-900">
+                        {customFieldValues[field.field_key] || '—'}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
 
           {/* Recent Tests */}

@@ -212,13 +212,18 @@ function buildReferenceRangePrompt(
   analyteKnowledge: any[],
   analyteValues: any[]
 ): string {
+  const customPatientData = patientContext?.custom_patient_data;
+  const customPatientDataSection = customPatientData && Object.keys(customPatientData).length > 0
+    ? `\nCUSTOM PATIENT ATTRIBUTES (use these for species/breed/condition-specific ranges):\n${Object.entries(customPatientData).map(([k, v]) => `- ${k}: ${v}`).join('\n')}\n`
+    : '';
+
+  const considerExactAge = testGroupConfig?.consider_age === true;
+
   return `You are a clinical laboratory AI assistant. Determine appropriate reference ranges and flags for the following test results.
 
 PATIENT CONTEXT:
-${JSON.stringify(patientContext, null, 2)}
-
-TEST GROUP CONFIGURATION:
-${JSON.stringify(testGroupConfig, null, 2)}
+${JSON.stringify({ ...patientContext, custom_patient_data: undefined }, null, 2)}${customPatientDataSection}
+${considerExactAge ? 'NOTE: Use EXACT age in days/months (provided above) for pediatric range selection. Do NOT round to nearest year bracket.' : ''}
 
 ANALYTE KNOWLEDGE BASE:
 ${analyteKnowledge.map(a => `

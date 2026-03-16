@@ -133,43 +133,38 @@ const BASELINE_CSS = `
   border-collapse: collapse;
   margin: 0.75rem 0;
   font-size: 0.95rem;
+  border: none;
+  background: #fff;
 }
 
 .limsv2-report table thead th {
-  background-color: #f1f5f9;
+  background-color: #fff;
   color: var(--report-heading-color);
+  border: none;
+  border-top: 2px solid #000;
+  border-bottom: 2px solid #000;
 }
 
 .limsv2-report table th,
 .limsv2-report table td {
-  border: 1px solid var(--report-border-color);
+  border: none;
   padding: 10px 12px;
   text-align: left;
   vertical-align: top;
-}
-
-.limsv2-report table tbody tr:nth-child(even) {
-  background-color: #f8fafc;
+  background: #fff;
 }
 
 /* Abnormal values highlighting & Flags */
-.result-abnormal, .abnormal, .flag-abnormal {
-  color: #dc2626; /* Red-600 */
-  font-weight: bold;
-}
-
-.result-high, .flag-high, .result-critical_high, .result-critical_h {
-  color: #dc2626 !important; /* Red */
-  font-weight: bold;
-}
-
+.result-abnormal, .abnormal, .flag-abnormal,
+.result-high, .flag-high, .result-critical_high, .result-critical_h,
 .result-low, .flag-low, .result-critical_low, .result-critical_l {
-  color: #ea580c !important; /* Orange-600 */
+  color: #000000 !important;
   font-weight: bold;
 }
 
 .result-normal, .normal, .flag-normal {
-  color: #16a34a !important; /* Green-600 */
+  color: inherit;
+  font-weight: normal;
 }
 
 /* Report Header & Titles */
@@ -1267,9 +1262,12 @@ function getNestedValue(obj: Record<string, any>, path: string): any {
 
 /**
  * Generate dynamic CSS based on lab settings (colors, fonts, etc.)
+ * @param settings - pdfLayoutSettings from labs table
+ * @param printOptions - merged print options (lab printOptions + test-group print_options override)
  */
-function generateDynamicCss(settings: any): string {
-  if (!settings || (!settings.resultColors && !settings.headerTextColor)) {
+function generateDynamicCss(settings: any, printOptions?: any): string {
+  const hasPrintOptions = printOptions && Object.keys(printOptions).length > 0;
+  if (!settings || (!settings.resultColors && !settings.headerTextColor && !hasPrintOptions)) {
     return "";
   }
 
@@ -1282,28 +1280,28 @@ function generateDynamicCss(settings: any): string {
       : settings.headerTextColor;
     css += `
       /* Header text styling for white on dark backgrounds */
-      .report-header, 
-      .report-header *, 
-      .report-header h1, 
-      .report-header h2, 
-      .report-header h3, 
+      .report-header,
+      .report-header *,
+      .report-header h1,
+      .report-header h2,
+      .report-header h3,
       .report-header p,
       .report-header .report-subtitle,
-      .report-header-title, 
-      .report-title, 
+      .report-header-title,
+      .report-title,
       .header-content,
       .header-content h1,
       .header-content h2,
       .header-content h3,
-      .header-dark h1, 
-      .header-dark h2, 
+      .header-dark h1,
+      .header-dark h2,
       .header-dark h3,
       .header-dark p,
       [class*="report-header"] h1,
       [class*="report-header"] h2,
       [class*="report-header"] p,
-      [class*="report-header"] div { 
-        color: ${color} !important; 
+      [class*="report-header"] div {
+        color: ${color} !important;
       }
     `;
   }
@@ -1327,7 +1325,82 @@ function generateDynamicCss(settings: any): string {
     }
   }
 
+  // ── Print Options overrides (lab-level + test-group-level) ──────────────────
+  if (hasPrintOptions) {
+    css += "\n/* Print Options Overrides */\n";
+
+    // Remove table borders
+    if (printOptions.tableBorders === false) {
+      css += `
+.report-table, .report-table tr, .report-table th, .report-table td,
+.patient-info table, .patient-info tr, .patient-info td, .patient-info th,
+.limsv2-report table, .limsv2-report tr, .limsv2-report th, .limsv2-report td {
+  border: none !important;
+  border-top: none !important;
+  border-bottom: none !important;
+  border-left: none !important;
+  border-right: none !important;
+}
+.report-table thead tr, .report-table thead th { border: none !important; }
+.report-table tbody tr, .report-table tbody tr td { border: none !important; }
+`;
+    }
+
+    // Hide flag column (last column in classic layout)
+    if (printOptions.flagColumn === false) {
+      css += `
+.report-table th:last-child,
+.report-table td:last-child { display: none !important; }
+`;
+    }
+
+    // Custom table header background color
+    if (printOptions.headerBackground) {
+      const bg = printOptions.headerBackground;
+      const textColor = printOptions.headerTextColor || "#ffffff";
+      css += `
+.report-table thead tr th {
+  background: ${bg} !important;
+  background-color: ${bg} !important;
+  color: ${textColor} !important;
+}
+`;
+    }
+
+    // Disable alternate row shading
+    if (printOptions.alternateRows === false) {
+      css += `
+.report-table tbody tr:nth-child(even) td,
+.report-table tbody tr:nth-child(even) { background: #ffffff !important; background-color: #ffffff !important; }
+`;
+    }
+
+    // Base font size
+    if (printOptions.baseFontSize && typeof printOptions.baseFontSize === "number") {
+      const fs = Math.min(Math.max(printOptions.baseFontSize, 8), 16);
+      css += `
+.limsv2-report, .report-table td, .report-table th,
+.patient-info td, .patient-info th { font-size: ${fs}px !important; }
+`;
+    }
+  }
+
   return css;
+}
+
+/**
+ * Merge lab-level printOptions (from pdf_layout_settings.printOptions) with
+ * test-group-level print_options. Test-group values win over lab values.
+ * Returns null if no options set at either level.
+ */
+function mergePrintOptions(
+  labLayoutSettings: any,
+  testGroupPrintOptions?: any,
+): any | null {
+  const labOpts = labLayoutSettings?.printOptions || null;
+  const groupOpts = testGroupPrintOptions || null;
+  if (!labOpts && !groupOpts) return null;
+  return { ...(labOpts || {}), ...(groupOpts || {}) };
 }
 
 // ── Configurable Patient Info Section Builder ──
@@ -1352,10 +1425,32 @@ const PATIENT_INFO_FIELD_MAP: Record<string, { label: string; placeholder: strin
 function buildPatientInfoHtml(
   config: PatientInfoConfig,
   accentColor = '#5a7f3a',
+  extraFieldConfigs?: Array<{ field_key: string; label: string }>,
 ): string {
+  // Build dynamic lookup for custom_* keys from lab's field configs
+  const customFieldMap: Record<string, { label: string; placeholder: string }> = {};
+  if (extraFieldConfigs) {
+    for (const f of extraFieldConfigs) {
+      customFieldMap[`custom_${f.field_key}`] = {
+        label: f.label,
+        placeholder: `{{custom_${f.field_key}}}`,
+      };
+    }
+  }
+
   const fields = config.fields
-    .map(key => PATIENT_INFO_FIELD_MAP[key])
-    .filter(Boolean);
+    .map(key => {
+      if (PATIENT_INFO_FIELD_MAP[key]) return PATIENT_INFO_FIELD_MAP[key];
+      if (customFieldMap[key]) return customFieldMap[key];
+      // Fallback: derive label from key name (e.g. custom_abha_id → "Abha Id")
+      if (key.startsWith('custom_')) {
+        const rawKey = key.replace(/^custom_/, '');
+        const label = rawKey.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
+        return { label, placeholder: `{{${key}}}` };
+      }
+      return undefined;
+    })
+    .filter(Boolean) as Array<{ label: string; placeholder: string }>;
 
   if (fields.length === 0) return '';
 
@@ -1403,6 +1498,53 @@ function buildPatientInfoHtml(
     </div>`;
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Shared helper: sort analytes by sort_order and group by section_heading.
+//
+// Returns an array of { heading: string | null, analytes: any[] } blocks.
+// Analytes with no section_heading (or all the same heading) are treated as
+// a single block with heading = null.
+// ─────────────────────────────────────────────────────────────────────────────
+function groupAnalytesBySectionHeading(
+  analytes: any[],
+): { heading: string | null; analytes: any[] }[] {
+  // Sort: defined sort_order first (ascending), then by insertion order
+  const sorted = [...analytes].sort((a, b) => {
+    const oa = a.sort_order ?? 0;
+    const ob = b.sort_order ?? 0;
+    return oa - ob;
+  });
+  console.log("📊 Analyte sort order:", sorted.map(a => `${a.parameter}(sort_order=${a.sort_order ?? 'null'})`).join(', '));
+
+  // Check if any analyte has a section_heading
+  const hasHeadings = sorted.some((a) => a.section_heading);
+  if (!hasHeadings) {
+    return [{ heading: null, analytes: sorted }];
+  }
+
+  // Group into consecutive blocks sharing the same heading
+  const blocks: { heading: string | null; analytes: any[] }[] = [];
+  let currentHeading: string | null = null;
+  let currentBlock: any[] = [];
+
+  for (const analyte of sorted) {
+    const h = analyte.section_heading ?? null;
+    if (h !== currentHeading) {
+      if (currentBlock.length > 0) {
+        blocks.push({ heading: currentHeading, analytes: currentBlock });
+      }
+      currentHeading = h;
+      currentBlock = [analyte];
+    } else {
+      currentBlock.push(analyte);
+    }
+  }
+  if (currentBlock.length > 0) {
+    blocks.push({ heading: currentHeading, analytes: currentBlock });
+  }
+  return blocks;
+}
+
 /**
  * Classic default template - plain table with flag text styling.
  * This is the original default template before the 3-band color matrix was added.
@@ -1417,13 +1559,15 @@ function generateClassicDefaultTemplateHtml(
   showMethodology = true,
   showInterpretation = false,
   patientInfoConfig?: PatientInfoConfig | null,
+  printOptions?: Record<string, unknown>,
+  extraFieldConfigs?: Array<{ field_key: string; label: string }>,
 ): string {
   const normalizedSectionContent =
     sectionContent && typeof sectionContent === "object" ? sectionContent : {};
 
   // Patient Information Section
   const patientInfoHtml = patientInfoConfig
-    ? buildPatientInfoHtml(patientInfoConfig)
+    ? buildPatientInfoHtml(patientInfoConfig, '#5a7f3a', extraFieldConfigs)
     : `
     <div class="patient-info" style="page-break-inside: avoid;">
       <h3 style="font-size: 14px; font-weight: 600; color: #374151; margin-bottom: 8px; border-bottom: 1px solid #e5e7eb; padding-bottom: 4px;">Patient Information</h3>
@@ -1460,6 +1604,7 @@ function generateClassicDefaultTemplateHtml(
     if (!analytes || analytes.length === 0) continue;
 
     const groupName = testGroupNames.get(groupId) || analytes[0]?.test_name || "Test Results";
+    const sectionBlocks = groupAnalytesBySectionHeading(analytes);
 
     testResultsHtml += `
       <div class="test-group-section" style="margin-bottom: 16px;">
@@ -1477,96 +1622,105 @@ function generateClassicDefaultTemplateHtml(
           <tbody>
     `;
 
-    for (let i = 0; i < analytes.length; i++) {
-      const analyte = analytes[i];
-      const rowBg = i % 2 === 0 ? "#ffffff" : "#f8fafc";
-      const parameterName = analyte.parameter || analyte.name || analyte.test_name || "";
-      const value = analyte.value ?? "";
-      const unit = analyte.unit || "";
-      const refRange = analyte.reference_range || "";
-      const flag = analyte.flag || "";
-      const normalizedFlag = normalizeReportFlag(flag);
-      const canonicalFlag = normalizedFlag.canonical;
-      const displayFlag = normalizedFlag.label;
-
-      const unitText = String(unit || "").trim().toLowerCase();
-      const refText = String(refRange || "").trim();
-      const hasNumericRef = /\\d/.test(refText);
-      const isDescriptive =
-        unitText === "n/a" || unitText === "na" || unitText === "-" ||
-        unitText === "none" || unitText === "not applicable" ||
-        (!unitText && refText && !hasNumericRef);
-
-      let flagStyle = "";
-      let flagClass = "";
-
-      if (canonicalFlag === "high" || canonicalFlag === "critical_high") {
-        flagStyle = "color: #dc2626; font-weight: bold;";
-        flagClass = "result-high flag-high";
-      } else if (canonicalFlag === "low" || canonicalFlag === "critical_low") {
-        flagStyle = "color: #ea580c; font-weight: bold;";
-        flagClass = "result-low flag-low";
-      } else if (canonicalFlag === "normal") {
-        flagStyle = "color: #16a34a;";
-        flagClass = "result-normal flag-normal";
-      } else if (canonicalFlag === "critical") {
-        flagStyle = "color: #7c2d12; font-weight: bold;";
-        flagClass = "result-critical flag-critical";
-      } else if (canonicalFlag === "abnormal") {
-        flagStyle = "color: #dc2626; font-weight: bold;";
-        flagClass = "result-abnormal flag-abnormal";
-      }
-
-      if (isDescriptive) {
+    let rowIndexGlobal = 0;
+    for (const block of sectionBlocks) {
+      // Render section sub-heading row if present
+      if (block.heading) {
         testResultsHtml += `
-            <tr style="background: ${rowBg};">
-              <td colspan="5" style="padding: 10px 12px; border: 1px solid #e5e7eb;">
-                <strong>${parameterName}:</strong> ${value || refText || ""}
-              </td>
+            <tr>
+              <td colspan="5" style="padding: 6px 12px; background: #f1f5f9; font-weight: 600; font-size: 11px; color: #374151; border: 1px solid #e5e7eb;">${block.heading}</td>
             </tr>
         `;
-        continue;
       }
+      for (const analyte of block.analytes) {
+        const rowBg = rowIndexGlobal++ % 2 === 0 ? "#ffffff" : "#f8fafc";
+        const parameterName = analyte.parameter || analyte.name || analyte.test_name || "";
+        const value = analyte.value ?? "";
+        const unit = analyte.unit || "";
+        const refRange = analyte.reference_range || "";
+        const flag = analyte.flag || "";
+        const normalizedFlag = normalizeReportFlag(flag);
+        const canonicalFlag = normalizedFlag.canonical;
+        const displayFlag = normalizedFlag.label;
 
-      testResultsHtml += `
-            <tr style="background: ${rowBg};">
-              <td style="padding: 8px 12px; border: 1px solid #e5e7eb;">
-                ${parameterName}${(analyte.is_auto_calculated || analyte.is_calculated) ? '<sup style="font-size:8px;color:#6b7280;margin-left:2px;font-style:italic;">*calc</sup>' : ''}
-                ${showMethodology && analyte.method ? `<div style="font-size: 9px; color: #9ca3af; margin-top: 2px;">${analyte.method}</div>` : ""}
-              </td>
-              <td class="${flagClass}" style="padding: 8px 12px; border: 1px solid #e5e7eb; ${flagStyle}">${value}</td>
-              <td style="padding: 8px 12px; border: 1px solid #e5e7eb;">${unit}</td>
-              <td style="padding: 8px 12px; border: 1px solid #e5e7eb;">${refRange}</td>
-              <td class="${flagClass}" style="padding: 8px 12px; border: 1px solid #e5e7eb; text-align: center; ${flagStyle}">${displayFlag}</td>
-            </tr>
-      `;
+        const unitText = String(unit || "").trim().toLowerCase();
+        const refText = String(refRange || "").trim();
+        const hasNumericRef = /\d/.test(refText);
+        const isDescriptive =
+          unitText === "n/a" || unitText === "na" || unitText === "-" ||
+          unitText === "none" || unitText === "not applicable" ||
+          (!unitText && refText && !hasNumericRef);
 
-      // Interpretation row (shown below the analyte row if enabled)
-      if (showInterpretation) {
-        let classicInterpretation = "";
+        let flagStyle = "";
+        let flagClass = "";
+
         if (canonicalFlag === "high" || canonicalFlag === "critical_high") {
-          classicInterpretation = analyte.interpretation_high || "";
+          flagStyle = "color: #dc2626; font-weight: bold;";
+          flagClass = "result-high flag-high";
         } else if (canonicalFlag === "low" || canonicalFlag === "critical_low") {
-          classicInterpretation = analyte.interpretation_low || "";
-        } else {
-          classicInterpretation = analyte.interpretation_normal || "";
+          flagStyle = "color: #ea580c; font-weight: bold;";
+          flagClass = "result-low flag-low";
+        } else if (canonicalFlag === "normal") {
+          flagStyle = "color: #16a34a;";
+          flagClass = "result-normal flag-normal";
+        } else if (canonicalFlag === "critical") {
+          flagStyle = "color: #7c2d12; font-weight: bold;";
+          flagClass = "result-critical flag-critical";
+        } else if (canonicalFlag === "abnormal") {
+          flagStyle = "color: #dc2626; font-weight: bold;";
+          flagClass = "result-abnormal flag-abnormal";
         }
-        if (classicInterpretation) {
+
+        if (isDescriptive) {
           testResultsHtml += `
-            <tr style="background: ${rowBg};">
-              <td colspan="5" style="padding: 2px 12px 6px 24px; border: 1px solid #e5e7eb; border-top: none; font-size: 11px; color: #6b7280; font-style: italic;">
-                <strong>Interpretation:</strong> ${classicInterpretation}
-              </td>
-            </tr>
+              <tr style="background: ${rowBg};">
+                <td colspan="5" style="padding: 10px 12px; border: 1px solid #e5e7eb;">
+                  <strong>${parameterName}:</strong> ${value || refText || ""}
+                </td>
+              </tr>
           `;
+          continue;
         }
-      }
-    }
+
+        testResultsHtml += `
+              <tr style="background: ${rowBg};">
+                <td style="padding: 8px 12px; border: 1px solid #e5e7eb;">
+                  ${parameterName}${(analyte.is_auto_calculated || analyte.is_calculated) ? '<sup style="font-size:8px;color:#6b7280;margin-left:2px;font-style:italic;">*calc</sup>' : ''}
+                  ${showMethodology && analyte.method ? `<div style="font-size: 9px; color: #9ca3af; margin-top: 2px;">${analyte.method}</div>` : ""}
+                </td>
+                <td class="${flagClass}" style="padding: 8px 12px; border: 1px solid #e5e7eb; ${flagStyle}">${value}${printOptions?.flagAsterisk && (canonicalFlag === 'high' || canonicalFlag === 'low' || canonicalFlag === 'critical_high' || canonicalFlag === 'critical_low') ? (printOptions?.flagAsteriskCritical && (canonicalFlag === 'critical_high' || canonicalFlag === 'critical_low') ? '**' : '*') : ''}</td>
+                <td style="padding: 8px 12px; border: 1px solid #e5e7eb;">${unit}</td>
+                <td style="padding: 8px 12px; border: 1px solid #e5e7eb;">${refRange}</td>
+                <td class="${flagClass}" style="padding: 8px 12px; border: 1px solid #e5e7eb; text-align: center; ${flagStyle}">${displayFlag}</td>
+              </tr>
+        `;
+
+        if (showInterpretation) {
+          let classicInterpretation = "";
+          if (canonicalFlag === "high" || canonicalFlag === "critical_high") {
+            classicInterpretation = analyte.interpretation_high || "";
+          } else if (canonicalFlag === "low" || canonicalFlag === "critical_low") {
+            classicInterpretation = analyte.interpretation_low || "";
+          } else {
+            classicInterpretation = analyte.interpretation_normal || "";
+          }
+          if (classicInterpretation) {
+            testResultsHtml += `
+              <tr style="background: ${rowBg};">
+                <td colspan="5" style="padding: 2px 12px 6px 24px; border: 1px solid #e5e7eb; border-top: none; font-size: 11px; color: #6b7280; font-style: italic;">
+                  <strong>Interpretation:</strong> ${classicInterpretation}
+                </td>
+              </tr>
+            `;
+          }
+        }
+      } // end for analyte
+    } // end for block
 
     testResultsHtml += `
           </tbody>
         </table>
-        ${context.analytes.some((a: any) => a.is_auto_calculated || a.is_calculated) ? '<p style="font-size:9px;color:#9ca3af;margin:2px 0 8px;font-style:italic;">*calc \u2013 Calculated parameter</p>' : ''}
+        ${analytes.some((a: any) => a.is_auto_calculated || a.is_calculated) ? '<p style="font-size:9px;color:#9ca3af;margin:2px 0 8px;font-style:italic;">*calc \u2013 Calculated parameter</p>' : ''}
       </div>
     `;
   }
@@ -1636,11 +1790,413 @@ function generateClassicDefaultTemplateHtml(
 }
 
 /**
+ * "Basic" template — old-school plain layout matching traditional printed lab reports.
+ *
+ * Design rules:
+ *  - "TEST REPORT" title bar with 1.5px border top/bottom
+ *  - Patient info as figure.table with <th> labels (15%) + <td> values (35%)
+ *  - 4 columns: TEST NAME (55%) | VALUE (15%) | UNITS (10%) | Bio. Ref. Interval (20%)
+ *  - Column header row: 1.5px solid border top/bottom only — no cell borders
+ *  - Group name as center-title (underlined, uppercase) inside main-group-row
+ *  - Section headings: sub-section-header class (uppercase, small, bold)
+ *  - High flags → red (#dc2626) bold; Low flags → black bold; Qualitative abnormal → black bold
+ *  - Test name bold, method italic small below it, calculated marker *
+ *  - Footer: flex layout — "Authenticated Electronic Report" left, signature right
+ *  - Font size controllable via printOptions.baseFontSize (lab-level setting)
+ */
+function generateBasicDefaultTemplateHtml(
+  _context: unknown,
+  testGroupNames: Map<string, string>,
+  analytesByGroup: Map<string, any[]>,
+  signatoryInfo: any,
+  sectionContent?: Record<string, string>,
+  includeSections = true,
+  showMethodology = true,
+  showInterpretation = false,
+  patientInfoConfig?: PatientInfoConfig | null,
+  printOptions?: Record<string, unknown>,
+  extraFieldConfigs?: Array<{ field_key: string; label: string }>,
+): string {
+  const normalizedSectionContent =
+    sectionContent && typeof sectionContent === "object" ? sectionContent : {};
+
+  // Font size: honour lab-level baseFontSize if set, otherwise 11px
+  const basePx = typeof printOptions?.baseFontSize === "number"
+    ? Math.max(8, Math.min(16, printOptions.baseFontSize as number))
+    : 11;
+  const smallPx = Math.max(7, basePx - 3);   // method / ref range
+  const titlePx = basePx + 2;                 // group heading
+  const sigPx   = basePx + 1;                 // signatory name
+
+  const noColorCss = `
+<style>
+.basic-report-template {
+  font-size: ${basePx}px;
+  line-height: 1.3;
+  color: #000;
+}
+.basic-report-template td,
+.basic-report-template th {
+  color: #000 !important;
+  font-weight: normal;
+  background-color: #fff !important;
+}
+/* Strip every colour flag-class BASELINE_CSS would inject */
+.basic-report-template .result-normal, .basic-report-template .flag-normal,
+.basic-report-template .value-normal, .basic-report-template .result-high,
+.basic-report-template .flag-high, .basic-report-template .value-high,
+.basic-report-template .result-low, .basic-report-template .flag-low,
+.basic-report-template .value-low, .basic-report-template .result-critical,
+.basic-report-template .flag-critical, .basic-report-template .value-critical,
+.basic-report-template .result-abnormal, .basic-report-template .flag-abnormal,
+.basic-report-template .value-abnormal, .basic-report-template .flag-trace,
+.basic-report-template .value-trace {
+  color: #000 !important;
+  font-weight: normal;
+}
+/* TEST REPORT title bar */
+.basic-report-template .report-main-title {
+  text-align: center !important;
+  font-size: ${titlePx + 2}px !important;
+  border-top: 1.5px solid #000 !important;
+  border-bottom: 1.5px solid #000 !important;
+  padding: 6px 0 !important;
+  margin: 8px 0 12px !important;
+  font-weight: bold !important;
+  color: #000 !important;
+}
+/* Prevent print CSS injecting borders on our tables */
+.basic-report-template table {
+  border: none !important;
+}
+/* Patient header table */
+.basic-report-template .patient-header-table {
+  width: 100% !important;
+  table-layout: fixed !important;
+  margin-bottom: 12px !important;
+  border: none !important;
+}
+.basic-report-template .patient-header-table th {
+  width: 15% !important;
+  font-weight: bold !important;
+  text-align: left !important;
+  color: #000 !important;
+  padding: 2px 4px !important;
+  white-space: nowrap !important;
+  border: none !important;
+}
+.basic-report-template .patient-header-table td {
+  width: 35% !important;
+  padding: 2px 4px !important;
+  border: none !important;
+}
+/* Results table — no cell borders, only header rule */
+.basic-report-template .tbl-results {
+  width: 100% !important;
+  table-layout: fixed !important;
+  border-collapse: collapse !important;
+  border: none !important;
+}
+.basic-report-template .tbl-results thead th {
+  border-top: 1.5px solid #000 !important;
+  border-bottom: 1.5px solid #000 !important;
+  border-left: none !important;
+  border-right: none !important;
+  font-weight: bold !important;
+  text-align: left !important;
+  padding: 4px 6px !important;
+}
+.basic-report-template .tbl-results thead th:nth-child(1) { width: 55% !important; }
+.basic-report-template .tbl-results thead th:nth-child(2) { width: 15% !important; text-align: center !important; }
+.basic-report-template .tbl-results thead th:nth-child(3) { width: 10% !important; }
+.basic-report-template .tbl-results thead th:nth-child(4) { width: 20% !important; }
+.basic-report-template .tbl-results td {
+  border: none !important;
+  padding: 3px 6px !important;
+}
+/* Value cell — high: red, low: black bold, abnormal: black bold */
+.basic-report-template .val {
+  text-align: center !important;
+  vertical-align: top !important;
+}
+.basic-report-template .val.high,
+.basic-report-template .val.critical_high,
+.basic-report-template .val.critical_h {
+  color: #dc2626 !important;
+  font-weight: bold !important;
+}
+.basic-report-template .val.low,
+.basic-report-template .val.critical_low,
+.basic-report-template .val.critical_l,
+.basic-report-template .val.abnormal {
+  color: #000 !important;
+  font-weight: bold !important;
+}
+/* Main group name row */
+.basic-report-template .main-group-row td {
+  padding: 0 !important;
+  border: none !important;
+}
+.basic-report-template .center-title {
+  text-align: center !important;
+  font-weight: bold !important;
+  text-decoration: underline !important;
+  font-size: ${titlePx}px !important;
+  margin: 10px 0 0 !important;
+  text-transform: uppercase !important;
+}
+.basic-report-template .center-subtitle {
+  text-align: center !important;
+  font-size: ${smallPx + 1}px !important;
+  margin: 2px 0 5px !important;
+  color: #444 !important;
+}
+/* Sub-section heading row */
+.basic-report-template .sub-section-header td {
+  font-weight: bold !important;
+  padding-top: 10px !important;
+  padding-bottom: 2px !important;
+  text-transform: uppercase !important;
+  font-size: ${smallPx + 1}px !important;
+  letter-spacing: 0.3px !important;
+  border: none !important;
+}
+/* Footer — flex, auth text left, signature right */
+.basic-report-template .report-footer {
+  margin-top: 30px !important;
+  border-top: 1.5px solid #000 !important;
+  padding-top: 10px !important;
+  display: flex !important;
+  justify-content: space-between !important;
+  align-items: flex-start !important;
+  page-break-inside: avoid !important;
+}
+.basic-report-template .auth-text {
+  font-size: ${smallPx + 1}px !important;
+  color: #555 !important;
+  font-style: italic !important;
+}
+.basic-report-template .signature-box {
+  text-align: right !important;
+}
+/* Undo hide-last-column rule for tbl-results */
+.basic-report-template .tbl-results th:last-child,
+.basic-report-template .tbl-results td:last-child {
+  display: table-cell !important;
+}
+</style>`;
+
+  // Patient info — figure.table wrapper with <th> labels
+  const patientInfoHtml = patientInfoConfig
+    ? buildPatientInfoHtml(patientInfoConfig, '#5a7f3a', extraFieldConfigs)
+    : `
+    <div class="report-header-top">
+      <h2 class="report-main-title">TEST REPORT</h2>
+    </div>
+    <figure class="table" style="margin: 0 0 12px;">
+      <table class="patient-header-table">
+        <tbody>
+          <tr>
+            <th>Name</th><td>: {{patientName}}</td>
+            <th>Reg. No</th><td>: {{patientId}}</td>
+          </tr>
+          <tr>
+            <th>Age / Sex</th><td>: {{patientAge}} / {{patientGender}}</td>
+            <th>Reg. Date</th><td>: {{collectionDate}}</td>
+          </tr>
+          <tr>
+            <th>Ref. By</th><td>: {{referringDoctorName}}</td>
+            <th>Report Date</th><td>: {{approvedAt}}</td>
+          </tr>
+        </tbody>
+      </table>
+    </figure>
+  `;
+
+  let testResultsHtml = '<div class="test-results">';
+  for (const [groupId, analytes] of analytesByGroup) {
+    if (!analytes || analytes.length === 0) continue;
+
+    const groupName = testGroupNames.get(groupId) || analytes[0]?.test_name || "Test Results";
+    const hasCalcInGroup = analytes.some((a: { is_auto_calculated?: boolean; is_calculated?: boolean }) => a.is_auto_calculated || a.is_calculated);
+
+    testResultsHtml += `
+      <figure class="table" style="margin: 0 0 14px;">
+        <table class="tbl-results">
+          <thead>
+            <tr>
+              <th>TEST NAME</th>
+              <th style="text-align:center;">VALUE</th>
+              <th>UNITS</th>
+              <th>Bio. Ref. Interval</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr class="main-group-row">
+              <td colspan="4">
+                <div class="center-title">${groupName}</div>
+              </td>
+            </tr>
+    `;
+
+    const sectionBlocks = groupAnalytesBySectionHeading(analytes);
+    for (const block of sectionBlocks) {
+      if (block.heading) {
+        testResultsHtml += `
+            <tr class="sub-section-header">
+              <td colspan="4">${block.heading}</td>
+            </tr>
+        `;
+      }
+      for (const analyte of block.analytes) {
+        const parameterName = analyte.parameter || analyte.name || analyte.test_name || "";
+        const value        = analyte.value ?? "";
+        const unit         = analyte.unit || "";
+        const refRange     = analyte.reference_range || "";
+        const flag         = analyte.flag || "";
+        const normalizedFlag  = normalizeReportFlag(flag);
+        const canonicalFlag   = normalizedFlag.canonical;
+        const isCalculated    = analyte.is_auto_calculated || analyte.is_calculated;
+
+        const unitText      = String(unit || "").trim().toLowerCase();
+        const refText       = String(refRange || "").trim();
+        const hasNumericRef = /\d/.test(refText);
+        const isDescriptive =
+          unitText === "n/a" || unitText === "na" || unitText === "-" ||
+          unitText === "none" || unitText === "not applicable" ||
+          (!unitText && refText && !hasNumericRef);
+
+        const isNumericHigh = canonicalFlag === "high" || canonicalFlag === "critical_high";
+        const isNumericLow  = canonicalFlag === "low"  || canonicalFlag === "critical_low";
+
+        const asteriskSuffix = (printOptions?.flagAsterisk && (isNumericHigh || isNumericLow))
+          ? (printOptions?.flagAsteriskCritical && (canonicalFlag === 'critical_high' || canonicalFlag === 'critical_low') ? '**' : '*')
+          : '';
+        const displayValue = value + asteriskSuffix;
+
+        if (isDescriptive) {
+          testResultsHtml += `
+              <tr>
+                <td colspan="4" style="padding: 3px 6px; font-size: ${basePx}px;">
+                  <strong>${parameterName}:</strong> ${value || refText || ""}
+                </td>
+              </tr>
+          `;
+          continue;
+        }
+
+        // val class drives colour: high → red, low/abnormal → black bold
+        const valClass = canonicalFlag ? `val ${canonicalFlag}` : "val";
+
+        testResultsHtml += `
+              <tr>
+                <td style="padding: 3px 6px; vertical-align: top;">
+                  <strong style="font-size: ${basePx}px;">${parameterName}</strong>${isCalculated ? `<sup style="font-size:${smallPx - 1}px; color:#444; margin-left:1px;">*</sup>` : ''}
+                  ${showMethodology && analyte.method ? `<div style="font-size: ${smallPx}px; color: #444; font-style: italic; margin-top: 1px;">${analyte.method}</div>` : ""}
+                </td>
+                <td class="${valClass}" style="font-size: ${basePx}px;">${displayValue}</td>
+                <td style="text-align: center; vertical-align: top; font-size: ${basePx}px;">${unit}</td>
+                <td style="vertical-align: top; font-size: ${smallPx + 1}px;">${refRange}</td>
+              </tr>
+        `;
+
+        if (showInterpretation) {
+          let interp = "";
+          if (isNumericHigh) interp = analyte.interpretation_high || "";
+          else if (isNumericLow) interp = analyte.interpretation_low || "";
+          else interp = analyte.interpretation_normal || "";
+          if (interp) {
+            testResultsHtml += `
+              <tr>
+                <td colspan="4" style="padding: 1px 6px 4px 20px; font-size: ${smallPx}px; color: #333; font-style: italic;">${interp}</td>
+              </tr>
+            `;
+          }
+        }
+      } // end for analyte
+    } // end for block
+
+    testResultsHtml += `
+          </tbody>
+        </table>
+        ${hasCalcInGroup ? `<p style="font-size:${smallPx}px;color:#444;margin:2px 0 6px;font-style:italic;">* Calculated parameter</p>` : ''}
+      </figure>
+    `;
+  }
+
+  testResultsHtml += "</div>";
+
+  // Footer — flex: auth text left, signatory right
+  const sigName        = signatoryInfo?.signatoryName || "";
+  const sigDesignation = signatoryInfo?.signatoryDesignation || "";
+  const sigImageUrl    = signatoryInfo?.signatoryImageUrl || "";
+
+  const signatoryHtml = `
+    <div class="report-footer">
+      <div class="auth-text">Authenticated Electronic Report</div>
+      <div class="signature-box">
+        ${sigImageUrl ? `<img src="${sigImageUrl}" alt="Signature" style="max-height: 45px; max-width: 130px; margin-bottom: 4px; display: block; margin-left: auto;" />` : ""}
+        ${sigName        ? `<div style="font-weight: bold; font-size: ${sigPx}px;">${sigName}</div>` : ""}
+        ${sigDesignation ? `<div style="font-size: ${basePx - 1}px; margin-top: 2px;">${sigDesignation}</div>` : ""}
+      </div>
+    </div>
+  `;
+
+  const buildSectionLabel = (key: string) => {
+    const { rawKey } = normalizeSectionKey(key);
+    if (!rawKey) return "Report Section";
+    return rawKey
+      .replace(/[_-]+/g, " ")
+      .split(" ")
+      .filter(Boolean)
+      .map((part: string) => part.charAt(0).toUpperCase() + part.slice(1).toLowerCase())
+      .join(" ");
+  };
+
+  let reportSectionsHtml = "";
+  if (includeSections && Object.keys(normalizedSectionContent).length > 0) {
+    const sectionItems = Object.entries(normalizedSectionContent)
+      .filter(([, content]) => content && String(content).trim().length > 0)
+      .map(([key, content]) => {
+        const formatted = formatSectionContentToHtml(String(content));
+        if (!formatted) return "";
+        return `
+          <div style="margin-top: 10px; font-size: ${basePx}px;">
+            <div style="font-weight: bold; margin-bottom: 3px;">${buildSectionLabel(key)}</div>
+            ${formatted}
+          </div>
+        `;
+      })
+      .filter(Boolean)
+      .join("");
+
+    if (sectionItems) {
+      reportSectionsHtml = `
+        <div class="report-sections" style="margin-top: 14px; border-top: 1px solid #000; padding-top: 6px;">
+          ${sectionItems}
+        </div>
+      `;
+    }
+  }
+
+  return `
+    ${noColorCss}
+    <div class="basic-report-template" style="font-family: Arial, Helvetica, sans-serif; font-size: ${basePx}px; color: #000;">
+      ${patientInfoHtml}
+      ${testResultsHtml}
+      ${reportSectionsHtml}
+      ${signatoryHtml}
+    </div>
+  `;
+}
+
+/**
  * Generate default template HTML when no custom template is found.
- * 
- * Supports two styles controlled by lab setting `default_template_style`:
+ *
+ * Supports three styles controlled by lab setting `default_template_style`:
  *   - "beautiful" (default): 3-band color matrix with colored cells
  *   - "classic": Plain table with flag text styling
+ *   - "basic": Old-school, no colours, bold H/L prefix on abnormal values
  */
 function generateDefaultTemplateHtml(
   context: any,
@@ -1649,17 +2205,28 @@ function generateDefaultTemplateHtml(
   signatoryInfo: any,
   sectionContent?: Record<string, string>,
   includeSections = true,
-  templateStyle: 'beautiful' | 'classic' = 'beautiful',
+  templateStyle: 'beautiful' | 'classic' | 'basic' = 'beautiful',
   showMethodology = true,
   showInterpretation = false,
   patientInfoConfig?: PatientInfoConfig | null,
+  printOptions?: Record<string, unknown>,
+  extraFieldConfigs?: Array<{ field_key: string; label: string }>,
 ): string {
   // Branch to classic template if requested
   if (templateStyle === 'classic') {
     return generateClassicDefaultTemplateHtml(
       context, testGroupNames, analytesByGroup, signatoryInfo,
       sectionContent, includeSections, showMethodology, showInterpretation,
-      patientInfoConfig,
+      patientInfoConfig, printOptions, extraFieldConfigs,
+    );
+  }
+
+  // Branch to basic (old-school) template if requested
+  if (templateStyle === 'basic') {
+    return generateBasicDefaultTemplateHtml(
+      context, testGroupNames, analytesByGroup, signatoryInfo,
+      sectionContent, includeSections, showMethodology, showInterpretation,
+      patientInfoConfig, printOptions, extraFieldConfigs,
     );
   }
 
@@ -1855,7 +2422,7 @@ function generateDefaultTemplateHtml(
 
   // ── Patient Information Section ──
   const patientInfoHtml = patientInfoConfig
-    ? buildPatientInfoHtml(patientInfoConfig, THEME.accent)
+    ? buildPatientInfoHtml(patientInfoConfig, THEME.accent, extraFieldConfigs)
     : `
     <div class="patient-info" style="margin-bottom: 16px; padding: 12px 16px; background: #ffffff; border: 1px solid #d1d5db; border-radius: 4px; page-break-inside: avoid;">
       <div style="display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 6px;">
@@ -1886,12 +2453,13 @@ function generateDefaultTemplateHtml(
     const groupName = testGroupNames.get(groupId) || analytes[0]?.test_name ||
       "Test Results";
 
-    // Separate analytes into categories
+    // Separate analytes into categories (sorted by sort_order first)
+    const sortedAnalytes = groupAnalytesBySectionHeading(analytes).flatMap(b => b.analytes);
     const colorMatrixAnalytes: any[] = [];
     const flatTableAnalytes: any[] = [];
     const descriptiveAnalytes: any[] = [];
 
-    for (const analyte of analytes) {
+    for (const analyte of sortedAnalytes) {
       if (isDescriptiveAnalyte(analyte)) {
         descriptiveAnalytes.push(analyte);
       } else if (isNumericValue(analyte.value) && hasStructuredRange(analyte)) {
@@ -1923,71 +2491,80 @@ function generateDefaultTemplateHtml(
           <tbody>
       `;
 
-      for (const analyte of colorMatrixAnalytes) {
-        const paramName = analyte.parameter || analyte.name || analyte.test_name || "";
-        const value = analyte.value ?? "";
-        const unitStr = analyte.unit || "";
-        const method = analyte.method || "";
-        const numVal = extractNumericVal(value);
-        const classification = numVal !== null ? classifyValue(numVal, analyte) : null;
-
-        const ref1 = formatRefForColumn(analyte, 1);
-        const ref2 = formatRefForColumn(analyte, 2);
-        const ref3 = formatRefForColumn(analyte, 3);
-
-        const buildColorCell = (colNum: 1 | 2 | 3, refText: string) => {
-          const isActive = classification?.column === colNum;
-          if (isActive) {
-            const color = getColor(classification!.semantic);
-            return `
-              <td style="padding: 6px; border: 1px solid #d1d5db; text-align: center; vertical-align: middle; background-color: ${color.bg}; -webkit-print-color-adjust: exact; print-color-adjust: exact;">
-                <div style="font-size: 15px; font-weight: 700; color: ${color.text};">${value}</div>
-                ${unitStr ? `<div style="font-size: 10px; color: ${color.text}; opacity: 0.85; margin-top: 1px;">${unitStr}</div>` : ""}
-                ${refText ? `<div style="font-size: 10px; color: ${color.text}; opacity: 0.85; margin-top: 2px;">${refText}</div>` : ""}
-              </td>
-            `;
-          }
-          return `
-            <td style="padding: 6px; border: 1px solid #d1d5db; text-align: center; vertical-align: middle; background-color: transparent;">
-              <div style="font-size: 10px; color: #6b7280;">${refText}</div>
-            </td>
+      for (const cmBlock of groupAnalytesBySectionHeading(colorMatrixAnalytes)) {
+        if (cmBlock.heading) {
+          testResultsHtml += `
+              <tr>
+                <td colspan="4" style="padding: 6px 12px; background: #f1f5f9; font-weight: 600; font-size: 11px; color: #374151; border: 1px solid #e5e7eb;">${cmBlock.heading}</td>
+              </tr>
           `;
-        };
-
-        testResultsHtml += `
-            <tr style="page-break-inside: avoid;">
-              <td style="font-weight: 600; padding: 10px 12px; border: 1px solid #d1d5db; color: #1f2937; width: 180px;">
-                ${paramName}${(analyte.is_auto_calculated || analyte.is_calculated) ? '<sup style="font-size:8px;color:#6b7280;margin-left:2px;font-style:italic;">*calc</sup>' : ''}
-                ${showMethodology && method ? `<div style="font-size: 9px; color: #9ca3af; margin-top: 2px;">${method}</div>` : ""}
-              </td>
-              ${buildColorCell(1, ref1)}
-              ${buildColorCell(2, ref2)}
-              ${buildColorCell(3, ref3)}
-            </tr>
-        `;
-
-        // Interpretation row (shown below the analyte row if enabled)
-        if (showInterpretation) {
-          const canonicalFlag = normalizeReportFlag(analyte.flag).canonical;
-          let interpretationText = "";
-          if (canonicalFlag === "high" || canonicalFlag === "critical_high") {
-            interpretationText = analyte.interpretation_high || "";
-          } else if (canonicalFlag === "low" || canonicalFlag === "critical_low") {
-            interpretationText = analyte.interpretation_low || "";
-          } else {
-            interpretationText = analyte.interpretation_normal || "";
-          }
-          if (interpretationText) {
-            testResultsHtml += `
-            <tr style="page-break-inside: avoid;">
-              <td colspan="4" style="padding: 4px 12px 8px 24px; border: 1px solid #d1d5db; border-top: none; font-size: 11px; color: #6b7280; font-style: italic;">
-                <strong>Interpretation:</strong> ${interpretationText}
-              </td>
-            </tr>
-            `;
-          }
         }
-      }
+        for (const analyte of cmBlock.analytes) {
+          const paramName = analyte.parameter || analyte.name || analyte.test_name || "";
+          const value = analyte.value ?? "";
+          const unitStr = analyte.unit || "";
+          const method = analyte.method || "";
+          const numVal = extractNumericVal(value);
+          const classification = numVal !== null ? classifyValue(numVal, analyte) : null;
+
+          const ref1 = formatRefForColumn(analyte, 1);
+          const ref2 = formatRefForColumn(analyte, 2);
+          const ref3 = formatRefForColumn(analyte, 3);
+
+          const buildColorCell = (colNum: 1 | 2 | 3, refText: string) => {
+            const isActive = classification?.column === colNum;
+            if (isActive) {
+              const color = getColor(classification!.semantic);
+              return `
+                <td style="padding: 6px; border: 1px solid #d1d5db; text-align: center; vertical-align: middle; background-color: ${color.bg}; -webkit-print-color-adjust: exact; print-color-adjust: exact;">
+                  <div style="font-size: 15px; font-weight: 700; color: ${color.text};">${value}</div>
+                  ${unitStr ? `<div style="font-size: 10px; color: ${color.text}; opacity: 0.85; margin-top: 1px;">${unitStr}</div>` : ""}
+                  ${refText ? `<div style="font-size: 10px; color: ${color.text}; opacity: 0.85; margin-top: 2px;">${refText}</div>` : ""}
+                </td>
+              `;
+            }
+            return `
+              <td style="padding: 6px; border: 1px solid #d1d5db; text-align: center; vertical-align: middle; background-color: transparent;">
+                <div style="font-size: 10px; color: #6b7280;">${refText}</div>
+              </td>
+            `;
+          };
+
+          testResultsHtml += `
+              <tr style="page-break-inside: avoid;">
+                <td style="font-weight: 600; padding: 10px 12px; border: 1px solid #d1d5db; color: #1f2937; width: 180px;">
+                  ${paramName}${(analyte.is_auto_calculated || analyte.is_calculated) ? '<sup style="font-size:8px;color:#6b7280;margin-left:2px;font-style:italic;">*calc</sup>' : ''}
+                  ${showMethodology && method ? `<div style="font-size: 9px; color: #9ca3af; margin-top: 2px;">${method}</div>` : ""}
+                </td>
+                ${buildColorCell(1, ref1)}
+                ${buildColorCell(2, ref2)}
+                ${buildColorCell(3, ref3)}
+              </tr>
+          `;
+
+          // Interpretation row (shown below the analyte row if enabled)
+          if (showInterpretation) {
+            const canonicalFlag = normalizeReportFlag(analyte.flag).canonical;
+            let interpretationText = "";
+            if (canonicalFlag === "high" || canonicalFlag === "critical_high") {
+              interpretationText = analyte.interpretation_high || "";
+            } else if (canonicalFlag === "low" || canonicalFlag === "critical_low") {
+              interpretationText = analyte.interpretation_low || "";
+            } else {
+              interpretationText = analyte.interpretation_normal || "";
+            }
+            if (interpretationText) {
+              testResultsHtml += `
+              <tr style="page-break-inside: avoid;">
+                <td colspan="4" style="padding: 4px 12px 8px 24px; border: 1px solid #d1d5db; border-top: none; font-size: 11px; color: #6b7280; font-style: italic;">
+                  <strong>Interpretation:</strong> ${interpretationText}
+                </td>
+              </tr>
+              `;
+            }
+          }
+        } // end for analyte
+      } // end for cmBlock
 
       testResultsHtml += `
           </tbody>
@@ -2012,53 +2589,62 @@ function generateDefaultTemplateHtml(
           <tbody>
       `;
 
-      for (const analyte of flatTableAnalytes) {
-        const paramName = analyte.parameter || analyte.name || analyte.test_name || "";
-        const value = analyte.value ?? "";
-        const unit = analyte.unit || "";
-        const refRange = analyte.reference_range || "";
-        const flag = analyte.flag || "";
-        const method = analyte.method || "";
-        const badge = getFlagBadge(flag);
-        const canonicalFlag = normalizeReportFlag(flag).canonical;
-        const isAbnormal = !!canonicalFlag && canonicalFlag !== "normal";
-
-        testResultsHtml += `
-            <tr style="page-break-inside: avoid;">
-              <td style="padding: 8px 12px; border: 1px solid #d1d5db; font-weight: 600; color: #1f2937;">
-                ${paramName}${(analyte.is_auto_calculated || analyte.is_calculated) ? '<sup style="font-size:8px;color:#6b7280;margin-left:2px;font-style:italic;">*calc</sup>' : ''}
-                ${showMethodology && method ? `<div style="font-size: 9px; color: #9ca3af;">${method}</div>` : ""}
-              </td>
-              <td style="padding: 8px 12px; border: 1px solid #d1d5db; text-align: center; font-weight: 700; color: ${isAbnormal ? badge.bg : "#374151"};">${value}</td>
-              <td style="padding: 8px 12px; border: 1px solid #d1d5db; text-align: center; color: #6b7280; font-size: 12px;">${unit}</td>
-              <td style="padding: 8px 12px; border: 1px solid #d1d5db; text-align: center; color: #6b7280; font-size: 12px;">${refRange}</td>
-              <td style="padding: 8px 12px; border: 1px solid #d1d5db; text-align: center;">
-                ${flag ? `<span style="display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 10px; font-weight: 600; color: white; background-color: ${badge.bg}; -webkit-print-color-adjust: exact; print-color-adjust: exact;">${badge.text}</span>` : ""}
-              </td>
-            </tr>
-        `;
-
-        // Interpretation row (shown below the analyte row if enabled)
-        if (showInterpretation) {
-          let interpretationTextFlat = "";
-          if (canonicalFlag === "high" || canonicalFlag === "critical_high") {
-            interpretationTextFlat = analyte.interpretation_high || "";
-          } else if (canonicalFlag === "low" || canonicalFlag === "critical_low") {
-            interpretationTextFlat = analyte.interpretation_low || "";
-          } else {
-            interpretationTextFlat = analyte.interpretation_normal || "";
-          }
-          if (interpretationTextFlat) {
-            testResultsHtml += `
-            <tr style="page-break-inside: avoid;">
-              <td colspan="5" style="padding: 4px 12px 8px 24px; border: 1px solid #d1d5db; border-top: none; font-size: 11px; color: #6b7280; font-style: italic;">
-                <strong>Interpretation:</strong> ${interpretationTextFlat}
-              </td>
-            </tr>
-            `;
-          }
+      for (const flatBlock of groupAnalytesBySectionHeading(flatTableAnalytes)) {
+        if (flatBlock.heading) {
+          testResultsHtml += `
+              <tr>
+                <td colspan="5" style="padding: 6px 12px; background: #f1f5f9; font-weight: 600; font-size: 11px; color: #374151; border: 1px solid #e5e7eb;">${flatBlock.heading}</td>
+              </tr>
+          `;
         }
-      }
+        for (const analyte of flatBlock.analytes) {
+          const paramName = analyte.parameter || analyte.name || analyte.test_name || "";
+          const value = analyte.value ?? "";
+          const unit = analyte.unit || "";
+          const refRange = analyte.reference_range || "";
+          const flag = analyte.flag || "";
+          const method = analyte.method || "";
+          const badge = getFlagBadge(flag);
+          const canonicalFlag = normalizeReportFlag(flag).canonical;
+          const isAbnormal = !!canonicalFlag && canonicalFlag !== "normal";
+
+          testResultsHtml += `
+              <tr style="page-break-inside: avoid;">
+                <td style="padding: 8px 12px; border: 1px solid #d1d5db; font-weight: 600; color: #1f2937;">
+                  ${paramName}${(analyte.is_auto_calculated || analyte.is_calculated) ? '<sup style="font-size:8px;color:#6b7280;margin-left:2px;font-style:italic;">*calc</sup>' : ''}
+                  ${showMethodology && method ? `<div style="font-size: 9px; color: #9ca3af;">${method}</div>` : ""}
+                </td>
+                <td style="padding: 8px 12px; border: 1px solid #d1d5db; text-align: center; font-weight: 700; color: ${isAbnormal ? badge.bg : "#374151"};">${value}</td>
+                <td style="padding: 8px 12px; border: 1px solid #d1d5db; text-align: center; color: #6b7280; font-size: 12px;">${unit}</td>
+                <td style="padding: 8px 12px; border: 1px solid #d1d5db; text-align: center; color: #6b7280; font-size: 12px;">${refRange}</td>
+                <td style="padding: 8px 12px; border: 1px solid #d1d5db; text-align: center;">
+                  ${flag ? `<span style="display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 10px; font-weight: 600; color: white; background-color: ${badge.bg}; -webkit-print-color-adjust: exact; print-color-adjust: exact;">${badge.text}</span>` : ""}
+                </td>
+              </tr>
+          `;
+
+          // Interpretation row (shown below the analyte row if enabled)
+          if (showInterpretation) {
+            let interpretationTextFlat = "";
+            if (canonicalFlag === "high" || canonicalFlag === "critical_high") {
+              interpretationTextFlat = analyte.interpretation_high || "";
+            } else if (canonicalFlag === "low" || canonicalFlag === "critical_low") {
+              interpretationTextFlat = analyte.interpretation_low || "";
+            } else {
+              interpretationTextFlat = analyte.interpretation_normal || "";
+            }
+            if (interpretationTextFlat) {
+              testResultsHtml += `
+              <tr style="page-break-inside: avoid;">
+                <td colspan="5" style="padding: 4px 12px 8px 24px; border: 1px solid #d1d5db; border-top: none; font-size: 11px; color: #6b7280; font-style: italic;">
+                  <strong>Interpretation:</strong> ${interpretationTextFlat}
+                </td>
+              </tr>
+              `;
+            }
+          }
+        } // end for analyte
+      } // end for flatBlock
 
       testResultsHtml += `
           </tbody>
@@ -2069,16 +2655,23 @@ function generateDefaultTemplateHtml(
 
     // ── Descriptive Rows ──
     if (descriptiveAnalytes.length > 0) {
-      for (const analyte of descriptiveAnalytes) {
-        const paramName = analyte.parameter || analyte.name || analyte.test_name || "";
-        const value = analyte.value ?? "";
-        const refText = String(analyte.reference_range || "").trim();
-        testResultsHtml += `
-          <div style="padding: 8px 12px; border: 1px solid #e5e7eb; border-radius: 4px; margin-bottom: 6px; background: #f9fafb;">
-            <strong style="color: #1f2937;">${paramName}:</strong>
-            <span style="color: #374151; margin-left: 6px;">${value || refText || ""}</span>
-          </div>
-        `;
+      for (const descBlock of groupAnalytesBySectionHeading(descriptiveAnalytes)) {
+        if (descBlock.heading) {
+          testResultsHtml += `
+          <div style="padding: 6px 12px; font-weight: 600; font-size: 12px; color: ${THEME.accent}; margin-top: 8px; margin-bottom: 4px; border-bottom: 1px solid ${THEME.accent};">${descBlock.heading}</div>
+          `;
+        }
+        for (const analyte of descBlock.analytes) {
+          const paramName = analyte.parameter || analyte.name || analyte.test_name || "";
+          const value = analyte.value ?? "";
+          const refText = String(analyte.reference_range || "").trim();
+          testResultsHtml += `
+            <div style="padding: 8px 12px; border: 1px solid #e5e7eb; border-radius: 4px; margin-bottom: 6px; background: #f9fafb;">
+              <strong style="color: #1f2937;">${paramName}:</strong>
+              <span style="color: #374151; margin-left: 6px;">${value || refText || ""}</span>
+            </div>
+          `;
+        }
       }
     }
 
@@ -2299,13 +2892,6 @@ function buildPdfBodyDocumentV2(
     .tbl-results,
     .tbl-interpretation {
       background: #ffffff !important;
-    }
-
-    /* Solid white for table cells - prevent baseline CSS colors bleeding letterhead */
-    .report-table tbody tr:nth-child(even),
-    .tbl-results tbody tr:nth-child(even),
-    .tbl-interpretation tbody tr:nth-child(even) {
-      background: #f8fafc !important;
     }
 
     /* Safe content area - spacing handled by HTML TABLE spacers now */
@@ -4791,6 +5377,13 @@ serve(async (req) => {
         console.error("  ❌ Lab settings query error:", labSettingsError.message);
       }
 
+      // Fetch custom patient field configs for this lab (for dynamic PDF fields)
+      const { data: customPatientFieldConfigs } = await supabaseClient
+        .from('lab_patient_field_configs')
+        .select('field_key, label, sort_order')
+        .eq('lab_id', job.lab_id)
+        .order('sort_order');
+
       const pdfLetterheadMode = labSettings?.pdf_letterhead_mode || 'background';
       console.log("  📋 PDF Letterhead Mode:", pdfLetterheadMode);
 
@@ -5471,6 +6064,7 @@ serve(async (req) => {
       let template = null; // Primary template for CSS/Settings
       let fullContext: any = null; // Define in outer scope for print version
       let rawHtmlForPrint = ""; // Capture HTML before watermark for print version
+      let mergedPrintOptions: Record<string, unknown> | null = null; // Lifted to outer scope for print version
 
       // Group analytes by test_group_id
       const contextTestGroupIds = context.testGroupIds || [];
@@ -5492,6 +6086,7 @@ serve(async (req) => {
       // Fetch test group names + per-group PDF style overrides
       const testGroupNames = new Map<string, string>();
       const testGroupStyles = new Map<string, string>(); // groupId → 'beautiful'|'classic'
+      const testGroupPrintOptions = new Map<string, Record<string, unknown>>(); // groupId → print_options JSONB
       const testGroupIdsToFetch = [
         ...new Set(
           [...contextTestGroupIds, ...analytesByGroup.keys()].filter((id) =>
@@ -5517,10 +6112,10 @@ serve(async (req) => {
         }
 
         // For any groups not found in order_tests, try the test_groups table
-        // Also fetch default_template_style for all groups (style override per test group)
+        // Also fetch default_template_style and print_options for all groups
         const { data: testGroupsData } = await supabaseClient
           .from("test_groups")
-          .select("id, name, default_template_style")
+          .select("id, name, default_template_style, print_options")
           .in("id", testGroupIdsToFetch);
 
         if (testGroupsData) {
@@ -5531,6 +6126,9 @@ serve(async (req) => {
               }
               if (tg.default_template_style) {
                 testGroupStyles.set(tg.id, tg.default_template_style);
+              }
+              if (tg.print_options) {
+                testGroupPrintOptions.set(tg.id, tg.print_options);
               }
             }
           }
@@ -5664,6 +6262,16 @@ serve(async (req) => {
 
           // QR verification URL
           verifyUrl: verifyUrl,
+          qr_code: `<img src="https://api.qrserver.com/v1/create-qr-code/?size=100x100&data=${encodeURIComponent(verifyUrl)}" alt="Verify Report" style="width:80px;height:80px;" />`,
+
+          // Custom patient fields (from patients.custom_fields JSONB)
+          ...Object.entries(baseContext.patient?.custom_fields || {}).reduce(
+            (acc: Record<string, string>, [k, v]) => {
+              acc[`custom_${k}`] = String(v ?? '');
+              return acc;
+            },
+            {},
+          ),
         };
 
         return {
@@ -5673,6 +6281,7 @@ serve(async (req) => {
           ...analytePlaceholders, // Add locally generated placeholders (fallbacks)
           ...flatAliases, // Add flat aliases
           verifyUrl: verifyUrl, // QR code URL
+          qr_code: `<img src="https://api.qrserver.com/v1/create-qr-code/?size=100x100&data=${encodeURIComponent(verifyUrl)}" alt="Verify Report" style="width:80px;height:80px;" />`,
           watermark: watermarkSettings.enabled
             ? watermarkSettings.imageUrl
             : null,
@@ -5682,13 +6291,34 @@ serve(async (req) => {
         };
       };
 
-      // Helper: Generate dynamic CSS
-      const generateDynamicCss = (settings: any) => {
-        return `
+      // Helper: Generate dynamic CSS (extends top-level generateDynamicCss with printOptions)
+      const generateDynamicCss = (settings: any, printOpts?: Record<string, unknown>) => {
+        let css = `
         .limsv2-report {
           font-size: ${settings.fontSize || "14px"};
         }
       `;
+        if (printOpts && Object.keys(printOpts).length > 0) {
+          css += "\n/* Print Options Overrides */\n";
+          if (printOpts.tableBorders === false) {
+            css += `.report-table,.report-table tr,.report-table th,.report-table td,.patient-info table,.patient-info tr,.patient-info td,.patient-info th,.limsv2-report table,.limsv2-report tr,.limsv2-report th,.limsv2-report td{border:none!important;}\n`;
+          }
+          if (printOpts.flagColumn === false) {
+            css += `.report-table th:last-child,.report-table td:last-child{display:none!important;}\n`;
+          }
+          if (printOpts.headerBackground) {
+            const textCol = (printOpts.headerTextColor as string) || "#ffffff";
+            css += `.report-table thead tr th{background:${printOpts.headerBackground}!important;background-color:${printOpts.headerBackground}!important;color:${textCol}!important;}\n`;
+          }
+          if (printOpts.alternateRows === false) {
+            css += `.report-table tbody tr:nth-child(even) td,.report-table tbody tr:nth-child(even){background:#ffffff!important;background-color:#ffffff!important;}\n`;
+          }
+          if (typeof printOpts.baseFontSize === "number") {
+            const fs = Math.min(Math.max(printOpts.baseFontSize, 8), 16);
+            css += `.limsv2-report,.report-table td,.report-table th,.patient-info td,.patient-info th{font-size:${fs}px!important;}\n`;
+          }
+        }
+        return css;
       };
 
       // Helper: Build PDF body document
@@ -5711,8 +6341,10 @@ serve(async (req) => {
         // Single Group Logic
         template = selectTemplate(context);
         fullContext = prepareFullContext(context);
-        const dynamicCss = generateDynamicCss(pdfSettings);
         const singleGroupId = context.testGroupIds?.[0];
+        const singlePrintOptions = mergePrintOptions(pdfSettings, singleGroupId ? testGroupPrintOptions.get(singleGroupId) : undefined);
+        mergedPrintOptions = singlePrintOptions; // lift to outer scope for print version
+        const dynamicCss = generateDynamicCss(pdfSettings, singlePrintOptions ?? undefined);
         const singleInterpretationTemplates = getInterpretationTemplatesForGroup(
           singleGroupId,
         );
@@ -5721,8 +6353,9 @@ serve(async (req) => {
 
         if (!template) {
           // No custom template found - use default template
+          const resolvedStyle = (singleGroupId && testGroupStyles.get(singleGroupId)) || labSettings?.default_template_style || 'beautiful';
           console.log(
-            "⚠️ No custom template found for lab, using default template",
+            `⚠️ No custom template found for lab, using default template (style: ${resolvedStyle})`,
           );
           renderedHtml = generateDefaultTemplateHtml(
             context,
@@ -5731,10 +6364,12 @@ serve(async (req) => {
             signatoryInfo,
             fullContext?.sectionContent,
             true,
-            (singleGroupId && testGroupStyles.get(singleGroupId)) || labSettings?.default_template_style || 'beautiful',
+            resolvedStyle,
             labSettings?.show_methodology ?? true,
             labSettings?.show_interpretation ?? false,
             labSettings?.report_patient_info_config,
+            singlePrintOptions ?? undefined,
+            customPatientFieldConfigs ?? [],
           );
           renderedHtml = renderTemplate(renderedHtml, fullContext); // Process placeholders
 
@@ -5950,6 +6585,8 @@ serve(async (req) => {
               labSettings?.show_methodology ?? true,
               labSettings?.show_interpretation ?? false,
               labSettings?.report_patient_info_config,
+              undefined,
+              customPatientFieldConfigs ?? [],
             );
             renderedHtml = renderTemplate(renderedHtml, groupFullContext);
 
@@ -6021,6 +6658,8 @@ serve(async (req) => {
             labSettings?.show_methodology ?? true,
             labSettings?.show_interpretation ?? false,
             labSettings?.report_patient_info_config,
+            undefined,
+            customPatientFieldConfigs ?? [],
           );
           let renderedDefaultHtml = renderTemplate(defaultHtml, fullContext);
 
@@ -6051,7 +6690,9 @@ serve(async (req) => {
             ? ` using base: ${template.template_name}`
             : " using default template"),
         );
-        const dynamicCss = generateDynamicCss(pdfSettings);
+        const labPrintOptions = mergePrintOptions(pdfSettings, undefined);
+        mergedPrintOptions = labPrintOptions; // lift to outer scope for print version
+        const dynamicCss = generateDynamicCss(pdfSettings, labPrintOptions ?? undefined);
         console.log(
           "🔧 About to call buildPdfBodyDocumentV2 (multi-template) with letterhead:",
           letterheadUrl || "NONE",
@@ -6311,6 +6952,8 @@ serve(async (req) => {
           } else {
             // No custom template - use default template
             console.log("⚠️ Using default template for print version");
+            const printSingleGroupId = context.testGroupIds?.[0];
+            const printResolvedStyle = (printSingleGroupId && testGroupStyles.get(printSingleGroupId)) || labSettings?.default_template_style || 'beautiful';
             printRenderedHtml = generateDefaultTemplateHtml(
               context,
               testGroupNames,
@@ -6318,10 +6961,12 @@ serve(async (req) => {
               signatoryInfo,
               printSectionContent,
               true,
-              labSettings?.default_template_style || 'beautiful',
+              printResolvedStyle,
               labSettings?.show_methodology ?? true,
               labSettings?.show_interpretation ?? false,
               labSettings?.report_patient_info_config,
+              mergedPrintOptions ?? undefined,
+              customPatientFieldConfigs ?? [],
             );
             printRenderedHtml = renderTemplate(
               printRenderedHtml,
@@ -6345,7 +6990,7 @@ serve(async (req) => {
           // AUTO-FIX: Apply flag classes (so we can style them bold in print CSS)
           printRenderedHtml = addFlagClassesToHtml(printRenderedHtml);
 
-          // Build print HTML WITHOUT gjs_css - pass empty string for clean print output
+          // Build print HTML body - gjs_css is injected separately below after this block
           // CRITICAL: Pass null for letterhead so we get a clean HTML without background/spacers
           // Print version: Include QR code for verification (positioned at top since no letterhead spacer)
           printHtml = buildPdfBodyDocumentV2(
@@ -6373,11 +7018,25 @@ serve(async (req) => {
           "",
         );
 
-        // Strip custom gjs_css from rawHtmlForPrint path (if it was included)
+        // Strip old lims-report-custom (may be from eCopy gjs_css or empty), then re-inject
+        // with: gjs_css (template's own CSS) + merged printOptions overrides
         printHtml = printHtml.replace(
           /<style id="lims-report-custom">[\s\S]*?<\/style>/gi,
           "",
         );
+        {
+          const gjsCssPart = template?.gjs_css || "";
+          const printOptionsCss = (mergedPrintOptions && Object.keys(mergedPrintOptions).length > 0)
+            ? generateDynamicCss(pdfSettings, mergedPrintOptions)
+            : generateDynamicCss(pdfSettings);
+          const combinedCss = [gjsCssPart, printOptionsCss].filter(Boolean).join("\n");
+          if (combinedCss) {
+            printHtml = printHtml.replace(
+              "</head>",
+              `<style id="lims-report-custom">${combinedCss}</style></head>`,
+            );
+          }
+        }
 
         // Inject report extras - INSIDE </main> not </body> for proper layout
         const printExtrasHtml = generateReportExtrasHtml(reportExtras);
@@ -6412,10 +7071,10 @@ serve(async (req) => {
             box-shadow: none !important;
           }
           
-          /* Ensure explicit table borders for print legibility */
-          table, th, td {
-            border-color: #000 !important;
-          }
+          /* Ensure explicit table borders for print legibility
+             Skipped when: tableBorders=false OR a custom GrapesJS template is used
+             (custom templates control their own border styles via gjs_css) */
+          ${!template?.gjs_html && mergedPrintOptions?.tableBorders !== false ? `table, tr, th, td { border-color: #000 !important; }` : ''}
 
           /* Force black text for everything */
           body, p, span, td, th, div, h1, h2, h3, h4, h5, h6, strong, b, i, em {
@@ -6440,10 +7099,13 @@ serve(async (req) => {
             border: none !important;
           }
 
-          /* Clean table styling for print */
-          table { border-collapse: collapse !important; border: 1px solid #000 !important; }
-          td, th { border: 1px solid #000 !important; padding: 4px 8px !important; color: black !important; }
-          thead th { background: #f0f0f0 !important; font-weight: bold !important; border-bottom: 2px solid #000 !important; }
+          /* Clean table styling for print - only for default templates, not custom GrapesJS */
+          ${!template?.gjs_html ? `
+          table { border-collapse: collapse !important; ${mergedPrintOptions?.tableBorders !== false ? 'border: 1px solid #000 !important;' : 'border: none !important;'} }
+          tr { ${mergedPrintOptions?.tableBorders !== false ? '' : 'border: none !important; border-top: none !important; border-bottom: none !important;'} }
+          td, th { ${mergedPrintOptions?.tableBorders !== false ? 'border: 1px solid #000 !important;' : 'border: none !important;'} padding: 4px 8px !important; color: black !important; }
+          thead th { background: #f0f0f0 !important; font-weight: bold !important; ${mergedPrintOptions?.tableBorders !== false ? 'border-bottom: 2px solid #000 !important;' : ''} }
+          ` : ''}
 
           /* Header/Footer specific fixes for B&W */
           .report-header, .report-footer {

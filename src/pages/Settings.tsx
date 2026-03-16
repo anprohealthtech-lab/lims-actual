@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useAuth } from '../contexts/AuthContext';
-import { database, supabase } from '../utils/supabase';
+import { database, supabase, type LabPatientFieldConfig } from '../utils/supabase';
 import EditUserModal from '../components/Users/EditUserModal';
 import { NotificationSettings } from '../components/Settings/NotificationSettings';
 import { NotificationTriggerSettings } from '../components/Settings/NotificationTriggerSettings';
@@ -113,7 +113,7 @@ interface LabSettings {
     low: string;
     normal: string;
   } | null;
-  default_template_style?: 'beautiful' | 'classic';
+  default_template_style?: 'beautiful' | 'classic' | 'basic';
   show_methodology?: boolean;
   show_interpretation?: boolean;
   flag_options?: Array<{ value: string; label: string }>;
@@ -126,6 +126,16 @@ interface LabSettings {
     layout: 'table' | 'inline';
     fields: string[];
   } | null;
+  print_options?: {
+    tableBorders?: boolean;
+    flagColumn?: boolean;
+    flagAsterisk?: boolean;
+    flagAsteriskCritical?: boolean;
+    headerBackground?: string;
+    alternateRows?: boolean;
+    baseFontSize?: number;
+  } | null;
+  _pdf_layout_settings_raw?: Record<string, unknown> | null;
 }
 
 // Define UserForm component outside of Settings
@@ -510,6 +520,13 @@ const Settings: React.FC = () => {
   const [availableRoles, setAvailableRoles] = useState<any[]>([]);
   const [labSettings, setLabSettings] = useState<LabSettings | null>(null);
   const [syncedWhatsAppUsers, setSyncedWhatsAppUsers] = useState<{id: string; name: string; whatsapp_user_id: string}[]>([]);
+
+  // Custom patient fields state
+  const [customPatientFields, setCustomPatientFields] = useState<LabPatientFieldConfig[]>([]);
+  const [showAddFieldForm, setShowAddFieldForm] = useState(false);
+  const [editingField, setEditingField] = useState<LabPatientFieldConfig | null>(null);
+  const [fieldForm, setFieldForm] = useState({ field_key: '', label: '', field_type: 'text' as 'text'|'number'|'select', options: '', searchable: false, required: false, use_for_ai_ref_range: false });
+  const [savingField, setSavingField] = useState(false);
   const [usageStats, setUsageStats] = useState<UsageStats>({
     totalUsers: 0,
     activeUsers: 0,
@@ -591,8 +608,14 @@ const Settings: React.FC = () => {
             loyalty_point_value: (labData as any).loyalty_point_value ?? 1.0,
             block_send_on_due: (labData as any).block_send_on_due ?? false,
             report_patient_info_config: (labData as any).report_patient_info_config ?? null,
+            print_options: (labData as any).pdf_layout_settings?.printOptions ?? null,
+            _pdf_layout_settings_raw: (labData as any).pdf_layout_settings ?? null,
           });
         }
+
+        // Load custom patient field configs
+        const { data: fieldConfigs } = await database.labPatientFieldConfigs.getAll();
+        if (fieldConfigs) setCustomPatientFields(fieldConfigs);
 
         // Load ALL users for WhatsApp sender dropdown (use user.id as whatsapp_user_id)
         const { data: allLabUsers, error: allUsersError } = await supabase
@@ -790,6 +813,74 @@ const Settings: React.FC = () => {
     }
   };
 
+  // ── Custom Patient Fields ────────────────────────────────────────
+  const resetFieldForm = () => {
+    setFieldForm({ field_key: '', label: '', field_type: 'text', options: '', searchable: false, required: false });
+    setEditingField(null);
+    setShowAddFieldForm(false);
+  };
+
+  const handleSaveField = async () => {
+    if (!fieldForm.field_key.trim() || !fieldForm.label.trim()) return;
+    setSavingField(true);
+    try {
+      const payload = {
+        field_key: fieldForm.field_key.trim().toLowerCase().replace(/\s+/g, '_'),
+        label: fieldForm.label.trim(),
+        field_type: fieldForm.field_type,
+        options: fieldForm.field_type === 'select' && fieldForm.options
+          ? fieldForm.options.split(',').map(o => o.trim()).filter(Boolean)
+          : null,
+        searchable: fieldForm.searchable,
+        required: fieldForm.required,
+        use_for_ai_ref_range: fieldForm.use_for_ai_ref_range,
+        sort_order: editingField ? editingField.sort_order : customPatientFields.length,
+      };
+      if (editingField) {
+        const { data } = await database.labPatientFieldConfigs.update(editingField.id, payload);
+        if (data) setCustomPatientFields(prev => prev.map(f => f.id === data.id ? data : f));
+      } else {
+        const { data } = await database.labPatientFieldConfigs.create(payload);
+        if (data) setCustomPatientFields(prev => [...prev, data]);
+      }
+      resetFieldForm();
+    } finally {
+      setSavingField(false);
+    }
+  };
+
+  const handleDeleteField = async (id: string) => {
+    if (!confirm('Delete this custom field? Existing patient data for this field will remain in the database but will no longer be displayed.')) return;
+    const { error } = await database.labPatientFieldConfigs.delete(id);
+    if (!error) setCustomPatientFields(prev => prev.filter(f => f.id !== id));
+  };
+
+  const handleEditField = (field: LabPatientFieldConfig) => {
+    setEditingField(field);
+    setFieldForm({
+      field_key: field.field_key,
+      label: field.label,
+      field_type: field.field_type,
+      options: Array.isArray(field.options) ? field.options.join(', ') : '',
+      searchable: field.searchable,
+      required: field.required,
+      use_for_ai_ref_range: field.use_for_ai_ref_range ?? false,
+    });
+    setShowAddFieldForm(true);
+  };
+
+  const handleMoveField = async (id: string, direction: 'up' | 'down') => {
+    const idx = customPatientFields.findIndex(f => f.id === id);
+    if ((direction === 'up' && idx === 0) || (direction === 'down' && idx === customPatientFields.length - 1)) return;
+    const swapIdx = direction === 'up' ? idx - 1 : idx + 1;
+    const reordered = [...customPatientFields];
+    [reordered[idx], reordered[swapIdx]] = [reordered[swapIdx], reordered[idx]];
+    setCustomPatientFields(reordered);
+    // Persist new sort_orders
+    await Promise.all(reordered.map((f, i) => database.labPatientFieldConfigs.update(f.id, { sort_order: i })));
+  };
+  // ────────────────────────────────────────────────────────────────
+
   // Save lab settings
   const handleSaveLabSettings = async () => {
     if (!labSettings || !labId) return;
@@ -830,6 +921,10 @@ const Settings: React.FC = () => {
         loyalty_point_value: labSettings.loyalty_point_value ?? 1.0,
         block_send_on_due: labSettings.block_send_on_due ?? false,
         report_patient_info_config: labSettings.report_patient_info_config ?? null,
+        pdf_layout_settings: {
+          ...(labSettings._pdf_layout_settings_raw || {}),
+          printOptions: labSettings.print_options ?? undefined,
+        },
       } as any);
 
       if (updateError) throw updateError;
@@ -1642,7 +1737,7 @@ const Settings: React.FC = () => {
                     <p className="text-sm text-gray-600 mb-4">
                       Choose the default template style used when a test group has no custom HTML template assigned.
                     </p>
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                       <label
                         className={`flex items-start p-4 border-2 rounded-lg cursor-pointer transition-all ${
                           (labSettings.default_template_style || 'beautiful') === 'beautiful'
@@ -1687,6 +1782,28 @@ const Settings: React.FC = () => {
                           </p>
                         </div>
                       </label>
+                      <label
+                        className={`flex items-start p-4 border-2 rounded-lg cursor-pointer transition-all ${
+                          labSettings.default_template_style === 'basic'
+                            ? 'border-indigo-500 bg-indigo-50'
+                            : 'border-gray-200 hover:border-gray-300'
+                        }`}
+                      >
+                        <input
+                          type="radio"
+                          name="template_style"
+                          value="basic"
+                          checked={labSettings.default_template_style === 'basic'}
+                          onChange={() => setLabSettings(prev => prev ? { ...prev, default_template_style: 'basic' } : prev)}
+                          className="mt-1 mr-3 text-indigo-600"
+                        />
+                        <div>
+                          <span className="font-medium text-gray-900">Basic (Old School)</span>
+                          <p className="text-xs text-gray-500 mt-1">
+                            No colours, no borders. Small font, bold H/L prefix on abnormal values. Method in italic. Classic lab printout style.
+                          </p>
+                        </div>
+                      </label>
                     </div>
 
                     {/* Additional Template Display Options */}
@@ -1720,6 +1837,119 @@ const Settings: React.FC = () => {
                             <p className="text-xs text-gray-400">Display low/normal/high interpretation text for each analyte based on its flag.</p>
                           </div>
                         </label>
+                      </div>
+                    </div>
+
+                    {/* Print Style Options */}
+                    <div className="mt-6 pt-4 border-t border-gray-200">
+                      <div className="flex items-center justify-between mb-1">
+                        <h4 className="text-sm font-semibold text-gray-700">Print Style Options</h4>
+                        {labSettings.print_options && Object.keys(labSettings.print_options).length > 0 && (
+                          <button
+                            type="button"
+                            onClick={() => setLabSettings(prev => prev ? { ...prev, print_options: null } : prev)}
+                            className="text-xs text-gray-400 hover:text-red-500 transition-colors"
+                          >
+                            ↩ Reset all to system defaults
+                          </button>
+                        )}
+                      </div>
+                      <p className="text-xs text-gray-500 mb-3">Applied to all reports as CSS overrides. Can be overridden per test group.</p>
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-3">
+                        {/* Table Borders */}
+                        <label className="flex items-center gap-2 cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={labSettings.print_options?.tableBorders !== false}
+                            onChange={(e) => setLabSettings(prev => prev ? { ...prev, print_options: { ...(prev.print_options || {}), tableBorders: e.target.checked } } : prev)}
+                            className="h-4 w-4 text-indigo-600 border-gray-300 rounded"
+                          />
+                          <div>
+                            <span className="text-sm font-medium text-gray-700">Table Borders</span>
+                            <p className="text-xs text-gray-400">Show borders on result table cells.</p>
+                          </div>
+                        </label>
+                        {/* Flag Column */}
+                        <label className="flex items-center gap-2 cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={labSettings.print_options?.flagColumn !== false}
+                            onChange={(e) => setLabSettings(prev => prev ? { ...prev, print_options: { ...(prev.print_options || {}), flagColumn: e.target.checked } } : prev)}
+                            className="h-4 w-4 text-indigo-600 border-gray-300 rounded"
+                          />
+                          <div>
+                            <span className="text-sm font-medium text-gray-700">Flag Column</span>
+                            <p className="text-xs text-gray-400">Show H/L/N flag column (Classic layout).</p>
+                          </div>
+                        </label>
+                        {/* Flag Asterisk */}
+                        <label className="flex items-center gap-2 cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={!!labSettings.print_options?.flagAsterisk}
+                            onChange={(e) => setLabSettings(prev => prev ? { ...prev, print_options: { ...(prev.print_options || {}), flagAsterisk: e.target.checked } } : prev)}
+                            className="h-4 w-4 text-indigo-600 border-gray-300 rounded"
+                          />
+                          <div>
+                            <span className="text-sm font-medium text-gray-700">Flag Asterisk (*)</span>
+                            <p className="text-xs text-gray-400">Append * to abnormal values (Classic).</p>
+                          </div>
+                        </label>
+                        {/* Critical Double Asterisk */}
+                        <label className="flex items-center gap-2 cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={!!labSettings.print_options?.flagAsteriskCritical}
+                            disabled={!labSettings.print_options?.flagAsterisk}
+                            onChange={(e) => setLabSettings(prev => prev ? { ...prev, print_options: { ...(prev.print_options || {}), flagAsteriskCritical: e.target.checked } } : prev)}
+                            className="h-4 w-4 text-indigo-600 border-gray-300 rounded disabled:opacity-40"
+                          />
+                          <div>
+                            <span className="text-sm font-medium text-gray-700">Critical Double (**)</span>
+                            <p className="text-xs text-gray-400">Use ** for critical H/L values.</p>
+                          </div>
+                        </label>
+                        {/* Alternate Row Shading */}
+                        <label className="flex items-center gap-2 cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={labSettings.print_options?.alternateRows !== false}
+                            onChange={(e) => setLabSettings(prev => prev ? { ...prev, print_options: { ...(prev.print_options || {}), alternateRows: e.target.checked } } : prev)}
+                            className="h-4 w-4 text-indigo-600 border-gray-300 rounded"
+                          />
+                          <div>
+                            <span className="text-sm font-medium text-gray-700">Alternate Row Shading</span>
+                            <p className="text-xs text-gray-400">Alternating row background color.</p>
+                          </div>
+                        </label>
+                        {/* Header Background */}
+                        <div className="flex items-center gap-2">
+                          <input
+                            type="color"
+                            value={labSettings.print_options?.headerBackground || '#0b4aa2'}
+                            onChange={(e) => setLabSettings(prev => prev ? { ...prev, print_options: { ...(prev.print_options || {}), headerBackground: e.target.value } } : prev)}
+                            className="h-8 w-8 rounded border border-gray-300 cursor-pointer"
+                          />
+                          <div>
+                            <span className="text-sm font-medium text-gray-700">Header Color</span>
+                            <p className="text-xs text-gray-400">Table header background color.</p>
+                          </div>
+                        </div>
+                        {/* Base Font Size */}
+                        <div className="flex items-center gap-2">
+                          <input
+                            type="number"
+                            min={8}
+                            max={16}
+                            value={labSettings.print_options?.baseFontSize ?? 12}
+                            onChange={(e) => setLabSettings(prev => prev ? { ...prev, print_options: { ...(prev.print_options || {}), baseFontSize: parseInt(e.target.value) || 12 } } : prev)}
+                            className="w-16 px-2 py-1 border border-gray-300 rounded text-sm"
+                          />
+                          <div>
+                            <span className="text-sm font-medium text-gray-700">Font Size (px)</span>
+                            <p className="text-xs text-gray-400">Base font size for result table (8–16).</p>
+                          </div>
+                        </div>
                       </div>
                     </div>
 
@@ -1801,6 +2031,178 @@ const Settings: React.FC = () => {
                         })}
                       </div>
                     </div>
+                  </div>
+
+                  {/* Custom Patient Fields */}
+                  <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6 lg:col-span-2">
+                    <div className="flex items-center justify-between mb-1">
+                      <h3 className="text-lg font-semibold text-gray-900">Custom Patient Fields</h3>
+                      {!showAddFieldForm && (
+                        <button
+                          type="button"
+                          onClick={() => { resetFieldForm(); setShowAddFieldForm(true); }}
+                          className="flex items-center gap-1.5 px-3 py-1.5 bg-indigo-600 text-white text-sm rounded-md hover:bg-indigo-700"
+                        >
+                          <Plus className="h-4 w-4" /> Add Field
+                        </button>
+                      )}
+                    </div>
+                    <p className="text-sm text-gray-500 mb-4">
+                      Define extra fields specific to your lab (e.g. ABHA ID, HIMS ID, Animal Type). Values are stored per patient and can optionally be searched in the order form and shown in PDF reports.
+                    </p>
+
+                    {/* Add / Edit form */}
+                    {showAddFieldForm && (
+                      <div className="mb-5 p-4 border border-indigo-200 bg-indigo-50 rounded-lg space-y-3">
+                        <h4 className="text-sm font-semibold text-indigo-800">{editingField ? 'Edit Field' : 'New Custom Field'}</h4>
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                          <div>
+                            <label className="block text-xs font-medium text-gray-700 mb-1">Field Key <span className="text-gray-400">(unique, no spaces)</span></label>
+                            <input
+                              type="text"
+                              value={fieldForm.field_key}
+                              disabled={!!editingField}
+                              onChange={e => setFieldForm(prev => ({ ...prev, field_key: e.target.value }))}
+                              placeholder="abha_id"
+                              className="w-full px-3 py-1.5 border border-gray-300 rounded text-sm disabled:bg-gray-100"
+                            />
+                          </div>
+                          <div>
+                            <label className="block text-xs font-medium text-gray-700 mb-1">Display Label</label>
+                            <input
+                              type="text"
+                              value={fieldForm.label}
+                              onChange={e => setFieldForm(prev => ({ ...prev, label: e.target.value }))}
+                              placeholder="ABHA ID"
+                              className="w-full px-3 py-1.5 border border-gray-300 rounded text-sm"
+                            />
+                          </div>
+                          <div>
+                            <label className="block text-xs font-medium text-gray-700 mb-1">Field Type</label>
+                            <select
+                              value={fieldForm.field_type}
+                              onChange={e => setFieldForm(prev => ({ ...prev, field_type: e.target.value as any }))}
+                              className="w-full px-3 py-1.5 border border-gray-300 rounded text-sm"
+                            >
+                              <option value="text">Text</option>
+                              <option value="number">Number</option>
+                              <option value="select">Select (dropdown)</option>
+                            </select>
+                          </div>
+                          {fieldForm.field_type === 'select' && (
+                            <div>
+                              <label className="block text-xs font-medium text-gray-700 mb-1">Options <span className="text-gray-400">(comma separated)</span></label>
+                              <input
+                                type="text"
+                                value={fieldForm.options}
+                                onChange={e => setFieldForm(prev => ({ ...prev, options: e.target.value }))}
+                                placeholder="Dog, Cat, Bird, Rabbit"
+                                className="w-full px-3 py-1.5 border border-gray-300 rounded text-sm"
+                              />
+                            </div>
+                          )}
+                        </div>
+                        <div className="flex flex-wrap items-center gap-x-6 gap-y-2">
+                          <label className="flex items-center gap-2 text-sm cursor-pointer">
+                            <input type="checkbox" checked={fieldForm.searchable} onChange={e => setFieldForm(prev => ({ ...prev, searchable: e.target.checked }))} className="h-3.5 w-3.5 text-indigo-600 rounded" />
+                            <span>Searchable in order form</span>
+                          </label>
+                          <label className="flex items-center gap-2 text-sm cursor-pointer">
+                            <input type="checkbox" checked={fieldForm.required} onChange={e => setFieldForm(prev => ({ ...prev, required: e.target.checked }))} className="h-3.5 w-3.5 text-indigo-600 rounded" />
+                            <span>Required when creating patient</span>
+                          </label>
+                          <label className="flex items-center gap-2 text-sm cursor-pointer">
+                            <input type="checkbox" checked={fieldForm.use_for_ai_ref_range} onChange={e => setFieldForm(prev => ({ ...prev, use_for_ai_ref_range: e.target.checked }))} className="h-3.5 w-3.5 text-purple-600 rounded" />
+                            <span className="text-purple-800">Use for AI Ref Range context</span>
+                          </label>
+                        </div>
+                        <div className="flex items-center gap-2 pt-1">
+                          <button type="button" onClick={handleSaveField} disabled={savingField || !fieldForm.field_key || !fieldForm.label} className="px-4 py-1.5 bg-indigo-600 text-white text-sm rounded hover:bg-indigo-700 disabled:opacity-50">
+                            {savingField ? 'Saving...' : editingField ? 'Update Field' : 'Add Field'}
+                          </button>
+                          <button type="button" onClick={resetFieldForm} className="px-4 py-1.5 border border-gray-300 text-gray-700 text-sm rounded hover:bg-gray-50">Cancel</button>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Field list */}
+                    {customPatientFields.length === 0 && !showAddFieldForm ? (
+                      <p className="text-sm text-gray-400 text-center py-6 border border-dashed border-gray-200 rounded-lg">
+                        No custom fields defined yet. Click "Add Field" to create one.
+                      </p>
+                    ) : customPatientFields.length > 0 ? (
+                      <div className="overflow-x-auto">
+                        <table className="w-full text-sm">
+                          <thead>
+                            <tr className="text-left text-xs text-gray-500 border-b border-gray-100">
+                              <th className="pb-2 pr-3 font-medium">Label</th>
+                              <th className="pb-2 pr-3 font-medium">Key</th>
+                              <th className="pb-2 pr-3 font-medium">Type</th>
+                              <th className="pb-2 pr-3 font-medium text-center">Searchable</th>
+                              <th className="pb-2 pr-3 font-medium text-center">Required</th>
+                              <th className="pb-2 pr-3 font-medium text-center text-purple-700">AI Ref Range</th>
+                              <th className="pb-2 font-medium">Order</th>
+                              <th className="pb-2 font-medium">Actions</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-gray-50">
+                            {customPatientFields.map((field, idx) => (
+                              <tr key={field.id} className="hover:bg-gray-50">
+                                <td className="py-2 pr-3 font-medium text-gray-800">{field.label}</td>
+                                <td className="py-2 pr-3 font-mono text-xs text-gray-500">{field.field_key}</td>
+                                <td className="py-2 pr-3 text-gray-600 capitalize">{field.field_type}{field.field_type === 'select' && field.options ? ` (${(field.options as string[]).join(', ')})` : ''}</td>
+                                <td className="py-2 pr-3 text-center text-green-600">{field.searchable ? '✓' : <span className="text-gray-300">—</span>}</td>
+                                <td className="py-2 pr-3 text-center text-orange-500">{field.required ? '✓' : <span className="text-gray-300">—</span>}</td>
+                                <td className="py-2 pr-3 text-center text-purple-600">{field.use_for_ai_ref_range ? '✓' : <span className="text-gray-300">—</span>}</td>
+                                <td className="py-2 pr-3">
+                                  <div className="flex items-center gap-0.5">
+                                    <button type="button" onClick={() => handleMoveField(field.id, 'up')} disabled={idx === 0} className="p-0.5 text-gray-400 hover:text-gray-600 disabled:opacity-20 text-xs">▲</button>
+                                    <button type="button" onClick={() => handleMoveField(field.id, 'down')} disabled={idx === customPatientFields.length - 1} className="p-0.5 text-gray-400 hover:text-gray-600 disabled:opacity-20 text-xs">▼</button>
+                                  </div>
+                                </td>
+                                <td className="py-2">
+                                  <div className="flex items-center gap-1">
+                                    <button type="button" onClick={() => handleEditField(field)} className="p-1 text-indigo-500 hover:text-indigo-700"><Edit className="h-3.5 w-3.5" /></button>
+                                    <button type="button" onClick={() => handleDeleteField(field.id)} className="p-1 text-red-400 hover:text-red-600"><Trash2 className="h-3.5 w-3.5" /></button>
+                                  </div>
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+
+                        {/* Toggle custom fields in PDF patient info */}
+                        <div className="mt-4 pt-4 border-t border-gray-100">
+                          <p className="text-xs font-medium text-gray-600 mb-2">Show in PDF Patient Info Section:</p>
+                          <div className="flex flex-wrap gap-3">
+                            {customPatientFields.map(field => {
+                              const pdfKey = `custom_${field.field_key}`;
+                              const currentFields = labSettings?.report_patient_info_config?.fields || [];
+                              const isChecked = currentFields.includes(pdfKey);
+                              return (
+                                <label key={pdfKey} className="flex items-center gap-2 text-sm cursor-pointer">
+                                  <input
+                                    type="checkbox"
+                                    checked={isChecked}
+                                    onChange={e => {
+                                      if (!labSettings) return;
+                                      const newFields = e.target.checked
+                                        ? [...currentFields, pdfKey]
+                                        : currentFields.filter(f => f !== pdfKey);
+                                      const layout = labSettings.report_patient_info_config?.layout || 'inline';
+                                      setLabSettings(prev => prev ? { ...prev, report_patient_info_config: { layout, fields: newFields } } : prev);
+                                    }}
+                                    className="h-3.5 w-3.5 text-indigo-600 rounded border-gray-300"
+                                  />
+                                  <span className="text-gray-700">{field.label}</span>
+                                </label>
+                              );
+                            })}
+                          </div>
+                          <p className="text-xs text-gray-400 mt-1">Save Lab Settings to apply PDF changes.</p>
+                        </div>
+                      </div>
+                    ) : null}
                   </div>
 
                   {/* Block Report Send on Outstanding Dues (Admin only) */}

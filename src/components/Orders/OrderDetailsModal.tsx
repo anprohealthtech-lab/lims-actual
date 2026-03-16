@@ -102,6 +102,8 @@ interface Order {
   order_date: string;
   expected_date: string;
   total_amount: number;
+  final_amount?: number;
+  collection_charge?: number | null;
   doctor: string | null;
   lab_id: string;
   sample_id?: string;
@@ -200,17 +202,16 @@ const getWorkflowSteps = (currentStatus: string, order?: any): WorkflowStep[] =>
       }
     }
 
-    return {
-      ...step,
-      completed,
-      current,
-      timestamp:
-        completed || current
-          ? step.name === "Sample Collection" && order?.sample_collected_at
-            ? order.sample_collected_at
-            : undefined
-          : undefined,
-    };
+    let timestamp: string | undefined;
+    if (completed || current) {
+      if (step.name === "Order Created") {
+        timestamp = order?.order_date;
+      } else if (step.name === "Sample Collection" && order?.sample_collected_at) {
+        timestamp = order.sample_collected_at;
+      }
+    }
+
+    return { ...step, completed, current, timestamp };
   });
 };
 
@@ -1785,8 +1786,8 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
               return true;
             }
 
-            // 3. Match if parameter names share significant overlap
-            if (vNameLower.includes(epNameLower) || epNameLower.includes(vNameLower)) {
+            // 3. Match if parameter names share significant overlap (exact only to avoid false positives)
+            if (vNameLower === epNameLower) {
               return true;
             }
 
@@ -2233,8 +2234,8 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
                   return true;
                 }
 
-                // 3. Match if matched_to contains the parameter name or vice versa
-                if (matchedTo && (matchedTo.includes(vNameLower) || vNameLower.includes(matchedTo))) {
+                // 3. Match if matched_to exactly equals the parameter name
+                if (matchedTo && matchedTo === vNameLower) {
                   return true;
                 }
 
@@ -2641,10 +2642,9 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
     const finalResults = validResults.map(v => ({ ...v }));
 
     try {
-      // 1. AUTO-RESOLVE RANGES for dynamic panels
+      // 1. AUTO-RESOLVE RANGES for test groups with AI enabled
       const groupsToResolve = testGroups.filter(tg =>
-        (tg.test_group_name || '').toLowerCase().includes('age-specific') ||
-        tg.analytes.some(a => (a.reference_range || '').toLowerCase().includes('age-specific'))
+        tg.ref_range_ai_config?.enabled === true
       );
 
       if (groupsToResolve.length > 0) {
@@ -3381,7 +3381,7 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
                       />
                       <button
                         onClick={handleMarkSampleCollected}
-                        disabled={updatingCollection || !selectedPhlebotomistId}
+                        disabled={updatingCollection}
                         className="px-3 py-1 text-xs bg-green-100 text-green-700 rounded hover:bg-green-200 disabled:opacity-50 disabled:cursor-not-allowed whitespace-nowrap"
                       >
                         {updatingCollection ? 'Collecting...' : 'Confirm'}
@@ -3999,7 +3999,10 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
                   </div>
                   <div>
                     <div className="text-blue-600 font-medium">Amount</div>
-                    <div className="text-blue-900 font-semibold">₹{order.total_amount.toLocaleString()}</div>
+                    <div className="text-blue-900 font-semibold">₹{(order.final_amount ?? order.total_amount).toLocaleString()}</div>
+                    {order.collection_charge && order.collection_charge > 0 && (
+                      <div className="text-xs text-orange-600 mt-0.5">incl. ₹{order.collection_charge} collection</div>
+                    )}
                   </div>
                 </div>
               </div>
@@ -4216,11 +4219,78 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
                             {step.name}
                           </div>
                           <div className="text-sm text-gray-500">{step.description}</div>
-                          {step.timestamp && <div className="text-xs text-gray-400">{new Date(step.timestamp).toLocaleString()}</div>}
+                          {step.timestamp && <div className="text-xs text-gray-400">
+                            {/* date-only strings (YYYY-MM-DD) have no real time — show date only to avoid IST UTC-midnight shift (+5:30) */}
+                            {/^\d{4}-\d{2}-\d{2}$/.test(step.timestamp)
+                              ? new Date(step.timestamp + 'T00:00:00').toLocaleDateString()
+                              : new Date(step.timestamp).toLocaleString()}
+                          </div>}
                         </div>
                       </div>
                     ))}
                   </div>
+
+                  {/* TAT Summary */}
+                  {(() => {
+                    const tatStart = order.sample_collected_at;
+                    if (!tatStart) return null;
+
+                    const startMs = new Date(tatStart).getTime();
+                    const nowMs = Date.now();
+                    const elapsedMs = nowMs - startMs;
+                    const elapsedHours = elapsedMs / 3_600_000;
+
+                    const isCompleted = ['Report Ready', 'Completed', 'Delivered'].includes(order.status);
+                    const deadline = order.expected_date ? new Date(order.expected_date) : null;
+                    // Valid only if after TAT start — rules out DB default values equal to order_date
+                    const isValidDeadline = deadline && !isNaN(deadline.getTime()) && deadline.getFullYear() > 2000 && deadline.getTime() > startMs;
+                    const isBreached = isValidDeadline && !isCompleted && deadline!.getTime() < nowMs;
+
+                    const fmt = (h: number) => {
+                      if (h < 1) return `${Math.round(h * 60)}m`;
+                      return `${Math.floor(h)}h ${Math.round((h % 1) * 60)}m`;
+                    };
+
+                    return (
+                      <div className={`mt-4 rounded-lg p-3 text-xs border ${isCompleted ? 'bg-green-50 border-green-200' : isBreached ? 'bg-red-50 border-red-200' : 'bg-blue-50 border-blue-200'}`}>
+                        <div className="font-semibold text-gray-700 mb-2 flex items-center gap-1">
+                          <Clock className="h-3.5 w-3.5" /> TAT Summary
+                        </div>
+                        <div className="space-y-1 text-gray-600">
+                          <div className="flex justify-between">
+                            <span>Started:</span>
+                            <span className="font-medium">{new Date(tatStart).toLocaleString(undefined, { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</span>
+                          </div>
+                          {isValidDeadline && (
+                            <div className="flex justify-between">
+                              <span>Deadline:</span>
+                              <span className={`font-medium ${isBreached ? 'text-red-600' : 'text-gray-700'}`}>
+                                {deadline!.toLocaleString(undefined, { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
+                              </span>
+                            </div>
+                          )}
+                          <div className="flex justify-between">
+                            <span>Elapsed:</span>
+                            <span className={`font-medium ${isBreached ? 'text-red-600' : isCompleted ? 'text-green-700' : 'text-blue-700'}`}>{fmt(elapsedHours)}</span>
+                          </div>
+                          {isValidDeadline && !isCompleted && (
+                            <div className="flex justify-between">
+                              <span>Status:</span>
+                              <span className={`font-semibold ${isBreached ? 'text-red-600' : 'text-green-600'}`}>
+                                {isBreached ? `⚠ Breached by ${fmt(elapsedHours - (deadline!.getTime() - startMs) / 3_600_000)}` : `✓ On track (${fmt((deadline!.getTime() - nowMs) / 3_600_000)} left)`}
+                              </span>
+                            </div>
+                          )}
+                          {isCompleted && (
+                            <div className="flex justify-between">
+                              <span>Status:</span>
+                              <span className="font-semibold text-green-600">✓ Completed in {fmt(elapsedHours)}</span>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })()}
                 </div>
 
                 <div className="bg-white border border-gray-200 rounded-lg p-4 sm:p-6">

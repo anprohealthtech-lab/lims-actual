@@ -304,27 +304,58 @@ Deno.serve(async (req: Request) => {
     console.log('[CREATE-LAB-WITH-ADMIN] Public user created');
 
     // 6. Run lab onboarding (populate test groups, analytes, packages, invoice templates)
-    console.log('[CREATE-LAB-WITH-ADMIN] Running lab onboarding (populating catalog data)...');
-    try {
-      const supabaseUrl = Deno.env.get("SUPABASE_URL");
-      const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
-      const onboardingResponse = await fetch(`${supabaseUrl}/functions/v1/onboarding-lab`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${serviceRoleKey}`,
-        },
-        body: JSON.stringify({ lab_id: labId }),
-      });
-      if (onboardingResponse.ok) {
-        const onboardingResult = await onboardingResponse.json();
-        console.log('[CREATE-LAB-WITH-ADMIN] Onboarding complete. Stats:', JSON.stringify(onboardingResult.stats));
-      } else {
-        const errText = await onboardingResponse.text();
-        console.warn(`[CREATE-LAB-WITH-ADMIN] WARNING: onboarding-lab returned ${onboardingResponse.status}: ${errText}`);
+    // This is REQUIRED for a usable new lab. If onboarding fails, rollback the created entities.
+    console.log('[CREATE-LAB-WITH-ADMIN] Running lab onboarding (required)...');
+    const supabaseUrl = Deno.env.get("SUPABASE_URL");
+    const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
+    if (!supabaseUrl || !serviceRoleKey) {
+      // Rollback
+      await supabaseAdmin.from("users").delete().eq("id", adminUserId!);
+      await supabaseAdmin.auth.admin.deleteUser(adminUserId!);
+      await supabaseAdmin.from("locations").delete().eq("lab_id", labId);
+      await supabaseAdmin.from("labs").delete().eq("id", labId);
+      throw new Error("Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY for onboarding");
+    }
+
+    let onboardingOk = false;
+    let onboardingLastError = '';
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      try {
+        const onboardingResponse = await fetch(`${supabaseUrl}/functions/v1/onboarding-lab`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${serviceRoleKey}`,
+          },
+          body: JSON.stringify({ lab_id: labId, mode: 'sync' }),
+        });
+
+        if (onboardingResponse.ok) {
+          const onboardingResult = await onboardingResponse.json();
+          console.log('[CREATE-LAB-WITH-ADMIN] Onboarding complete. Stats:', JSON.stringify(onboardingResult.stats));
+          onboardingOk = true;
+          break;
+        }
+
+        onboardingLastError = `onboarding-lab returned ${onboardingResponse.status}: ${await onboardingResponse.text()}`;
+        console.warn(`[CREATE-LAB-WITH-ADMIN] Onboarding attempt ${attempt}/3 failed: ${onboardingLastError}`);
+      } catch (onboardingErr) {
+        onboardingLastError = onboardingErr instanceof Error ? onboardingErr.message : String(onboardingErr);
+        console.warn(`[CREATE-LAB-WITH-ADMIN] Onboarding attempt ${attempt}/3 error: ${onboardingLastError}`);
       }
-    } catch (onboardingErr) {
-      console.warn('[CREATE-LAB-WITH-ADMIN] WARNING: onboarding-lab call failed (non-critical):', onboardingErr);
+
+      // small backoff before retry
+      await new Promise((resolve) => setTimeout(resolve, attempt * 500));
+    }
+
+    if (!onboardingOk) {
+      // Rollback to avoid partially initialized labs
+      console.error('[CREATE-LAB-WITH-ADMIN] ERROR: onboarding failed, rolling back lab/admin creation');
+      await supabaseAdmin.from("users").delete().eq("id", adminUserId!);
+      await supabaseAdmin.auth.admin.deleteUser(adminUserId!);
+      await supabaseAdmin.from("locations").delete().eq("lab_id", labId);
+      await supabaseAdmin.from("labs").delete().eq("id", labId);
+      throw new Error(`Failed to initialize lab catalog data: ${onboardingLastError || 'unknown onboarding error'}`);
     }
 
     console.log('[CREATE-LAB-WITH-ADMIN] SUCCESS: Lab and admin created');

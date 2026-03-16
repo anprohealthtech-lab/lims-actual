@@ -26,11 +26,11 @@ import {
   Maximize2,
 } from 'lucide-react';
 
-import TemplateAIConsole from '../components/TemplateStudio/TemplateAIConsole';
-import TemplateAIAuditModal, { TemplateAuditResult } from '../components/TemplateStudio/TemplateAIAuditModal';
+import AIStudioModal from '../components/TemplateStudio/AIStudioModal';
+import CompletenessModal from '../components/TemplateStudio/CompletenessModal';
+import type { TemplateAuditResult } from '../components/TemplateStudio/TemplateAIAuditModal';
 import PlaceholderPicker, { PlaceholderOption } from '../components/TemplateStudio/PlaceholderPicker';
 import TemplateBuilderSidebar from '../components/TemplateStudio/TemplateBuilderSidebar';
-import ReportUploadModal from '../components/TemplateStudio/ReportUploadModal';
 import PDFPreviewModal from '../components/TemplateStudio/PDFPreviewModal';
 import { useAuth } from '../contexts/AuthContext';
 import { database, supabase, LabBrandingAsset, LabUserSignature } from '../utils/supabase';
@@ -622,6 +622,8 @@ const buildPremiumEditorConfig = (
             '{{labPhone}}',
             '{{labEmail}}',
             '{{labLogoUrl}}',
+            '{{qr_code}}',
+            '{{verifyUrl}}',
           ],
           minimumCharacters: 0,
         },
@@ -793,8 +795,13 @@ const TemplateStudioCKE: React.FC = () => {
   const [testGroups, setTestGroups] = useState<TestGroupOption[]>([]);
   const [testGroupsLoading, setTestGroupsLoading] = useState(false);
   const [testGroupsError, setTestGroupsError] = useState<string | null>(null);
-  const [isAiConsoleOpen, setIsAiConsoleOpen] = useState(false);
+  const [isAIStudioOpen, setIsAIStudioOpen] = useState(false);
+  const [isCompletenessOpen, setIsCompletenessOpen] = useState(false);
   const [isBuilderSidebarOpen, setIsBuilderSidebarOpen] = useState(false);
+  const [auditLoading, setAuditLoading] = useState(false);
+  const [auditResult, setAuditResult] = useState<TemplateAuditResult | null>(null);
+  const [auditError, setAuditError] = useState<string | null>(null);
+  const [auditImplementing, setAuditImplementing] = useState(false);
   const [placeholderPickerOpen, setPlaceholderPickerOpen] = useState(false);
   const [placeholderOptions, setPlaceholderOptions] = useState<PlaceholderOption[]>([]);
   const [placeholderLoading, setPlaceholderLoading] = useState(false);
@@ -805,11 +812,6 @@ const TemplateStudioCKE: React.FC = () => {
   const [isPdfPreviewOpen, setIsPdfPreviewOpen] = useState(false);
   const [isDeleteConfirmOpen, setIsDeleteConfirmOpen] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
-  const [isAuditModalOpen, setIsAuditModalOpen] = useState(false);
-  const [auditLoading, setAuditLoading] = useState(false);
-  const [auditResult, setAuditResult] = useState<TemplateAuditResult | null>(null);
-  const [auditError, setAuditError] = useState<string | null>(null);
-  const [auditImplementing, setAuditImplementing] = useState(false);
 
   const setHtmlContent = useCallback(
     (value: string) => {
@@ -823,7 +825,6 @@ const TemplateStudioCKE: React.FC = () => {
   const [toolbarCollapsed, setToolbarCollapsed] = useState(false);
   const [templateSearchQuery, setTemplateSearchQuery] = useState('');
   const [testGroupQuery, setTestGroupQuery] = useState('');
-  const [isReportUploadOpen, setIsReportUploadOpen] = useState(false);
 
   // Dropdown menu states for grouped actions
   const [showToolsMenu, setShowToolsMenu] = useState(false);
@@ -892,14 +893,23 @@ const TemplateStudioCKE: React.FC = () => {
     []
   );
 
+  const REPORT_EXTRAS_PLACEHOLDER_OPTIONS: PlaceholderOption[] = useMemo(
+    () => [
+      { id: 'qr_code', label: 'QR Code (Verification)', placeholder: '{{qr_code}}', group: 'extras' },
+      { id: 'verifyUrl', label: 'Verification URL', placeholder: '{{verifyUrl}}', group: 'extras' },
+    ],
+    []
+  );
+
   const DEFAULT_PLACEHOLDER_OPTIONS: PlaceholderOption[] = useMemo(
     () => [
       ...LAB_META_PLACEHOLDER_OPTIONS,
       ...PATIENT_PLACEHOLDER_OPTIONS,
       ...SECTION_PLACEHOLDER_OPTIONS,
       ...SIGNATORY_PLACEHOLDER_OPTIONS,
+      ...REPORT_EXTRAS_PLACEHOLDER_OPTIONS,
     ],
-    [LAB_META_PLACEHOLDER_OPTIONS, PATIENT_PLACEHOLDER_OPTIONS, SECTION_PLACEHOLDER_OPTIONS, SIGNATORY_PLACEHOLDER_OPTIONS]
+    [LAB_META_PLACEHOLDER_OPTIONS, PATIENT_PLACEHOLDER_OPTIONS, SECTION_PLACEHOLDER_OPTIONS, SIGNATORY_PLACEHOLDER_OPTIONS, REPORT_EXTRAS_PLACEHOLDER_OPTIONS]
   );
 
   const filteredTestGroups = useMemo(() => {
@@ -2063,13 +2073,13 @@ const TemplateStudioCKE: React.FC = () => {
 
     if (!labId) {
       setAuditError('Lab context missing. Please reload and try again.');
-      setIsAuditModalOpen(true);
+      setIsCompletenessOpen(true);
       return;
     }
 
     if (!templateMeta) {
       setAuditError('Template is not ready. Select a template and try again.');
-      setIsAuditModalOpen(true);
+      setIsCompletenessOpen(true);
       return;
     }
 
@@ -2079,11 +2089,11 @@ const TemplateStudioCKE: React.FC = () => {
 
     if (!html.trim()) {
       setAuditError('Template is empty. Add content before running the audit.');
-      setIsAuditModalOpen(true);
+      setIsCompletenessOpen(true);
       return;
     }
 
-    setIsAuditModalOpen(true);
+    setIsCompletenessOpen(true);
     setAuditLoading(true);
     setAuditError(null);
     setAuditSuccessMessage(null);
@@ -2245,7 +2255,7 @@ const TemplateStudioCKE: React.FC = () => {
 
     if (!auditResult) {
       setAuditError('Run an audit before implementing changes.');
-      setIsAuditModalOpen(true);
+      setIsCompletenessOpen(true);
       return;
     }
 
@@ -2255,7 +2265,7 @@ const TemplateStudioCKE: React.FC = () => {
 
     if (!currentHtml.trim()) {
       setAuditError('Template is empty. Add content before implementing fixes.');
-      setIsAuditModalOpen(true);
+      setIsCompletenessOpen(true);
       return;
     }
 
@@ -2709,15 +2719,12 @@ const TemplateStudioCKE: React.FC = () => {
                   <button onClick={() => { setIsBuilderSidebarOpen(true); setShowAIMenu(false); }} className="w-full px-3 py-2 text-left text-sm hover:bg-gray-50 flex items-center gap-2">
                     <Sparkles className="h-4 w-4 text-blue-500" /> Template Builder
                   </button>
-                  <button onClick={() => { setIsAiConsoleOpen(true); setShowAIMenu(false); }} className="w-full px-3 py-2 text-left text-sm hover:bg-gray-50 flex items-center gap-2">
-                    <Sparkles className="h-4 w-4 text-blue-500" /> AI Assistant
-                  </button>
-                  <button onClick={() => { setIsReportUploadOpen(true); setShowAIMenu(false); }} className="w-full px-3 py-2 text-left text-sm hover:bg-gray-50 flex items-center gap-2">
-                    <Upload className="h-4 w-4 text-violet-500" /> From Report (Upload)
+                  <button onClick={() => { setIsAIStudioOpen(true); setShowAIMenu(false); }} className="w-full px-3 py-2 text-left text-sm hover:bg-gray-50 flex items-center gap-2">
+                    <Sparkles className="h-4 w-4 text-indigo-500" /> AI Studio
                   </button>
                   <div className="border-t border-gray-100 my-1" />
-                  <button onClick={() => { handleRunAudit(); setShowAIMenu(false); }} className="w-full px-3 py-2 text-left text-sm hover:bg-gray-50 flex items-center gap-2">
-                    <Wand2 className="h-4 w-4 text-purple-500" /> Run AI Audit
+                  <button onClick={() => { setIsCompletenessOpen(true); setShowAIMenu(false); }} className="w-full px-3 py-2 text-left text-sm hover:bg-gray-50 flex items-center gap-2">
+                    <Wand2 className="h-4 w-4 text-purple-500" /> Check Completeness
                   </button>
                 </div>
               )}
@@ -3037,10 +3044,10 @@ const TemplateStudioCKE: React.FC = () => {
                     </div>
                     <button
                       type="button"
-                      onClick={() => setIsAuditModalOpen(true)}
+                      onClick={() => setIsCompletenessOpen(true)}
                       className="mt-3 w-full rounded border border-purple-200 bg-white px-3 py-1.5 text-[11px] font-medium text-purple-700 hover:bg-purple-50 transition-colors"
                     >
-                      View Full Audit Report
+                      Check Completeness
                     </button>
                   </div>
                 </section>
@@ -3832,28 +3839,24 @@ const TemplateStudioCKE: React.FC = () => {
           ) : null
         }
 
-        <TemplateAIConsole
-          open={isAiConsoleOpen}
-          onClose={() => setIsAiConsoleOpen(false)}
+        <AIStudioModal
+          open={isAIStudioOpen}
+          onClose={() => setIsAIStudioOpen(false)}
           editor={editorAdapter}
           templateName={templateMeta?.template_name || 'Template'}
           labId={labId || ''}
+          testGroupId={templateMeta?.test_group_id || undefined}
           onApplied={() => setSaveMessage('AI changes applied in the editor. Review and save when ready.')}
+          onHtmlGenerated={handleReportUploadGenerated}
         />
 
-        <TemplateAIAuditModal
-          open={isAuditModalOpen}
-          onClose={() => setIsAuditModalOpen(false)}
-          loading={auditLoading}
-          result={auditResult}
-          error={auditError}
-          lastCheckedAt={templateMeta?.ai_verification_checked_at || null}
-          onImplement={handleImplementAudit}
-          implementing={auditImplementing}
-          disableImplement={!labId || !templateMeta}
-          onRevert={handleRevertAuditImplementation}
-          canRevert={!!auditRevertSnapshot}
-          successMessage={auditSuccessMessage}
+        <CompletenessModal
+          open={isCompletenessOpen}
+          onClose={() => setIsCompletenessOpen(false)}
+          editor={editorAdapter}
+          placeholderOptions={placeholderOptions}
+          labId={labId || ''}
+          templateName={templateMeta?.template_name || 'Template'}
         />
 
         <TemplateBuilderSidebar
@@ -3868,12 +3871,7 @@ const TemplateStudioCKE: React.FC = () => {
           placeholderLoading={placeholderLoading}
         />
 
-        <ReportUploadModal
-          open={isReportUploadOpen}
-          onClose={() => setIsReportUploadOpen(false)}
-          labId={labId || ''}
-          onHtmlGenerated={handleReportUploadGenerated}
-        />
+
 
         <PDFPreviewModal
           open={isPdfPreviewOpen}

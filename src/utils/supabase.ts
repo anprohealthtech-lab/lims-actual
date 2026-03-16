@@ -148,6 +148,20 @@ export interface LabReportBrandingDefaults {
   defaultReportFooterHtml: string | null;
 }
 
+export interface LabPatientFieldConfig {
+  id: string;
+  lab_id: string;
+  field_key: string;        // e.g. "abha_id"
+  label: string;            // e.g. "ABHA ID"
+  field_type: 'text' | 'number' | 'select';
+  options?: string[] | null; // for select type
+  searchable: boolean;
+  required: boolean;
+  use_for_ai_ref_range: boolean; // inject value into AI reference range context
+  sort_order: number;
+  created_at?: string;
+}
+
 interface LabContactRecord {
   id: string;
   name: string | null;
@@ -1649,6 +1663,11 @@ export const database = {
       // Generate display_id in format DD-Mon-YYYY-SeqNum
       const display_id = `${dateFormatted}-${sequentialNumber}`;
 
+      // Ensure custom_fields is always a plain object (never a pre-stringified string)
+      if (patientDetails.custom_fields && typeof patientDetails.custom_fields === 'string') {
+        try { patientDetails.custom_fields = JSON.parse(patientDetails.custom_fields); } catch { patientDetails.custom_fields = {}; }
+      }
+
       // Create patient with display_id and lab_id
       const { data, error } = await supabase
         .from("patients")
@@ -1760,6 +1779,64 @@ export const database = {
         .update({ is_active: false })
         .eq("id", id);
       return { error };
+    },
+  },
+
+  // ============================================================
+  // Custom Patient Field Configs (per-lab)
+  // ============================================================
+  labPatientFieldConfigs: {
+    getAll: async (): Promise<{ data: LabPatientFieldConfig[] | null; error: any }> => {
+      const lab_id = await database.getCurrentUserLabId();
+      if (!lab_id) return { data: null, error: new Error("No lab_id") };
+      const { data, error } = await supabase
+        .from("lab_patient_field_configs")
+        .select("*")
+        .eq("lab_id", lab_id)
+        .order("sort_order", { ascending: true });
+      return { data, error };
+    },
+
+    create: async (config: Omit<LabPatientFieldConfig, "id" | "lab_id" | "created_at">): Promise<{ data: LabPatientFieldConfig | null; error: any }> => {
+      const lab_id = await database.getCurrentUserLabId();
+      if (!lab_id) return { data: null, error: new Error("No lab_id") };
+      const { data, error } = await supabase
+        .from("lab_patient_field_configs")
+        .insert({ ...config, lab_id })
+        .select()
+        .single();
+      return { data, error };
+    },
+
+    update: async (id: string, updates: Partial<Omit<LabPatientFieldConfig, "id" | "lab_id" | "created_at">>): Promise<{ data: LabPatientFieldConfig | null; error: any }> => {
+      const { data, error } = await supabase
+        .from("lab_patient_field_configs")
+        .update(updates)
+        .eq("id", id)
+        .select()
+        .single();
+      return { data, error };
+    },
+
+    delete: async (id: string): Promise<{ error: any }> => {
+      const { error } = await supabase
+        .from("lab_patient_field_configs")
+        .delete()
+        .eq("id", id);
+      return { error };
+    },
+
+    // Fetch only the searchable fields (used by patient search in OrderForm)
+    getSearchable: async (): Promise<LabPatientFieldConfig[]> => {
+      const lab_id = await database.getCurrentUserLabId();
+      if (!lab_id) return [];
+      const { data } = await supabase
+        .from("lab_patient_field_configs")
+        .select("field_key, label, field_type")
+        .eq("lab_id", lab_id)
+        .eq("searchable", true)
+        .order("sort_order", { ascending: true });
+      return data || [];
     },
   },
 
@@ -3050,7 +3127,8 @@ export const database = {
       const { color_code, color_name } = getOrderAssignedColor(dailySequence);
 
       // Create the order with sample tracking data and lab_id
-      const { tests, ...orderDetails } = orderData;
+      // Strip frontend-only fields that don't exist as DB columns
+      const { tests, trfAttachmentId, ...orderDetails } = orderData;
       const orderWithSample = {
         ...orderDetails,
         sample_id: sampleId,
@@ -5362,6 +5440,7 @@ export const database = {
       const { data, error } = await supabase
         .from("lab_analytes")
         .select(`
+          id,
           is_active,
           visible,
           category,
@@ -5430,6 +5509,7 @@ export const database = {
 
             return {
               ...analyteObj,
+              lab_analyte_id: item.id,
               is_active: item.is_active,
               visible: item.visible,
               // Prioritize lab-specific category if it exists, otherwise use global
@@ -6077,12 +6157,24 @@ export const database = {
       flag_rules?: any;
       code?: string;
       description?: string;
+      display_name?: string | null;
     }) => {
       const { data, error } = await supabase
         .from("lab_analytes")
         .update(updates)
         .eq("lab_id", labId)
         .eq("analyte_id", analyteId)
+        .select()
+        .single();
+      return { data, error };
+    },
+
+    // Update a specific lab_analytes row by its own primary key (for deactivating duplicates)
+    updateById: async (labAnalyteId: string, updates: { is_active?: boolean; visible?: boolean }) => {
+      const { data, error } = await supabase
+        .from("lab_analytes")
+        .update(updates)
+        .eq("id", labAnalyteId)
         .select()
         .single();
       return { data, error };
@@ -6291,12 +6383,16 @@ export const database = {
             only_billing,
             start_from_next_page,
             default_template_style,
+            print_options,
             is_outsourced,
             default_outsourced_lab_id,
             required_patient_inputs,
             ref_range_ai_config,
+            collection_charge,
             test_group_analytes(
               analyte_id,
+              sort_order,
+              section_heading,
               analytes(
                 id,
                 name,
@@ -6354,12 +6450,16 @@ export const database = {
             only_billing,
             start_from_next_page,
             default_template_style,
+            print_options,
             is_outsourced,
             default_outsourced_lab_id,
             required_patient_inputs,
             ref_range_ai_config,
+            collection_charge,
             test_group_analytes(
               analyte_id,
+              sort_order,
+              section_heading,
               analytes(
                 id,
                 name,
@@ -6422,6 +6522,8 @@ export const database = {
             ref_range_ai_config,
             test_group_analytes(
               analyte_id,
+              sort_order,
+              section_heading,
               analytes(
                 id,
                 name,
@@ -6492,6 +6594,8 @@ export const database = {
           is_outsourced: testGroupData.is_outsourced || false,
           default_outsourced_lab_id: testGroupData.default_outsourced_lab_id || null,
           default_template_style: testGroupData.default_template_style || null,
+          print_options: testGroupData.print_options ?? null,
+          collection_charge: testGroupData.collection_charge ?? null,
         };
 
         console.log("Creating test group with data:", sanitizedData);
@@ -6586,6 +6690,8 @@ export const database = {
             is_outsourced: updates.is_outsourced,
             default_outsourced_lab_id: updates.default_outsourced_lab_id,
             default_template_style: updates.default_template_style || null,
+            print_options: updates.print_options ?? null,
+            collection_charge: updates.collection_charge ?? null,
             updated_at: new Date().toISOString(),
           })
           .eq("id", id)
@@ -6600,6 +6706,8 @@ export const database = {
         // Step 2: Update analyte relationships if analytes are provided
         if (updates.analytes && Array.isArray(updates.analytes)) {
           const newAnalyteIds: string[] = updates.analytes;
+          const analyteMetadata: Record<string, { sort_order?: number; section_heading?: string }> =
+            updates.analyteMetadata || {};
 
           // Insert new analytes first (keeps count > 0, preventing the orphan
           // auto-link trigger from firing during the subsequent delete step)
@@ -6622,6 +6730,21 @@ export const database = {
                 insertError,
               );
               return { data, error: insertError };
+            }
+
+            // Update sort_order and section_heading for each analyte
+            for (const analyteId of newAnalyteIds) {
+              const meta = analyteMetadata[analyteId];
+              if (meta) {
+                await supabase
+                  .from("test_group_analytes")
+                  .update({
+                    sort_order: meta.sort_order ?? 0,
+                    section_heading: meta.section_heading || null,
+                  })
+                  .eq("test_group_id", id)
+                  .eq("analyte_id", analyteId);
+              }
             }
           }
 

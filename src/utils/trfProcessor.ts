@@ -326,7 +326,7 @@ export function validatePatientData(patientInfo?: TRFPatientInfo): {
 export async function autoCreatePatientFromTRF(
   patientInfo: TRFPatientInfo,
   labId: string
-): Promise<{ id: string; name: string } | null> {
+): Promise<{ id: string; name: string; age?: number; gender?: string; phone?: string; age_unit?: string; [key: string]: any } | null> {
   try {
     // Validate required fields
     if (!patientInfo.name || !patientInfo.phone) {
@@ -350,7 +350,7 @@ export async function autoCreatePatientFromTRF(
         lab_id: labId,
         created_at: new Date().toISOString(),
       })
-      .select('id, name')
+      .select('id, name, age, gender, phone, age_unit, dob, date_of_birth, default_doctor_id, default_location_id, default_payment_type')
       .single();
 
     if (error) {

@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { X, User, Phone, Mail, MapPin, Calendar, Upload, FileText, Brain, Zap, Plus, Minus, TestTube, CheckCircle, AlertTriangle, RotateCcw, UserCheck, Heart, Droplets, ClipboardList } from 'lucide-react';
 import { QRCodeSVG } from 'qrcode.react';
-import { supabase, uploadFile, generateFilePath, database } from '../../utils/supabase';
+import { supabase, uploadFile, generateFilePath, database, LabPatientFieldConfig } from '../../utils/supabase';
 import { useAuth } from '../../contexts/AuthContext';
 
 interface Patient {
@@ -111,6 +111,10 @@ const PatientForm: React.FC<PatientFormProps> = ({
   const [ocrResults, setOcrResults] = useState<any>(null);
   const [ocrError, setOcrError] = useState<string | null>(null);
 
+  // Custom patient fields
+  const [customFieldConfigs, setCustomFieldConfigs] = useState<LabPatientFieldConfig[]>([]);
+  const [customFieldValues, setCustomFieldValues] = useState<Record<string, any>>({});
+
   // Active section for navigation
   const [activeSection, setActiveSection] = useState<'personal' | 'contact' | 'medical' | 'tests'>('personal');
 
@@ -210,6 +214,32 @@ const PatientForm: React.FC<PatientFormProps> = ({
     fetchTestData();
   }, []);
 
+  // Load custom patient field configs
+  React.useEffect(() => {
+    const loadCustomFieldConfigs = async () => {
+      const { data } = await database.labPatientFieldConfigs.getAll();
+      if (data) {
+        setCustomFieldConfigs(data);
+        if (patient) {
+          // custom_fields may be missing if patient came from a view (v_patients_with_duplicates)
+          // that was created before the column was added — fetch directly in that case
+          let rawCustomFields = (patient as any).custom_fields;
+          if (rawCustomFields === undefined) {
+            const { data: fullPatient } = await database.patients.getById(patient.id);
+            rawCustomFields = fullPatient?.custom_fields;
+          }
+          if (rawCustomFields) {
+            const parsed = typeof rawCustomFields === 'string'
+              ? (() => { try { return JSON.parse(rawCustomFields); } catch { return {}; } })()
+              : rawCustomFields;
+            setCustomFieldValues(parsed || {});
+          }
+        }
+      }
+    };
+    loadCustomFieldConfigs();
+  }, []);
+
   // Fetch referring doctors
   React.useEffect(() => {
     const fetchDoctors = async () => {
@@ -258,6 +288,7 @@ const PatientForm: React.FC<PatientFormProps> = ({
       ocrResults,
       attachmentId,
       selectedDoctorId,
+      custom_fields: customFieldValues,
     });
   };
 
@@ -799,6 +830,44 @@ const PatientForm: React.FC<PatientFormProps> = ({
                     placeholder="Brief medical history, current medications, chronic conditions, etc."
                   />
                 </div>
+
+                {/* Custom patient fields */}
+                {customFieldConfigs.length > 0 && (
+                  <div className="border-t border-gray-200 pt-5">
+                    <h4 className="text-sm font-semibold text-gray-900 mb-4">Additional Information</h4>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+                      {customFieldConfigs.map((field) => (
+                        <div key={field.id} className="space-y-2">
+                          <label className="text-sm font-medium text-gray-700">
+                            {field.label}{field.required && ' *'}
+                          </label>
+                          {field.field_type === 'select' && field.options ? (
+                            <select
+                              value={customFieldValues[field.field_key] || ''}
+                              onChange={(e) => setCustomFieldValues(prev => ({ ...prev, [field.field_key]: e.target.value }))}
+                              required={field.required}
+                              className="w-full px-4 py-3 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all bg-gray-50 hover:bg-white"
+                            >
+                              <option value="">Select {field.label}...</option>
+                              {(field.options as string[]).map((opt) => (
+                                <option key={opt} value={opt}>{opt}</option>
+                              ))}
+                            </select>
+                          ) : (
+                            <input
+                              type={field.field_type === 'number' ? 'number' : 'text'}
+                              value={customFieldValues[field.field_key] || ''}
+                              onChange={(e) => setCustomFieldValues(prev => ({ ...prev, [field.field_key]: e.target.value }))}
+                              required={field.required}
+                              className="w-full px-4 py-3 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all bg-gray-50 hover:bg-white"
+                              placeholder={`Enter ${field.label.toLowerCase()}`}
+                            />
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
               </div>
             )}
 

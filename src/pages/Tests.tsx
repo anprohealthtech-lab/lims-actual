@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Plus, Edit2, Trash2, Search, Filter, X, Save, AlertCircle, Beaker, Layers, Package, DollarSign, Eye, Edit, Link2, Calculator, RefreshCw, Brain } from 'lucide-react';
+import { Plus, Edit2, Trash2, Search, Filter, X, Save, AlertCircle, Beaker, Layers, Package, DollarSign, Eye, EyeOff, Edit, Link2, Calculator, RefreshCw, Brain } from 'lucide-react';
 import { database, supabase } from '../utils/supabase';
 import TestGroupForm from '../components/Tests/TestGroupForm';
 import TestForm from '../components/Tests/TestForm';
@@ -33,6 +33,7 @@ interface Test {
 
 interface Analyte {
   id: string;
+  lab_analyte_id?: string; // lab_analytes primary key (used for per-row deactivation)
   name: string;
   unit: string;
   referenceRange?: string;
@@ -100,6 +101,7 @@ interface TestGroup {
   onlyBilling?: boolean;
   startFromNextPage?: boolean;
   default_template_style?: string | null;
+  print_options?: Record<string, unknown> | null;
   analytes?: string[];
   ref_range_ai_config?: any;
   required_patient_inputs?: string[];
@@ -151,6 +153,9 @@ const Tests: React.FC = () => {
   const [tests, setTests] = useState<Test[]>([]);
   const [testGroups, setTestGroups] = useState<TestGroup[]>([]);
   const [analytes, setAnalytes] = useState<Analyte[]>([]);
+  const [inactiveAnalytes, setInactiveAnalytes] = useState<Analyte[]>([]);
+  const [showInactiveAnalytes, setShowInactiveAnalytes] = useState(false);
+  const [loadingInactiveAnalytes, setLoadingInactiveAnalytes] = useState(false);
   const [packages, setPackages] = useState<PackageType[]>([]);
   const [showTestForm, setShowTestForm] = useState(false);
   const [showAnalyteForm, setShowAnalyteForm] = useState(false);
@@ -473,6 +478,7 @@ const Tests: React.FC = () => {
             onlyBilling: group.only_billing || false,
             startFromNextPage: group.start_from_next_page || false,
             default_template_style: group.default_template_style || null,
+            print_options: group.print_options ?? null,
             is_outsourced: group.is_outsourced || false,
             default_outsourced_lab_id: group.default_outsourced_lab_id,
             ref_range_ai_config: group.ref_range_ai_config,
@@ -858,7 +864,9 @@ const Tests: React.FC = () => {
             isCalculated: analyteSource?.is_calculated || analyte.isCalculated || false,
             formula: analyteSource?.formula || analyte.formula || '',
             formulaVariables: analyteSource?.formula_variables || analyte.formulaVariables || [],
-            formulaDescription: analyteSource?.formula_description || analyte.formulaDescription || ''
+            formulaDescription: analyteSource?.formula_description || analyte.formulaDescription || '',
+            // Lab-level display name override
+            display_name: labAnalyte.display_name || null,
           });
           setShowEditAnalyteModal(true);
           return;
@@ -990,7 +998,8 @@ const Tests: React.FC = () => {
           required_patient_inputs: updatedTestGroup.required_patient_inputs,
           is_outsourced: updatedTestGroup.is_outsourced,
           default_outsourced_lab_id: updatedTestGroup.default_outsourced_lab_id,
-          default_template_style: updatedTestGroup.default_template_style || null
+          default_template_style: updatedTestGroup.default_template_style || null,
+          print_options: updatedTestGroup.print_options ?? null,
         };
         setTestGroups(prev => prev.map(tg => tg.id === editingTestGroup.id ? transformedGroup : tg));
         setShowTestGroupForm(false);
@@ -1255,6 +1264,7 @@ const Tests: React.FC = () => {
           onlyBilling: group.only_billing || false,
           startFromNextPage: group.start_from_next_page || false,
           default_template_style: group.default_template_style || null,
+          print_options: group.print_options ?? null,
           analytes: group.test_group_analytes ? group.test_group_analytes.map((tga: any) => tga.analyte_id) : []
         }));
         setTestGroups(transformedTestGroups);
@@ -1403,6 +1413,7 @@ const Tests: React.FC = () => {
           onlyBilling: group.only_billing || false,
           startFromNextPage: group.start_from_next_page || false,
           default_template_style: group.default_template_style || null,
+          print_options: group.print_options ?? null,
           analytes: group.test_group_analytes ? group.test_group_analytes.map((tga: any) => tga.analyte_id) : []
         }));
         setTestGroups(transformedTestGroups);
@@ -1462,6 +1473,66 @@ const Tests: React.FC = () => {
     } catch (e: any) {
       console.error("Hide failed", e);
       alert("Failed to delete analyte.");
+    }
+  };
+
+  const handleDeactivateAnalyte = async (analyte: Analyte) => {
+    if (!analyte.lab_analyte_id) return;
+    try {
+      const { error } = await database.labAnalytes.updateById(analyte.lab_analyte_id, { is_active: false });
+      if (error) throw error;
+      setAnalytes(prev => prev.filter(a => a.lab_analyte_id !== analyte.lab_analyte_id));
+      if (showInactiveAnalytes) {
+        setInactiveAnalytes(prev => [{ ...analyte, isActive: false }, ...prev]);
+      }
+    } catch (e: any) {
+      console.error("Deactivate failed", e);
+      alert("Failed to deactivate analyte.");
+    }
+  };
+
+  const handleReactivateAnalyte = async (analyte: Analyte) => {
+    if (!analyte.lab_analyte_id) return;
+    try {
+      const { error } = await database.labAnalytes.updateById(analyte.lab_analyte_id, { is_active: true });
+      if (error) throw error;
+      setInactiveAnalytes(prev => prev.filter(a => a.lab_analyte_id !== analyte.lab_analyte_id));
+      setAnalytes(prev => [{ ...analyte, isActive: true }, ...prev]);
+    } catch (e: any) {
+      console.error("Reactivate failed", e);
+      alert("Failed to reactivate analyte.");
+    }
+  };
+
+  const handleLoadInactiveAnalytes = async () => {
+    if (inactiveAnalytes.length > 0) return; // already loaded
+    try {
+      setLoadingInactiveAnalytes(true);
+      const labId = await database.getCurrentUserLabId();
+      if (!labId) return;
+      const { data, error } = await database.labAnalytes.getAllForLab(labId);
+      if (error) throw error;
+      const inactive: Analyte[] = (data || [])
+        .filter((item: any) => item.is_active === false && item.visible !== false)
+        .map((item: any) => {
+          const a = Array.isArray(item.analytes) ? item.analytes[0] : item.analytes;
+          return {
+            id: a?.id || item.analyte_id,
+            lab_analyte_id: item.id,
+            name: a?.name || item.name || "Unknown",
+            unit: a?.unit || item.unit || "",
+            category: item.category || a?.category || "General",
+            referenceRange: item.lab_specific_reference_range || a?.reference_range || "",
+            lowCritical: item.low_critical,
+            highCritical: item.high_critical,
+            isActive: false,
+          };
+        });
+      setInactiveAnalytes(inactive);
+    } catch (e: any) {
+      console.error("Load inactive failed", e);
+    } finally {
+      setLoadingInactiveAnalytes(false);
     }
   };
 
@@ -1785,10 +1856,20 @@ const Tests: React.FC = () => {
         {
           activeTab === 'analytes' && (
             <div className="bg-white rounded-lg shadow-sm border border-gray-200 overflow-hidden">
-              <div className="px-3 py-2 border-b border-gray-200">
+              <div className="px-3 py-2 border-b border-gray-200 flex items-center justify-between">
                 <h3 className="text-sm font-semibold text-gray-900">
                   Analytes ({filteredAnalytes.length})
                 </h3>
+                <button
+                  onClick={() => {
+                    const next = !showInactiveAnalytes;
+                    setShowInactiveAnalytes(next);
+                    if (next) handleLoadInactiveAnalytes();
+                  }}
+                  className={`text-xs px-2 py-1 rounded border transition-colors ${showInactiveAnalytes ? 'bg-amber-100 border-amber-400 text-amber-700' : 'bg-gray-100 border-gray-300 text-gray-600 hover:bg-gray-200'}`}
+                >
+                  {showInactiveAnalytes ? 'Hide Inactive' : 'Show Inactive'}
+                </button>
               </div>
 
               <div className="overflow-x-auto">
@@ -1853,6 +1934,15 @@ const Tests: React.FC = () => {
                             >
                               <Edit className="h-4 w-4" />
                             </button>
+                            {analyte.lab_analyte_id && (
+                              <button
+                                onClick={() => handleDeactivateAnalyte(analyte)}
+                                className="text-amber-500 hover:text-amber-700 p-1 rounded"
+                                title="Deactivate (hide from lists, can reactivate)"
+                              >
+                                <EyeOff className="h-4 w-4" />
+                              </button>
+                            )}
                             <button
                               onClick={() => handleDeleteAnalyte(analyte)}
                               className="text-red-500 hover:text-red-700 p-1 rounded"
@@ -1879,6 +1969,47 @@ const Tests: React.FC = () => {
                   </tbody>
                 </table>
               </div>
+
+              {/* Inactive Analytes Section */}
+              {showInactiveAnalytes && (
+                <div className="border-t border-amber-200 bg-amber-50">
+                  <div className="px-3 py-2 border-b border-amber-200 flex items-center justify-between">
+                    <h4 className="text-xs font-semibold text-amber-800">
+                      Inactive Analytes ({inactiveAnalytes.length})
+                      <span className="ml-1 font-normal text-amber-600">— click Reactivate to restore</span>
+                    </h4>
+                    {loadingInactiveAnalytes && <span className="text-xs text-amber-600">Loading...</span>}
+                  </div>
+                  {inactiveAnalytes.length === 0 && !loadingInactiveAnalytes ? (
+                    <div className="px-3 py-4 text-xs text-amber-600 text-center">No inactive analytes found.</div>
+                  ) : (
+                    <table className="w-full text-xs divide-y divide-amber-100">
+                      <tbody>
+                        {inactiveAnalytes.map((analyte) => (
+                          <tr key={analyte.lab_analyte_id} className="opacity-60 hover:opacity-80">
+                            <td className="px-3 py-2 w-2/5">
+                              <span className="font-medium text-gray-700">{analyte.name}</span>
+                              <div className="text-gray-400">Unit: {analyte.unit}</div>
+                            </td>
+                            <td className="px-3 py-2 w-1/5">
+                              <span className="px-1.5 py-0.5 rounded-full bg-gray-100 text-gray-500 text-xs">{analyte.category}</span>
+                            </td>
+                            <td className="px-3 py-2 w-1/4 text-gray-500">{analyte.referenceRange || '—'}</td>
+                            <td className="px-3 py-2 text-right">
+                              <button
+                                onClick={() => handleReactivateAnalyte(analyte)}
+                                className="text-xs px-2 py-1 bg-green-100 text-green-700 border border-green-300 rounded hover:bg-green-200"
+                              >
+                                Reactivate
+                              </button>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  )}
+                </div>
+              )}
             </div>
           )
         }
@@ -2112,7 +2243,8 @@ const Tests: React.FC = () => {
                 is_calculated: editingAnalyte.isCalculated,
                 formula: editingAnalyte.formula,
                 formula_variables: editingAnalyte.formulaVariables,
-                formula_description: editingAnalyte.formulaDescription
+                formula_description: editingAnalyte.formulaDescription,
+                display_name: (editingAnalyte as any).display_name || null,
               }}
               availableAnalytes={analytes
                 .filter(a => !a.isCalculated && a.id !== editingAnalyte.id)

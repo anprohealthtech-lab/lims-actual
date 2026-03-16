@@ -53,6 +53,7 @@ const Patients: React.FC = () => {
   const [patients, setPatients] = useState<Patient[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [successMessage, setSuccessMessage] = useState<string | null>(null);
   const [searchTerm, setSearchTerm] = useState('');
   const [isAdmin, setIsAdmin] = useState(false);
 
@@ -95,11 +96,12 @@ const Patients: React.FC = () => {
       // ✅ Apply location filtering for access control
       const { shouldFilter, locationIds } = await database.shouldFilterByLocation();
 
-      // Build base query
+      // Build base query — only active patients
       let query = supabase
         .from('v_patients_with_duplicates')
         .select('*')
         .eq('lab_id', labId)
+        .eq('is_active', true)
         .order('registration_date', { ascending: false });
 
       // ✅ Apply location filter if user is restricted
@@ -150,7 +152,7 @@ const Patients: React.FC = () => {
   // Handlers
   const handleAddPatient = async (formData: any) => {
     try {
-      const { ocrResults, attachmentId, requestedTests, selectedDoctorId, ...patientDetails } = formData;
+      const { ocrResults, attachmentId, requestedTests, selectedDoctorId, custom_fields, ...patientDetails } = formData;
 
       const patientData = {
         name: `${patientDetails.firstName} ${patientDetails.lastName}`.trim(),
@@ -168,6 +170,7 @@ const Patients: React.FC = () => {
         blood_group: patientDetails.bloodGroup || null,
         allergies: patientDetails.allergies || null,
         medical_history: patientDetails.medicalHistory || null,
+        custom_fields: custom_fields || {},
         total_tests: 0,
         is_active: true,
         requestedTests: requestedTests || [],
@@ -214,6 +217,9 @@ const Patients: React.FC = () => {
         blood_group: formData.bloodGroup || null,
         allergies: formData.allergies || null,
         medical_history: formData.medicalHistory || null,
+        custom_fields: typeof formData.custom_fields === 'string'
+          ? (() => { try { return JSON.parse(formData.custom_fields); } catch { return {}; } })()
+          : (formData.custom_fields || {}),
       };
 
       const { data, error } = await supabase
@@ -228,6 +234,8 @@ const Patients: React.FC = () => {
       setPatients(prev => prev.map(p => p.id === selectedPatient.id ? data : p));
       setActiveModal(null);
       setSelectedPatient(null);
+      setSuccessMessage('Patient updated successfully');
+      setTimeout(() => setSuccessMessage(null), 3000);
     } catch (err: any) {
       setError(err.message || 'Failed to update patient');
     }
@@ -324,6 +332,13 @@ const Patients: React.FC = () => {
 
   return (
     <div className={`flex flex-col h-full bg-gray-50 ${mobile.isMobile ? 'p-2' : 'p-6'}`}>
+      {/* Success Toast */}
+      {successMessage && (
+        <div className="fixed top-4 right-4 z-50 flex items-center gap-2 bg-green-600 text-white px-4 py-3 rounded-lg shadow-lg animate-fade-in">
+          <svg className="h-5 w-5 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" /></svg>
+          <span className="text-sm font-medium">{successMessage}</span>
+        </div>
+      )}
       {/* Header Section */}
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-6">
         <div>

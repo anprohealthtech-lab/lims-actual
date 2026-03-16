@@ -609,10 +609,19 @@ IMPORTANT: Use the IMAGE to verify checkbox states. The OCR text shows what test
       const searchPhone = extractedData.patientInfo.phone?.replace(/\D/g, "") ||
         "";
 
-      // Query patients: if phone provided, filter by phone; otherwise get all
+      // Query patients: filter by lab_id first, then optionally by phone
       let query = supabase
         .from("patients")
-        .select("id, name, phone, age, gender");
+        .select("id, name, phone, age, gender")
+        .eq("is_active", true);
+
+      // CRITICAL: Always filter by lab_id to avoid cross-lab patient matches
+      if (userLabId) {
+        query = query.eq("lab_id", userLabId);
+        console.log(`  Filtering patients by lab_id: ${userLabId}`);
+      } else {
+        console.warn("⚠️ WARNING: No lab_id available, matching against ALL labs' patients!");
+      }
 
       if (searchPhone) {
         // Filter by phone for better performance and accuracy
@@ -725,11 +734,18 @@ IMPORTANT: Use the IMAGE to verify checkbox states. The OCR text shows what test
       const searchName = normalizeDocName(doctorName);
       console.log(`   Normalized search: "${searchName}"`);
 
-      // Query all active doctors
-      const { data: doctors, error: doctorError } = await supabase
+      // Query active doctors — filter by lab_id if available
+      let doctorQuery = supabase
         .from("doctors")
         .select("id, name, specialization")
         .eq("is_active", true);
+
+      if (userLabId) {
+        doctorQuery = doctorQuery.eq("lab_id", userLabId);
+        console.log(`  Filtering doctors by lab_id: ${userLabId}`);
+      }
+
+      const { data: doctors, error: doctorError } = await doctorQuery;
 
       if (doctorError) {
         console.error("❌ Error fetching doctors:", doctorError);

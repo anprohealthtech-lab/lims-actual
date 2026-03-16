@@ -44,6 +44,8 @@ interface SimpleAnalyteEditorProps {
     formula?: string;
     formula_variables?: string[];
     formula_description?: string;
+    // Lab-level display name override (highest priority in PDF reports)
+    display_name?: string | null;
   };
   availableAnalytes?: SourceAnalyte[];
   onSave: (analyte: any) => void;
@@ -252,6 +254,8 @@ export const SimpleAnalyteEditor: React.FC<SimpleAnalyteEditorProps> = ({
           interpretation_normal: formData.interpretation_normal,
           interpretation_high: formData.interpretation_high,
           is_active: formData.is_active,
+          // Lab-level display name override for PDF reports
+          display_name: (formData as any).display_name?.trim() || null,
           // Set lab_specific_* fields to mark as customized (prevents global sync overwrite)
           lab_specific_name: formData.name,
           lab_specific_unit: formData.unit,
@@ -370,7 +374,7 @@ export const SimpleAnalyteEditor: React.FC<SimpleAnalyteEditorProps> = ({
             <h4 className="text-lg font-medium text-gray-900 mb-4">Basic Information</h4>
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <div className="md:col-span-2">
+              <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">Analyte Name *</label>
                 <input
                   type="text"
@@ -379,6 +383,19 @@ export const SimpleAnalyteEditor: React.FC<SimpleAnalyteEditorProps> = ({
                   className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                   placeholder="e.g., Hemoglobin, Glucose, White Blood Cell Count"
                   required
+                />
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">
+                  Display Name <span className="text-xs text-gray-400 font-normal">(PDF override, optional)</span>
+                </label>
+                <input
+                  type="text"
+                  value={(formData as any).display_name || ''}
+                  onChange={(e) => setFormData(prev => ({ ...prev, display_name: e.target.value } as any))}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                  placeholder="e.g., Serum Cholesterol (shown in report)"
                 />
               </div>
 

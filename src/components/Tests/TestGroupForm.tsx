@@ -49,6 +49,16 @@ interface TestGroup {
   ref_range_ai_config?: any;
   required_patient_inputs?: string[];
   default_template_style?: string | null;
+  collection_charge?: number | null;
+  print_options?: {
+    tableBorders?: boolean;
+    flagColumn?: boolean;
+    flagAsterisk?: boolean;
+    flagAsteriskCritical?: boolean;
+    headerBackground?: string;
+    alternateRows?: boolean;
+    baseFontSize?: number;
+  } | null;
 }
 
 const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGroup }) => {
@@ -62,6 +72,7 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
     department: testGroup?.department || '',
     selectedAnalytes: testGroup?.analytes || [],
     price: testGroup?.price?.toString() || '',
+    collection_charge: testGroup?.collection_charge?.toString() || '',
     turnaroundTime: testGroup?.turnaroundTime || '',
     tat_hours: testGroup?.tat_hours?.toString() || '3',
     sampleType: testGroup?.sampleType || '',
@@ -84,6 +95,7 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
     onlyBilling: testGroup?.onlyBilling ?? false,
     startFromNextPage: testGroup?.startFromNextPage ?? false,
     default_template_style: testGroup?.default_template_style || '',
+    print_options: testGroup?.print_options ?? null,
     is_outsourced: testGroup?.is_outsourced ?? false,
     default_outsourced_lab_id: testGroup?.default_outsourced_lab_id || '',
     ref_range_ai_config: testGroup?.ref_range_ai_config || { enabled: false, consider_age: true },
@@ -99,6 +111,8 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
   const [labMethodOptions, setLabMethodOptions] = useState<string[]>([]);
   const [newMethodValue, setNewMethodValue] = useState('');
   const [methodError, setMethodError] = useState<string | null>(null);
+  // Per-analyte metadata for sort_order and section_heading (keyed by analyte_id)
+  const [analyteMetadata, setAnalyteMetadata] = useState<Record<string, { sort_order: number; section_heading: string }>>({});
 
   // Load analytes and outsourced labs
   useEffect(() => {
@@ -109,10 +123,20 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
   const loadData = async () => {
     try {
       setLoading(true);
-      const [analytesRes, labsRes] = await Promise.all([
+      const requests: Promise<any>[] = [
         database.analytes.getAll(),
-        supabase.from('outsourced_labs').select('*').eq('is_active', true).order('name')
-      ]);
+        supabase.from('outsourced_labs').select('*').eq('is_active', true).order('name'),
+      ];
+      if (testGroup?.id) {
+        requests.push(
+          supabase
+            .from('test_group_analytes')
+            .select('analyte_id, sort_order, section_heading')
+            .eq('test_group_id', testGroup.id)
+        );
+      }
+
+      const [analytesRes, labsRes, tgaRes] = await Promise.all(requests);
 
       if (analytesRes.error) {
         console.error('Error loading analytes:', analytesRes.error);
@@ -124,6 +148,17 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
         console.error('Error loading outsourced labs:', labsRes.error);
       } else {
         setOutsourcedLabs(labsRes.data || []);
+      }
+
+      if (tgaRes && !tgaRes.error && tgaRes.data) {
+        const meta: Record<string, { sort_order: number; section_heading: string }> = {};
+        for (const row of tgaRes.data) {
+          meta[row.analyte_id] = {
+            sort_order: row.sort_order ?? 0,
+            section_heading: row.section_heading ?? '',
+          };
+        }
+        setAnalyteMetadata(meta);
       }
     } catch (error) {
       console.error('Error loading data:', error);
@@ -334,7 +369,9 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
         ...formData,
         category: formData.category || null,
         analytes: formData.selectedAnalytes,
+        analyteMetadata,
         price: parseFloat(formData.price),
+        collection_charge: formData.collection_charge ? parseFloat(formData.collection_charge) : null,
         tat_hours: parseFloat(formData.tat_hours) || 3,
         default_ai_processing_type: formData.default_ai_processing_type,
         group_level_prompt: formData.group_level_prompt,
@@ -348,6 +385,7 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
         ref_range_ai_config: formData.ref_range_ai_config,
         required_patient_inputs: formData.required_patient_inputs,
         default_template_style: formData.default_template_style || null,
+        print_options: formData.print_options || null,
         // Auto-sync legacy boolean fields from required_patient_inputs
         lmpRequired: rpi.includes('lmp'),
         idRequired: rpi.includes('id_document'),
@@ -711,6 +749,24 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
                 />
               </div>
 
+              {/* Collection Charge */}
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">
+                  Collection Charge (₹)
+                </label>
+                <input
+                  type="number"
+                  name="collection_charge"
+                  min="0"
+                  step="0.01"
+                  value={formData.collection_charge}
+                  onChange={handleChange}
+                  placeholder="0"
+                  className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent"
+                />
+                <p className="text-xs text-gray-500 mt-1">Extra charge for sample collection (e.g. home visit)</p>
+              </div>
+
               {/* TAT Hours */}
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">
@@ -832,10 +888,112 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
                   <option value="">Lab Default</option>
                   <option value="beautiful">Beautiful (3-Column Color Matrix)</option>
                   <option value="classic">Classic (Plain Table)</option>
+                  <option value="basic">Basic (Old School - No Color)</option>
                 </select>
                 <p className="text-xs text-gray-500 mt-1">
                   Forces this layout for this test group, overriding both the lab default and any linked custom template.
                 </p>
+              </div>
+
+              {/* Print Style Overrides */}
+              <div>
+                <div className="flex items-center justify-between mb-1">
+                  <label className="block text-sm font-medium text-gray-700">Print Style Overrides</label>
+                  {formData.print_options && Object.keys(formData.print_options).length > 0 && (
+                    <button type="button"
+                      onClick={() => setFormData(prev => ({ ...prev, print_options: null }))}
+                      className="text-xs text-red-500 hover:text-red-700 font-medium">
+                      ↩ Clear all — use lab defaults
+                    </button>
+                  )}
+                </div>
+                <p className="text-xs text-gray-500 mb-2">
+                  <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-amber-100 text-amber-700 font-medium text-xs">↩ Lab</span> = inherit lab setting &nbsp;·&nbsp;
+                  <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-amber-500 text-white text-xs">On/Off</span> = override for this test group only
+                </p>
+                <div className="border border-amber-200 rounded-lg p-3 bg-amber-50 space-y-2.5">
+                  {([
+                    { key: 'tableBorders', label: 'Table Borders' },
+                    { key: 'flagColumn', label: 'Flag Column (Classic)' },
+                    { key: 'flagAsterisk', label: 'Flag Asterisk * on H/L' },
+                    { key: 'flagAsteriskCritical', label: 'Critical Double **', disabledWhen: !(formData.print_options as any)?.flagAsterisk },
+                    { key: 'alternateRows', label: 'Alternate Row Shading' },
+                  ] as { key: string; label: string; disabledWhen?: boolean }[]).map(({ key, label, disabledWhen }) => {
+                    const opts = (formData.print_options || {}) as Record<string, unknown>;
+                    const isSet = key in opts && opts[key] !== undefined;
+                    const val = opts[key];
+                    const clearKey = (k: string) => setFormData(prev => {
+                      const next = { ...(prev.print_options || {}) } as Record<string, unknown>;
+                      delete next[k];
+                      return { ...prev, print_options: Object.keys(next).length > 0 ? next as typeof prev.print_options : null };
+                    });
+                    const setKey = (k: string, v: unknown) => setFormData(prev => ({ ...prev, print_options: { ...(prev.print_options || {}), [k]: v } }));
+                    return (
+                      <div key={key} className={`flex items-center justify-between${disabledWhen ? ' opacity-40 pointer-events-none' : ''}`}>
+                        <span className="text-sm text-gray-700">{label}</span>
+                        <div className="flex items-center gap-1">
+                          {(['lab', 'on', 'off'] as const).map(opt => {
+                            const active = opt === 'lab' ? !isSet : opt === 'on' ? val === true : val === false;
+                            return (
+                              <button type="button" key={opt}
+                                onClick={() => opt === 'lab' ? clearKey(key) : setKey(key, opt === 'on')}
+                                className={`px-2 py-0.5 text-xs rounded border transition-colors ${active ? 'bg-amber-500 text-white border-amber-500' : 'bg-white text-gray-500 border-gray-300 hover:border-amber-400'}`}>
+                                {opt === 'lab' ? '↩ Lab' : opt === 'on' ? 'On' : 'Off'}
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    );
+                  })}
+
+                  {/* Header Color */}
+                  <div className="flex items-center justify-between">
+                    <span className="text-sm text-gray-700">Header Color</span>
+                    <div className="flex items-center gap-2">
+                      {(formData.print_options as any)?.headerBackground ? (
+                        <button type="button"
+                          onClick={() => setFormData(prev => {
+                            const next = { ...(prev.print_options || {}) } as Record<string, unknown>;
+                            delete next.headerBackground;
+                            return { ...prev, print_options: Object.keys(next).length > 0 ? next as typeof prev.print_options : null };
+                          })}
+                          className="text-xs px-2 py-0.5 rounded border bg-white text-gray-500 border-gray-300 hover:border-amber-400">
+                          ↩ Lab
+                        </button>
+                      ) : (
+                        <span className="text-xs text-gray-400 italic">Lab default</span>
+                      )}
+                      <input type="color"
+                        value={(formData.print_options as any)?.headerBackground || '#0b4aa2'}
+                        onChange={(e) => setFormData(prev => ({ ...prev, print_options: { ...(prev.print_options || {}), headerBackground: e.target.value } }))}
+                        className="h-7 w-7 rounded border border-gray-300 cursor-pointer" />
+                    </div>
+                  </div>
+
+                  {/* Font Size */}
+                  <div className="flex items-center justify-between">
+                    <span className="text-sm text-gray-700">Font Size (px)</span>
+                    <div className="flex items-center gap-2">
+                      {(formData.print_options as any)?.baseFontSize !== undefined && (
+                        <button type="button"
+                          onClick={() => setFormData(prev => {
+                            const next = { ...(prev.print_options || {}) } as Record<string, unknown>;
+                            delete next.baseFontSize;
+                            return { ...prev, print_options: Object.keys(next).length > 0 ? next as typeof prev.print_options : null };
+                          })}
+                          className="text-xs px-2 py-0.5 rounded border bg-white text-gray-500 border-gray-300 hover:border-amber-400">
+                          ↩ Lab
+                        </button>
+                      )}
+                      <input type="number" min={8} max={16}
+                        value={(formData.print_options as any)?.baseFontSize ?? ''}
+                        placeholder="Lab default"
+                        onChange={(e) => setFormData(prev => ({ ...prev, print_options: { ...(prev.print_options || {}), baseFontSize: e.target.value ? parseInt(e.target.value) : undefined } }))}
+                        className="w-20 px-2 py-1 border border-gray-300 rounded text-sm" />
+                    </div>
+                  </div>
+                </div>
               </div>
             </div>
 
@@ -1067,26 +1225,60 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
             {formData.selectedAnalytes.length > 0 && (
               <div className="bg-green-50 border border-green-200 rounded-lg p-4">
                 <h4 className="font-medium text-green-900 mb-2">Selected Analytes ({formData.selectedAnalytes.length})</h4>
+                <p className="text-xs text-gray-500 mb-3">Set sort order and optional section sub-headings for PDF report grouping.</p>
                 <div className="space-y-2">
-                  {selectedAnalyteDetails.map((analyte) => (
-                    <div key={analyte.id} className="flex items-center justify-between bg-white p-2 rounded border border-green-100 shadow-sm">
-                        <div className="flex items-center">
+                  {selectedAnalyteDetails.map((analyte) => {
+                    const meta = analyteMetadata[analyte.id] || { sort_order: 0, section_heading: '' };
+                    return (
+                      <div key={analyte.id} className="bg-white p-2 rounded border border-green-100 shadow-sm">
+                        <div className="flex items-center justify-between mb-1">
+                          <div className="flex items-center">
                             <span className="font-medium text-gray-800 text-sm">{analyte.name}</span>
                             <span className="ml-2 text-xs text-gray-500">
-                                {analyte.referenceRange ? `(${analyte.referenceRange})` : ''} 
-                                {analyte.unit ? ` [${analyte.unit}]` : ''}
+                              {analyte.referenceRange ? `(${analyte.referenceRange})` : ''}
+                              {analyte.unit ? ` [${analyte.unit}]` : ''}
                             </span>
-                        </div>
-                        <button
+                          </div>
+                          <button
                             type="button"
                             onClick={() => setEditingAttachedAnalyte(analyte)}
                             className="text-blue-600 hover:text-blue-800 text-xs font-medium px-2 py-1 rounded hover:bg-blue-50 flex items-center"
-                        >
+                          >
                             <Edit className="w-3 h-3 mr-1" />
                             Edit
-                        </button>
-                    </div>
-                  ))}
+                          </button>
+                        </div>
+                        <div className="flex gap-2 mt-1">
+                          <div className="flex items-center gap-1">
+                            <label className="text-xs text-gray-500 whitespace-nowrap">Order:</label>
+                            <input
+                              type="number"
+                              min={0}
+                              value={meta.sort_order}
+                              onChange={(e) => setAnalyteMetadata(prev => ({
+                                ...prev,
+                                [analyte.id]: { ...meta, sort_order: parseInt(e.target.value) || 0 }
+                              }))}
+                              className="w-14 text-xs border border-gray-300 rounded px-1 py-0.5 focus:outline-none focus:ring-1 focus:ring-blue-400"
+                            />
+                          </div>
+                          <div className="flex items-center gap-1 flex-1">
+                            <label className="text-xs text-gray-500 whitespace-nowrap">Section Heading:</label>
+                            <input
+                              type="text"
+                              value={meta.section_heading}
+                              placeholder="e.g. Chemical Examination"
+                              onChange={(e) => setAnalyteMetadata(prev => ({
+                                ...prev,
+                                [analyte.id]: { ...meta, section_heading: e.target.value }
+                              }))}
+                              className="flex-1 text-xs border border-gray-300 rounded px-1 py-0.5 focus:outline-none focus:ring-1 focus:ring-blue-400"
+                            />
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
                 </div>
               </div>
             )}

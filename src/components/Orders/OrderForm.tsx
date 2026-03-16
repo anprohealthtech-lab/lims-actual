@@ -18,9 +18,11 @@ import {
   Loader,
   Clock as ClockIcon,
   DollarSign,
-  Gift
+  Gift,
+  UserPlus,
+  Truck
 } from 'lucide-react';
-import { database, supabase, formatAge } from '../../utils/supabase';
+import { database, supabase, formatAge, LabPatientFieldConfig } from '../../utils/supabase';
 import { SampleTypeIndicator } from '../Common/SampleTypeIndicator';
 import { getLabCurrency } from '../../utils/currency';
 import {
@@ -99,6 +101,7 @@ interface TestGroup {
   sample_type?: string | null;
   required_patient_inputs?: string[];
   ref_range_ai_config?: any;
+  collection_charge?: number | null;
 }
 
 
@@ -184,6 +187,12 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
   const [validationErrors, setValidationErrors] = useState<string[]>([]);
   const [submissionProgress, setSubmissionProgress] = useState<string>('');
 
+  // Custom patient field configs (searchable ones)
+  const [searchablePatientFields, setSearchablePatientFields] = useState<LabPatientFieldConfig[]>([]);
+  // All custom patient field configs (for Add New Patient modal)
+  const [allPatientFieldConfigs, setAllPatientFieldConfigs] = useState<LabPatientFieldConfig[]>([]);
+  const [newPatientCustomFields, setNewPatientCustomFields] = useState<Record<string, any>>({});
+
   // Searches / dropdown visibility
   const [patientSearch, setPatientSearch] = useState<string>('');
   const [doctorSearch, setDoctorSearch] = useState<string>('Self / Walk-in');
@@ -220,6 +229,14 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
   const [paymentMethod, setPaymentMethod] = useState<'cash' | 'card' | 'upi' | 'online'>('cash');
   const [amountPaid, setAmountPaid] = useState<number>(0);
   const [takeFullPayment, setTakeFullPayment] = useState<boolean>(false);
+
+  // Quick-Add Doctor modal
+  const [showAddDoctorModal, setShowAddDoctorModal] = useState<boolean>(false);
+  const [newDoctorData, setNewDoctorData] = useState({ name: '', specialization: '', phone: '', hospital: '' });
+  const [addingDoctor, setAddingDoctor] = useState<boolean>(false);
+
+  // Sample Collection Charge
+  const [collectionCharge, setCollectionCharge] = useState<number>(0);
 
   // Loyalty Points
   const [loyaltyEnabled, setLoyaltyEnabled] = useState<boolean>(false);
@@ -308,10 +325,10 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
         } else {
           console.warn('Matched patient not found in patients list, will need to refresh');
           // Refresh patients and try again
-          const updatedPatients = await database.patients.getAll();
-          if (updatedPatients && Array.isArray(updatedPatients)) {
-            setPatients(updatedPatients);
-            const matched = updatedPatients.find((p: any) => p.id === trfExtraction.matchedPatient!.id);
+          const { data: refreshedPatients } = await database.patients.getAll();
+          if (refreshedPatients && Array.isArray(refreshedPatients)) {
+            setPatients(refreshedPatients);
+            const matched = refreshedPatients.find((p: any) => p.id === trfExtraction.matchedPatient!.id);
             if (matched) {
               setSelectedPatient(matched);
               setPatientSearch(matched.name);
@@ -347,12 +364,12 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
                 console.log('✓ Patient created in database:', newPatient);
 
                 // Refresh patients list
-                const updatedPatients = await database.patients.getAll();
-                if (updatedPatients && Array.isArray(updatedPatients)) {
-                  setPatients(updatedPatients);
+                const { data: refreshedPatients } = await database.patients.getAll();
+                if (refreshedPatients && Array.isArray(refreshedPatients)) {
+                  setPatients(refreshedPatients);
 
                   // Try to find in refreshed list
-                  const created = updatedPatients.find((p: any) => p.id === newPatient.id);
+                  const created = refreshedPatients.find((p: any) => p.id === newPatient.id);
                   if (created) {
                     setSelectedPatient(created);
                     setPatientSearch(created.name);
@@ -367,7 +384,6 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
                     console.log('✓ Patient selected directly:', newPatient.name);
                   }
                 } else {
-                  console.error('Failed to refresh patient list');
                   // Still use the newly created patient
                   setSelectedPatient(newPatient as any);
                   setPatientSearch(newPatient.name);
@@ -537,17 +553,44 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
     setLoadingPatients(true);
     try {
       const labId = await database.getCurrentUserLabId();
-      const { data, error } = await supabase
+      const patientSelect = 'id, name, phone, age, gender, age_unit, dob, date_of_birth, default_doctor_id, default_location_id, default_payment_type, custom_fields';
+
+      // Main query: name + phone
+      const mainQuery = supabase
         .from('patients')
-        .select('id, name, phone, age, gender, age_unit, dob, date_of_birth, default_doctor_id, default_location_id, default_payment_type')
+        .select(patientSelect)
         .eq('lab_id', labId)
+        .eq('is_active', true)
         .or(`name.ilike.%${query}%,phone.ilike.%${query}%`)
         .order('name')
         .limit(20);
 
-      if (!error && data) {
-        setPatients(data as Patient[]);
+      // Custom fields search: filter on the stored generated column custom_fields_text
+      // (PostgREST does not support ::text cast in filter column names)
+      const customFieldQueries = searchablePatientFields.length > 0 ? [
+        supabase
+          .from('patients')
+          .select(patientSelect)
+          .eq('lab_id', labId)
+          .eq('is_active', true)
+          .ilike('custom_fields_text', `%${query}%`)
+          .limit(20)
+      ] : [];
+
+      const [mainResult, ...customResults] = await Promise.all([mainQuery, ...customFieldQueries]);
+
+      // Merge and deduplicate by id
+      const seen = new Set<string>();
+      const merged: any[] = [];
+      for (const p of [...(mainResult.data || []), ...customResults.flatMap(r => r.data || [])]) {
+        if (!seen.has(p.id)) {
+          seen.add(p.id);
+          merged.push(p);
+        }
       }
+      merged.sort((a, b) => a.name.localeCompare(b.name));
+
+      setPatients(merged as Patient[]);
     } catch (err) {
       console.error('Error searching patients:', err);
     } finally {
@@ -633,6 +676,14 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
         // Set combined list - packages first, then test groups
         setTestGroups([...packagesList, ...testGroupsList]);
         setOutsourcedLabs(outsourcedLabsRes?.data ?? []);
+
+        // Load searchable custom patient fields
+        const searchableFields = await database.labPatientFieldConfigs.getSearchable();
+        setSearchablePatientFields(searchableFields);
+
+        // Load all custom patient field configs for Add New Patient modal
+        const { data: allFields } = await database.labPatientFieldConfigs.getAll();
+        if (allFields) setAllPatientFieldConfigs(allFields);
 
         // Auto-select user's primary location if no patient is pre-selected
         if (!preSelectedPatientId) {
@@ -859,12 +910,16 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
   // Filtering helpers
   const filteredPatients = patients.filter((p) => {
     const q = patientSearch.toLowerCase().trim();
-    return (
-      !q ||
-      p.name?.toLowerCase().includes(q) ||
-      (p.phone ?? '').includes(q) ||
-      p.id?.includes(q)
-    );
+    if (!q) return true;
+    if (p.name?.toLowerCase().includes(q)) return true;
+    if ((p.phone ?? '').includes(q)) return true;
+    if (p.id?.includes(q)) return true;
+    // Also pass through patients that matched via custom fields search
+    const cf = (p as any).custom_fields;
+    if (cf && typeof cf === 'object') {
+      return Object.values(cf).some(v => String(v ?? '').toLowerCase().includes(q));
+    }
+    return false;
   });
 
   const filteredDoctors = doctors.filter((d) => {
@@ -939,60 +994,10 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
               onPickPatient(matched);
               console.log('✓ Auto-selected matched patient (confidence:', formData.matchConfidence, '):', matched.name);
             }
-          } else if (result.patientInfo && formData.patientData) {
-            // Low confidence match (<70%) or no match - create new patient
-            console.log('Creating new patient (no match or confidence <70%):', {
-              hasMatch: !!formData.matchedPatientId,
-              confidence: formData.matchConfidence,
-              trfName: result.patientInfo?.name
-            });
-
-            const validation = validatePatientData(result.patientInfo);
-
-            if (validation.isValid) {
-              console.log('Auto-creating new patient from TRF...');
-
-              // Get current user's lab_id
-              const { data: { user } } = await supabase.auth.getUser();
-              if (user) {
-                const { data: userRecord } = await supabase
-                  .from('users')
-                  .select('lab_id')
-                  .eq('id', user.id)
-                  .single();
-
-                if (userRecord?.lab_id) {
-                  const newPatient = await autoCreatePatientFromTRF(
-                    result.patientInfo,
-                    userRecord.lab_id
-                  );
-
-                  if (newPatient) {
-                    // Refresh patients list
-                    const updatedPatients = await database.patients.getAll();
-                    if (updatedPatients && Array.isArray(updatedPatients)) {
-                      setPatients(updatedPatients);
-
-                      // Select the new patient
-                      const created = updatedPatients.find((p: any) => p.id === newPatient.id);
-                      if (created) {
-                        setSelectedPatient(created);
-                        setPatientSearch(created.name);
-                        onPickPatient(created);
-                        console.log('✓ Auto-created new patient:', created.name);
-                      }
-                    }
-                  } else {
-                    console.warn('Failed to auto-create patient, user will need to select manually');
-                  }
-                }
-              }
-            } else {
-              console.log('Patient data incomplete, user will need to create manually');
-              console.log('Missing:', validation.missing);
-              // Show patient data in form for manual completion
-              setPatientSearch(formData.patientData.name);
-            }
+          } else if (result.patientInfo?.name) {
+            // No match or low confidence — patient will be created in handleTRFReviewClose
+            // after user reviews the extracted data. Just pre-fill the search field.
+            setPatientSearch(result.patientInfo.name);
           }
 
           // Doctor handling: find existing doctor (don't create new)
@@ -1122,6 +1127,31 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
     }, 0);
   };
 
+  // Track whether the TRF attachment was successfully linked to a saved order
+  const trfAttachmentLinked = React.useRef(false);
+
+  // When form is closed without saving, delete any orphan TRF attachment
+  const handleClose = async () => {
+    if (trfExtraction?.attachmentId && !trfAttachmentLinked.current) {
+      // Delete orphan attachment from storage + DB
+      try {
+        const { data: att } = await supabase
+          .from('attachments')
+          .select('file_path')
+          .eq('id', trfExtraction.attachmentId)
+          .single();
+        if (att?.file_path) {
+          await supabase.storage.from('attachments').remove([att.file_path]);
+        }
+        await supabase.from('attachments').delete().eq('id', trfExtraction.attachmentId);
+        console.log('Cleaned up orphan TRF attachment:', trfExtraction.attachmentId);
+      } catch (err) {
+        console.warn('Failed to clean up orphan TRF attachment:', err);
+      }
+    }
+    onClose();
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
 
@@ -1223,7 +1253,8 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
         expected_date: computedExpectedDate,
         doctor: (selectedDoctor && selectedDoctor !== SELF_DOCTOR_ID) ? (doctors.find((d) => d.id === selectedDoctor)?.name || 'Self') : 'Self',
         notes: notes || null,
-        total_amount: calculatedTotal, // Subtotal before discount
+        total_amount: calculatedTotal + collectionCharge, // Subtotal (tests + collection charge) before discount
+        collection_charge: collectionCharge > 0 ? collectionCharge : null,
         final_amount: finalAmount, // Total after discount
         ...(isAdmin && customOrderDate ? {
           created_at: new Date(customOrderDate).toISOString(),
@@ -1239,12 +1270,28 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
           pregnancy_status: additionalInputs.pregnancy_status,
           lmp: additionalInputs.lmp,
           date_of_birth: selectedPatient!.dob || selectedPatient!.date_of_birth || null,
-          additional_inputs: additionalInputs // Catch-all
+          additional_inputs: additionalInputs, // Catch-all
+          // Custom patient fields marked for AI ref range context (e.g. species, breed)
+          ...(() => {
+            const aiFields = allPatientFieldConfigs.filter(f => f.use_for_ai_ref_range);
+            if (aiFields.length === 0) return {};
+            const cf = (selectedPatient as any).custom_fields;
+            const parsed = typeof cf === 'string' ? (() => { try { return JSON.parse(cf); } catch { return {}; } })() : (cf || {});
+            const custom_patient_data: Record<string, any> = {};
+            for (const f of aiFields) {
+              if (parsed[f.field_key] !== undefined && parsed[f.field_key] !== '') {
+                custom_patient_data[f.label] = parsed[f.field_key];
+              }
+            }
+            return Object.keys(custom_patient_data).length > 0 ? { custom_patient_data } : {};
+          })()
         }
       };
 
       if (testsPayload) orderData.tests = testsPayload;
       if (testRequestFile) orderData.testRequestFile = testRequestFile;
+      // Pass TRF attachment ID so Orders.tsx links only this specific attachment
+      if (trfExtraction?.attachmentId) orderData.trfAttachmentId = trfExtraction.attachmentId;
 
       // Include loyalty redemption data in order
       if (loyaltyRedeemEnabled && loyaltyPointsToRedeem > 0) {
@@ -1254,6 +1301,8 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
 
       setSubmissionProgress('Saving order...');
       const result = await onSubmit(orderData);
+      // Mark TRF attachment as linked so handleClose won't delete it
+      trfAttachmentLinked.current = true;
       // Auto-create invoice and payment if discount or payment is provided
       if (discountValue > 0 || amountPaid > 0) {
         try {
@@ -1276,14 +1325,18 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
 
           console.log('📝 Creating invoice for order:', orderId);
 
+          // Subtotal including collection charge for invoice accuracy
+          const invoiceSubtotal = calculatedTotal + collectionCharge;
+
           // Create invoice
           const invoiceData = {
             order_id: orderId,
             patient_id: selectedPatient!.id,
             patient_name: selectedPatient!.name,
             lab_id: labId,
-            subtotal: calculatedTotal,
-            total_before_discount: calculatedTotal,
+            subtotal: invoiceSubtotal,
+            total_before_discount: invoiceSubtotal,
+            collection_charge: collectionCharge > 0 ? collectionCharge : null,
             discount: discountAmount,
             total_discount: discountAmount,
             total_after_discount: finalAmount,
@@ -1360,6 +1413,23 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
               outsourced_cost: outsourcedCost
             };
           }));
+
+          // Add collection charge as a separate invoice line item if applicable
+          if (collectionCharge > 0) {
+            invoiceItemsData.push({
+              invoice_id: invoice.id,
+              order_test_id: null,
+              test_name: 'Sample Collection Charge',
+              price: collectionCharge,
+              quantity: 1,
+              total: collectionCharge,
+              lab_id: labId,
+              order_id: orderId,
+              location_receivable: null,
+              outsourced_lab_id: null,
+              outsourced_cost: null
+            } as any);
+          }
 
           // ✅ OPTIMIZED: Run invoice items and payment creation in parallel if applicable
           const parallelOps: Promise<any>[] = [];
@@ -1490,6 +1560,36 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
     }
   };
 
+  // Quick-Add Doctor handler
+  const handleAddDoctor = async () => {
+    if (!newDoctorData.name.trim()) return;
+    setAddingDoctor(true);
+    try {
+      const result = await database.doctors.create({
+        name: newDoctorData.name.trim(),
+        specialization: newDoctorData.specialization || undefined,
+        phone: newDoctorData.phone || undefined,
+        hospital: newDoctorData.hospital || undefined,
+        is_referring_doctor: true,
+      });
+      if (result.data) {
+        const { data: refreshed } = await database.doctors.getAll();
+        if (refreshed) setDoctors(refreshed as any);
+        setSelectedDoctor(result.data.id);
+        setDoctorSearch(result.data.name);
+        setShowAddDoctorModal(false);
+        setNewDoctorData({ name: '', specialization: '', phone: '', hospital: '' });
+      } else {
+        alert('Failed to add doctor. Please try again.');
+      }
+    } catch (e) {
+      console.error('Error adding doctor:', e);
+      alert('Error adding doctor.');
+    } finally {
+      setAddingDoctor(false);
+    }
+  };
+
   // Totals (for UI display only)
   const selectedTestRows = testGroups.filter((t) => selectedTests.includes(t.id));
   const totalAmount = selectedTestRows.reduce((sum, t) => {
@@ -1497,14 +1597,21 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
     return sum + price;
   }, 0);
 
+  // Auto-update collection charge from selected test groups
+  React.useEffect(() => {
+    const autoCharge = selectedTestRows.reduce((sum, t) => sum + (t.collection_charge || 0), 0);
+    setCollectionCharge(autoCharge);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedTests.join(',')]);
+
   // Calculate discount
   const discountAmount = discountValue > 0
-    ? (discountType === 'percentage' ? (totalAmount * discountValue) / 100 : Math.min(discountValue, totalAmount))
+    ? (discountType === 'percentage' ? ((totalAmount + collectionCharge) * discountValue) / 100 : Math.min(discountValue, totalAmount + collectionCharge))
     : 0;
   const loyaltyDiscountAmount = loyaltyRedeemEnabled && loyaltyPointsToRedeem > 0
     ? loyaltyPointsToRedeem * loyaltyPointValue
     : 0;
-  const finalAmount = Math.max(0, totalAmount - discountAmount - loyaltyDiscountAmount);
+  const finalAmount = Math.max(0, totalAmount + collectionCharge - discountAmount - loyaltyDiscountAmount);
   const balanceDue = finalAmount - amountPaid;
 
   useEffect(() => {
@@ -1549,7 +1656,7 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
         {/* Header */}
         <div className="flex items-center justify-between p-6 border-b border-gray-200">
           <h2 className="text-xl font-semibold text-gray-900">Create New Order</h2>
-          <button onClick={onClose} className="text-gray-400 hover:text-gray-600 p-1 rounded">
+          <button onClick={handleClose} className="text-gray-400 hover:text-gray-600 p-1 rounded">
             <X className="h-6 w-6" />
           </button>
         </div>
@@ -1761,6 +1868,10 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
                               <div className="font-semibold text-gray-900 text-sm">{p.name}</div>
                               <div className="text-xs text-gray-600 mt-0.5">
                                 {formatAge(p.age, p.age_unit)}, {p.gender ?? '-'} • {p.phone ?? '-'} • ID: {p.id.slice(-8)}
+                                {searchablePatientFields.map(field => {
+                                  const val = (p as any).custom_fields?.[field.field_key];
+                                  return val ? <span key={field.field_key}> • {field.label}: {val}</span> : null;
+                                })}
                               </div>
                             </button>
                           ))}
@@ -2224,7 +2335,8 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
                   Referring Doctor
                   <span className="ml-1 text-xs text-gray-400 font-normal">(optional)</span>
                 </label>
-                <div className="relative">
+                <div className="flex gap-2">
+                  <div className="relative flex-1">
                   <input
                     type="text"
                     placeholder="Search doctor or leave as Self…"
@@ -2287,6 +2399,17 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
                       ))}
                     </div>
                   )}
+                  </div>
+                  {/* Quick-Add Doctor button */}
+                  <button
+                    type="button"
+                    onClick={() => setShowAddDoctorModal(true)}
+                    title="Add new doctor"
+                    className="flex-shrink-0 px-3 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 transition-colors flex items-center gap-1"
+                  >
+                    <UserPlus className="h-4 w-4" />
+                    <span className="text-xs hidden sm:inline">New</span>
+                  </button>
                 </div>
                 {selectedDoctor !== 'SELF' && selectedDoctor && (
                   <button
@@ -2468,6 +2591,25 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
                 <div className="flex justify-between text-sm">
                   <span className="text-gray-600">Subtotal ({selectedTests.length} tests)</span>
                   <span className="font-medium">{currencySymbol}{totalAmount.toLocaleString()}</span>
+                </div>
+
+                {/* Sample Collection Charge */}
+                <div className="flex items-center justify-between text-sm border-t pt-2">
+                  <label className="flex items-center gap-1.5 text-gray-700">
+                    <Truck className="h-3.5 w-3.5 text-orange-500" />
+                    Collection Charge
+                  </label>
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="number"
+                      min="0"
+                      step="0.01"
+                      value={collectionCharge}
+                      onChange={(e) => setCollectionCharge(Number(e.target.value))}
+                      className="w-24 px-2 py-1 text-sm border border-gray-300 rounded-md text-right focus:ring-2 focus:ring-orange-400"
+                    />
+                    <span className="text-gray-500 text-xs">{currencySymbol}</span>
+                  </div>
                 </div>
 
                 {/* Discount Input */}
@@ -2677,7 +2819,7 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
             <div className="flex items-center gap-3">
               <button
                 type="button"
-                onClick={onClose}
+                onClick={handleClose}
                 disabled={isSubmitting}
                 className="px-4 py-2 border border-gray-300 rounded-md text-gray-700 hover:bg-gray-50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
               >
@@ -2694,13 +2836,100 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
                     <span>Creating Order...</span>
                   </>
                 ) : (
-                  <span>Create Order{selectedTests.length > 0 ? ` – ${currencySymbol}${totalAmount}` : ''}</span>
+                  <span>Create Order{selectedTests.length > 0 ? ` – ${currencySymbol}${finalAmount}` : ''}</span>
                 )}
               </button>
             </div>
           </div>
         </form>
       </div>
+
+      {/* Quick-Add Doctor Modal */}
+      {showAddDoctorModal && (
+        <div className="fixed inset-0 bg-black/50 z-[200] flex items-center justify-center p-4">
+          <div className="bg-white rounded-xl shadow-2xl p-6 w-full max-w-sm">
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-lg font-semibold text-gray-900 flex items-center gap-2">
+                <UserPlus className="h-5 w-5 text-blue-600" />
+                Add New Doctor
+              </h3>
+              <button
+                type="button"
+                onClick={() => { setShowAddDoctorModal(false); setNewDoctorData({ name: '', specialization: '', phone: '', hospital: '' }); }}
+                className="text-gray-400 hover:text-gray-600"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+
+            <div className="space-y-3">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Name <span className="text-red-500">*</span></label>
+                <input
+                  type="text"
+                  value={newDoctorData.name}
+                  onChange={(e) => setNewDoctorData(p => ({ ...p, name: e.target.value }))}
+                  autoFocus
+                  placeholder="Dr. John Smith"
+                  className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Specialization</label>
+                <input
+                  type="text"
+                  value={newDoctorData.specialization}
+                  onChange={(e) => setNewDoctorData(p => ({ ...p, specialization: e.target.value }))}
+                  placeholder="General Medicine"
+                  className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Phone</label>
+                <input
+                  type="text"
+                  value={newDoctorData.phone}
+                  onChange={(e) => setNewDoctorData(p => ({ ...p, phone: e.target.value }))}
+                  placeholder="+91 9999999999"
+                  className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Hospital / Clinic</label>
+                <input
+                  type="text"
+                  value={newDoctorData.hospital}
+                  onChange={(e) => setNewDoctorData(p => ({ ...p, hospital: e.target.value }))}
+                  placeholder="City Hospital"
+                  className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                />
+              </div>
+            </div>
+
+            <div className="flex gap-3 mt-5">
+              <button
+                type="button"
+                onClick={() => { setShowAddDoctorModal(false); setNewDoctorData({ name: '', specialization: '', phone: '', hospital: '' }); }}
+                className="flex-1 px-4 py-2 border border-gray-300 rounded-md text-gray-700 hover:bg-gray-50"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleAddDoctor}
+                disabled={!newDoctorData.name.trim() || addingDoctor}
+                className="flex-1 px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:opacity-50 flex items-center justify-center gap-2"
+              >
+                {addingDoctor ? (
+                  <><Loader className="h-4 w-4 animate-spin" /> Adding...</>
+                ) : (
+                  <>Add Doctor</>
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* New Patient Modal */}
       {showNewPatientModal && (
@@ -2726,6 +2955,7 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
                     gender: newPatient.gender,
                     phone: newPatient.phone.trim(),
                     email: newPatient.email?.trim() || null,
+                    custom_fields: Object.keys(newPatientCustomFields).length > 0 ? newPatientCustomFields : null,
                     // sensible defaults
                     address: '',
                     city: '',
@@ -2755,6 +2985,7 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
                     setSelectedPatient(data);
                     setShowNewPatientModal(false);
                     setNewPatient({ name: '', age: '', age_unit: 'years', gender: 'Male', phone: '', email: '' });
+                    setNewPatientCustomFields({});
                   }
                 } catch (err) {
                   console.error(err);
@@ -2830,12 +3061,46 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
                     className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm"
                   />
                 </div>
+                {allPatientFieldConfigs.map((field) => (
+                  <div key={field.field_key} className={field.field_type === 'text' || field.field_type === 'textarea' ? 'md:col-span-2' : ''}>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">
+                      {field.label}{field.required ? ' *' : ''}
+                    </label>
+                    {field.field_type === 'select' && field.options ? (
+                      <select
+                        required={field.required}
+                        value={newPatientCustomFields[field.field_key] ?? ''}
+                        onChange={(e) => setNewPatientCustomFields((p) => ({ ...p, [field.field_key]: e.target.value }))}
+                        className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm"
+                      >
+                        <option value="">Select…</option>
+                        {field.options.map((opt: string) => <option key={opt} value={opt}>{opt}</option>)}
+                      </select>
+                    ) : field.field_type === 'textarea' ? (
+                      <textarea
+                        required={field.required}
+                        value={newPatientCustomFields[field.field_key] ?? ''}
+                        onChange={(e) => setNewPatientCustomFields((p) => ({ ...p, [field.field_key]: e.target.value }))}
+                        rows={2}
+                        className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm"
+                      />
+                    ) : (
+                      <input
+                        type={field.field_type === 'number' ? 'number' : field.field_type === 'date' ? 'date' : 'text'}
+                        required={field.required}
+                        value={newPatientCustomFields[field.field_key] ?? ''}
+                        onChange={(e) => setNewPatientCustomFields((p) => ({ ...p, [field.field_key]: e.target.value }))}
+                        className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm"
+                      />
+                    )}
+                  </div>
+                ))}
               </div>
 
               <div className="flex items-center justify-end gap-3 pt-2">
                 <button
                   type="button"
-                  onClick={() => setShowNewPatientModal(false)}
+                  onClick={() => { setShowNewPatientModal(false); setNewPatientCustomFields({}); }}
                   className="px-4 py-2 text-sm border border-gray-300 rounded-md hover:bg-gray-50"
                   disabled={creatingPatient}
                 >
