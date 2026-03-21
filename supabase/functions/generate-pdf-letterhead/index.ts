@@ -1042,6 +1042,20 @@ function renderTemplate(html: string, context: Record<string, any>): string {
     return String(value);
   });
 
+  // Clean up qr_code visual placeholder wrapper inserted by TemplateStudio.
+  // Replaces <div data-lims-placeholder="qr_code" ...><img .../></div>
+  // with a clean <div class="qr-verify"><img/><p>Scan to verify</p></div>
+  result = result.replace(
+    /<div[^>]*data-lims-placeholder="qr_code"[^>]*>([\s\S]*?)<\/div>/gi,
+    (_match, inner) => {
+      const imgMatch = inner.match(/<img[^>]*>/i);
+      if (imgMatch) {
+        return `<div class="qr-verify" style="text-align:left;">${imgMatch[0]}<p style="margin:2px 0 0 0;font-size:9px;color:#6b7280;">Scan to verify</p></div>`;
+      }
+      return inner; // fallback: just return inner content
+    }
+  );
+
   return result;
 }
 
@@ -1892,6 +1906,8 @@ function generateClassicDefaultTemplateHtml(
   patientInfoConfig?: PatientInfoConfig | null,
   printOptions?: Record<string, unknown>,
   extraFieldConfigs?: Array<{ field_key: string; label: string }>,
+  groupInterpretations?: Map<string, string>,
+  sectionLabels?: Record<string, string>,
 ): string {
   const normalizedSectionContent =
     sectionContent && typeof sectionContent === "object" ? sectionContent : {};
@@ -1966,7 +1982,11 @@ function generateClassicDefaultTemplateHtml(
       for (const analyte of block.analytes) {
         const rowBg = rowIndexGlobal++ % 2 === 0 ? "#ffffff" : "#f8fafc";
         const parameterName = analyte.parameter || analyte.name || analyte.test_name || "";
-        const value = analyte.value ?? "";
+        const _isCalc = analyte.is_auto_calculated || analyte.is_calculated;
+        const rawValue = analyte.value ?? "";
+        const value = _isCalc && rawValue !== "" && !isNaN(Number(rawValue))
+          ? String(parseFloat(Number(rawValue).toFixed(2)))
+          : rawValue;
         const unit = analyte.unit || "";
         const refRange = analyte.reference_range || "";
         const flag = analyte.flag || "";
@@ -2048,10 +2068,12 @@ function generateClassicDefaultTemplateHtml(
       } // end for analyte
     } // end for block
 
+    const _classicGroupInterp = groupInterpretations?.get(groupId);
     testResultsHtml += `
           </tbody>
         </table>
         ${analytes.some((a: any) => a.is_auto_calculated || a.is_calculated) ? '<p style="font-size:9px;color:#9ca3af;margin:2px 0 8px;font-style:italic;">*calc \u2013 Calculated parameter</p>' : ''}
+        ${_classicGroupInterp ? `<div class="limsv2-report group-interpretation" style="margin-top:8px;padding:6px 10px;border-top:1px solid #e2e8f0;font-size:inherit;">${_classicGroupInterp}</div>` : ''}
       </div>
     `;
   }
@@ -2072,6 +2094,7 @@ function generateClassicDefaultTemplateHtml(
   `;
 
   const buildSectionLabel = (key: string) => {
+    if (sectionLabels?.[key]) return sectionLabels[key];
     const { rawKey } = normalizeSectionKey(key);
     if (!rawKey) return "Report Section";
     return rawKey
@@ -2148,6 +2171,8 @@ function generateBasicDefaultTemplateHtml(
   printOptions?: Record<string, unknown>,
   extraFieldConfigs?: Array<{ field_key: string; label: string }>,
   groupId?: string,
+  groupInterpretations?: Map<string, string>,
+  sectionLabels?: Record<string, string>,
 ): string {
   const normalizedSectionContent =
     sectionContent && typeof sectionContent === "object" ? sectionContent : {};
@@ -2160,10 +2185,18 @@ function generateBasicDefaultTemplateHtml(
   const sigPx = basePx + 1;
   const testNameWeight = (printOptions?.testNameBold ?? true) ? "600" : "normal";
   const calcMarker = (printOptions?.calcMarker as string) ?? "asterisk";
+  const boldAllValues = (printOptions?.boldAllValues as boolean) ?? true;
+  const boldAbnormal = (printOptions?.boldAbnormalValues as boolean) ?? true;
   const sectionHeaderInline = (printOptions?.sectionHeaderInline as boolean) ?? false;
-  const resultColors = printOptions?.resultColors as Record<string, string> | undefined;
-  const highColor = resultColors?.high || "#dc2626";
-  const lowColor = resultColors?.low || "#000000";
+  const flagSymbol = (printOptions?.flagSymbol as string) ?? "none";
+  const showFlagLegend = (printOptions?.showFlagLegend as boolean) ?? false;
+  const colCount = flagSymbol === "before" ? 5 : 4;
+  console.log("[generateBasicDefaultTemplateHtml] printOptions received:", JSON.stringify(printOptions));
+  console.log("[generateBasicDefaultTemplateHtml] boldAllValues resolved to:", boldAllValues, "(raw value:", printOptions?.boldAllValues, "type:", typeof printOptions?.boldAllValues, ")");
+  const resultColors = printOptions?.resultColors as Record<string, unknown> | undefined;
+  const colorsEnabled = resultColors?.enabled !== false;
+  const highColor = colorsEnabled ? (String(resultColors?.high || "") || "#dc2626") : "#000000";
+  const lowColor = colorsEnabled ? (String(resultColors?.low || "") || "#000000") : "#000000";
 
   const noColorCss = `
 <style>
@@ -2278,49 +2311,27 @@ function generateBasicDefaultTemplateHtml(
   vertical-align: middle !important;
 }
 
-.basic-report-template .tbl-results thead th:nth-child(1) {
-  width: 50% !important;
-  text-align: left !important;
-}
-
-.basic-report-template .tbl-results thead th:nth-child(2) {
-  width: 15% !important;
-  text-align: right !important;
-}
-
-.basic-report-template .tbl-results thead th:nth-child(3) {
-  width: 10% !important;
-  text-align: left !important;
-}
-
-.basic-report-template .tbl-results thead th:nth-child(4) {
-  width: 25% !important;
-  text-align: right !important;
-}
-
-.basic-report-template .tbl-results tbody td:nth-child(1) {
-  width: 50% !important;
-  text-align: left !important;
-  color: #111 !important;
-}
-
-.basic-report-template .tbl-results tbody td:nth-child(2) {
-  width: 15% !important;
-  text-align: right !important;
-}
-
-.basic-report-template .tbl-results tbody td:nth-child(3) {
-  width: 10% !important;
-  text-align: left !important;
-  color: #444 !important;
-  white-space: nowrap !important;
-}
-
-.basic-report-template .tbl-results tbody td:nth-child(4) {
-  width: 25% !important;
-  text-align: right !important;
-  color: #666 !important;
-}
+${flagSymbol === "before" ? `
+.basic-report-template .tbl-results thead th:nth-child(1) { width: 44% !important; text-align: left !important; }
+.basic-report-template .tbl-results thead th:nth-child(2) { width: 7% !important; text-align: center !important; }
+.basic-report-template .tbl-results thead th:nth-child(3) { width: 14% !important; text-align: right !important; }
+.basic-report-template .tbl-results thead th:nth-child(4) { width: 10% !important; text-align: left !important; }
+.basic-report-template .tbl-results thead th:nth-child(5) { width: 25% !important; text-align: right !important; }
+.basic-report-template .tbl-results tbody td:nth-child(1) { width: 44% !important; text-align: left !important; color: #111 !important; }
+.basic-report-template .tbl-results tbody td:nth-child(2) { width: 7% !important; text-align: center !important; font-weight: 700 !important; }
+.basic-report-template .tbl-results tbody td:nth-child(3) { width: 14% !important; text-align: right !important; }
+.basic-report-template .tbl-results tbody td:nth-child(4) { width: 10% !important; text-align: left !important; color: #444 !important; white-space: nowrap !important; }
+.basic-report-template .tbl-results tbody td:nth-child(5) { width: 25% !important; text-align: right !important; color: #666 !important; }
+` : `
+.basic-report-template .tbl-results thead th:nth-child(1) { width: 50% !important; text-align: left !important; }
+.basic-report-template .tbl-results thead th:nth-child(2) { width: 15% !important; text-align: right !important; }
+.basic-report-template .tbl-results thead th:nth-child(3) { width: 10% !important; text-align: left !important; }
+.basic-report-template .tbl-results thead th:nth-child(4) { width: 25% !important; text-align: right !important; }
+.basic-report-template .tbl-results tbody td:nth-child(1) { width: 50% !important; text-align: left !important; color: #111 !important; }
+.basic-report-template .tbl-results tbody td:nth-child(2) { width: 15% !important; text-align: right !important; }
+.basic-report-template .tbl-results tbody td:nth-child(3) { width: 10% !important; text-align: left !important; color: #444 !important; white-space: nowrap !important; }
+.basic-report-template .tbl-results tbody td:nth-child(4) { width: 25% !important; text-align: right !important; color: #666 !important; }
+`}
 
 .basic-report-template .tbl-results td,
 .basic-report-template .tbl-results th {
@@ -2357,7 +2368,7 @@ function generateBasicDefaultTemplateHtml(
   text-align: right !important;
   vertical-align: top !important;
   font-size: ${basePx}px !important;
-  font-weight: 600 !important;
+  font-weight: ${boldAllValues ? "600" : "normal"} !important;
   font-variant-numeric: tabular-nums !important;
 }
 
@@ -2367,7 +2378,7 @@ function generateBasicDefaultTemplateHtml(
 .basic-report-template .val.H,
 .basic-report-template .val.High {
   color: ${highColor} !important;
-  font-weight: 700 !important;
+  ${boldAbnormal ? "font-weight: 700 !important;" : ""}
 }
 
 .basic-report-template .val.low,
@@ -2377,7 +2388,7 @@ function generateBasicDefaultTemplateHtml(
 .basic-report-template .val.L,
 .basic-report-template .val.Low {
   color: ${lowColor} !important;
-  font-weight: 700 !important;
+  ${boldAbnormal ? "font-weight: 700 !important;" : ""}
 }
 
 .basic-report-template .main-group-row td {
@@ -2536,6 +2547,7 @@ function generateBasicDefaultTemplateHtml(
           <thead>
             <tr>
               <th>TEST NAME</th>
+              ${flagSymbol === "before" ? `<th>FLAG</th>` : ""}
               <th>VALUE</th>
               <th>UNITS</th>
               <th>Bio. Ref. Interval</th>
@@ -2543,7 +2555,7 @@ function generateBasicDefaultTemplateHtml(
           </thead>
           <tbody>
             <tr class="main-group-row">
-              <td colspan="4">
+              <td colspan="${colCount}">
                 <div class="center-title">${groupName}</div>
                 ${specimenText}
               </td>
@@ -2555,20 +2567,23 @@ function generateBasicDefaultTemplateHtml(
       if (block.heading) {
         testResultsHtml += `
             <tr class="sub-section-header">
-              <td colspan="4">${block.heading}</td>
+              <td colspan="${colCount}">${block.heading}</td>
             </tr>
         `;
       }
 
       for (const analyte of block.analytes) {
         const parameterName = analyte.parameter || analyte.name || analyte.test_name || "";
-        const value = analyte.value ?? "";
+        const isCalculated = analyte.is_auto_calculated || analyte.is_calculated;
+        const rawValue = analyte.value ?? "";
+        const value = isCalculated && rawValue !== "" && !isNaN(Number(rawValue))
+          ? String(parseFloat(Number(rawValue).toFixed(2)))
+          : rawValue;
         const unit = analyte.unit || "";
         const refRange = analyte.reference_range || "";
         const flag = analyte.flag || "";
         const normalizedFlag = normalizeReportFlag(flag);
         const canonicalFlag = normalizedFlag.canonical;
-        const isCalculated = analyte.is_auto_calculated || analyte.is_calculated;
         const calcSuffix = isCalculated
           ? calcMarker === "asterisk"
             ? `<sup style="font-size:${smallPx - 1}px; color:#444; margin-left:1px;">*</sup>`
@@ -2594,12 +2609,26 @@ function generateBasicDefaultTemplateHtml(
               ? "***"
               : "**")
           : "";
-        const displayValue = value + asteriskSuffix;
+
+        // Short flag symbol: H / L / A / H* / L*
+        const flagSymbolText = (() => {
+          if (!canonicalFlag || canonicalFlag === "normal") return "";
+          if (canonicalFlag === "high") return "H";
+          if (canonicalFlag === "low") return "L";
+          if (canonicalFlag === "critical_high") return "H*";
+          if (canonicalFlag === "critical_low") return "L*";
+          if (canonicalFlag === "abnormal") return "A";
+          return "";
+        })();
+
+        const displayValue = flagSymbol === "after" && flagSymbolText
+          ? `${value + asteriskSuffix} <span style="font-weight:700;">${flagSymbolText}</span>`
+          : value + asteriskSuffix;
 
         if (isDescriptive) {
           testResultsHtml += `
               <tr class="descriptive-row">
-                <td colspan="4" style="font-size: ${basePx}px;">
+                <td colspan="${colCount}" style="font-size: ${basePx}px;">
                   <span style="font-weight:600;">${parameterName}</span>: ${value || refText || ""}
                 </td>
               </tr>
@@ -2619,6 +2648,7 @@ function generateBasicDefaultTemplateHtml(
                     ? `<div class="test-method">${analyte.method}</div>`
                     : ""}
                 </td>
+                ${flagSymbol === "before" ? `<td class="${valClass}" style="font-size:${basePx}px; text-align:center;">${flagSymbolText}</td>` : ""}
                 <td class="${valClass}">${displayValue}</td>
                 <td style="text-align:left; vertical-align:top; font-size:${basePx}px; color:#444;">${unit}</td>
                 <td style="text-align:right; vertical-align:top; font-size:${smallPx + 1}px; color:#666;">${refRange}</td>
@@ -2634,7 +2664,7 @@ function generateBasicDefaultTemplateHtml(
           if (interp) {
             testResultsHtml += `
               <tr class="interpretation-row">
-                <td colspan="4">${interp}</td>
+                <td colspan="${colCount}">${interp}</td>
               </tr>
             `;
           }
@@ -2642,10 +2672,19 @@ function generateBasicDefaultTemplateHtml(
       }
     }
 
+    const _basicGroupInterp = groupInterpretations?.get(groupId);
     testResultsHtml += `
           </tbody>
         </table>
-        ${hasCalcInGroup ? `<p class="calculated-note">* Calculated parameter &nbsp;|&nbsp; ** Abnormal value &nbsp;|&nbsp; *** Critical value</p>` : ""}
+        ${(() => {
+          const parts: string[] = [];
+          if (hasCalcInGroup && calcMarker === "asterisk") parts.push("* Calculated parameter");
+          if (printOptions?.flagAsterisk) parts.push("** Abnormal value");
+          if (printOptions?.flagAsterisk && printOptions?.flagAsteriskCritical) parts.push("*** Critical value");
+          if (showFlagLegend && flagSymbol !== "none") parts.push("H = High &nbsp; L = Low &nbsp; A = Abnormal &nbsp; H* = Critical High &nbsp; L* = Critical Low");
+          return parts.length ? `<p class="calculated-note">${parts.join(" &nbsp;|&nbsp; ")}</p>` : "";
+        })()}
+        ${_basicGroupInterp ? `<div class="limsv2-report group-interpretation" style="margin-top:8px;padding:6px 0;border-top:1px solid #ddd;font-size:inherit;">${_basicGroupInterp}</div>` : ''}
       </figure>
     `;
   }
@@ -2670,6 +2709,7 @@ function generateBasicDefaultTemplateHtml(
   `;
 
   const buildSectionLabel = (key: string) => {
+    if (sectionLabels?.[key]) return sectionLabels[key];
     const { rawKey } = normalizeSectionKey(key);
     if (!rawKey) return "Report Section";
     return rawKey
@@ -2706,7 +2746,7 @@ function generateBasicDefaultTemplateHtml(
     }
   }
 
-  return `
+  const innerHtml = `
     ${scopedCss}
     <div class="basic-report-template" style="font-family: Arial, Helvetica, sans-serif; font-size: ${basePx}px; color: #000;">
       ${patientInfoHtml}
@@ -2715,6 +2755,11 @@ function generateBasicDefaultTemplateHtml(
       ${signatoryHtml}
     </div>
   `;
+  // The scoped CSS uses [data-test-group-id="..."] .basic-report-template selectors.
+  // We must wrap the output in a matching parent element so the selectors actually apply.
+  return groupId
+    ? `<div data-test-group-id="${groupId}">${innerHtml}</div>`
+    : innerHtml;
 }
 
 /**
@@ -2739,13 +2784,16 @@ function generateDefaultTemplateHtml(
   printOptions?: Record<string, unknown>,
   extraFieldConfigs?: Array<{ field_key: string; label: string }>,
   groupId?: string,
+  groupInterpretations?: Map<string, string>,
+  sectionLabels?: Record<string, string>,
 ): string {
   // Branch to classic template if requested
   if (templateStyle === 'classic') {
     return generateClassicDefaultTemplateHtml(
       context, testGroupNames, analytesByGroup, signatoryInfo,
       sectionContent, includeSections, showMethodology, showInterpretation,
-      patientInfoConfig, printOptions, extraFieldConfigs,
+      patientInfoConfig, printOptions, extraFieldConfigs, groupInterpretations,
+      sectionLabels,
     );
   }
 
@@ -2755,7 +2803,7 @@ function generateDefaultTemplateHtml(
       context, testGroupNames, analytesByGroup, signatoryInfo,
       sectionContent, includeSections, showMethodology, showInterpretation,
       patientInfoConfig, printOptions, extraFieldConfigs,
-      groupId,
+      groupId, groupInterpretations, sectionLabels,
     );
   }
 
@@ -3204,6 +3252,16 @@ function generateDefaultTemplateHtml(
       }
     }
 
+    // ── Group Interpretation Block ──
+    const _groupInterp = groupInterpretations?.get(groupId);
+    if (_groupInterp) {
+      testResultsHtml += `
+        <div class="limsv2-report group-interpretation" style="margin-top:10px;padding:8px 12px;border-top:1px solid #e5e7eb;border-radius:0 0 4px 4px;background:#f9fafb;">
+          ${_groupInterp}
+        </div>
+      `;
+    }
+
     testResultsHtml += `
       </div>
     `;
@@ -3239,6 +3297,7 @@ function generateDefaultTemplateHtml(
   `;
 
   const buildSectionLabel = (key: string) => {
+    if (sectionLabels?.[key]) return sectionLabels[key];
     const { rawKey } = normalizeSectionKey(key);
     if (!rawKey) return "Report Section";
     return rawKey
@@ -3312,6 +3371,8 @@ function buildPdfBodyDocumentV2(
   // Calculate spacer heights from settings (default to 130px)
   const topSpacerHeight = pdfSettings?.margins?.top ?? 130;
   const bottomSpacerHeight = pdfSettings?.margins?.bottom ?? 130;
+  const leftPadding = pdfSettings?.margins?.left ?? 20;
+  const rightPadding = pdfSettings?.margins?.right ?? 20;
 
   // QR code is now placed in signature area (bottom) - not at top
   // The QR will be injected where signature exists, on the opposite side
@@ -3425,7 +3486,7 @@ function buildPdfBodyDocumentV2(
 
     /* Safe content area - spacing handled by HTML TABLE spacers now */
     .limsv2-report-body--pdf {
-      padding: 0 20px !important;
+      padding: 0 ${rightPadding}px 0 ${leftPadding}px !important;
     }
 
     /* Prevent table rows from being cut across pages */
@@ -3519,6 +3580,10 @@ ${
       ? `<style id="lims-letterhead">${letterheadStyles}</style>`
       : ""
   }
+<style id="lims-margin-overrides">
+/* Left/right padding driven by lab PDF margin settings */
+.limsv2-report-body--pdf { padding-left: ${leftPadding}px !important; padding-right: ${rightPadding}px !important; }
+</style>
 </head>
 <body>
 ${wrappedBody}
@@ -4160,8 +4225,8 @@ async function fetchSectionContent(
   supabaseClient: any,
   resultIds: string[],
   includeImages = true,
-): Promise<Record<string, string>> {
-  if (!resultIds || resultIds.length === 0) return {};
+): Promise<{ sectionContent: Record<string, string>; sectionLabels: Record<string, string> }> {
+  if (!resultIds || resultIds.length === 0) return { sectionContent: {}, sectionLabels: {} };
 
   try {
     const { data, error } = await supabaseClient
@@ -4170,7 +4235,8 @@ async function fetchSectionContent(
         final_content,
         image_urls,
         lab_template_sections!inner(
-          placeholder_key
+          placeholder_key,
+          section_name
         )
       `)
       .in("result_id", resultIds)
@@ -4178,28 +4244,31 @@ async function fetchSectionContent(
 
     if (error || !data) {
       console.warn("Failed to fetch section content:", error?.message);
-      return {};
+      return { sectionContent: {}, sectionLabels: {} };
     }
 
-    // Build map of placeholder_key -> final_content
-    const sectionMap: Record<string, string> = {};
+    // Build map of placeholder_key -> final_content and placeholder_key -> section_name
+    const sectionContent: Record<string, string> = {};
+    const sectionLabels: Record<string, string> = {};
     for (const item of data) {
       const key = item.lab_template_sections?.placeholder_key;
       if (key) {
+        const label = item.lab_template_sections?.section_name;
+        if (label) sectionLabels[key] = label;
         const content = item.final_content ? String(item.final_content) : "";
         const imageUrls = parseSectionImageUrls(item.image_urls);
         const imagesHtml = includeImages ? buildSectionImagesHtml(imageUrls) : "";
         const combined = [content.trim(), imagesHtml].filter(Boolean).join("\n\n");
         if (combined) {
-          sectionMap[key] = combined;
+          sectionContent[key] = combined;
         }
       }
     }
 
-    return sectionMap;
+    return { sectionContent, sectionLabels };
   } catch (err) {
     console.warn("Error fetching section content:", err);
-    return {};
+    return { sectionContent: {}, sectionLabels: {} };
   }
 }
 
@@ -4585,6 +4654,7 @@ function generateReportExtrasHtml(extras: {
   ai_doctor_summary?: string;
   include_trend_graphs?: boolean;
   results_extras?: any[];
+  analyzer_histogram_svgs?: Array<{ test_code: string; name: string; associated_test?: string; boundaries?: any; svg_data?: string }>;
 }): string {
   if (!extras) return "";
 
@@ -4629,53 +4699,22 @@ function generateReportExtrasHtml(extras: {
       html += "</div>";
     }
 
-    // Analyzer graphs from machine interface (stored in trend_graph_data.analyzer_graphs)
-    if (trendData.analyzer_graphs) {
-      const analyzerData = trendData.analyzer_graphs;
+  }
 
-      // Render stored images (histograms, scatter plots, etc.)
-      if (analyzerData.images && analyzerData.images.length > 0) {
-        html +=
-          '<div class="analyzer-graphs-section" style="margin-top: 25px; page-break-inside: avoid;">';
-        html +=
-          '<h3 style="margin-bottom: 15px; color: #1e40af; border-bottom: 2px solid #3b82f6; padding-bottom: 8px;">Analyzer Graphs</h3>';
-
-        html +=
-          '<div style="display: flex; flex-wrap: wrap; gap: 15px; justify-content: center;">';
-        for (const img of analyzerData.images) {
-          html += `<div style="text-align: center; max-width: 45%;">`;
-          html +=
-            `<img src="${img.url}" alt="${img.name}" style="max-width: 100%; height: auto; border: 1px solid #e5e7eb; border-radius: 4px;" />`;
-          html +=
-            `<p style="margin-top: 5px; font-size: 11px; color: #6b7280;">${img.name}</p>`;
-          html += `</div>`;
-        }
-        html += "</div>";
-
-        // AI analysis of the graphs
-        if (analyzerData.ai_analysis && analyzerData.ai_analysis.length > 0) {
-          html +=
-            '<div style="margin-top: 15px; padding: 12px; background: #f0f9ff; border-radius: 6px; border-left: 4px solid #3b82f6;">';
-          html +=
-            '<p style="margin: 0 0 8px 0; font-weight: bold; color: #1e40af; font-size: 12px;">AI Graph Analysis:</p>';
-          for (const analysis of analyzerData.ai_analysis) {
-            if (analysis.description) {
-              html +=
-                `<p style="margin: 4px 0; font-size: 11px; color: #374151;">• <strong>${
-                  analysis.name || analysis.type
-                }:</strong> ${analysis.description}</p>`;
-            }
-          }
-          html += "</div>";
-        }
-
-        if (analyzerData.instrument) {
-          html +=
-            `<p style="margin-top: 10px; font-size: 10px; color: #9ca3af; text-align: right;">Source: ${analyzerData.instrument}</p>`;
-        }
-
-        html += "</div>";
+  // Analyzer histograms from analyzer_graphs table
+  if (extras.analyzer_histogram_svgs && extras.analyzer_histogram_svgs.length > 0) {
+    const svgRows = extras.analyzer_histogram_svgs.filter(r => r.svg_data);
+    if (svgRows.length > 0) {
+      html += '<div class="analyzer-graphs-section" style="margin-top: 25px; page-break-inside: avoid;">';
+      html += '<h3 style="margin: 0 0 12px 0; color: #1e40af; font-size: 13px; font-weight: 700; border-bottom: 2px solid #3b82f6; padding-bottom: 6px;">Analyzer Histograms</h3>';
+      html += '<div style="display: flex; flex-wrap: wrap; gap: 12px; justify-content: flex-start;">';
+      for (const row of svgRows) {
+        html += '<div style="text-align: center; flex: 0 0 auto;">';
+        html += row.svg_data!;
+        html += '</div>';
       }
+      html += '</div>';
+      html += '</div>';
     }
   }
 
@@ -5769,26 +5808,27 @@ serve(async (req) => {
             .filter(Boolean);
 
           if (resultIds.length > 0) {
-            const sectionContentWithImages = await fetchSectionContent(
+            const { sectionContent: scWithImages, sectionLabels } = await fetchSectionContent(
               supabaseClient,
               resultIds,
               true,
             );
-            const sectionContentNoImages = await fetchSectionContent(
+            const { sectionContent: scNoImages } = await fetchSectionContent(
               supabaseClient,
               resultIds,
               false,
             );
 
-            const withImages = Object.keys(sectionContentWithImages).length > 0
-              ? sectionContentWithImages
+            const withImages = Object.keys(scWithImages).length > 0
+              ? scWithImages
               : (context.sectionContent || {});
-            const noImages = Object.keys(sectionContentNoImages).length > 0
-              ? sectionContentNoImages
+            const noImages = Object.keys(scNoImages).length > 0
+              ? scNoImages
               : (context.sectionContent || {});
 
             context.sectionContent = withImages;
             context.sectionContentNoImages = noImages;
+            context.sectionLabels = sectionLabels;
             context.placeholderValues = {
               ...(context.placeholderValues || {}),
               ...withImages,
@@ -6435,6 +6475,14 @@ serve(async (req) => {
         .eq("id", orderId)
         .single();
 
+      // 6b2. Get analyzer histograms from analyzer_graphs table
+      const { data: analyzerGraphRows, error: analyzerGraphError } = await supabaseClient
+        .from("analyzer_graphs")
+        .select("test_code, name, associated_test, boundaries, svg_data")
+        .eq("order_id", orderId)
+        .order("created_at", { ascending: true });
+      console.log(`📊 Analyzer graphs fetched: ${analyzerGraphRows?.length ?? 0} rows`, analyzerGraphError ? `Error: ${analyzerGraphError.message}` : "OK");
+
       // 6c. Get from reports table (ai_doctor_summary, include_trend_graphs)
       const { data: reportRecord } = await supabaseClient
         .from("reports")
@@ -6473,6 +6521,8 @@ serve(async (req) => {
         include_trend_graphs: reportRecord?.include_trend_graphs ?? true,
         // From results table
         results_extras: resultsWithExtras || [],
+        // From analyzer_graphs table
+        analyzer_histogram_svgs: analyzerGraphRows || [],
       };
 
       // Merge report extras into context so they are available to templates
@@ -6628,6 +6678,7 @@ serve(async (req) => {
       const testGroupNames = new Map<string, string>();
       const testGroupStyles = new Map<string, string>(); // groupId → 'beautiful'|'classic'
       const testGroupPrintOptions = new Map<string, Record<string, unknown>>(); // groupId → print_options JSONB
+      const testGroupInterpretations = new Map<string, string>(); // groupId → group_interpretation HTML
       const testGroupIdsToFetch = [
         ...new Set(
           [...contextTestGroupIds, ...analytesByGroup.keys()].filter((id) =>
@@ -6656,7 +6707,7 @@ serve(async (req) => {
         // Also fetch default_template_style and print_options for all groups
         const { data: testGroupsData } = await supabaseClient
           .from("test_groups")
-          .select("id, name, default_template_style, print_options")
+          .select("id, name, default_template_style, print_options, group_interpretation")
           .in("id", testGroupIdsToFetch);
 
         if (testGroupsData) {
@@ -6670,6 +6721,9 @@ serve(async (req) => {
               }
               if (tg.print_options) {
                 testGroupPrintOptions.set(tg.id, tg.print_options);
+              }
+              if (tg.group_interpretation) {
+                testGroupInterpretations.set(tg.id, tg.group_interpretation);
               }
             }
           }
@@ -7075,6 +7129,9 @@ serve(async (req) => {
             labSettings?.report_patient_info_config,
             singlePrintOptions ?? undefined,
             customPatientFieldConfigs ?? [],
+            singleGroupId,
+            testGroupInterpretations,
+            (fullContext as any)?.sectionLabels,
           );
           renderedHtml = renderTemplate(renderedHtml, fullContext); // Process placeholders
 
@@ -7296,6 +7353,8 @@ serve(async (req) => {
               mergePrintOptions(pdfSettings, testGroupPrintOptions.get(testGroupId)) ?? undefined,
               customPatientFieldConfigs ?? [],
               testGroupId,
+              testGroupInterpretations,
+              (groupFullContext as any)?.sectionLabels,
             );
             renderedHtml = renderTemplate(renderedHtml, groupFullContext);
 
@@ -7337,9 +7396,7 @@ serve(async (req) => {
             ${
             renderedSections.length > 0
               ? `
-              <div class="test-group-separator" style="page-break-before: always; margin: 20px 0 10px; padding-top: 10px; border-top: 2px solid #3b82f6;">
-                <h2 style="color: #1e40af; font-size: 16px; margin: 0; font-weight: 600;">${testName}</h2>
-              </div>
+              <div class="test-group-separator" style="page-break-before: always;"></div>
             `
               : ""
           }
@@ -7369,6 +7426,9 @@ serve(async (req) => {
             labSettings?.report_patient_info_config,
             undefined,
             customPatientFieldConfigs ?? [],
+            undefined,
+            testGroupInterpretations,
+            (fullContext as any)?.sectionLabels,
           );
           let renderedDefaultHtml = renderTemplate(defaultHtml, fullContext);
 
@@ -7599,6 +7659,9 @@ serve(async (req) => {
             labSettings?.report_patient_info_config,
             compactPrintOptions,
             customPatientFieldConfigs ?? [],
+            undefined,
+            testGroupInterpretations,
+            (fullContext as any)?.sectionLabels,
           );
           compactRenderedHtml = renderTemplate(
             compactRenderedHtml,
@@ -7743,6 +7806,9 @@ serve(async (req) => {
               labSettings?.report_patient_info_config,
               mergedPrintOptions ?? undefined,
               customPatientFieldConfigs ?? [],
+              printSingleGroupId,
+              testGroupInterpretations,
+              (fullContext as any)?.sectionLabels,
             );
             printRenderedHtml = renderTemplate(
               printRenderedHtml,
@@ -7815,7 +7881,24 @@ serve(async (req) => {
         }
 
         // Inject report extras - INSIDE </main> not </body> for proper layout
-        const printExtrasHtml = useCompactPrint ? "" : generateReportExtrasHtml(reportExtras);
+        let printExtrasHtml = "";
+        if (useCompactPrint) {
+          // Compact print: include analyzer graphs only, scaled down to fit on page
+          const svgRows = (reportExtras.analyzer_histogram_svgs || []).filter((r: any) => r.svg_data);
+          if (svgRows.length > 0) {
+            printExtrasHtml = '<div style="margin-top:10px;page-break-inside:avoid;">';
+            printExtrasHtml += '<p style="margin:0 0 5px 0;font-size:10px;font-weight:700;color:#1e40af;border-bottom:1px solid #93c5fd;padding-bottom:2px;letter-spacing:0.05em;">ANALYZER HISTOGRAMS</p>';
+            printExtrasHtml += '<div style="display:flex;flex-wrap:wrap;gap:8px;align-items:flex-start;">';
+            for (const row of svgRows) {
+              // Scale SVG down by injecting max-width on the svg tag
+              const compactSvg = row.svg_data.replace(/<svg\b/i, '<svg style="max-width:130px;height:auto;display:block;"');
+              printExtrasHtml += `<div style="flex:0 0 auto;text-align:center;">${compactSvg}</div>`;
+            }
+            printExtrasHtml += '</div></div>';
+          }
+        } else {
+          printExtrasHtml = generateReportExtrasHtml(reportExtras);
+        }
         if (printExtrasHtml) {
           printHtml = printHtml.replace("</main>", `${printExtrasHtml}</main>`);
         }
@@ -7989,10 +8072,9 @@ serve(async (req) => {
           {
             headerHtml: "",
             footerHtml: "",
-            // Use database margins for print, with fallback to defaults
-            margins: pdfSettings?.margins
-              ? `${pdfSettings.margins.top}px ${pdfSettings.margins.right}px ${pdfSettings.margins.bottom}px ${pdfSettings.margins.left}px`
-              : "150px 20px 150px 20px",
+            // Print version has no header/footer but uses the lab's configured top margin
+            // so there is space to print on physical letterhead paper.
+            margins: `${pdfSettings?.margins?.top ?? 20}px ${pdfSettings?.margins?.right ?? 20}px ${pdfSettings?.margins?.bottom ?? 20}px ${pdfSettings?.margins?.left ?? 20}px`,
             headerHeight: "0px",
             footerHeight: "0px",
             scale: pdfSettings?.scale ?? DEFAULT_PDF_SETTINGS.scale,

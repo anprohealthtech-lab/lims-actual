@@ -874,15 +874,14 @@ export const database = {
         // First try to get from lab's default branding
         const { data: brandingData, error: brandingError } = await supabase
           .from("lab_branding_assets")
-          .select("file_url, imagekit_url, processed_url")
+          .select("file_url, imagekit_url")
           .eq("lab_id", labId)
           .eq("asset_type", "signature")
           .eq("is_default", true)
           .single();
 
         if (!brandingError && brandingData) {
-          return brandingData.imagekit_url || brandingData.processed_url ||
-            brandingData.file_url;
+          return brandingData.imagekit_url || brandingData.file_url;
         }
 
         // Fallback: Get any signature from users in this lab
@@ -5134,6 +5133,63 @@ export const database = {
       return { data, error };
     },
 
+    // User-based Daily Collection Report
+    getCollectionReport: async (fromDate: string, toDate: string) => {
+      const lab_id = await database.getCurrentUserLabId();
+      if (!lab_id) return { data: null, error: new Error('No lab found') };
+
+      const { data: ordersData, error: ordersError } = await supabase
+        .from('orders')
+        .select('id, order_date, order_number, patient_name, doctor, total_amount, final_amount, created_by')
+        .eq('lab_id', lab_id)
+        .gte('order_date', fromDate)
+        .lte('order_date', `${toDate}T23:59:59.999Z`)
+        .order('created_by', { ascending: true })
+        .order('order_date', { ascending: true });
+
+      if (ordersError) return { data: null, error: ordersError };
+
+      const orders = ordersData || [];
+      const orderIds = orders.map((o: any) => o.id).filter(Boolean);
+
+      if (orderIds.length === 0) {
+        return { data: { orders: [], invoices: [], payments: [], users: [] }, error: null };
+      }
+
+      // Invoices for discount + total_after_discount
+      const { data: invoicesData } = await supabase
+        .from('invoices')
+        .select('id, order_id, total, total_after_discount, discount, status')
+        .in('order_id', orderIds);
+      const invoices = invoicesData || [];
+
+      // Payments within date range
+      const invoiceIds = invoices.map((i: any) => i.id).filter(Boolean);
+      let payments: any[] = [];
+      if (invoiceIds.length > 0) {
+        const { data: paymentsData } = await supabase
+          .from('payments')
+          .select('invoice_id, amount, payment_method, payment_date')
+          .in('invoice_id', invoiceIds)
+          .gte('payment_date', fromDate)
+          .lte('payment_date', `${toDate}T23:59:59.999Z`);
+        payments = paymentsData || [];
+      }
+
+      // User names for created_by IDs
+      const userIds = [...new Set(orders.map((o: any) => o.created_by).filter(Boolean))];
+      let users: any[] = [];
+      if (userIds.length > 0) {
+        const { data: usersData } = await supabase
+          .from('users')
+          .select('id, name, email')
+          .in('id', userIds as string[]);
+        users = usersData || [];
+      }
+
+      return { data: { orders, invoices, payments, users }, error: null };
+    },
+
     // For Cash Reconciliation (cash-only, date + location)
     getByDateRange: async (
       fromDate: string,
@@ -6390,6 +6446,7 @@ export const database = {
             required_patient_inputs,
             ref_range_ai_config,
             collection_charge,
+            group_interpretation,
             test_group_analytes(
               analyte_id,
               sort_order,
@@ -6458,6 +6515,7 @@ export const database = {
             required_patient_inputs,
             ref_range_ai_config,
             collection_charge,
+            group_interpretation,
             test_group_analytes(
               analyte_id,
               sort_order,
@@ -6602,6 +6660,7 @@ export const database = {
 	            ? Number(testGroupData.report_priority)
 	            : null,
 	          collection_charge: testGroupData.collection_charge ?? null,
+          group_interpretation: testGroupData.group_interpretation || null,
         };
 
         console.log("Creating test group with data:", sanitizedData);
@@ -6701,6 +6760,7 @@ export const database = {
 	              ? Number(updates.report_priority)
 	              : null,
 	            collection_charge: updates.collection_charge ?? null,
+            group_interpretation: updates.group_interpretation ?? null,
             updated_at: new Date().toISOString(),
           })
           .eq("id", id)

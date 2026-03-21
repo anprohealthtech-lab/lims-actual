@@ -56,7 +56,16 @@ export default function AnalyzerAPIKeys() {
     try {
       const { plaintext, hash } = await generateApiKey();
 
+      const { data: userData, error: userError } = await supabase
+        .from('users')
+        .select('lab_id')
+        .eq('id', user?.id)
+        .single();
+
+      if (userError || !userData?.lab_id) throw new Error('Could not determine lab. Please re-login.');
+
       const { error: insertError } = await supabase.from('lab_api_keys').insert({
+        lab_id: userData.lab_id,
         label: newLabel.trim(),
         key_hash: hash,
         created_by: user?.id,

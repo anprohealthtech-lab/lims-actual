@@ -2833,14 +2833,27 @@ const Reports: React.FC = () => {
             </div>
 
             <div className="flex items-center justify-between gap-3 px-6 py-4 border-t bg-gray-50">
-              <button
-                type="button"
-                className="px-4 py-2 text-sm rounded-md border border-gray-300 bg-white text-gray-700 hover:bg-gray-100 disabled:opacity-50"
-                onClick={handleSaveOrderSettings}
-                disabled={orderSettingsLoading || orderSettingsSaving || !orderSettingsOrderId}
-              >
-                {orderSettingsSaving ? 'Saving...' : 'Save Settings'}
-              </button>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  className="px-4 py-2 text-sm rounded-md border border-gray-300 bg-white text-gray-700 hover:bg-gray-100 disabled:opacity-50"
+                  onClick={handleSaveOrderSettings}
+                  disabled={orderSettingsLoading || orderSettingsSaving || !orderSettingsOrderId}
+                >
+                  {orderSettingsSaving ? 'Saving...' : 'Save Settings'}
+                </button>
+                <button
+                  type="button"
+                  className="px-4 py-2 text-sm rounded-md border border-blue-300 bg-blue-50 text-blue-700 hover:bg-blue-100 disabled:opacity-50"
+                  onClick={() => {
+                    setPdfSettingsOrderId(orderSettingsOrderId);
+                    setShowPDFSettings(true);
+                  }}
+                  disabled={orderSettingsSaving || !orderSettingsOrderId}
+                >
+                  PDF Margin & Layout Settings
+                </button>
+              </div>
               <div className="flex items-center gap-3">
                 <button
                   type="button"
@@ -2866,6 +2879,15 @@ const Reports: React.FC = () => {
           </div>
         </div>
       )}
+
+      {/* PDF Settings Modal (margins, scale, letterhead mode) */}
+      <PDFSettingsModal
+        isOpen={showPDFSettings}
+        onClose={() => { setShowPDFSettings(false); setPdfSettingsOrderId(null); }}
+        onRegenerate={handleRegenerateWithSettings}
+        isRegenerating={isGenerating}
+        labId={userLabId ?? undefined}
+      />
 
       {/* Report Design Studio */}
       {reportStudioOrderId && (

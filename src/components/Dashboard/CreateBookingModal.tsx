@@ -1,5 +1,5 @@
-import React, { useState } from 'react';
-import { X, Calendar, User, Phone, MapPin, Save, Loader, Home, Building } from 'lucide-react';
+import React, { useState, useEffect, KeyboardEvent } from 'react';
+import { X, User, Phone, Save, Loader, Sparkles } from 'lucide-react';
 import { database } from '../../utils/supabase';
 
 interface CreateBookingModalProps {
@@ -7,32 +7,107 @@ interface CreateBookingModalProps {
     onSuccess: () => void;
 }
 
+const SALUTATIONS = ['Mr.', 'Mrs.', 'Ms.', 'Dr.', 'Master', 'Baby', 'Prof.', 'Shri.', 'Smt.', 'Ku.'];
+
+// Returns 'Male' | 'Female' | '' based on salutation and name keywords
+function detectGender(sal: string, first: string, last: string): 'Male' | 'Female' | '' {
+    const s = sal.toLowerCase().replace('.', '');
+    if (['mr', 'master', 'shri', 'shriman', 'bhai'].includes(s)) return 'Male';
+    if (['mrs', 'ms', 'miss', 'smt', 'shrimati', 'ku', 'kumari', 'baby'].includes(s)) return 'Female';
+
+    const words = `${first} ${last}`.toLowerCase().split(/\s+/);
+    const maleWords = ['bhai', 'bro', 'shriman', 'lal', 'singh', 'ram', 'kumar'];
+    const femaleWords = ['ben', 'bhen', 'bai', 'devi', 'kumari', 'shrimati', 'smt', 'sister', 'mata', 'amma', 'didi'];
+    if (words.some(w => femaleWords.includes(w))) return 'Female';
+    if (words.some(w => maleWords.includes(w))) return 'Male';
+    return '';
+}
+
 const CreateBookingModal: React.FC<CreateBookingModalProps> = ({ onClose, onSuccess }) => {
     const [loading, setLoading] = useState(false);
+
+    // Name fields
+    const [salutation, setSalutation] = useState('');
+    const [firstName, setFirstName] = useState('');
+    const [middleName, setMiddleName] = useState('');
+    const [lastName, setLastName] = useState('');
+
+    // Gender with auto-detect tracking
+    const [gender, setGender] = useState('');
+    const [genderAutoDetected, setGenderAutoDetected] = useState(false);
+    const [genderManuallySet, setGenderManuallySet] = useState(false);
+
+    useEffect(() => {
+        if (!genderManuallySet) {
+            const detected = detectGender(salutation, firstName, lastName);
+            if (detected) {
+                setGender(detected);
+                setGenderAutoDetected(true);
+            }
+        }
+    }, [salutation, firstName, lastName]);
+
     const [formData, setFormData] = useState({
-        name: '',
         phone: '',
-        date: new Date().toISOString().slice(0, 16), // datetime-local format
-        type: 'walk_in', // walk_in | home_collection
+        date: new Date().toISOString().slice(0, 16),
+        type: 'walk_in',
         address: '',
-        notes: '' // Rough notes about tests
     });
+
+    // Tests as chips
+    const [tests, setTests] = useState<string[]>([]);
+    const [testInput, setTestInput] = useState('');
+
+    const getFullName = () =>
+        [salutation, firstName.trim(), middleName.trim(), lastName.trim()]
+            .filter(Boolean)
+            .join(' ');
+
+    const addTest = () => {
+        const val = testInput.trim();
+        if (val && !tests.includes(val)) {
+            setTests(prev => [...prev, val]);
+        }
+        setTestInput('');
+    };
+
+    const handleTestKeyDown = (e: KeyboardEvent<HTMLInputElement>) => {
+        if (e.key === 'Enter' || e.key === ',') {
+            e.preventDefault();
+            addTest();
+        } else if (e.key === 'Backspace' && !testInput && tests.length > 0) {
+            setTests(prev => prev.slice(0, -1));
+        }
+    };
 
     const handleSubmit = async (e: React.FormEvent) => {
         e.preventDefault();
+        if (!firstName.trim()) {
+            alert('First name is required.');
+            return;
+        }
         setLoading(true);
+
+        // Commit any pending test input on submit
+        const finalTests = testInput.trim()
+            ? [...tests, testInput.trim()].filter((t, i, arr) => arr.indexOf(t) === i)
+            : tests;
+
         try {
             const payload = {
                 booking_source: 'phone_call',
                 status: 'pending',
                 patient_info: {
-                    name: formData.name,
-                    phone: formData.phone
+                    name: getFullName(),
+                    phone: formData.phone,
+                    ...(gender ? { gender: gender as 'Male' | 'Female' | 'Other' } : {})
                 },
                 collection_type: formData.type,
                 scheduled_at: new Date(formData.date).toISOString(),
-                home_collection_address: formData.type === 'home_collection' ? { address: formData.address } : null,
-                test_details: formData.notes ? [{ name: formData.notes, type: 'note' }] : []
+                home_collection_address: formData.type === 'home_collection'
+                    ? { address: formData.address }
+                    : null,
+                test_details: finalTests.map(t => ({ name: t, type: 'note' as const }))
             };
 
             const { error } = await database.bookings.create(payload);
@@ -45,6 +120,8 @@ const CreateBookingModal: React.FC<CreateBookingModalProps> = ({ onClose, onSucc
             setLoading(false);
         }
     };
+
+    const namePreview = getFullName();
 
     return (
         <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
@@ -61,36 +138,105 @@ const CreateBookingModal: React.FC<CreateBookingModalProps> = ({ onClose, onSucc
                 </div>
 
                 <form onSubmit={handleSubmit} className="p-4 space-y-4">
-                    {/* Patient Details */}
-                    <div className="space-y-3">
-                        <div>
-                            <label className="block text-xs font-medium text-gray-700 mb-1">Patient Name</label>
-                            <div className="relative">
+                    {/* Patient Name */}
+                    <div className="space-y-2">
+                        <label className="block text-xs font-medium text-gray-700">
+                            Patient Name
+                        </label>
+
+                        {/* Row 1: Salutation + First Name */}
+                        <div className="flex gap-2">
+                            <select
+                                value={salutation}
+                                onChange={e => setSalutation(e.target.value)}
+                                className="w-[88px] shrink-0 px-2 py-2 text-sm border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none bg-white"
+                            >
+                                <option value="">Salute</option>
+                                {SALUTATIONS.map(s => (
+                                    <option key={s} value={s}>{s}</option>
+                                ))}
+                            </select>
+                            <div className="relative flex-1">
                                 <User className="absolute left-3 top-2.5 w-4 h-4 text-gray-400" />
                                 <input
                                     type="text"
                                     required
-                                    placeholder="Enter patient name"
-                                    value={formData.name}
-                                    onChange={e => setFormData({ ...formData, name: e.target.value })}
+                                    placeholder="First Name *"
+                                    value={firstName}
+                                    onChange={e => setFirstName(e.target.value)}
                                     className="w-full pl-9 pr-3 py-2 text-sm border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none transition-all"
                                 />
                             </div>
                         </div>
 
-                        <div>
-                            <label className="block text-xs font-medium text-gray-700 mb-1">Phone Number</label>
-                            <div className="relative">
-                                <Phone className="absolute left-3 top-2.5 w-4 h-4 text-gray-400" />
-                                <input
-                                    type="tel"
-                                    required
-                                    placeholder="Enter phone number"
-                                    value={formData.phone}
-                                    onChange={e => setFormData({ ...formData, phone: e.target.value })}
-                                    className="w-full pl-9 pr-3 py-2 text-sm border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none transition-all"
-                                />
-                            </div>
+                        {/* Row 2: Middle + Last Name */}
+                        <div className="flex gap-2">
+                            <input
+                                type="text"
+                                placeholder="Middle Name"
+                                value={middleName}
+                                onChange={e => setMiddleName(e.target.value)}
+                                className="flex-1 px-3 py-2 text-sm border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none transition-all"
+                            />
+                            <input
+                                type="text"
+                                placeholder="Last Name"
+                                value={lastName}
+                                onChange={e => setLastName(e.target.value)}
+                                className="flex-1 px-3 py-2 text-sm border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none transition-all"
+                            />
+                        </div>
+
+                        {/* Row 3: Gender (auto-detected) */}
+                        <div className="flex items-center gap-2">
+                            <span className="text-xs text-gray-500 shrink-0">Gender:</span>
+                            {(['Male', 'Female', 'Other'] as const).map(g => (
+                                <button
+                                    key={g}
+                                    type="button"
+                                    onClick={() => { setGender(g); setGenderAutoDetected(false); setGenderManuallySet(true); }}
+                                    className={`px-3 py-1 text-xs font-medium rounded-full border transition-all ${
+                                        gender === g
+                                            ? g === 'Male'
+                                                ? 'bg-blue-50 border-blue-400 text-blue-700'
+                                                : g === 'Female'
+                                                    ? 'bg-pink-50 border-pink-400 text-pink-700'
+                                                    : 'bg-purple-50 border-purple-400 text-purple-700'
+                                            : 'border-gray-200 text-gray-500 hover:border-gray-300'
+                                    }`}
+                                >
+                                    {g}
+                                </button>
+                            ))}
+                            {genderAutoDetected && gender && (
+                                <span className="flex items-center gap-0.5 text-[10px] text-amber-600 font-medium">
+                                    <Sparkles className="w-3 h-3" /> Auto
+                                </span>
+                            )}
+                        </div>
+
+                        {/* Live preview */}
+                        {namePreview && (
+                            <p className="text-[11px] text-gray-500 leading-tight">
+                                Saved as:{' '}
+                                <span className="font-semibold text-gray-700">{namePreview}</span>
+                            </p>
+                        )}
+                    </div>
+
+                    {/* Phone */}
+                    <div>
+                        <label className="block text-xs font-medium text-gray-700 mb-1">Phone Number</label>
+                        <div className="relative">
+                            <Phone className="absolute left-3 top-2.5 w-4 h-4 text-gray-400" />
+                            <input
+                                type="tel"
+                                required
+                                placeholder="Enter phone number"
+                                value={formData.phone}
+                                onChange={e => setFormData({ ...formData, phone: e.target.value })}
+                                className="w-full pl-9 pr-3 py-2 text-sm border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none transition-all"
+                            />
                         </div>
                     </div>
 
@@ -106,7 +252,6 @@ const CreateBookingModal: React.FC<CreateBookingModalProps> = ({ onClose, onSucc
                                 className="w-full px-3 py-2 text-sm border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none transition-all"
                             />
                         </div>
-
                         <div>
                             <label className="block text-xs font-medium text-gray-700 mb-1">Collection Type</label>
                             <select
@@ -120,7 +265,7 @@ const CreateBookingModal: React.FC<CreateBookingModalProps> = ({ onClose, onSucc
                         </div>
                     </div>
 
-                    {/* Address if Home Collection */}
+                    {/* Address – only for home collection */}
                     {formData.type === 'home_collection' && (
                         <div className="animate-in fade-in slide-in-from-top-2 duration-200">
                             <label className="block text-xs font-medium text-gray-700 mb-1">Collection Address</label>
@@ -135,19 +280,57 @@ const CreateBookingModal: React.FC<CreateBookingModalProps> = ({ onClose, onSucc
                         </div>
                     )}
 
-                    {/* Notes / Tests */}
+                    {/* Tests – chip / tag input */}
                     <div>
-                        <label className="block text-xs font-medium text-gray-700 mb-1">Requested Tests / Notes</label>
-                        <textarea
-                            rows={2}
-                            placeholder="E.g. CBC, Thyroid Profile..."
-                            value={formData.notes}
-                            onChange={e => setFormData({ ...formData, notes: e.target.value })}
-                            className="w-full px-3 py-2 text-sm border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none transition-all resize-none"
-                        />
+                        <label className="block text-xs font-medium text-gray-700 mb-1">
+                            Requested Tests
+                            {tests.length > 0 && (
+                                <span className="ml-1.5 text-blue-600 font-semibold">{tests.length}</span>
+                            )}
+                        </label>
+
+                        {/* Tag input box */}
+                        <div
+                            className="border border-gray-200 rounded-lg focus-within:ring-2 focus-within:ring-blue-500 focus-within:border-transparent bg-white
+                                       min-h-[38px] max-h-28 overflow-y-auto px-2 py-1.5 flex flex-wrap gap-1.5 items-center transition-all cursor-text"
+                            onClick={e => {
+                                const input = (e.currentTarget as HTMLElement).querySelector('input');
+                                input?.focus();
+                            }}
+                        >
+                            {tests.map((test, i) => (
+                                <span
+                                    key={i}
+                                    className="inline-flex items-center gap-1 bg-blue-50 text-blue-700 text-xs font-medium
+                                               px-2 py-0.5 rounded-full border border-blue-200 shrink-0"
+                                >
+                                    {test}
+                                    <button
+                                        type="button"
+                                        onClick={() => setTests(prev => prev.filter((_, idx) => idx !== i))}
+                                        className="text-blue-400 hover:text-blue-700 leading-none"
+                                    >
+                                        <X className="w-3 h-3" />
+                                    </button>
+                                </span>
+                            ))}
+                            <input
+                                type="text"
+                                value={testInput}
+                                onChange={e => setTestInput(e.target.value)}
+                                onKeyDown={handleTestKeyDown}
+                                onBlur={addTest}
+                                placeholder={tests.length === 0 ? 'CBC, Thyroid Profile… (Enter to add)' : 'Add more…'}
+                                className="flex-1 min-w-[140px] text-sm outline-none bg-transparent py-0.5 placeholder-gray-400"
+                            />
+                        </div>
+                        <p className="mt-0.5 text-[10px] text-gray-400">
+                            Press Enter or comma to add · Backspace to remove last
+                        </p>
                     </div>
 
-                    <div className="pt-2 flex justify-end gap-3">
+                    {/* Actions */}
+                    <div className="pt-1 flex justify-end gap-3">
                         <button
                             type="button"
                             onClick={onClose}

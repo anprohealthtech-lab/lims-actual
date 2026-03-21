@@ -19,7 +19,8 @@ ALTER TABLE public.lab_api_keys ENABLE ROW LEVEL SECURITY;
 CREATE POLICY "Lab users can manage their api keys"
   ON public.lab_api_keys
   FOR ALL
-  USING (lab_id IN (SELECT lab_id FROM public.users WHERE id = auth.uid()));
+  USING (lab_id IN (SELECT lab_id FROM public.users WHERE id = auth.uid()))
+  WITH CHECK (lab_id IN (SELECT lab_id FROM public.users WHERE id = auth.uid()));
 
 -- Index for fast key validation on every ingest request
 CREATE INDEX idx_lab_api_keys_hash ON public.lab_api_keys (key_hash) WHERE is_active = true;

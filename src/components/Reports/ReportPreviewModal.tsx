@@ -81,7 +81,7 @@ export const ReportPreviewModal: React.FC<ReportPreviewModalProps> = ({
                 .from('orders')
                 .select(`
           doctor_phone, 
-          lab_results (
+          results (
             final_report
           )
         `)
@@ -92,8 +92,8 @@ export const ReportPreviewModal: React.FC<ReportPreviewModalProps> = ({
                 setDoctorPhone(data.doctor_phone || '');
 
                 // Check for final report URL in results
-                if (Array.isArray(data.lab_results)) {
-                    const resultWithReport = data.lab_results.find((r: any) => r.final_report && r.final_report.pdf_url);
+                if (Array.isArray(data.results)) {
+                    const resultWithReport = data.results.find((r: any) => r.final_report && r.final_report.pdf_url);
                     if (resultWithReport) {
                         setFinalReportUrl(resultWithReport.final_report.pdf_url);
                     }

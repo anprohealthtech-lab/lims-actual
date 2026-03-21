@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import ReactDOM from "react-dom";
 import {
   Activity,
@@ -18,6 +18,7 @@ import {
   FileText,
   Loader2,
   Minimize,
+  Printer,
   RefreshCcw,
   RefreshCw,
   Save,
@@ -32,6 +33,7 @@ import {
   XCircle,
   Zap
 } from "lucide-react";
+import { buildBasicPreviewHtml } from "../utils/buildBasicPreviewHtml";
 import AttachmentSelector from "../components/Reports/AttachmentSelector";
 import {
   useAIResultIntelligence,
@@ -43,7 +45,7 @@ import {
   type DeltaCheckResponse,
   LANGUAGE_DISPLAY_NAMES
 } from "../hooks/useAIResultIntelligence";
-import { supabase, database, aiAnalysis } from "../utils/supabase";
+import { supabase, database, aiAnalysis, formatAge } from "../utils/supabase";
 import { runAIFlagAnalysis, analyzeAndSaveFlag } from "../utils/aiFlagAnalysis";
 import { generateAndSaveTrendCharts, saveClinicalSummary, toggleOrderSummaryInReport, saveClinicalSummaryOptions } from "../utils/reportExtrasService";
 import TrendGraphPanel from "../components/Results/TrendGraphPanel";
@@ -175,6 +177,12 @@ const OrderVerificationView: React.FC<OrderVerificationViewProps> = ({ onBackToP
 
   const [isAdmin, setIsAdmin] = useState(false);
 
+  // Quick preview state
+  const [labPrintOptions, setLabPrintOptions] = useState<Record<string, unknown>>({});
+  const [quickPreview, setQuickPreview] = useState<{ html: string; patientName: string } | null>(null);
+  const [quickPreviewLoading, setQuickPreviewLoading] = useState<Record<string, boolean>>({});
+  const previewIframeRef = useRef<HTMLIFrameElement>(null);
+
   // Canonical flag options — always the full 7; never replaced by DB flag_options
   const labFlagOptions = [
     { value: '', label: 'Normal' },
@@ -249,6 +257,20 @@ const OrderVerificationView: React.FC<OrderVerificationViewProps> = ({ onBackToP
       const labId = await database.getCurrentUserLabId();
       setCurrentLabId(labId);
       // Lab flag_options from DB is intentionally ignored — canonical 7-option list is always used
+
+      // Fetch pdf_layout_settings for basic preview printOptions
+      if (labId) {
+        try {
+          const { data: labData } = await supabase
+            .from("labs")
+            .select("pdf_layout_settings")
+            .eq("id", labId)
+            .single();
+          if (labData?.pdf_layout_settings?.printOptions) {
+            setLabPrintOptions(labData.pdf_layout_settings.printOptions as Record<string, unknown>);
+          }
+        } catch { /* non-critical, preview will fall back to defaults */ }
+      }
     };
     fetchLabId();
   }, []);
@@ -793,6 +815,182 @@ const OrderVerificationView: React.FC<OrderVerificationViewProps> = ({ onBackToP
       await approvePanel(panel, analytes);
     }
     setBulkProcessing(false);
+  };
+
+  const handleQuickPreview = async (order: OrderGroup) => {
+    setQuickPreviewLoading(prev => ({ ...prev, [order.orderId]: true }));
+    try {
+      // 1. Ensure all analytes are loaded for every panel
+      await Promise.all(order.panels.map(p => ensureAnalytesLoaded(p.result_id)));
+
+      // 2. Fetch patient + order details, plus per-panel metadata in parallel
+      const groupIds = order.panels.map(p => p.test_group_id).filter(Boolean) as string[];
+
+      const allResultIds = order.panels.map(p => p.result_id);
+
+      const [patientRes, orderRes, tgaRes, tgRes, sectionsRes, verifierRes] = await Promise.all([
+        supabase
+          .from("patients")
+          .select("age, age_unit, gender, display_id")
+          .eq("id", order.patientId)
+          .single(),
+        supabase
+          .from("orders")
+          .select("sample_id, physician_name")
+          .eq("id", order.orderId)
+          .single(),
+        // section_heading + sort_order + is_auto_calculated from test_group_analytes
+        groupIds.length > 0
+          ? supabase
+              .from("test_group_analytes")
+              .select("test_group_id, analyte_id, sort_order, section_heading, analytes(is_auto_calculated)")
+              .in("test_group_id", groupIds)
+          : Promise.resolve({ data: [] as any[], error: null }),
+        // per-group print_options override
+        groupIds.length > 0
+          ? supabase
+              .from("test_groups")
+              .select("id, print_options")
+              .in("id", groupIds)
+          : Promise.resolve({ data: [] as any[], error: null }),
+        // report sections (findings, impression, etc.)
+        allResultIds.length > 0
+          ? supabase
+              .from("result_section_content")
+              .select("result_id, final_content, lab_template_sections(section_name, display_order, section_type)")
+              .in("result_id", allResultIds)
+              .order("section_id")
+          : Promise.resolve({ data: [] as any[], error: null }),
+        // signatory: first verified_by user across all result_values
+        allResultIds.length > 0
+          ? supabase
+              .from("result_values")
+              .select("verified_by, users!result_values_verified_by_fkey(name, role)")
+              .in("result_id", allResultIds)
+              .not("verified_by", "is", null)
+              .limit(1)
+              .maybeSingle()
+          : Promise.resolve({ data: null as any, error: null }),
+      ]);
+
+      const ageFormatted = formatAge(patientRes.data?.age, patientRes.data?.age_unit);
+      const gender = patientRes.data?.gender ?? "";
+      const patientCode = patientRes.data?.display_id ?? "";
+      const sampleId = orderRes.data?.sample_id ?? "";
+      const referredBy = orderRes.data?.physician_name ?? "";
+      const ageGender = [ageFormatted !== "N/A" ? ageFormatted : "", gender].filter(Boolean).join(" / ");
+      const orderDate = order.orderDate
+        ? new Date(order.orderDate).toLocaleDateString()
+        : "";
+
+      // Build lookup: test_group_id → Map<analyte_id, { sort_order, section_heading, is_auto_calculated }>
+      type TgaMeta = { sort_order: number; section_heading: string | null; is_auto_calculated: boolean };
+      const tgaByGroup = new Map<string, Map<string, TgaMeta>>();
+      for (const row of tgaRes.data || []) {
+        if (!tgaByGroup.has(row.test_group_id)) {
+          tgaByGroup.set(row.test_group_id, new Map());
+        }
+        tgaByGroup.get(row.test_group_id)!.set(row.analyte_id, {
+          sort_order: row.sort_order ?? 999,
+          section_heading: row.section_heading ?? null,
+          is_auto_calculated: (row.analytes as any)?.is_auto_calculated ?? false,
+        });
+      }
+
+      // Build report sections: sorted by display_order, group across all panels
+      const reportSections = (sectionsRes.data || [])
+        .filter((s: any) => s.final_content && String(s.final_content).trim())
+        .sort((a: any, b: any) => {
+          const aOrd = (a.lab_template_sections as any)?.display_order ?? 99;
+          const bOrd = (b.lab_template_sections as any)?.display_order ?? 99;
+          return aOrd - bOrd;
+        })
+        // deduplicate by section_name (multiple panels may have same section)
+        .reduce((acc: any[], s: any) => {
+          const name = (s.lab_template_sections as any)?.section_name || "Section";
+          if (!acc.find(x => x.sectionName === name)) {
+            acc.push({ sectionName: name, content: String(s.final_content).trim() });
+          }
+          return acc;
+        }, []);
+
+      // Signatory
+      const verifierUser = (verifierRes.data as any)?.users;
+      const signatoryName = verifierUser?.name || "";
+      const signatoryDesignation = verifierUser?.role || "";
+
+      // Build lookup: test_group_id → merged printOptions (lab-level overridden by group-level)
+      const groupPrintOptions = new Map<string, Record<string, unknown>>();
+      for (const tg of tgRes.data || []) {
+        const groupOpts = tg.print_options || {};
+        groupPrintOptions.set(tg.id, { ...labPrintOptions, ...groupOpts });
+      }
+
+      // 3. Determine the dominant print options (first group that has its own wins; else lab)
+      //    For the whole preview we use one merged set (same as how single-group PDF works).
+      //    If multiple groups have different options we use the first non-empty group override,
+      //    falling back to lab-level.
+      let resolvedPrintOptions: Record<string, unknown> = { ...labPrintOptions };
+      for (const gid of groupIds) {
+        const gOpts = (tgRes.data || []).find((t: any) => t.id === gid)?.print_options;
+        if (gOpts && Object.keys(gOpts).length > 0) {
+          resolvedPrintOptions = { ...labPrintOptions, ...gOpts };
+          break;
+        }
+      }
+
+      // 4. Build test groups with sorted + section-headed analytes
+      const testGroups = order.panels
+        .map(panel => {
+          const raw = rowsByResult[panel.result_id] || [];
+          const metaMap = panel.test_group_id
+            ? (tgaByGroup.get(panel.test_group_id) ?? new Map<string, TgaMeta>())
+            : new Map<string, TgaMeta>();
+
+          const analytes = raw
+            .map(a => {
+              const meta = a.analyte_id ? metaMap.get(a.analyte_id) : undefined;
+              return {
+                parameter: a.parameter,
+                value: a.value,
+                unit: a.unit,
+                reference_range: a.reference_range,
+                flag: a.flag,
+                section_heading: meta?.section_heading ?? null,
+                is_auto_calculated: meta?.is_auto_calculated ?? false,
+                _sort: meta?.sort_order ?? 999,
+              };
+            })
+            .sort((x, y) => x._sort - y._sort)
+            .map(({ _sort: _s, ...rest }) => rest);
+
+          return {
+            testGroupName: panel.test_group_name || "Test Results",
+            analytes,
+          };
+        })
+        .filter(g => g.analytes.length > 0);
+
+      const html = buildBasicPreviewHtml({
+        patientName: order.patientName,
+        patientCode,
+        ageGender,
+        orderDate,
+        referredBy,
+        sampleId,
+        testGroups,
+        sections: reportSections,
+        signatoryName,
+        signatoryDesignation,
+        printOptions: resolvedPrintOptions,
+      });
+
+      setQuickPreview({ html, patientName: order.patientName });
+    } catch (err) {
+      console.error("Quick preview failed:", err);
+    } finally {
+      setQuickPreviewLoading(prev => ({ ...prev, [order.orderId]: false }));
+    }
   };
 
   const showAllAnalytesForOrder = async (order: OrderGroup) => {
@@ -1924,6 +2122,19 @@ ${summary.urgent_findings.map(f => `• ${f}`).join('\n')}` : ''}
                           </button>
                           {/* AI Flags button hidden - flag analysis now done in backend automatically */}
                           <button
+                            onClick={() => handleQuickPreview(order)}
+                            disabled={quickPreviewLoading[order.orderId]}
+                            className="inline-flex items-center px-4 py-2 rounded-xl bg-gradient-to-r from-sky-600 to-blue-600 text-white transition-all duration-200 hover:from-sky-700 hover:to-blue-700 active:scale-95 disabled:opacity-50"
+                            title="Quick preview — basic print view of all results"
+                          >
+                            {quickPreviewLoading[order.orderId] ? (
+                              <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                            ) : (
+                              <Eye className="h-4 w-4 mr-2" />
+                            )}
+                            {quickPreviewLoading[order.orderId] ? "Loading..." : "Quick Preview"}
+                          </button>
+                          <button
                             onClick={() => approveEntireOrder(order)}
                             disabled={bulkProcessing}
                             className="inline-flex items-center px-4 py-2 rounded-xl bg-gradient-to-r from-green-600 to-emerald-600 text-white disabled:opacity-50"
@@ -2317,6 +2528,53 @@ ${summary.urgent_findings.map(f => `• ${f}`).join('\n')}` : ''}
             setDeltaCheckTargetResultId(null);
           }}
         />
+      )}
+
+      {/* ── Quick Preview Modal ────────────────────────────────────────────── */}
+      {quickPreview && ReactDOM.createPortal(
+        <div
+          className="fixed inset-0 z-50 flex flex-col bg-black/60"
+          onClick={() => setQuickPreview(null)}
+        >
+          <div
+            className="relative flex flex-col w-full h-full bg-white shadow-2xl"
+            onClick={e => e.stopPropagation()}
+          >
+            {/* Header */}
+            <div className="flex items-center justify-between px-5 py-3 border-b border-gray-200 bg-gray-50 shrink-0">
+              <div className="flex items-center space-x-2">
+                <Eye className="h-5 w-5 text-sky-600" />
+                <span className="font-semibold text-gray-800">
+                  Quick Preview — {quickPreview.patientName}
+                </span>
+                <span className="text-xs text-gray-400 ml-1">(Basic print style)</span>
+              </div>
+              <div className="flex items-center space-x-2">
+                <button
+                  onClick={() => previewIframeRef.current?.contentWindow?.print()}
+                  className="inline-flex items-center px-3 py-1.5 rounded-lg bg-sky-600 text-white text-sm hover:bg-sky-700"
+                >
+                  <Printer className="h-4 w-4 mr-1.5" /> Print
+                </button>
+                <button
+                  onClick={() => setQuickPreview(null)}
+                  className="p-1.5 rounded-lg hover:bg-gray-200 text-gray-600"
+                  title="Close"
+                >
+                  <X className="h-5 w-5" />
+                </button>
+              </div>
+            </div>
+            {/* iframe */}
+            <iframe
+              ref={previewIframeRef}
+              srcDoc={quickPreview.html}
+              className="flex-1 w-full border-0"
+              title="Quick Preview"
+            />
+          </div>
+        </div>,
+        document.body
       )}
 
       {showPatientSummaryModal && patientSummaryTarget && (

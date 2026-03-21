@@ -405,6 +405,7 @@ const Tests: React.FC = () => {
           console.log('✅ Analytes loaded:', dbAnalytesData?.length || 0, 'records');
           const transformedAnalytes = (dbAnalytesData || []).map(analyte => ({
             id: analyte.id,
+            lab_analyte_id: analyte.lab_analyte_id,
             name: analyte.name,
             unit: analyte.unit,
             referenceRange: analyte.reference_range || analyte.referenceRange,
@@ -485,6 +486,7 @@ const Tests: React.FC = () => {
             default_outsourced_lab_id: group.default_outsourced_lab_id,
             ref_range_ai_config: group.ref_range_ai_config,
             required_patient_inputs: group.required_patient_inputs || [],
+            group_interpretation: group.group_interpretation || null,
             analytes: group.test_group_analytes ? group.test_group_analytes.map((tga: any) => tga.analyte_id) : []
           }));
           setTestGroups(transformedTestGroups);
@@ -1003,6 +1005,7 @@ const Tests: React.FC = () => {
           default_outsourced_lab_id: updatedTestGroup.default_outsourced_lab_id,
           default_template_style: updatedTestGroup.default_template_style || null,
           print_options: updatedTestGroup.print_options ?? null,
+          group_interpretation: updatedTestGroup.group_interpretation || null,
         };
         setTestGroups(prev => prev.map(tg => tg.id === editingTestGroup.id ? transformedGroup : tg));
         setShowTestGroupForm(false);
@@ -1269,6 +1272,7 @@ const Tests: React.FC = () => {
 	          report_priority: group.report_priority ?? null,
 	          default_template_style: group.default_template_style || null,
           print_options: group.print_options ?? null,
+          group_interpretation: group.group_interpretation || null,
           analytes: group.test_group_analytes ? group.test_group_analytes.map((tga: any) => tga.analyte_id) : []
         }));
         setTestGroups(transformedTestGroups);

@@ -252,6 +252,18 @@ exports.handler = async (event) => {
 
     await updateStatus('ready', updateFields);
 
+    // Warm up ImageKit variant URLs so on-demand transformations (e.g. e-removedotbg)
+    // are pre-processed and cached before any PDF generation requests them.
+    // Fire-and-forget — we don't await or block on these.
+    if (variants && typeof variants === 'object') {
+      for (const url of Object.values(variants)) {
+        if (typeof url === 'string' && url.startsWith('http')) {
+          fetch(url, { method: 'HEAD' }).catch(() => {});
+        }
+      }
+      console.log(`imagekit-process: warming up ${Object.keys(variants).length} variant URL(s)`);
+    }
+
     return {
       statusCode: 200,
       headers: { 'Content-Type': 'application/json' },

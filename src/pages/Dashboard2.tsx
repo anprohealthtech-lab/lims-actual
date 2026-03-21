@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from "react";
-import { RefreshCw } from "lucide-react";
+import { RefreshCw, IndianRupee, ListChecks, Wallet, AlertCircle } from "lucide-react";
 
 import { useDashboardData } from "../hooks/useDashboardData";
 import type { DashboardOrderRow, DashboardState } from "../types/dashboard";
@@ -134,6 +134,65 @@ const Dashboard2: React.FC = () => {
           setFilters((f) => ({ ...f, status: map[key] ?? "all" }));
         }}
       />
+
+      {/* Financial summary + Status detail */}
+      {!loading && rows.length > 0 && (
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+          {/* Financial totals */}
+          <div className="lg:col-span-2 bg-white rounded-lg border border-gray-200 p-4">
+            <p className="text-xs font-semibold uppercase tracking-wide text-gray-500 mb-3">Today's Collection</p>
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+              <div className="flex flex-col gap-0.5">
+                <span className="text-xs text-gray-500">Total Amount</span>
+                <span className="text-lg font-bold text-gray-900 flex items-center gap-0.5">
+                  <IndianRupee className="h-4 w-4 text-gray-400" />
+                  {rows.reduce((s, r) => s + (r.total_amount || 0), 0).toLocaleString("en-IN")}
+                </span>
+              </div>
+              <div className="flex flex-col gap-0.5">
+                <span className="text-xs text-gray-500">Total Paid</span>
+                <span className="text-lg font-bold text-emerald-700 flex items-center gap-0.5">
+                  <Wallet className="h-4 w-4 text-emerald-400" />
+                  {rows.reduce((s, r) => s + (r.paid_total || 0), 0).toLocaleString("en-IN")}
+                </span>
+              </div>
+              <div className="flex flex-col gap-0.5">
+                <span className="text-xs text-gray-500">Total Due</span>
+                <span className="text-lg font-bold text-red-600 flex items-center gap-0.5">
+                  <AlertCircle className="h-4 w-4 text-red-400" />
+                  {rows.reduce((s, r) => s + (r.balance_due || 0), 0).toLocaleString("en-IN")}
+                </span>
+              </div>
+              <div className="flex flex-col gap-0.5">
+                <span className="text-xs text-gray-500">No. of Records</span>
+                <span className="text-lg font-bold text-blue-700">{rows.length}</span>
+              </div>
+            </div>
+          </div>
+
+          {/* Status detail */}
+          <div className="bg-white rounded-lg border border-gray-200 p-4">
+            <p className="text-xs font-semibold uppercase tracking-wide text-gray-500 mb-3 flex items-center gap-1.5">
+              <ListChecks className="h-4 w-4" /> Status Detail
+            </p>
+            <ul className="space-y-1.5 text-sm">
+              {[
+                { label: "Samples Registered", value: rows.length },
+                { label: "In Process", value: kpis.pending + kpis.for_approval },
+                { label: "Approved", value: kpis.approved },
+                { label: "Report Ready", value: kpis.report_ready },
+                { label: "Delivered", value: kpis.delivered },
+                { label: "Overdue", value: kpis.overdue },
+              ].map(({ label, value }) => (
+                <li key={label} className="flex items-center justify-between">
+                  <span className="text-gray-600">{label}</span>
+                  <span className="font-semibold text-gray-900 bg-gray-100 rounded px-2 py-0.5 text-xs">{value}</span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        </div>
+      )}
 
       {/* Main layout */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">

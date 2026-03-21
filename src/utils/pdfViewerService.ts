@@ -195,13 +195,13 @@ export const prepareViewerReportData = async (orderId: string): Promise<ViewerRe
       // Also fetch signature
       const { data: signatureAsset } = await supabase
         .from('lab_branding_assets')
-        .select('file_url, imagekit_url, processed_url')
+        .select('file_url, imagekit_url')
         .eq('lab_id', context.labId)
         .eq('asset_type', 'signature')
         .eq('is_default', true)
         .maybeSingle();
-      
-      const signatureUrl = signatureAsset?.imagekit_url || signatureAsset?.processed_url || signatureAsset?.file_url || null;
+
+      const signatureUrl = signatureAsset?.imagekit_url || signatureAsset?.file_url || null;
 
       if (labData) {
         const addressParts = [labData.address, labData.city, labData.state, labData.pincode].filter(Boolean);

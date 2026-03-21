@@ -62,6 +62,17 @@ Deno.serve(async (req) => {
     return json({ error: 'Invalid or inactive API key' }, 403)
   }
 
+  // Gate: lab_interface_enabled must be true for this lab
+  const { data: labRow } = await supabase
+    .from('labs')
+    .select('lab_interface_enabled')
+    .eq('id', labId)
+    .single()
+
+  if (!labRow?.lab_interface_enabled) {
+    return json({ error: 'Lab interface not enabled for this lab' }, 403)
+  }
+
   touchKey(supabase, keyId)
 
   // ─────────────────────────────────────────────────────────────────

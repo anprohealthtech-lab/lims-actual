@@ -509,6 +509,49 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
     dob: string;
   }>({ name: '', age: '', age_unit: 'years', gender: 'Male', phone: '', email: '', dob: '' });
 
+  // Split name fields for Add Patient form
+  const NP_SALUTATIONS = ['Mr.', 'Mrs.', 'Ms.', 'Dr.', 'Master', 'Baby', 'Prof.', 'Shri.', 'Smt.', 'Ku.'];
+  const [npSalutation, setNpSalutation] = useState('');
+  const [npFirstName, setNpFirstName] = useState('');
+  const [npMiddleName, setNpMiddleName] = useState('');
+  const [npLastName, setNpLastName] = useState('');
+  const [npGenderAutoDetected, setNpGenderAutoDetected] = useState(false);
+  const [npGenderManuallySet, setNpGenderManuallySet] = useState(false);
+
+  const npDetectGender = (sal: string, first: string, last: string): 'Male' | 'Female' | '' => {
+    const s = sal.toLowerCase().replace('.', '');
+    if (['mr', 'master', 'shri', 'shriman'].includes(s)) return 'Male';
+    if (['mrs', 'ms', 'miss', 'smt', 'shrimati', 'ku', 'kumari', 'baby'].includes(s)) return 'Female';
+    const words = `${first} ${last}`.toLowerCase().split(/\s+/);
+    const female = ['ben', 'bhen', 'bai', 'devi', 'kumari', 'shrimati', 'smt', 'sister', 'mata', 'amma', 'didi'];
+    const male = ['bhai', 'bro', 'shriman', 'lal', 'singh', 'ram', 'kumar'];
+    if (words.some(w => female.includes(w))) return 'Female';
+    if (words.some(w => male.includes(w))) return 'Male';
+    return '';
+  };
+
+  const npGetFullName = () =>
+    [npSalutation, npFirstName.trim(), npMiddleName.trim(), npLastName.trim()].filter(Boolean).join(' ');
+
+  const npResetNameFields = () => {
+    setNpSalutation(''); setNpFirstName(''); setNpMiddleName(''); setNpLastName('');
+    setNpGenderAutoDetected(false); setNpGenderManuallySet(false);
+  };
+
+  // Auto-detect gender when split name fields change (skipped if user manually picked)
+  useEffect(() => {
+    if (!npGenderManuallySet) {
+      const detected = npDetectGender(npSalutation, npFirstName, npLastName);
+      if (detected) {
+        setNewPatient(p => ({ ...p, gender: detected }));
+        setNpGenderAutoDetected(true);
+      }
+    }
+    // Always sync composed name
+    const full = npGetFullName();
+    if (full) setNewPatient(p => ({ ...p, name: full }));
+  }, [npSalutation, npFirstName, npMiddleName, npLastName]);
+
   const calcAgeFromDob = (dob: string): { age: string; age_unit: 'years' | 'months' | 'days' } => {
     const birth = new Date(dob);
     const today = new Date();
@@ -1928,45 +1971,87 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
             <h3 className="text-lg font-medium text-gray-900 flex items-center gap-2">
               <TestTube className="h-5 w-5" />
               Test Selection
+              {selectedTests.length > 0 && (
+                <span className="text-sm font-semibold text-blue-600 bg-blue-50 px-2 py-0.5 rounded-full leading-none">
+                  {selectedTests.length}
+                </span>
+              )}
             </h3>
 
             {loadingTests ? (
               <div className="p-4 text-center text-gray-500">Loading tests…</div>
             ) : (
-              <div className="space-y-3">
-                {/* Test Search */}
-                <div className="relative">
-                  <Search className="w-4 h-4 text-gray-400 absolute left-3 top-3 pointer-events-none" />
-                  <input
-                    ref={searchInputRef}
-                    type="text"
-                    value={testSearch}
-                    placeholder="Search tests or packages... (Press Enter to select)"
-                    onChange={(e) => {
-                      setTestSearch(e.target.value);
-                      setShowTestList(true);
-                    }}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter' && testSearch) {
-                        e.preventDefault(); // Prevent form submission
-                        const search = testSearch.toLowerCase();
-                        const match = testGroups.find(t =>
-                          t.name.toLowerCase().includes(search) ||
-                          (t.category && t.category.toLowerCase().includes(search)) ||
-                          (t.code && t.code.toLowerCase().includes(search)) ||
-                          (t.type === 'package' && 'package'.includes(search))
-                        );
-                        if (match) handleToggleTest(match.id);
-                      }
-                    }}
-                    onFocus={() => setShowTestList(true)}
-                    className="w-full pl-9 pr-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
-                  />
+              <div className="space-y-2">
+                {/* Chip input box — selected tests as pills + search inside */}
+                <div
+                  className="border border-gray-300 rounded-md focus-within:ring-2 focus-within:ring-blue-500 focus-within:border-blue-500
+                             bg-white min-h-[42px] max-h-28 overflow-y-auto px-2 py-1.5 flex flex-wrap gap-1.5 items-center cursor-text"
+                  onClick={e => {
+                    const input = (e.currentTarget as HTMLElement).querySelector('input');
+                    input?.focus();
+                  }}
+                >
+                  {selectedTests.map(id => {
+                    const t = testGroups.find(tg => tg.id === id);
+                    if (!t) return null;
+                    return (
+                      <span
+                        key={id}
+                        className={`inline-flex items-center gap-1 text-xs font-medium px-2 py-0.5 rounded-full border shrink-0 ${
+                          t.type === 'package'
+                            ? 'bg-purple-50 text-purple-700 border-purple-200'
+                            : 'bg-blue-50 text-blue-700 border-blue-200'
+                        }`}
+                      >
+                        {t.name}
+                        <button
+                          type="button"
+                          onClick={e => { e.stopPropagation(); handleToggleTest(id); }}
+                          className="opacity-60 hover:opacity-100 leading-none"
+                        >
+                          <X className="w-3 h-3" />
+                        </button>
+                      </span>
+                    );
+                  })}
+                  <div className="relative flex-1 min-w-[180px] flex items-center">
+                    <Search className="w-3.5 h-3.5 text-gray-400 absolute left-1.5 pointer-events-none" />
+                    <input
+                      ref={searchInputRef}
+                      type="text"
+                      value={testSearch}
+                      placeholder={selectedTests.length === 0 ? 'Search tests or packages…' : 'Add more…'}
+                      onChange={(e) => {
+                        setTestSearch(e.target.value);
+                        setShowTestList(true);
+                      }}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' && testSearch) {
+                          e.preventDefault();
+                          const search = testSearch.toLowerCase();
+                          const match = testGroups.find(t =>
+                            t.name.toLowerCase().includes(search) ||
+                            (t.category && t.category.toLowerCase().includes(search)) ||
+                            (t.code && t.code.toLowerCase().includes(search)) ||
+                            (t.type === 'package' && 'package'.includes(search))
+                          );
+                          if (match) handleToggleTest(match.id);
+                        } else if (e.key === 'Backspace' && !testSearch && selectedTests.length > 0) {
+                          handleToggleTest(selectedTests[selectedTests.length - 1]);
+                        }
+                      }}
+                      onFocus={() => setShowTestList(true)}
+                      className="w-full pl-6 text-sm outline-none bg-transparent py-0.5 placeholder-gray-400"
+                    />
+                  </div>
                 </div>
+                <p className="text-[10px] text-gray-400">
+                  Enter to add first match · Backspace to remove last · click chip ✕ to remove
+                </p>
 
-                {/* Collapsible Test List */}
+                {/* Dropdown — filtered or full browse */}
                 {showTestList && (
-                  <div className="border border-gray-200 rounded-lg divide-y max-h-80 overflow-y-auto bg-white shadow-lg">
+                  <div className="border border-gray-200 rounded-lg divide-y max-h-64 overflow-y-auto bg-white shadow-lg">
                     {testGroups.length === 0 ? (
                       <div className="p-4 text-gray-500 text-sm">No tests or packages found.</div>
                     ) : (
@@ -2019,22 +2104,6 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
                         ))
                     )}
                   </div>
-                )}
-
-                {/* Show selected count when collapsed */}
-                {!showTestList && selectedTests.length > 0 && (
-                  <button
-                    type="button"
-                    onClick={() => setShowTestList(true)}
-                    className="w-full p-3 bg-blue-50 border border-blue-200 rounded-lg text-left hover:bg-blue-100 transition-colors"
-                  >
-                    <div className="flex items-center justify-between">
-                      <span className="text-sm font-medium text-blue-900">
-                        {selectedTests.length} test{selectedTests.length !== 1 ? 's' : ''} selected
-                      </span>
-                      <span className="text-xs text-blue-700">Click to view/edit</span>
-                    </div>
-                  </button>
                 )}
               </div>
             )}
@@ -2955,11 +3024,13 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
             <form
               onSubmit={async (e) => {
                 e.preventDefault();
-                if (!newPatient.name || !newPatient.age || !newPatient.gender || !newPatient.phone) return;
+                const composedName = npGetFullName() || newPatient.name;
+                if (!npFirstName.trim() && !composedName) return;
+                if (!newPatient.age || !newPatient.phone) return;
                 try {
                   setCreatingPatient(true);
                   const payload: any = {
-                    name: newPatient.name.trim(),
+                    name: (npGetFullName() || newPatient.name).trim(),
                     age: parseInt(newPatient.age, 10),
                     age_unit: newPatient.age_unit,
                     gender: newPatient.gender,
@@ -2997,6 +3068,7 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
                     setShowNewPatientModal(false);
                     setNewPatient({ name: '', age: '', age_unit: 'years', gender: 'Male', phone: '', email: '', dob: '' });
                     setNewPatientCustomFields({});
+                    npResetNameFields();
                   }
                 } catch (err) {
                   console.error(err);
@@ -3008,15 +3080,54 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
               className="p-6 space-y-4"
             >
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">Name *</label>
-                  <input
-                    type="text"
-                    required
-                    value={newPatient.name}
-                    onChange={(e) => setNewPatient((p) => ({ ...p, name: e.target.value }))}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm"
-                  />
+                {/* ── Patient Name (split fields) ── */}
+                <div className="md:col-span-2 space-y-2">
+                  <label className="block text-sm font-medium text-gray-700">Patient Name *</label>
+
+                  {/* Row 1: Salutation + First Name */}
+                  <div className="flex gap-2">
+                    <select
+                      value={npSalutation}
+                      onChange={e => setNpSalutation(e.target.value)}
+                      className="w-[96px] shrink-0 px-2 py-2 text-sm border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white"
+                    >
+                      <option value="">Salute</option>
+                      {NP_SALUTATIONS.map(s => <option key={s} value={s}>{s}</option>)}
+                    </select>
+                    <input
+                      type="text"
+                      required
+                      placeholder="First Name *"
+                      value={npFirstName}
+                      onChange={e => setNpFirstName(e.target.value)}
+                      className="flex-1 px-3 py-2 text-sm border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                    />
+                  </div>
+
+                  {/* Row 2: Middle + Last Name */}
+                  <div className="flex gap-2">
+                    <input
+                      type="text"
+                      placeholder="Middle Name"
+                      value={npMiddleName}
+                      onChange={e => setNpMiddleName(e.target.value)}
+                      className="flex-1 px-3 py-2 text-sm border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                    />
+                    <input
+                      type="text"
+                      placeholder="Last Name"
+                      value={npLastName}
+                      onChange={e => setNpLastName(e.target.value)}
+                      className="flex-1 px-3 py-2 text-sm border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                    />
+                  </div>
+
+                  {/* Preview */}
+                  {npGetFullName() && (
+                    <p className="text-xs text-gray-500">
+                      Saved as: <span className="font-semibold text-gray-700">{npGetFullName()}</span>
+                    </p>
+                  )}
                 </div>
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1">Date of Birth</label>
@@ -3062,16 +3173,32 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
                   </div>
                 </div>
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">Gender *</label>
-                  <select
-                    value={newPatient.gender}
-                    onChange={(e) => setNewPatient((p) => ({ ...p, gender: e.target.value }))}
-                    className="w-full rounded-md border-gray-300 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm"
-                  >
-                    <option>Male</option>
-                    <option>Female</option>
-                    <option>Other</option>
-                  </select>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">Gender *</label>
+                  <div className="flex items-center gap-2 flex-wrap">
+                    {(['Male', 'Female', 'Other'] as const).map(g => (
+                      <button
+                        key={g}
+                        type="button"
+                        onClick={() => { setNewPatient(p => ({ ...p, gender: g })); setNpGenderAutoDetected(false); setNpGenderManuallySet(true); }}
+                        className={`px-3 py-1.5 text-sm font-medium rounded-full border transition-all ${
+                          newPatient.gender === g
+                            ? g === 'Male'
+                              ? 'bg-blue-50 border-blue-400 text-blue-700'
+                              : g === 'Female'
+                                ? 'bg-pink-50 border-pink-400 text-pink-700'
+                                : 'bg-purple-50 border-purple-400 text-purple-700'
+                            : 'border-gray-300 text-gray-500 hover:border-gray-400'
+                        }`}
+                      >
+                        {g}
+                      </button>
+                    ))}
+                    {npGenderAutoDetected && newPatient.gender && (
+                      <span className="flex items-center gap-0.5 text-[11px] text-amber-600 font-medium">
+                        <Sparkles className="w-3 h-3" /> Auto
+                      </span>
+                    )}
+                  </div>
                 </div>
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1">Phone *</label>
@@ -3131,7 +3258,7 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
               <div className="flex items-center justify-end gap-3 pt-2">
                 <button
                   type="button"
-                  onClick={() => { setShowNewPatientModal(false); setNewPatientCustomFields({}); }}
+                  onClick={() => { setShowNewPatientModal(false); setNewPatientCustomFields({}); npResetNameFields(); }}
                   className="px-4 py-2 text-sm border border-gray-300 rounded-md hover:bg-gray-50"
                   disabled={creatingPatient}
                 >
@@ -3140,7 +3267,7 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
                 <button
                   type="submit"
                   disabled={
-                    creatingPatient || !newPatient.name || !newPatient.age || !newPatient.phone
+                    creatingPatient || !npFirstName.trim() || !newPatient.age || !newPatient.phone
                   }
                   className="px-5 py-2 text-sm bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:bg-gray-300 disabled:cursor-not-allowed"
                 >

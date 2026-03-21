@@ -370,3 +370,9 @@ entrypoint = "./functions/create-lab-with-admin/index.ts"
 enabled = true
 verify_jwt = false
 entrypoint = "./functions/onboarding-lab/index.ts"
+
+# LIS bridge ingest — authenticated via x-lab-api-key header (no user JWT)
+[functions.analyzer-ingest]
+enabled = true
+verify_jwt = false
+entrypoint = "./functions/analyzer-ingest/index.ts"

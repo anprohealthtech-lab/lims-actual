@@ -5,7 +5,7 @@
  * that require findings, impressions, recommendations, etc.
  */
 
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useImperativeHandle, forwardRef } from 'react';
 import {
   FileText,
   CheckSquare,
@@ -78,7 +78,11 @@ const SECTION_TYPE_LABELS: Record<string, string> = {
   custom: 'Custom Section',
 };
 
-const SectionEditor: React.FC<SectionEditorProps> = ({
+export interface SectionEditorRef {
+  save: () => Promise<void>;
+}
+
+const SectionEditor = forwardRef<SectionEditorRef, SectionEditorProps>(({
   resultId,
   testGroupId,
   onSave,
@@ -86,7 +90,7 @@ const SectionEditor: React.FC<SectionEditorProps> = ({
   className = '',
   editorRole = 'doctor',
   showAIAssistant = true,
-}) => {
+}, ref) => {
   const [sections, setSections] = useState<TemplateSection[]>([]);
   const [contents, setContents] = useState<Map<string, SectionContent>>(new Map());
   const [loading, setLoading] = useState(true);
@@ -182,6 +186,35 @@ const SectionEditor: React.FC<SectionEditorProps> = ({
       loadData();
     }
   }, [resultId, testGroupId, loadData]);
+
+  // Global keyboard shortcut: press 'a','b','c'... to toggle predefined options
+  // Only fires when not typing in an input/textarea and a section with options is expanded
+  useEffect(() => {
+    if (readOnly) return;
+    const handleKeyDown = (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement;
+      if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable) return;
+      const key = e.key.toLowerCase();
+      const charCode = key.charCodeAt(0);
+      if (charCode < 97 || charCode > 122) return; // only a-z
+      const optionIndex = charCode - 97;
+
+      // Find the first expanded section that has an option at this index and is not locked
+      for (const section of sections) {
+        if (!expandedSections.has(section.id)) continue;
+        if (!section.predefined_options || section.predefined_options.length <= optionIndex) continue;
+        const content = contents.get(section.id);
+        if (content?.is_finalized) continue;
+        const roleAllowed = editorRole === 'doctor' || section.allow_technician_entry;
+        if (!roleAllowed) continue;
+        e.preventDefault();
+        toggleOption(section.id, optionIndex);
+        break;
+      }
+    };
+    document.addEventListener('keydown', handleKeyDown);
+    return () => document.removeEventListener('keydown', handleKeyDown);
+  }, [readOnly, sections, expandedSections, contents, editorRole]);
 
   // Toggle predefined option selection
   const toggleOption = (sectionId: string, optionIndex: number) => {
@@ -505,7 +538,7 @@ const SectionEditor: React.FC<SectionEditorProps> = ({
       }
 
       await Promise.all(savePromises);
-      
+
       // Reload to get IDs for new records
       await loadData();
       
@@ -519,6 +552,8 @@ const SectionEditor: React.FC<SectionEditorProps> = ({
       setSaving(false);
     }
   };
+
+  useImperativeHandle(ref, () => ({ save: saveAll }));
 
   if (loading) {
     return (
@@ -631,6 +666,7 @@ const SectionEditor: React.FC<SectionEditorProps> = ({
                       <div className="space-y-2">
                         {section.predefined_options.map((option, idx) => {
                           const isSelected = content?.selected_options.includes(idx);
+                          const shortcutKey = idx < 26 ? String.fromCharCode(97 + idx) : null; // a, b, c...
                           return (
                             <button
                               key={idx}
@@ -648,6 +684,11 @@ const SectionEditor: React.FC<SectionEditorProps> = ({
                                     isSelected ? 'text-blue-600' : 'text-gray-400'
                                   }`}
                                 />
+                                {shortcutKey && (
+                                  <span className="inline-flex items-center justify-center w-5 h-5 mr-2 text-xs font-bold bg-gray-200 text-gray-600 rounded border border-gray-300 flex-shrink-0 mt-0.5">
+                                    {shortcutKey.toUpperCase()}
+                                  </span>
+                                )}
                                 <span className="text-sm">{option}</span>
                               </div>
                             </button>
@@ -894,6 +935,6 @@ const SectionEditor: React.FC<SectionEditorProps> = ({
       </div>
     </div>
   );
-};
+});
 
 export default SectionEditor;

@@ -14,13 +14,14 @@ serve(async (req) => {
 
   try {
     // 1. Parse Input
-    const { lab_id, mode } = await req.json();
+    const { lab_id, mode, test_group_name } = await req.json();
     if (!lab_id) {
       throw new Error('lab_id is required');
     }
 
-    const isSync = mode === 'sync'; // Sync mode updates existing records
+    const isSync = mode === 'sync';   // Sync mode updates existing records
     const isReset = mode === 'reset'; // Reset mode deletes ALL and restores from global
+    const isSingle = mode === 'single'; // Single group sync by name (non-destructive)
 
     // 2. Init Supabase Client
     const supabaseClient = createClient(
@@ -28,7 +29,152 @@ serve(async (req) => {
       Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
     );
 
-    console.log(`🚀 Starting ${isReset ? 'RESET' : isSync ? 'SYNC' : 'ONBOARD'} for Lab: ${lab_id}`);
+    console.log(`🚀 Starting ${isReset ? 'RESET' : isSync ? 'SYNC' : isSingle ? 'SINGLE' : 'ONBOARD'} for Lab: ${lab_id}`);
+
+    // --- SINGLE MODE: non-destructive sync of one test group by name ---
+    if (isSingle) {
+      if (!test_group_name) throw new Error('test_group_name is required for single mode');
+
+      // Find entry in global catalog (case-insensitive)
+      const { data: catalogEntry } = await supabaseClient
+        .from('global_test_catalog')
+        .select('id, name, code, group_interpretation, default_ai_processing_type, group_level_prompt, ai_config')
+        .ilike('name', test_group_name)
+        .maybeSingle();
+
+      if (!catalogEntry) {
+        return new Response(JSON.stringify({
+          success: false,
+          error: `'${test_group_name}' not found in global catalog`,
+        }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+      }
+
+      // Find lab's test group by name
+      const { data: labGroup } = await supabaseClient
+        .from('test_groups')
+        .select('id, name, group_interpretation')
+        .eq('lab_id', lab_id)
+        .ilike('name', test_group_name)
+        .maybeSingle();
+
+      if (!labGroup) {
+        return new Response(JSON.stringify({
+          success: false,
+          error: `'${test_group_name}' not found in this lab's test groups`,
+        }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+      }
+
+      // Load analyte metadata from catalog junction table
+      const { data: catalogMeta } = await supabaseClient
+        .from('global_test_catalog_analytes')
+        .select('analyte_id, section_heading, sort_order, display_order, is_visible, is_header, header_name, custom_reference_range')
+        .eq('catalog_id', catalogEntry.id)
+        .order('sort_order', { ascending: true });
+
+      // Load existing analyte links for this lab test group
+      const { data: existingLinks } = await supabaseClient
+        .from('test_group_analytes')
+        .select('analyte_id')
+        .eq('test_group_id', labGroup.id);
+
+      const existingAnalyteSet = new Set((existingLinks || []).map((l: any) => l.analyte_id));
+      const toAdd = (catalogMeta || []).filter((m: any) => !existingAnalyteSet.has(m.analyte_id));
+
+      let analytesAdded = 0;
+      let analytesHydrated = 0;
+
+      if (toAdd.length > 0) {
+        // Ensure analytes exist in lab_analytes (FK guard)
+        const labAnalytePayload = toAdd.map((m: any) => ({ lab_id, analyte_id: m.analyte_id, is_active: true, visible: true }));
+        await supabaseClient.from('lab_analytes').upsert(labAnalytePayload, { onConflict: 'lab_id,analyte_id', ignoreDuplicates: true });
+        analytesHydrated = toAdd.length;
+
+        // Insert missing analyte links (non-destructive — ignore existing)
+        const linkPayload = toAdd.map((m: any) => ({
+          test_group_id: labGroup.id,
+          analyte_id: m.analyte_id,
+          is_visible: m.is_visible ?? true,
+          sort_order: m.sort_order,
+          display_order: m.display_order ?? m.sort_order,
+          section_heading: m.section_heading ?? null,
+          is_header: m.is_header ?? false,
+          header_name: m.header_name ?? null,
+          custom_reference_range: m.custom_reference_range ?? null,
+        }));
+
+        const { error: linkErr } = await supabaseClient
+          .from('test_group_analytes')
+          .upsert(linkPayload, { onConflict: 'test_group_id,analyte_id', ignoreDuplicates: true });
+
+        if (!linkErr) analytesAdded = toAdd.length;
+        else console.error('Single mode link error:', linkErr);
+      }
+
+      // Sync group_interpretation only if global has one and lab doesn't yet
+      let interpretationSynced = false;
+      if (catalogEntry.group_interpretation && !labGroup.group_interpretation) {
+        const { error: interpErr } = await supabaseClient
+          .from('test_groups')
+          .update({ group_interpretation: catalogEntry.group_interpretation })
+          .eq('id', labGroup.id);
+        if (!interpErr) interpretationSynced = true;
+      }
+
+      // Seed report sections for this test group (non-destructive)
+      let sectionsAdded = 0;
+      const { data: catalogSections } = await supabaseClient
+        .from('global_test_catalog_sections')
+        .select('section_type, section_name, display_order, default_content, predefined_options, is_required, is_editable, placeholder_key, allow_images, allow_technician_entry')
+        .eq('catalog_id', catalogEntry.id);
+
+      if (catalogSections && catalogSections.length > 0) {
+        const { data: existingSections } = await supabaseClient
+          .from('lab_template_sections')
+          .select('section_type')
+          .eq('lab_id', lab_id)
+          .eq('test_group_id', labGroup.id);
+
+        const existingTypes = new Set((existingSections || []).map((s: any) => s.section_type));
+        const sectionsToInsert = catalogSections
+          .filter((s: any) => !existingTypes.has(s.section_type))
+          .map((s: any) => ({
+            lab_id,
+            test_group_id: labGroup.id,
+            section_type: s.section_type,
+            section_name: s.section_name,
+            display_order: s.display_order,
+            default_content: s.default_content,
+            predefined_options: s.predefined_options ?? [],
+            is_required: s.is_required ?? false,
+            is_editable: s.is_editable ?? true,
+            placeholder_key: s.placeholder_key,
+            allow_images: s.allow_images ?? false,
+            allow_technician_entry: s.allow_technician_entry ?? false,
+          }));
+
+        if (sectionsToInsert.length > 0) {
+          const { error: secErr } = await supabaseClient
+            .from('lab_template_sections')
+            .insert(sectionsToInsert);
+          if (!secErr) sectionsAdded = sectionsToInsert.length;
+          else console.error('Single mode section insert error:', secErr);
+        }
+      }
+
+      console.log(`✅ Single sync: ${labGroup.name} — added ${analytesAdded} analytes, ${sectionsAdded} sections, interpretation synced: ${interpretationSynced}`);
+
+      return new Response(JSON.stringify({
+        success: true,
+        mode: 'single',
+        test_group_name: labGroup.name,
+        catalog_analyte_count: (catalogMeta || []).length,
+        existing_analyte_count: existingAnalyteSet.size,
+        analytesAdded,
+        analytesHydrated,
+        interpretationSynced,
+        sectionsAdded,
+      }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+    }
 
     // --- Counters for Logging ---
     let stats: Record<string, number> = {
@@ -41,6 +187,7 @@ serve(async (req) => {
       templatesCloned: 0,
       packagesCreated: 0,
       invoiceTemplatesCreated: 0,
+      sectionsCreated: 0,
       orphanLabAnalytesDeleted: 0,
       orphanLabTemplatesDeleted: 0
     };
@@ -127,6 +274,24 @@ serve(async (req) => {
     // --- C. Hydrate Test Groups (BULK approach to avoid timeouts) ---
     console.log('...Hydrating Test Groups');
     const { data: globalTestGroups } = await supabaseClient.from('global_test_catalog').select('*');
+
+    // Bulk-fetch analyte metadata (section_heading, sort_order) from junction table
+    const allCatalogIds = (globalTestGroups || []).map((g: any) => g.id);
+    const catalogAnalyteMeta = new Map<string, { analyte_id: string; section_heading: string | null; sort_order: number; display_order: number | null; is_visible: boolean; is_header: boolean; header_name: string | null; custom_reference_range: string | null }[]>();
+    if (allCatalogIds.length > 0) {
+      for (let i = 0; i < allCatalogIds.length; i += 500) {
+        const { data: metaRows } = await supabaseClient
+          .from('global_test_catalog_analytes')
+          .select('catalog_id, analyte_id, section_heading, sort_order, display_order, is_visible, is_header, header_name, custom_reference_range')
+          .in('catalog_id', allCatalogIds.slice(i, i + 500))
+          .order('sort_order', { ascending: true });
+        for (const row of (metaRows || [])) {
+          if (!catalogAnalyteMeta.has(row.catalog_id)) catalogAnalyteMeta.set(row.catalog_id, []);
+          catalogAnalyteMeta.get(row.catalog_id)!.push(row);
+        }
+      }
+      console.log(`   📋 Loaded analyte metadata for ${catalogAnalyteMeta.size} catalog entries`);
+    }
 
     if (globalTestGroups && globalTestGroups.length > 0) {
       console.log(`   Found ${globalTestGroups.length} global test groups.`);
@@ -220,7 +385,8 @@ serve(async (req) => {
             to_be_copied: false,
             default_ai_processing_type: gtg.default_ai_processing_type || 'ocr_report',
             group_level_prompt: gtg.group_level_prompt || null,
-            ai_config: gtg.ai_config || {}
+            ai_config: gtg.ai_config || {},
+            group_interpretation: gtg.group_interpretation || null
           })))
           .select('id, code');
 
@@ -247,9 +413,17 @@ serve(async (req) => {
       // --- Ensure ALL analyte IDs referenced in the catalog exist in lab_analytes ---
       // Many catalog entries reference analytes that are NOT is_global=true (from source labs).
       // We must hydrate them before inserting test_group_analytes (FK constraint).
+      const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
       const allCatalogAnalyteIds = new Set<string>();
+      // Collect from OLD jsonb array (filtered to valid UUIDs only)
       for (const gtg of globalTestGroups) {
-        for (const aid of parseAnalyteIds(gtg.analytes)) allCatalogAnalyteIds.add(aid);
+        for (const aid of parseAnalyteIds(gtg.analytes)) {
+          if (UUID_RE.test(aid)) allCatalogAnalyteIds.add(aid);
+        }
+      }
+      // Also collect from NEW junction table — these are the authoritative IDs going forward
+      for (const rows of catalogAnalyteMeta.values()) {
+        for (const row of rows) allCatalogAnalyteIds.add(row.analyte_id);
       }
       // validAnalyteIdsSet: only IDs that actually exist in the analytes table (safe to FK-reference)
       let validAnalyteIdsSet = new Set<string>();
@@ -335,21 +509,46 @@ serve(async (req) => {
       }
 
       // --- BATCH INSERT analyte links for newly created groups ---
-      const analyteLinksPayload: { test_group_id: string; analyte_id: string; is_visible: boolean }[] = [];
+      const analyteLinksPayload: {
+        test_group_id: string; analyte_id: string; is_visible: boolean;
+        sort_order?: number; display_order?: number | null;
+        section_heading?: string | null; is_header?: boolean; header_name?: string | null;
+        custom_reference_range?: string | null;
+      }[] = [];
       for (const gtg of toCreate) {
         const newId = createdMap.get(gtg.code);
         if (!newId) continue;
-        // Use fallback-resolved IDs if available, otherwise use catalog IDs filtered to valid set
-        const analyteIds: string[] = (gtg as any)._resolvedAnalyteIds || parseAnalyteIds(gtg.analytes).filter(id => validAnalyteIdsSet.has(id));
-        for (const aid of analyteIds) {
-          analyteLinksPayload.push({ test_group_id: newId, analyte_id: aid, is_visible: true });
+        const metaRows = catalogAnalyteMeta.get(gtg.id);
+        if (metaRows && metaRows.length > 0) {
+          // Use junction table metadata — preserves section_heading + sort_order
+          for (const m of metaRows) {
+            if (!validAnalyteIdsSet.has(m.analyte_id)) continue;
+            analyteLinksPayload.push({
+              test_group_id: newId,
+              analyte_id: m.analyte_id,
+              is_visible: m.is_visible,
+              sort_order: m.sort_order,
+              display_order: m.display_order,
+              section_heading: m.section_heading,
+              is_header: m.is_header,
+              header_name: m.header_name,
+              custom_reference_range: m.custom_reference_range,
+            });
+          }
+        } else {
+          // Fallback: no junction table metadata yet — use plain ID list (legacy / pre-migration)
+          const analyteIds: string[] = (gtg as any)._resolvedAnalyteIds
+            || parseAnalyteIds(gtg.analytes).filter((id: string) => UUID_RE.test(id) && validAnalyteIdsSet.has(id));
+          for (let idx = 0; idx < analyteIds.length; idx++) {
+            analyteLinksPayload.push({ test_group_id: newId, analyte_id: analyteIds[idx], is_visible: true, sort_order: idx });
+          }
         }
       }
       if (analyteLinksPayload.length > 0) {
         for (let i = 0; i < analyteLinksPayload.length; i += 500) {
           const { error: laErr } = await supabaseClient
             .from('test_group_analytes')
-            .upsert(analyteLinksPayload.slice(i, i + 500), { onConflict: 'test_group_id,analyte_id', ignoreDuplicates: true });
+            .upsert(analyteLinksPayload.slice(i, i + 500), { onConflict: 'test_group_id,analyte_id' });
           if (laErr) console.error(`Analyte link batch error (chunk ${i}):`, laErr);
         }
         console.log(`   🔗 Linked ${analyteLinksPayload.length} analyte associations`);
@@ -367,7 +566,9 @@ serve(async (req) => {
                 group_level_prompt: gtg.group_level_prompt || null,
                 ai_config: gtg.ai_config || {},
                 sample_type: gtg.specimen_type_default || 'EDTA Blood',
-                category: gtg.department_default || 'General'
+                category: gtg.department_default || 'General',
+                // Only propagate group_interpretation if global catalog has one set
+                ...(gtg.group_interpretation ? { group_interpretation: gtg.group_interpretation } : {})
               })
               .eq('id', existingId)
               .then(({ error }) => {
@@ -381,15 +582,37 @@ serve(async (req) => {
       }
 
       // Re-sync analyte links for updated groups in sync/reset mode
+      // Non-destructive: only ADD missing analytes — never delete existing lab-custom links
       if ((isSync || isReset) && toUpdate.length > 0) {
-        const updatedIds = toUpdate.map(u => u.existingId);
-        await supabaseClient.from('test_group_analytes').delete().in('test_group_id', updatedIds);
-        const resyncPayload: { test_group_id: string; analyte_id: string; is_visible: boolean }[] = [];
+        const resyncPayload: {
+          test_group_id: string; analyte_id: string; is_visible: boolean;
+          sort_order?: number; display_order?: number | null;
+          section_heading?: string | null; is_header?: boolean; header_name?: string | null;
+          custom_reference_range?: string | null;
+        }[] = [];
         for (const { gtg, existingId } of toUpdate) {
-          // Use fallback-resolved IDs if available, otherwise use catalog IDs filtered to valid set
-          const analyteIds: string[] = (gtg as any)._resolvedAnalyteIds || parseAnalyteIds(gtg.analytes).filter(id => validAnalyteIdsSet.has(id));
-          for (const aid of analyteIds) {
-            resyncPayload.push({ test_group_id: existingId, analyte_id: aid, is_visible: true });
+          const metaRows = catalogAnalyteMeta.get(gtg.id);
+          if (metaRows && metaRows.length > 0) {
+            for (const m of metaRows) {
+              if (!validAnalyteIdsSet.has(m.analyte_id)) continue;
+              resyncPayload.push({
+                test_group_id: existingId,
+                analyte_id: m.analyte_id,
+                is_visible: m.is_visible,
+                sort_order: m.sort_order,
+                display_order: m.display_order,
+                section_heading: m.section_heading,
+                is_header: m.is_header,
+                header_name: m.header_name,
+                custom_reference_range: m.custom_reference_range,
+              });
+            }
+          } else {
+            const analyteIds: string[] = (gtg as any)._resolvedAnalyteIds
+              || parseAnalyteIds(gtg.analytes).filter((id: string) => UUID_RE.test(id) && validAnalyteIdsSet.has(id));
+            for (let idx = 0; idx < analyteIds.length; idx++) {
+              resyncPayload.push({ test_group_id: existingId, analyte_id: analyteIds[idx], is_visible: true, sort_order: idx });
+            }
           }
         }
         if (resyncPayload.length > 0) {
@@ -397,7 +620,7 @@ serve(async (req) => {
           for (let i = 0; i < resyncPayload.length; i += 500) {
             const { error: rsErr } = await supabaseClient
               .from('test_group_analytes')
-              .upsert(resyncPayload.slice(i, i + 500), { onConflict: 'test_group_id,analyte_id', ignoreDuplicates: true });
+              .upsert(resyncPayload.slice(i, i + 500), { onConflict: 'test_group_id,analyte_id' });
             if (rsErr) console.error(`Re-sync analyte link error (chunk ${i}):`, rsErr);
             else resyncLinked += resyncPayload.slice(i, i + 500).length;
           }
@@ -992,6 +1215,96 @@ serve(async (req) => {
       }
     }
     
+    // --- G. Seed Report Sections from Global Catalog ---
+    console.log('...Seeding Report Sections');
+    const { data: globalSections } = await supabaseClient
+      .from('global_test_catalog_sections')
+      .select('catalog_id, section_type, section_name, display_order, default_content, predefined_options, is_required, is_editable, placeholder_key, allow_images, allow_technician_entry');
+
+    if (globalSections && globalSections.length > 0) {
+      // Map: catalog_id → sections[]
+      const catalogSectionsMap = new Map<string, typeof globalSections>();
+      for (const s of globalSections) {
+        if (!catalogSectionsMap.has(s.catalog_id)) catalogSectionsMap.set(s.catalog_id, []);
+        catalogSectionsMap.get(s.catalog_id)!.push(s);
+      }
+
+      // Pre-fetch existing sections for this lab (keyed as "test_group_id:section_type")
+      const { data: existingLabSections } = await supabaseClient
+        .from('lab_template_sections')
+        .select('test_group_id, section_type')
+        .eq('lab_id', lab_id);
+
+      const existingSectionKeys = new Set(
+        (existingLabSections || []).map((s: any) => `${s.test_group_id}:${s.section_type}`)
+      );
+
+      const sectionsPayload: object[] = [];
+
+      // Newly created groups
+      for (const gtg of toCreate) {
+        const labGroupId = createdMap.get(gtg.code);
+        if (!labGroupId) continue;
+        const sections = catalogSectionsMap.get(gtg.id) || [];
+        for (const s of sections) {
+          if (existingSectionKeys.has(`${labGroupId}:${s.section_type}`)) continue;
+          sectionsPayload.push({
+            lab_id,
+            test_group_id: labGroupId,
+            section_type: s.section_type,
+            section_name: s.section_name,
+            display_order: s.display_order,
+            default_content: s.default_content,
+            predefined_options: s.predefined_options ?? [],
+            is_required: s.is_required ?? false,
+            is_editable: s.is_editable ?? true,
+            placeholder_key: s.placeholder_key,
+            allow_images: s.allow_images ?? false,
+            allow_technician_entry: s.allow_technician_entry ?? false,
+          });
+        }
+      }
+
+      // Updated groups in sync/reset mode — fill any missing sections
+      if (isSync || isReset) {
+        for (const { gtg, existingId } of toUpdate) {
+          const sections = catalogSectionsMap.get(gtg.id) || [];
+          for (const s of sections) {
+            if (existingSectionKeys.has(`${existingId}:${s.section_type}`)) continue;
+            sectionsPayload.push({
+              lab_id,
+              test_group_id: existingId,
+              section_type: s.section_type,
+              section_name: s.section_name,
+              display_order: s.display_order,
+              default_content: s.default_content,
+              predefined_options: s.predefined_options ?? [],
+              is_required: s.is_required ?? false,
+              is_editable: s.is_editable ?? true,
+              placeholder_key: s.placeholder_key,
+              allow_images: s.allow_images ?? false,
+              allow_technician_entry: s.allow_technician_entry ?? false,
+            });
+          }
+        }
+      }
+
+      if (sectionsPayload.length > 0) {
+        for (let i = 0; i < sectionsPayload.length; i += 500) {
+          const { error: secErr } = await supabaseClient
+            .from('lab_template_sections')
+            .insert(sectionsPayload.slice(i, i + 500));
+          if (secErr) console.error(`Section insert error (chunk ${i}):`, secErr);
+        }
+        stats.sectionsCreated = sectionsPayload.length;
+        console.log(`   📝 Seeded ${sectionsPayload.length} report sections`);
+      } else {
+        console.log('   ✅ Report sections already up to date');
+      }
+    } else {
+      console.log('   ⏭️ No global sections defined yet — skipping');
+    }
+
     // --- F. Ensure Lab has default PDF Layout Settings ---
     console.log('\\n📄 Ensuring default PDF layout settings...');
     
@@ -1061,6 +1374,7 @@ serve(async (req) => {
         duplicatesRemoved: stats.duplicatesRemoved,
         analytesHydrated: stats.analytesHydrated,
         invoiceTemplatesCreated: stats.invoiceTemplatesCreated,
+        sectionsCreated: stats.sectionsCreated,
         orphanLabAnalytesDeleted: stats.orphanLabAnalytesDeleted,
         orphanLabTemplatesDeleted: stats.orphanLabTemplatesDeleted
       }),

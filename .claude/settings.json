@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "Read(//c/Users/Lenovo/.claude/projects/d--LIMS-version-2-project/b0d4c8f2-9112-46be-8229-72045a3550ac/tool-results/**)"
+    ]
+  }
+}

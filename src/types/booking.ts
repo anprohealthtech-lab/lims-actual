@@ -29,6 +29,8 @@ export interface Booking {
   b2b_client_id?: string;
   quotation_amount?: number;
   converted_order_id?: string;
+  assigned_phlebo_id?: string;
+  assigned_phlebo_name?: string;
   created_by?: string;
   created_at: string;
   updated_at: string;

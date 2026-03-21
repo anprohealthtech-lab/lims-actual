@@ -1457,8 +1457,15 @@ const TemplateStudioCKE: React.FC = () => {
             return;
           }
 
+          // For QR code placeholder, insert as a visual block
+          // The wrapper div is stripped by the edge function after {{qr_code}} is rendered
+          if (token === '{{qr_code}}') {
+            const qrHtml = `<div class="qr-verify" data-lims-placeholder="qr_code" style="display:inline-block;border:2px dashed #aaa;border-radius:4px;padding:6px;text-align:center;min-width:70px;min-height:70px;background:#f5f5f5;vertical-align:bottom;">{{qr_code}}</div>`;
+            const viewFragment = instance.data.processor.toView(qrHtml);
+            const modelFragment = instance.data.toModel(viewFragment);
+            instance.model.insertContent(modelFragment, selection);
           // For signature placeholders, insert as image tag instead of plain text
-          if (token === '{{approverSignature}}' || token === '{{approvedBySignature}}') {
+          } else if (token === '{{approverSignature}}' || token === '{{approvedBySignature}}') {
             const imgHtml = `<img src="${token}" alt="Approver Signature" style="max-width:200px;height:auto;object-fit:contain;" />`;
             const viewFragment = instance.data.processor.toView(imgHtml);
             const modelFragment = instance.data.toModel(viewFragment);

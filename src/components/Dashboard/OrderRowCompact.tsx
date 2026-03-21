@@ -1,5 +1,5 @@
 import React from "react";
-import { User, AlertTriangle } from "lucide-react";
+import { User, AlertTriangle, Stethoscope, Building2 } from "lucide-react";
 import IconStrip from "./IconStrip";
 import { DashboardOrderRow } from "@/types/dashboard";
 
@@ -25,7 +25,19 @@ const OrderRowCompact: React.FC<Props> = ({ row, onView, actions }) => {
             <User className="h-5 w-5 text-blue-600 shrink-0" />
             <div>
               <div className="text-base font-bold text-gray-900">{row.patient_name}</div>
-              <div className="text-xs text-gray-600">ID: {row.patient_id}</div>
+              <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 mt-0.5">
+                <span className="text-xs text-gray-500">#{row.order_number ?? row.order_id.slice(-6)}</span>
+                {row.doctor && (
+                  <span className="flex items-center gap-0.5 text-xs text-indigo-600">
+                    <Stethoscope className="h-3 w-3" />{row.doctor}
+                  </span>
+                )}
+                {row.account_name && (
+                  <span className="flex items-center gap-0.5 text-xs text-amber-700 bg-amber-50 px-1.5 py-0.5 rounded-full border border-amber-200">
+                    <Building2 className="h-3 w-3" />{row.account_name}
+                  </span>
+                )}
+              </div>
             </div>
           </div>
         </div>
@@ -34,14 +46,14 @@ const OrderRowCompact: React.FC<Props> = ({ row, onView, actions }) => {
       </div>
 
       {/* tests chips */}
-      <div className="mt-2 flex flex-wrap gap-2">
+      <div className="mt-2 flex flex-wrap gap-1">
         {row.tests.map((t, i) => (
-          <span key={i} className={`px-2 py-1 rounded-full border text-sm ${
+          <span key={i} className={`px-1.5 py-0.5 rounded-full border text-xs ${
             t.verified ? "border-green-300 bg-green-50 text-green-800"
             : t.entered > 0 ? "border-amber-300 bg-amber-50 text-amber-800"
             : "border-blue-300 bg-blue-50 text-blue-800"
           }`}>
-            {t.name} <span className="opacity-70 text-xs ml-1">{t.entered}/{t.expected}</span>
+            {t.name} <span className="opacity-60 ml-0.5">{t.entered}/{t.expected}</span>
           </span>
         ))}
       </div>

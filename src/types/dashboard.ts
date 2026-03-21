@@ -39,6 +39,8 @@ export interface DashboardOrderRow {
   paid_total?: number | null;
   balance_due?: number | null;
 
+  account_name?: string | null;   // B2B account (hospital/corporate)
+
   attachments_count: number;
   ai_used: boolean;
   is_overdue: boolean;

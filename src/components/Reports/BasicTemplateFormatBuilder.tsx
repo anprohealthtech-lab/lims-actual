@@ -5,8 +5,13 @@ export interface BasicPrintOptions {
   flagAsterisk?: boolean;
   flagAsteriskCritical?: boolean;
   testNameBold?: boolean;          // default true
+  boldAllValues?: boolean;         // default true — all values font-weight 600; false = normal weight
+  boldAbnormalValues?: boolean;    // default true — extra bold (700) for high/low; false = no extra bold
   calcMarker?: 'asterisk' | 'cal' | 'none'; // default 'asterisk'
   sectionHeaderInline?: boolean;   // default false = small-caps style; true = inline bold row like left screenshot
+  flagSymbol?: 'none' | 'before' | 'after'; // default 'none'; 'before' = separate flag column before value; 'after' = inline flag suffix
+  showFlagLegend?: boolean;        // show H=High, L=Low legend below each group table
+  resultColors?: { high?: string; low?: string; enabled?: boolean }; // custom flag colors (matches edge fn)
 }
 
 interface Props {
@@ -90,7 +95,14 @@ function buildBasicHtml(
   const sigPx   = basePx + 1;
   const testNameWeight = (printOptions.testNameBold ?? true) ? '600' : 'normal';
   const calcMarker = printOptions.calcMarker ?? 'asterisk';
+  const boldAllValues = printOptions.boldAllValues ?? true;
+  const boldAbnormal = printOptions.boldAbnormalValues ?? true;
   const sectionHeaderInline = printOptions.sectionHeaderInline ?? false;
+  const flagSymbol = printOptions.flagSymbol ?? 'none';
+  const showFlagLegend = printOptions.showFlagLegend ?? false;
+  const colCount = flagSymbol === 'before' ? 5 : 4;
+  const highColor = printOptions.resultColors?.enabled ? (printOptions.resultColors?.high ?? '#dc2626') : '#dc2626';
+  const lowColor  = printOptions.resultColors?.enabled ? (printOptions.resultColors?.low  ?? '#000')    : '#000';
 
   const noColorCss = `
 <style>
@@ -205,15 +217,27 @@ function buildBasicHtml(
   vertical-align: middle !important;
 }
 
+${flagSymbol === 'before' ? `
+.basic-report-template .tbl-results thead th:nth-child(1) { width: 44% !important; text-align: left !important; }
+.basic-report-template .tbl-results thead th:nth-child(2) { width: 7% !important; text-align: center !important; }
+.basic-report-template .tbl-results thead th:nth-child(3) { width: 14% !important; text-align: right !important; }
+.basic-report-template .tbl-results thead th:nth-child(4) { width: 10% !important; text-align: left !important; }
+.basic-report-template .tbl-results thead th:nth-child(5) { width: 25% !important; text-align: right !important; }
+.basic-report-template .tbl-results tbody td:nth-child(1) { width: 44% !important; text-align: left !important; color: #111 !important; }
+.basic-report-template .tbl-results tbody td:nth-child(2) { width: 7% !important; text-align: center !important; font-weight: 700 !important; }
+.basic-report-template .tbl-results tbody td:nth-child(3) { width: 14% !important; text-align: right !important; }
+.basic-report-template .tbl-results tbody td:nth-child(4) { width: 10% !important; text-align: left !important; color: #444 !important; white-space: nowrap !important; }
+.basic-report-template .tbl-results tbody td:nth-child(5) { width: 25% !important; text-align: right !important; color: #666 !important; }
+` : `
 .basic-report-template .tbl-results thead th:nth-child(1) { width: 50% !important; text-align: left !important; }
 .basic-report-template .tbl-results thead th:nth-child(2) { width: 15% !important; text-align: right !important; }
 .basic-report-template .tbl-results thead th:nth-child(3) { width: 10% !important; text-align: left !important; }
 .basic-report-template .tbl-results thead th:nth-child(4) { width: 25% !important; text-align: right !important; }
-
 .basic-report-template .tbl-results tbody td:nth-child(1) { width: 50% !important; text-align: left !important; color: #111 !important; }
 .basic-report-template .tbl-results tbody td:nth-child(2) { width: 15% !important; text-align: right !important; }
 .basic-report-template .tbl-results tbody td:nth-child(3) { width: 10% !important; text-align: left !important; color: #444 !important; white-space: nowrap !important; }
 .basic-report-template .tbl-results tbody td:nth-child(4) { width: 25% !important; text-align: right !important; color: #666 !important; }
+`}
 
 .basic-report-template .tbl-results td {
   border: none !important;
@@ -246,7 +270,7 @@ function buildBasicHtml(
   text-align: right !important;
   vertical-align: top !important;
   font-size: ${basePx}px !important;
-  font-weight: 600 !important;
+  font-weight: ${boldAllValues ? '600' : 'normal'} !important;
   font-variant-numeric: tabular-nums !important;
 }
 
@@ -255,8 +279,8 @@ function buildBasicHtml(
 .basic-report-template .val.critical_h,
 .basic-report-template .val.H,
 .basic-report-template .val.High {
-  color: #dc2626 !important;
-  font-weight: 700 !important;
+  color: ${highColor} !important;
+  ${boldAbnormal ? 'font-weight: 700 !important;' : ''}
 }
 
 .basic-report-template .val.low,
@@ -265,8 +289,8 @@ function buildBasicHtml(
 .basic-report-template .val.abnormal,
 .basic-report-template .val.L,
 .basic-report-template .val.Low {
-  color: #000 !important;
-  font-weight: 700 !important;
+  color: ${lowColor} !important;
+  ${boldAbnormal ? 'font-weight: 700 !important;' : ''}
 }
 
 .basic-report-template .main-group-row td { padding: 0 !important; border: none !important; }
@@ -393,6 +417,7 @@ function buildBasicHtml(
           <thead>
             <tr>
               <th style="font-size:${basePx}px;">TEST NAME</th>
+              ${flagSymbol === 'before' ? `<th style="font-size:${basePx}px;">FLAG</th>` : ''}
               <th style="font-size:${basePx}px;">VALUE</th>
               <th style="font-size:${basePx}px;">UNITS</th>
               <th style="font-size:${basePx}px;">Bio. Ref. Interval</th>
@@ -400,7 +425,7 @@ function buildBasicHtml(
           </thead>
           <tbody>
             <tr class="main-group-row">
-              <td colspan="4">
+              <td colspan="${colCount}">
                 <div class="center-title" style="font-size:${basePx + 1}px;">${groupName}</div>
                 ${specimenText}
               </td>
@@ -412,20 +437,23 @@ function buildBasicHtml(
       if (block.heading) {
         testResultsHtml += `
             <tr class="sub-section-header">
-              <td colspan="4" style="font-size:${smallPx + 1}px;">${block.heading}</td>
+              <td colspan="${colCount}" style="font-size:${smallPx + 1}px;">${block.heading}</td>
             </tr>
         `;
       }
 
       for (const analyte of block.analytes) {
         const parameterName = analyte.parameter || analyte.name || analyte.test_name || '';
-        const value         = analyte.value ?? '';
+        const isCalculated    = analyte.is_auto_calculated || analyte.is_calculated;
+        const rawValue        = analyte.value ?? '';
+        const value           = isCalculated && rawValue !== '' && !isNaN(Number(rawValue))
+          ? String(parseFloat(Number(rawValue).toFixed(2)))
+          : rawValue;
         const unit          = analyte.unit || '';
         const refRange      = analyte.reference_range || '';
         const flag          = analyte.flag || '';
         const normalizedFlag  = normalizeReportFlag(flag);
         const canonicalFlag   = normalizedFlag.canonical;
-        const isCalculated    = analyte.is_auto_calculated || analyte.is_calculated;
 
         const unitText      = String(unit || '').trim().toLowerCase();
         const refText       = String(refRange || '').trim();
@@ -443,12 +471,26 @@ function buildBasicHtml(
               (canonicalFlag === 'critical_high' || canonicalFlag === 'critical_low')
               ? '***' : '**')
           : '';
-        const displayValue = value + asteriskSuffix;
+
+        // Short flag symbol: H / L / A / H* / L*
+        const flagSymbolText = (() => {
+          if (!canonicalFlag || canonicalFlag === 'normal') return '';
+          if (canonicalFlag === 'high') return 'H';
+          if (canonicalFlag === 'low') return 'L';
+          if (canonicalFlag === 'critical_high') return 'H*';
+          if (canonicalFlag === 'critical_low') return 'L*';
+          if (canonicalFlag === 'abnormal') return 'A';
+          return '';
+        })();
+
+        const displayValue = flagSymbol === 'after' && flagSymbolText
+          ? `${value + asteriskSuffix} <span style="font-weight:700;">${flagSymbolText}</span>`
+          : value + asteriskSuffix;
 
         if (isDescriptive) {
           testResultsHtml += `
               <tr class="descriptive-row">
-                <td colspan="4" style="font-size: ${basePx}px;">
+                <td colspan="${colCount}" style="font-size: ${basePx}px;">
                   <span style="font-weight:600;">${parameterName}</span>: ${value || refText || ''}
                 </td>
               </tr>
@@ -472,6 +514,7 @@ function buildBasicHtml(
                   </div>
                   ${showMethodology && analyte.method ? `<div class="test-method" style="font-size:${smallPx}px;">${analyte.method}</div>` : ''}
                 </td>
+                ${flagSymbol === 'before' ? `<td class="${valClass}" style="font-size:${basePx}px; text-align:center;">${flagSymbolText}</td>` : ''}
                 <td class="${valClass}" style="font-size:${basePx}px;">${displayValue}</td>
                 <td style="text-align:left; vertical-align:top; font-size:${basePx}px; color:#444;">${unit}</td>
                 <td style="text-align:right; vertical-align:top; font-size:${smallPx + 1}px; color:#666;">${refRange}</td>
@@ -486,7 +529,7 @@ function buildBasicHtml(
           if (interp) {
             testResultsHtml += `
               <tr class="interpretation-row">
-                <td colspan="4" style="font-size:${smallPx}px;">${interp}</td>
+                <td colspan="${colCount}" style="font-size:${smallPx}px;">${interp}</td>
               </tr>
             `;
           }
@@ -497,7 +540,14 @@ function buildBasicHtml(
     testResultsHtml += `
           </tbody>
         </table>
-        ${hasCalcInGroup ? `<p class="calculated-note">* Calculated parameter &nbsp;|&nbsp; ** Abnormal value &nbsp;|&nbsp; *** Critical value</p>` : ''}
+        ${(() => {
+          const parts: string[] = [];
+          if (hasCalcInGroup && calcMarker === 'asterisk') parts.push('* Calculated parameter');
+          if (printOptions.flagAsterisk) parts.push('** Abnormal value');
+          if (printOptions.flagAsterisk && printOptions.flagAsteriskCritical) parts.push('*** Critical value');
+          if (showFlagLegend && flagSymbol !== 'none') parts.push('H = High &nbsp; L = Low &nbsp; A = Abnormal &nbsp; H* = Critical High &nbsp; L* = Critical Low');
+          return parts.length ? `<p class="calculated-note">${parts.join(' &nbsp;|&nbsp; ')}</p>` : '';
+        })()}
       </figure>
     `;
   }
@@ -597,6 +647,12 @@ export default function BasicTemplateFormatBuilder({ printOptions, showMethodolo
           <Row label="Test Name Bold" hint="Bold test names (off = normal weight)">
             <Toggle checked={printOptions.testNameBold ?? true} onChange={(v) => setPO({ testNameBold: v })} />
           </Row>
+          <Row label="Bold All Values" hint="All result values semi-bold (off = normal weight)">
+            <Toggle checked={printOptions.boldAllValues ?? true} onChange={(v) => setPO({ boldAllValues: v })} />
+          </Row>
+          <Row label="Bold Abnormal Values" hint="Extra bold for high/low values (off = normal weight)">
+            <Toggle checked={printOptions.boldAbnormalValues ?? true} onChange={(v) => setPO({ boldAbnormalValues: v })} />
+          </Row>
           <Row label="Calculated Marker" hint="How to mark auto-calculated fields">
             <select
               value={printOptions.calcMarker ?? 'asterisk'}
@@ -617,6 +673,24 @@ export default function BasicTemplateFormatBuilder({ printOptions, showMethodolo
               <option value="label">Small caps label</option>
               <option value="inline">Inline shaded row</option>
             </select>
+          </Row>
+          <Row label="Flag Symbol" hint="Show H/L symbol before or after value">
+            <select
+              value={printOptions.flagSymbol ?? 'none'}
+              onChange={(e) => setPO({ flagSymbol: e.target.value as 'none' | 'before' | 'after', showFlagLegend: e.target.value === 'none' ? false : printOptions.showFlagLegend })}
+              className="text-sm border border-gray-300 rounded px-2 py-1 bg-white"
+            >
+              <option value="none">None</option>
+              <option value="before">Before value (column)</option>
+              <option value="after">After value (inline)</option>
+            </select>
+          </Row>
+          <Row label="Flag Legend" hint="H=High, L=Low legend below table">
+            <Toggle
+              checked={!!printOptions.showFlagLegend}
+              disabled={(printOptions.flagSymbol ?? 'none') === 'none' && !printOptions.flagAsterisk}
+              onChange={(v) => setPO({ showFlagLegend: v })}
+            />
           </Row>
           <Row label="Flag Asterisk (*)" hint="Append * to H/L values">
             <Toggle

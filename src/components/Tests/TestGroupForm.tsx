@@ -1,5 +1,9 @@
-import React, { useState, useEffect } from 'react';
-import { X, Layers, TestTube, DollarSign, Clock, Settings, Plus, Search, AlertCircle, Brain, Building2, Edit, Sparkles } from 'lucide-react';
+import React, { useState, useEffect, useRef } from 'react';
+import { X, Layers, TestTube, DollarSign, Clock, Settings, Plus, Search, AlertCircle, Brain, Building2, Edit, Sparkles, FileText, Code, RefreshCw } from 'lucide-react';
+
+const CKEDITOR_VERSION = '47.1.0';
+const CKEDITOR_SCRIPT_URL = `https://cdn.ckeditor.com/ckeditor5/${CKEDITOR_VERSION}/ckeditor5.umd.js`;
+const CKEDITOR_CSS_URL = `https://cdn.ckeditor.com/ckeditor5/${CKEDITOR_VERSION}/ckeditor5.css`;
 import { database, supabase } from '../../utils/supabase';
 import AnalyteForm from './AnalyteForm';
 import { SimpleAnalyteEditor } from '../TestGroups/SimpleAnalyteEditor';
@@ -61,6 +65,7 @@ interface TestGroup {
     alternateRows?: boolean;
     baseFontSize?: number;
   } | null;
+  group_interpretation?: string | null;
 }
 
 const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGroup }) => {
@@ -103,11 +108,13 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
     default_outsourced_lab_id: testGroup?.default_outsourced_lab_id || '',
     ref_range_ai_config: testGroup?.ref_range_ai_config || { enabled: false, consider_age: true },
     required_patient_inputs: testGroup?.required_patient_inputs || [],
+    group_interpretation: testGroup?.group_interpretation || '',
   });
 
   const [analytes, setAnalytes] = useState<any[]>([]);
   const [outsourcedLabs, setOutsourcedLabs] = useState<any[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
+  const [showSelectedOnly, setShowSelectedOnly] = useState(false);
   const [showAnalyteForm, setShowAnalyteForm] = useState(false);
   const [loading, setLoading] = useState(true);
   const [editingAttachedAnalyte, setEditingAttachedAnalyte] = useState<any>(null);
@@ -117,12 +124,76 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
   // Per-analyte metadata for sort_order and section_heading (keyed by analyte_id)
   const [analyteMetadata, setAnalyteMetadata] = useState<Record<string, { sort_order: number; section_heading: string }>>({});
   const [showImportWizard, setShowImportWizard] = useState(false);
+  const [syncingGlobal, setSyncingGlobal] = useState(false);
+  const [syncGlobalResult, setSyncGlobalResult] = useState<string | null>(null);
+
+  // Group interpretation CKEditor state
+  const [interpEditorInstance, setInterpEditorInstance] = useState<any>(null);
+  const [interpCkLoaded, setInterpCkLoaded] = useState(false);
+  const [interpTab, setInterpTab] = useState<'visual' | 'html'>('visual');
+  const [showInterpEditor, setShowInterpEditor] = useState(!!testGroup?.group_interpretation);
+  const interpEditorRef = useRef<HTMLDivElement>(null);
 
   // Load analytes and outsourced labs
   useEffect(() => {
     loadData();
     loadLabMethodOptions();
   }, []);
+
+  // Load CKEditor for group interpretation editor
+  useEffect(() => {
+    if (!showInterpEditor) return;
+    if (interpCkLoaded) return;
+    const load = async () => {
+      if ((window as any).CKEDITOR) { setInterpCkLoaded(true); return; }
+      if (!document.querySelector(`link[href="${CKEDITOR_CSS_URL}"]`)) {
+        const link = document.createElement('link');
+        link.rel = 'stylesheet'; link.href = CKEDITOR_CSS_URL;
+        document.head.appendChild(link);
+      }
+      if (!document.querySelector(`script[src="${CKEDITOR_SCRIPT_URL}"]`)) {
+        await new Promise<void>((resolve, reject) => {
+          const s = document.createElement('script');
+          s.src = CKEDITOR_SCRIPT_URL; s.async = true;
+          s.onload = () => resolve(); s.onerror = () => reject();
+          document.head.appendChild(s);
+        });
+      }
+      setInterpCkLoaded(true);
+    };
+    load().catch(console.error);
+  }, [showInterpEditor]);
+
+  // Init CKEditor once loaded and ref is ready
+  useEffect(() => {
+    if (!interpCkLoaded || !interpEditorRef.current || interpEditorInstance || interpTab !== 'visual') return;
+    const init = async () => {
+      try {
+        const CKE = (window as any).CKEDITOR;
+        if (!CKE) return;
+        const { Essentials, Bold, Italic, Underline, Link, List, Paragraph, Heading,
+                Alignment, Indent, IndentBlock, Table, TableToolbar, BlockQuote, Undo, SourceEditing } = CKE;
+        const editor = await CKE.ClassicEditor.create(interpEditorRef.current, {
+          licenseKey: (import.meta.env.VITE_CKEDITOR_LICENSE_KEY as string) || '',
+          plugins: [Essentials, Bold, Italic, Underline, Link, List, Paragraph, Heading,
+                    Alignment, Indent, IndentBlock, Table, TableToolbar, BlockQuote, Undo, SourceEditing],
+          toolbar: ['heading', '|', 'bold', 'italic', 'underline', '|',
+                    'link', 'bulletedList', 'numberedList', '|',
+                    'alignment', 'indent', 'outdent', '|',
+                    'insertTable', 'blockQuote', '|', 'undo', 'redo'],
+          table: { contentToolbar: ['tableColumn', 'tableRow', 'mergeTableCells'] },
+        });
+        editor.setData(formData.group_interpretation || '');
+        editor.model.document.on('change:data', () => {
+          setFormData(prev => ({ ...prev, group_interpretation: editor.getData() }));
+        });
+        const el = editor.ui.view.editable.element;
+        if (el) { el.style.minHeight = '140px'; el.style.maxHeight = '320px'; el.style.overflowY = 'auto'; }
+        setInterpEditorInstance(editor);
+      } catch (e) { console.error('CKEditor init error', e); }
+    };
+    init();
+  }, [interpCkLoaded, interpTab]);
 
   const loadData = async () => {
     try {
@@ -221,12 +292,15 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
     }
   };
 
-  // Filter analytes based on search query
-  const filteredAnalytes = analytes.filter(analyte =>
-    analyte.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-    analyte.category.toLowerCase().includes(searchQuery.toLowerCase()) ||
-    analyte.unit.toLowerCase().includes(searchQuery.toLowerCase())
-  );
+  // Filter analytes based on search query and showSelectedOnly toggle
+  const filteredAnalytes = analytes.filter(analyte => {
+    const matchesSearch =
+      analyte.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      analyte.category.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      analyte.unit.toLowerCase().includes(searchQuery.toLowerCase());
+    const matchesSelected = !showSelectedOnly || formData.selectedAnalytes.includes(analyte.id);
+    return matchesSearch && matchesSelected;
+  });
 
   const handleAddNewAnalyte = async (analyteData: any) => {
     try {
@@ -359,6 +433,27 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
     'Other',
   ];
 
+  const handleSyncFromGlobal = async () => {
+    if (!testGroup?.name || syncingGlobal) return;
+    setSyncingGlobal(true);
+    setSyncGlobalResult(null);
+    try {
+      const labId = await database.getCurrentUserLabId();
+      if (!labId) throw new Error('Unable to determine lab context');
+      const { data, error: fnError } = await supabase.functions.invoke('onboarding-lab', {
+        body: { lab_id: labId, mode: 'single', test_group_name: testGroup.name }
+      });
+      if (fnError) throw new Error(fnError.message);
+      if (!data?.success) throw new Error(data?.error || 'Sync failed');
+      const msg = `Synced: ${data.analytesAdded} analytes added${data.interpretationSynced ? ', interpretation updated' : ''}`;
+      setSyncGlobalResult(msg);
+    } catch (err: any) {
+      setSyncGlobalResult(`Error: ${err.message}`);
+    } finally {
+      setSyncingGlobal(false);
+    }
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
 
@@ -391,6 +486,7 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
         default_template_style: formData.default_template_style || null,
         report_priority: formData.report_priority ? parseInt(formData.report_priority, 10) : null,
         print_options: formData.print_options || null,
+        group_interpretation: formData.group_interpretation || null,
         // Auto-sync legacy boolean fields from required_patient_inputs
         lmpRequired: rpi.includes('lmp'),
         idRequired: rpi.includes('id_document'),
@@ -940,6 +1036,8 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
                     { key: 'flagColumn', label: 'Flag Column (Classic)' },
                     { key: 'flagAsterisk', label: 'Flag Asterisk * on H/L' },
                     { key: 'flagAsteriskCritical', label: 'Critical Double **', disabledWhen: !(formData.print_options as any)?.flagAsterisk },
+                    { key: 'boldAllValues', label: 'Bold All Values' },
+                    { key: 'boldAbnormalValues', label: 'Bold Abnormal Values' },
                     { key: 'alternateRows', label: 'Alternate Row Shading' },
                   ] as { key: string; label: string; disabledWhen?: boolean }[]).map(({ key, label, disabledWhen }) => {
                     const opts = (formData.print_options || {}) as Record<string, unknown>;
@@ -1018,6 +1116,84 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
                   </div>
                 </div>
               </div>
+            </div>
+
+            {/* Group Interpretation */}
+            <div className="bg-purple-50 border border-purple-200 rounded-lg p-4">
+              <div className="flex items-center justify-between mb-2">
+                <div className="flex items-center gap-2">
+                  <FileText className="h-4 w-4 text-purple-600" />
+                  <span className="text-sm font-medium text-purple-900">Group Interpretation</span>
+                  <span className="text-xs text-purple-500 bg-purple-100 px-1.5 py-0.5 rounded">Shown in report after results</span>
+                </div>
+                {!showInterpEditor ? (
+                  <button
+                    type="button"
+                    onClick={() => setShowInterpEditor(true)}
+                    className="flex items-center gap-1 px-2 py-1 text-xs bg-purple-600 text-white rounded hover:bg-purple-700"
+                  >
+                    <Plus className="h-3 w-3" /> Add Interpretation
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => { setShowInterpEditor(false); setFormData(prev => ({ ...prev, group_interpretation: '' })); }}
+                    className="text-xs text-red-500 hover:text-red-700"
+                  >
+                    Remove
+                  </button>
+                )}
+              </div>
+              {showInterpEditor && (
+                <div className="mt-2">
+                  <p className="text-xs text-purple-600 mb-2">
+                    Rich text rendered after this test group's result table in all report styles. Font size inherits the test group's base font size setting.
+                  </p>
+                  {/* Tab bar */}
+                  <div className="flex gap-1 mb-2">
+                    <button
+                      type="button"
+                      onClick={() => setInterpTab('visual')}
+                      className={`flex items-center gap-1 px-2 py-1 text-xs rounded border transition-colors ${interpTab === 'visual' ? 'bg-purple-600 text-white border-purple-600' : 'bg-white text-gray-600 border-gray-300 hover:border-purple-400'}`}
+                    >
+                      <FileText className="h-3 w-3" /> Visual
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setInterpTab('html')}
+                      className={`flex items-center gap-1 px-2 py-1 text-xs rounded border transition-colors ${interpTab === 'html' ? 'bg-purple-600 text-white border-purple-600' : 'bg-white text-gray-600 border-gray-300 hover:border-purple-400'}`}
+                    >
+                      <Code className="h-3 w-3" /> HTML
+                    </button>
+                  </div>
+                  {/* Visual (CKEditor) tab */}
+                  {interpTab === 'visual' && (
+                    <div className="border border-purple-200 rounded bg-white">
+                      {!interpCkLoaded && (
+                        <div className="flex items-center justify-center h-24 text-sm text-gray-400">Loading editor…</div>
+                      )}
+                      <div ref={interpEditorRef} style={{ display: interpCkLoaded ? 'block' : 'none' }} />
+                    </div>
+                  )}
+                  {/* HTML tab */}
+                  {interpTab === 'html' && (
+                    <textarea
+                      rows={8}
+                      value={formData.group_interpretation || ''}
+                      onChange={(e) => {
+                        const html = e.target.value;
+                        setFormData(prev => ({ ...prev, group_interpretation: html }));
+                        // Sync to CKEditor if active
+                        if (interpEditorInstance) {
+                          try { interpEditorInstance.setData(html); } catch (_) {}
+                        }
+                      }}
+                      placeholder="<p>Paste or type HTML here...</p>"
+                      className="w-full px-3 py-2 border border-purple-200 rounded bg-white text-xs font-mono focus:outline-none focus:ring-2 focus:ring-purple-400"
+                    />
+                  )}
+                </div>
+              )}
             </div>
 
             {/* Pre-Collection Guidelines */}
@@ -1158,16 +1334,27 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
               </button>
             </div>
 
-            {/* Search Box */}
-            <div className="relative">
-              <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400 h-4 w-4" />
-              <input
-                type="text"
-                placeholder="Search analytes by name, category, or unit..."
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                className="w-full pl-9 pr-4 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-              />
+            {/* Search Box + Show Selected Toggle */}
+            <div className="flex items-center gap-3">
+              <div className="relative flex-1">
+                <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400 h-4 w-4" />
+                <input
+                  type="text"
+                  placeholder="Search analytes by name, category, or unit..."
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  className="w-full pl-9 pr-4 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                />
+              </div>
+              <label className="flex items-center gap-2 text-sm text-gray-700 cursor-pointer whitespace-nowrap">
+                <input
+                  type="checkbox"
+                  checked={showSelectedOnly}
+                  onChange={(e) => setShowSelectedOnly(e.target.checked)}
+                  className="h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded"
+                />
+                Show Selected ({formData.selectedAnalytes.length})
+              </label>
             </div>
 
             {/* No Analytes Available Message */}
@@ -1200,13 +1387,17 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
             )}
 
             {/* No Search Results */}
-            {!loading && analytes.length > 0 && filteredAnalytes.length === 0 && searchQuery && (
+            {!loading && analytes.length > 0 && filteredAnalytes.length === 0 && (searchQuery || showSelectedOnly) && (
               <div className="text-center py-8 bg-gray-50 rounded-lg border border-gray-200">
                 <Search className="h-8 w-8 text-gray-400 mx-auto mb-2" />
                 <p className="text-gray-600 mb-4">
-                  No analytes found matching "{searchQuery}"
+                  {showSelectedOnly && !searchQuery
+                    ? 'No analytes selected yet.'
+                    : `No analytes found matching "${searchQuery}"`}
                   <br />
-                  <span className="text-sm text-blue-600">Create a new analyte for your lab.</span>
+                  <span className="text-sm text-blue-600">
+                    {showSelectedOnly && !searchQuery ? 'Select analytes from the full list.' : 'Create a new analyte for your lab.'}
+                  </span>
                 </p>
                 <button
                   type="button"
@@ -1399,7 +1590,7 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
 
           {/* Form Actions */}
           <div className="flex items-center justify-between pt-6 border-t border-gray-200">
-            <div>
+            <div className="flex items-center gap-2">
               {testGroup?.id && (
                 <button
                   type="button"
@@ -1409,6 +1600,25 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
                   <Sparkles className="h-4 w-4" />
                   Import from Report
                 </button>
+              )}
+              {testGroup?.id && (
+                <div className="flex flex-col">
+                  <button
+                    type="button"
+                    onClick={handleSyncFromGlobal}
+                    disabled={syncingGlobal}
+                    className="flex items-center gap-2 px-4 py-2 border border-blue-300 text-blue-700 rounded-md hover:bg-blue-50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors text-sm"
+                    title="Reattach any missing analytes from global catalog (non-destructive)"
+                  >
+                    <RefreshCw className={`h-4 w-4 ${syncingGlobal ? 'animate-spin' : ''}`} />
+                    {syncingGlobal ? 'Syncing...' : 'Sync from Global'}
+                  </button>
+                  {syncGlobalResult && (
+                    <span className={`text-xs mt-1 ${syncGlobalResult.startsWith('Error') ? 'text-red-500' : 'text-green-600'}`}>
+                      {syncGlobalResult}
+                    </span>
+                  )}
+                </div>
               )}
             </div>
             <div className="flex items-center space-x-4">

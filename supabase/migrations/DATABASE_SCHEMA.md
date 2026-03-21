@@ -321,6 +321,7 @@ CREATE TABLE public.analytes (
   description text,
   ref_range_knowledge jsonb DEFAULT '{}'::jsonb,
   expected_value_flag_map jsonb DEFAULT '{}'::jsonb,
+  visible boolean NOT NULL DEFAULT true,
   CONSTRAINT analytes_pkey PRIMARY KEY (id)
 );
 CREATE TABLE public.analyzer_comm_log (
@@ -364,6 +365,25 @@ CREATE TABLE public.analyzer_connections (
   CONSTRAINT analyzer_connections_profile_id_fkey FOREIGN KEY (profile_id) REFERENCES public.analyzer_profiles(id),
   CONSTRAINT analyzer_connections_lab_id_fkey FOREIGN KEY (lab_id) REFERENCES public.labs(id)
 );
+CREATE TABLE public.analyzer_graphs (
+  id uuid NOT NULL DEFAULT gen_random_uuid(),
+  lab_id uuid NOT NULL,
+  order_id uuid NOT NULL,
+  result_id uuid,
+  raw_message_id uuid,
+  test_code text NOT NULL,
+  name text NOT NULL,
+  associated_test text,
+  histogram_data jsonb,
+  boundaries jsonb,
+  svg_data text,
+  created_at timestamp with time zone NOT NULL DEFAULT now(),
+  CONSTRAINT analyzer_graphs_pkey PRIMARY KEY (id),
+  CONSTRAINT analyzer_graphs_lab_id_fkey FOREIGN KEY (lab_id) REFERENCES public.labs(id),
+  CONSTRAINT analyzer_graphs_order_id_fkey FOREIGN KEY (order_id) REFERENCES public.orders(id),
+  CONSTRAINT analyzer_graphs_result_id_fkey FOREIGN KEY (result_id) REFERENCES public.results(id),
+  CONSTRAINT analyzer_graphs_raw_message_id_fkey FOREIGN KEY (raw_message_id) REFERENCES public.analyzer_raw_messages(id)
+);
 CREATE TABLE public.analyzer_knowledge (
   id uuid NOT NULL DEFAULT gen_random_uuid(),
   lab_id uuid NOT NULL,
@@ -405,6 +425,7 @@ CREATE TABLE public.analyzer_order_queue (
   max_retries integer DEFAULT 3,
   last_error text,
   next_retry_at timestamp with time zone,
+  sending_started_at timestamp with time zone,
   CONSTRAINT analyzer_order_queue_pkey PRIMARY KEY (id),
   CONSTRAINT analyzer_order_queue_lab_id_fkey FOREIGN KEY (lab_id) REFERENCES public.labs(id),
   CONSTRAINT analyzer_order_queue_analyzer_connection_id_fkey FOREIGN KEY (analyzer_connection_id) REFERENCES public.analyzer_connections(id),
@@ -555,12 +576,15 @@ CREATE TABLE public.bookings (
   created_at timestamp with time zone DEFAULT now(),
   updated_at timestamp with time zone DEFAULT now(),
   account_id uuid,
+  assigned_phlebo_id uuid,
+  assigned_phlebo_name text,
   CONSTRAINT bookings_pkey PRIMARY KEY (id),
   CONSTRAINT bookings_lab_id_fkey FOREIGN KEY (lab_id) REFERENCES public.labs(id),
   CONSTRAINT bookings_b2b_client_id_fkey FOREIGN KEY (b2b_client_id) REFERENCES public.accounts(id),
   CONSTRAINT bookings_converted_order_id_fkey FOREIGN KEY (converted_order_id) REFERENCES public.orders(id),
   CONSTRAINT bookings_created_by_fkey FOREIGN KEY (created_by) REFERENCES auth.users(id),
-  CONSTRAINT bookings_account_id_fkey FOREIGN KEY (account_id) REFERENCES public.accounts(id)
+  CONSTRAINT bookings_account_id_fkey FOREIGN KEY (account_id) REFERENCES public.accounts(id),
+  CONSTRAINT bookings_assigned_phlebo_id_fkey FOREIGN KEY (assigned_phlebo_id) REFERENCES public.users(id)
 );
 CREATE TABLE public.calibration_records (
   id uuid NOT NULL DEFAULT gen_random_uuid(),
@@ -890,8 +914,25 @@ CREATE TABLE public.global_test_catalog (
   default_ai_processing_type text CHECK (default_ai_processing_type IS NULL OR (default_ai_processing_type = ANY (ARRAY['INSTRUMENT_SCREEN_OCR'::text, 'THERMAL_SLIP_OCR'::text, 'RAPID_CARD_LFA'::text, 'COLOR_STRIP_MULTIPARAM'::text, 'SINGLE_WELL_COLORIMETRIC'::text, 'AGGLUTINATION_CARD'::text, 'MICROSCOPY_MORPHOLOGY'::text, 'ZONE_OF_INHIBITION'::text, 'MENISCUS_SCALE_READING'::text, 'SAMPLE_QUALITY_TUBE_CHECK'::text, 'MANUAL_ENTRY_NO_VISION'::text, 'UNKNOWN_NEEDS_REVIEW'::text]))),
   group_level_prompt text,
   ai_config jsonb DEFAULT '{}'::jsonb,
+  group_interpretation text,
   CONSTRAINT global_test_catalog_pkey PRIMARY KEY (id),
   CONSTRAINT global_test_catalog_default_template_id_fkey FOREIGN KEY (default_template_id) REFERENCES public.global_template_catalog(id)
+);
+CREATE TABLE public.global_test_catalog_analytes (
+  id uuid NOT NULL DEFAULT gen_random_uuid(),
+  catalog_id uuid NOT NULL,
+  analyte_id uuid NOT NULL,
+  section_heading text,
+  sort_order integer NOT NULL DEFAULT 0,
+  display_order integer,
+  is_visible boolean NOT NULL DEFAULT true,
+  is_header boolean DEFAULT false,
+  header_name text,
+  custom_reference_range text,
+  created_at timestamp with time zone DEFAULT now(),
+  CONSTRAINT global_test_catalog_analytes_pkey PRIMARY KEY (id),
+  CONSTRAINT global_test_catalog_analytes_catalog_id_fkey FOREIGN KEY (catalog_id) REFERENCES public.global_test_catalog(id),
+  CONSTRAINT global_test_catalog_analytes_analyte_id_fkey FOREIGN KEY (analyte_id) REFERENCES public.analytes(id)
 );
 CREATE TABLE public.inventory_items (
   id uuid NOT NULL DEFAULT gen_random_uuid(),
@@ -1210,6 +1251,19 @@ CREATE TABLE public.lab_analytes (
   CONSTRAINT lab_analytes_analyte_id_fkey FOREIGN KEY (analyte_id) REFERENCES public.analytes(id),
   CONSTRAINT lab_analytes_lab_id_fkey FOREIGN KEY (lab_id) REFERENCES public.labs(id)
 );
+CREATE TABLE public.lab_api_keys (
+  id uuid NOT NULL DEFAULT gen_random_uuid(),
+  lab_id uuid NOT NULL,
+  key_hash text NOT NULL UNIQUE,
+  label text NOT NULL,
+  is_active boolean NOT NULL DEFAULT true,
+  created_at timestamp with time zone NOT NULL DEFAULT now(),
+  last_used_at timestamp with time zone,
+  created_by uuid,
+  CONSTRAINT lab_api_keys_pkey PRIMARY KEY (id),
+  CONSTRAINT lab_api_keys_lab_id_fkey FOREIGN KEY (lab_id) REFERENCES public.labs(id),
+  CONSTRAINT lab_api_keys_created_by_fkey FOREIGN KEY (created_by) REFERENCES public.users(id)
+);
 CREATE TABLE public.lab_branding_assets (
   id uuid NOT NULL DEFAULT gen_random_uuid(),
   lab_id uuid NOT NULL,
@@ -1480,6 +1534,7 @@ CREATE TABLE public.labs (
   loyalty_point_value numeric NOT NULL DEFAULT 1.0,
   block_send_on_due boolean NOT NULL DEFAULT false,
   report_patient_info_config jsonb,
+  lab_interface_enabled boolean NOT NULL DEFAULT false,
   CONSTRAINT labs_pkey PRIMARY KEY (id),
   CONSTRAINT labs_default_processing_location_id_fkey FOREIGN KEY (default_processing_location_id) REFERENCES public.locations(id)
 );
@@ -1624,6 +1679,7 @@ CREATE TABLE public.order_test_groups (
   actual_report_time timestamp with time zone,
   is_tat_breached boolean DEFAULT false,
   tat_status text CHECK (tat_status = ANY (ARRAY['pending'::text, 'in_progress'::text, 'within_tat'::text, 'breached'::text])),
+  print_order integer DEFAULT 0,
   CONSTRAINT order_test_groups_pkey PRIMARY KEY (id),
   CONSTRAINT order_test_groups_order_id_fkey FOREIGN KEY (order_id) REFERENCES public.orders(id),
   CONSTRAINT order_test_groups_test_group_id_fkey FOREIGN KEY (test_group_id) REFERENCES public.test_groups(id),
@@ -1649,6 +1705,7 @@ CREATE TABLE public.order_tests (
   canceled_at timestamp with time zone,
   canceled_by uuid,
   cancellation_reason text,
+  print_order integer DEFAULT 0,
   CONSTRAINT order_tests_pkey PRIMARY KEY (id),
   CONSTRAINT order_tests_invoice_id_fkey FOREIGN KEY (invoice_id) REFERENCES public.invoices(id),
   CONSTRAINT order_tests_order_id_fkey FOREIGN KEY (order_id) REFERENCES public.orders(id),
@@ -1744,6 +1801,7 @@ CREATE TABLE public.orders (
   loyalty_points_redeemed integer DEFAULT 0,
   loyalty_discount_amount numeric DEFAULT 0,
   collection_charge numeric DEFAULT NULL::numeric,
+  report_settings jsonb DEFAULT '{}'::jsonb,
   CONSTRAINT orders_pkey PRIMARY KEY (id),
   CONSTRAINT orders_sample_collector_id_fkey FOREIGN KEY (sample_collector_id) REFERENCES public.users(id),
   CONSTRAINT orders_patient_id_fkey FOREIGN KEY (patient_id) REFERENCES public.patients(id),
@@ -2448,6 +2506,9 @@ CREATE TABLE public.reports (
   whatsapp_sent_via text CHECK (whatsapp_sent_via = ANY (ARRAY['api'::text, 'manual_link'::text])),
   email_sent_via text CHECK (email_sent_via = ANY (ARRAY['api'::text, 'manual_link'::text])),
   doctor_sent_via text CHECK (doctor_sent_via = ANY (ARRAY['api'::text, 'manual_link'::text])),
+  print_layout_mode text DEFAULT 'standard'::text CHECK (print_layout_mode = ANY (ARRAY['standard'::text, 'compact'::text])),
+  print_plan_json jsonb,
+  print_plan_source text CHECK (print_plan_source = ANY (ARRAY['manual'::text, 'deterministic'::text, 'ai'::text, 'fallback'::text])),
   CONSTRAINT reports_pkey PRIMARY KEY (id),
   CONSTRAINT reports_lab_id_fkey FOREIGN KEY (lab_id) REFERENCES public.labs(id),
   CONSTRAINT fk_reports_patient FOREIGN KEY (patient_id) REFERENCES public.patients(id),
@@ -2868,9 +2929,13 @@ CREATE TABLE public.test_groups (
   default_template_style text CHECK (default_template_style = ANY (ARRAY['beautiful'::text, 'classic'::text, 'basic'::text])),
   print_options jsonb,
   collection_charge numeric DEFAULT NULL::numeric,
+  report_priority integer,
+  analyzer_connection_id uuid,
+  group_interpretation text,
   CONSTRAINT test_groups_pkey PRIMARY KEY (id),
   CONSTRAINT test_groups_lab_id_fkey FOREIGN KEY (lab_id) REFERENCES public.labs(id),
-  CONSTRAINT test_groups_default_outsourced_lab_id_fkey FOREIGN KEY (default_outsourced_lab_id) REFERENCES public.outsourced_labs(id)
+  CONSTRAINT test_groups_default_outsourced_lab_id_fkey FOREIGN KEY (default_outsourced_lab_id) REFERENCES public.outsourced_labs(id),
+  CONSTRAINT test_groups_analyzer_connection_id_fkey FOREIGN KEY (analyzer_connection_id) REFERENCES public.analyzer_connections(id)
 );
 CREATE TABLE public.test_mappings (
   id uuid NOT NULL DEFAULT gen_random_uuid(),

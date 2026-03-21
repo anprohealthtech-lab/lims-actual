@@ -121,7 +121,7 @@ async function analyzeBatchFlags(
   const prompt = buildBatchPrompt(resultValues, patient, testGroupName);
   
   const message = await anthropic.messages.create({
-    model: 'claude-3-5-haiku-20241022',
+    model: 'claude-haiku-4-5-20251001',
     max_tokens: 2048,
     messages: [
       {
@@ -183,7 +183,7 @@ async function interpretSingleFlag(
   const prompt = buildSinglePrompt(resultValue, patient);
   
   const message = await anthropic.messages.create({
-    model: 'claude-3-5-haiku-20241022',
+    model: 'claude-haiku-4-5-20251001',
     max_tokens: 512,
     messages: [
       {

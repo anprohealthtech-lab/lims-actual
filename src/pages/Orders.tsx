@@ -2,7 +2,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 import {
   Plus, Search, Clock as ClockIcon, CheckCircle, AlertTriangle,
-  Eye, User, Calendar, TestTube, ChevronDown, ChevronUp, TrendingUp, ToggleLeft, ToggleRight, X, RefreshCcw
+  Eye, User, Calendar, TestTube, ChevronDown, ChevronUp, TrendingUp, ToggleLeft, ToggleRight, X, RefreshCcw, Activity
 } from "lucide-react";
 import { useAuth } from "../contexts/AuthContext";
 import { database, supabase, formatAge } from "../utils/supabase";
@@ -12,6 +12,7 @@ import QuickResultEntryModal from "../components/Orders/QuickResultEntryModal";
 import EnhancedOrdersPage from "../components/Orders/EnhancedOrdersPage";
 import OrderFiltersBar, { OrderFilters } from "../components/Orders/OrderFiltersBar";
 import { useRealtimeOrders } from "../hooks/useRealtimeOrders";
+import { useAnalyzerRealtime } from "../hooks/useAnalyzerRealtime";
 import { SampleTypeGroup } from "../components/Common/SampleTypeIndicator";
 import { TATStatusBadge } from "../components/Orders/TATStatusBadge";
 import { useMobileOptimizations } from "../utils/platformHelper";
@@ -251,6 +252,9 @@ const Orders: React.FC = () => {
     };
     getLabId();
   }, []);
+
+  // 🔬 ANALYZER REALTIME: Track LIS result arrivals per order
+  const analyzerActivity = useAnalyzerRealtime(userLabId);
 
   // 🔴 REALTIME: Subscribe to order changes
   const { isConnected: realtimeConnected } = useRealtimeOrders({
@@ -1342,6 +1346,19 @@ const Orders: React.FC = () => {
                                 RE-RUN ({rerunByOrder.get(o.id)?.count})
                               </span>
                             )}
+                            {/* LIS Analyzer Result Badge */}
+                            {analyzerActivity.has(o.id) && (() => {
+                              const act = analyzerActivity.get(o.id)!;
+                              return (
+                                <span
+                                  title={`Analyzer results received at ${new Date(act.receivedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`}
+                                  className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-lg text-xs font-bold border bg-purple-100 text-purple-800 border-purple-300 whitespace-nowrap${act.isNew ? ' animate-pulse' : ''}`}
+                                >
+                                  <Activity className="h-3 w-3" />
+                                  LIS{act.count > 1 ? ` ×${act.count}` : ''}
+                                </span>
+                              );
+                            })()}
                             <span className="inline-flex items-center px-2 py-0.5 md:px-3 md:py-1.5 rounded-lg text-xs md:text-sm font-bold border bg-blue-100 text-blue-800 border-blue-200 whitespace-nowrap">
                               {o.status === "In Progress" ? "In Process" : o.status}
                             </span>

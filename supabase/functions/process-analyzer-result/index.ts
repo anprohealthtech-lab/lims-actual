@@ -1,5 +1,5 @@
 import { createClient } from 'jsr:@supabase/supabase-js@2'
-import { GoogleGenerativeAI } from 'npm:@google/generative-ai'
+import Anthropic from 'npm:@anthropic-ai/sdk'
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -15,7 +15,7 @@ function extractEmbeddedImages(rawContent: string): Array<{ type: string; data: 
   const obxEdPattern = /OBX\|[^|]*\|ED\|([^|]*)\|[^|]*\|([^^]*)\^([^^]*)\^([^^]*)\^([^|]*)/gi;
   let match;
   while ((match = obxEdPattern.exec(rawContent)) !== null) {
-    const [_, testCode, _, mimeType, encoding, data] = match;
+    const [_full, testCode, _sub, mimeType, encoding, data] = match;
     if (encoding?.toUpperCase() === 'BASE64' && data) {
       images.push({
         type: mimeType?.toLowerCase() || 'png',
@@ -49,6 +49,131 @@ function extractEmbeddedImages(rawContent: string): Array<{ type: string; data: 
   }
   
   return images;
+}
+
+// Extract Octer-stream histogram data from ED-type OBX segments (3-digit decimal encoding)
+function extractOcterStreamHistograms(rawContent: string): Array<{
+  name: string
+  testCode: string
+  data: number[]
+  leftLine?: number
+  rightLine?: number
+  divisionLines?: number[]
+}> {
+  const histograms: Array<{
+    name: string; testCode: string; data: number[]
+    leftLine?: number; rightLine?: number; divisionLines?: number[]
+  }> = []
+
+  // Match ED type OBX with Octer-stream encoding
+  // Format: OBX|n|ED|CODE^Name^sys||^Application^Octer-stream^DIGITS||||||F
+  const edPattern = /OBX\|\d+\|ED\|([^^|]+)\^([^^|]+)\^[^|]*\|\|[^^]*\^Application\^Octer-stream\^([0-9]+)/gi
+  let match
+  while ((match = edPattern.exec(rawContent)) !== null) {
+    const testCode = match[1].trim()
+    const name = match[2].trim()
+    const digits = match[3]
+
+    // Parse 3-digit chunks into numbers
+    const data: number[] = []
+    for (let i = 0; i + 3 <= digits.length; i += 3) {
+      data.push(parseInt(digits.slice(i, i + 3), 10))
+    }
+
+    if (data.length > 0) {
+      histograms.push({ testCode, name, data })
+    }
+  }
+
+  // Parse boundary/division line values from NM segments
+  const nmPattern = /OBX\|\d+\|NM\|(\d+)\^[^|]+\|\|([0-9.]+)/gi
+  const lineMap = new Map<string, number>()
+  while ((match = nmPattern.exec(rawContent)) !== null) {
+    lineMap.set(match[1], parseFloat(match[2]))
+  }
+
+  for (const hist of histograms) {
+    if (hist.testCode === '15000') { // WBC: Lym|Mid|Gran divisions
+      hist.leftLine = lineMap.get('15010')
+      hist.rightLine = lineMap.get('15013')
+      const d1 = lineMap.get('15011'), d2 = lineMap.get('15012')
+      if (d1 !== undefined && d2 !== undefined) hist.divisionLines = [d1, d2]
+    } else if (hist.testCode === '15050') { // RBC
+      hist.leftLine = lineMap.get('15051')
+      hist.rightLine = lineMap.get('15052')
+    } else if (hist.testCode === '15100') { // PLT
+      hist.leftLine = lineMap.get('15111')
+      hist.rightLine = lineMap.get('15112')
+    }
+  }
+
+  return histograms
+}
+
+// Generate inline SVG area histogram chart
+function generateHistogramSVG(
+  name: string,
+  data: number[],
+  opts: { leftLine?: number; rightLine?: number; divisionLines?: number[]; color?: string }
+): string {
+  const W = 300, H = 110
+  const PAD = { top: 8, right: 8, bottom: 22, left: 28 }
+  const chartW = W - PAD.left - PAD.right
+  const chartH = H - PAD.top - PAD.bottom
+
+  const maxVal = Math.max(...data, 1)
+  const n = data.length
+
+  const xScale = (i: number) => PAD.left + (i / n) * chartW
+  const yScale = (v: number) => PAD.top + chartH - (v / maxVal) * chartH
+
+  // Area fill path
+  let path = `M${PAD.left},${PAD.top + chartH}`
+  for (let i = 0; i < n; i++) {
+    path += ` L${xScale(i).toFixed(1)},${yScale(data[i]).toFixed(1)}`
+  }
+  path += ` L${(PAD.left + chartW).toFixed(1)},${PAD.top + chartH} Z`
+
+  const color = opts.color ?? '#3B82F6'
+
+  let svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">`
+  svg += `<rect width="${W}" height="${H}" fill="white" stroke="#E5E7EB" stroke-width="0.5" rx="3"/>`
+
+  // Area
+  svg += `<path d="${path}" fill="${color}" fill-opacity="0.25" stroke="${color}" stroke-width="1.2"/>`
+
+  // Division lines (e.g. Lym|Mid|Gran for WBC)
+  if (opts.divisionLines) {
+    for (const dl of opts.divisionLines) {
+      const x = xScale(dl).toFixed(1)
+      svg += `<line x1="${x}" y1="${PAD.top}" x2="${x}" y2="${PAD.top + chartH}" stroke="#9CA3AF" stroke-width="1" stroke-dasharray="3,2"/>`
+    }
+  }
+
+  // Left/right gate markers
+  if (opts.leftLine !== undefined) {
+    const x = xScale(opts.leftLine).toFixed(1)
+    svg += `<line x1="${x}" y1="${PAD.top}" x2="${x}" y2="${PAD.top + chartH}" stroke="#EF4444" stroke-width="1.2"/>`
+  }
+  if (opts.rightLine !== undefined) {
+    const x = xScale(opts.rightLine).toFixed(1)
+    svg += `<line x1="${x}" y1="${PAD.top}" x2="${x}" y2="${PAD.top + chartH}" stroke="#EF4444" stroke-width="1.2"/>`
+  }
+
+  // Y-axis ticks (0, mid, max)
+  svg += `<line x1="${PAD.left}" y1="${PAD.top}" x2="${PAD.left}" y2="${PAD.top + chartH}" stroke="#6B7280" stroke-width="0.8"/>`
+  svg += `<text x="${PAD.left - 3}" y="${PAD.top + 4}" text-anchor="end" font-size="7" fill="#6B7280" font-family="sans-serif">${maxVal}</text>`
+  svg += `<text x="${PAD.left - 3}" y="${PAD.top + chartH / 2 + 3}" text-anchor="end" font-size="7" fill="#6B7280" font-family="sans-serif">${Math.round(maxVal / 2)}</text>`
+  svg += `<text x="${PAD.left - 3}" y="${PAD.top + chartH}" text-anchor="end" font-size="7" fill="#6B7280" font-family="sans-serif">0</text>`
+
+  // X-axis
+  svg += `<line x1="${PAD.left}" y1="${PAD.top + chartH}" x2="${PAD.left + chartW}" y2="${PAD.top + chartH}" stroke="#6B7280" stroke-width="0.8"/>`
+
+  // Title
+  svg += `<text x="${W / 2}" y="${H - 5}" text-anchor="middle" font-size="9" fill="#374151" font-family="sans-serif" font-weight="600">${name}</text>`
+
+  svg += `</svg>`
+  return svg
 }
 
 // Helper to extract histogram/waveform numeric data
@@ -96,76 +221,73 @@ Deno.serve(async (req) => {
       Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
     )
 
-    // 3. Init AI - Use vision model if images detected
-    const genAI = new GoogleGenerativeAI(Deno.env.get('GEMINI_API_KEY') || '')
-    
-    // 3a. Extract embedded images and waveform data
+    // 3. Init AI
+    const anthropic = new Anthropic({ apiKey: Deno.env.get('ANTHROPIC_API_KEY') || '' })
+    const MODEL = 'claude-haiku-4-5-20251001'
+
+    // 3a. Extract embedded images, waveform data, and Octer-stream histograms
     const embeddedImages = extractEmbeddedImages(record.raw_content);
     const waveformData = extractWaveformData(record.raw_content);
-    
-    console.log(`📊 Found ${embeddedImages.length} images and ${waveformData.length} waveforms in analyzer data`);
-    
-    // Use vision model if images are present
-    const modelName = embeddedImages.length > 0 ? 'gemini-2.5-flash' : 'gemini-2.5-flash';
-    const model = genAI.getGenerativeModel({ model: modelName })
+    const octerHistograms = extractOcterStreamHistograms(record.raw_content);
 
-    // 4. AI Parse - Include image analysis if images present
-    let prompt = `
-    You are a strictly technical laboratory interface parser. 
-    Output ONLY valid JSON. Do NOT write introduction text. Do NOT write "Okay".
-    
-    Parse this raw analyzer data:
-    ${record.raw_content}
-    
-    REQUIRED JSON STRUCTURE:
-    {
-      "sample_barcode": "string",
-      "results": [
-        { "test_code": "string", "value": "string", "unit": "string", "flag": "string" }
-      ],
-      "instrument": "string",
-      "graphs": [
-        { "type": "histogram|scatter|waveform", "name": "string", "description": "string", "associated_test": "string" }
-      ]
+    // Generate SVG charts for each decoded histogram
+    const histogramColors: Record<string, string> = {
+      '15000': '#3B82F6', // WBC — blue
+      '15050': '#EF4444', // RBC — red
+      '15100': '#F59E0B', // PLT — amber
     }
-    
-    If waveform/histogram data is present, include it in the graphs array.
-    `
-    
-    // Build content parts for AI
-    const contentParts: any[] = [{ text: prompt }];
-    
-    // Add images if present (for vision analysis)
-    if (embeddedImages.length > 0) {
-      for (const img of embeddedImages) {
-        contentParts.push({
-          inlineData: {
-            mimeType: `image/${img.type}`,
-            data: img.data
-          }
-        });
-      }
-      contentParts.push({
-        text: `\n\nANALYZE THE ATTACHED ${embeddedImages.length} IMAGE(S) FROM THE ANALYZER.
-        For each image, identify:
-        - What type of graph/chart it is (histogram, scatter plot, waveform, etc.)
-        - What test/parameter it relates to (WBC diff, RBC histogram, etc.)
-        - Any abnormalities visible
-        - Include this analysis in the "graphs" array of your response.`
-      });
-    }
-    
-    // Add waveform data context
+    const generatedHistogramSVGs = octerHistograms.map(h => ({
+      testCode: h.testCode,
+      name: h.name,
+      channels: h.data.length,
+      svg: generateHistogramSVG(h.name, h.data, {
+        leftLine: h.leftLine,
+        rightLine: h.rightLine,
+        divisionLines: h.divisionLines,
+        color: histogramColors[h.testCode] ?? '#6366F1',
+      }),
+    }))
+
+    console.log(`📊 Found ${embeddedImages.length} images, ${waveformData.length} waveforms, ${octerHistograms.length} Octer-stream histograms in analyzer data`);
+
+    // 4. AI Parse
+    // Strip ED/Octer-stream binary blobs before sending to AI — already decoded separately
+    const rawForAI = record.raw_content.replace(
+      /(\|ED\|[^|]*\|\|[^^]*\^Application\^Octer-stream\^)[0-9]+/gi,
+      '$1<binary_histogram_data_stripped>'
+    )
+
+    let parsePrompt = `You are a strictly technical laboratory interface parser.
+Output ONLY valid JSON. No markdown fences, no explanation, no introduction.
+
+Parse this raw analyzer data:
+${rawForAI}
+
+REQUIRED JSON STRUCTURE:
+{
+  "sample_barcode": "string",
+  "results": [
+    { "test_code": "string", "value": "string", "unit": "string", "flag": "string" }
+  ],
+  "instrument": "string",
+  "graphs": [
+    { "type": "histogram|scatter|waveform", "name": "string", "test_code": "string", "description": "string", "associated_test": "string" }
+  ]
+}
+
+For graphs/histograms, use the OBX test code (e.g. "15000" for WBC histogram).
+Do NOT include or describe binary histogram data — it is already extracted separately.`
+
     if (waveformData.length > 0) {
-      contentParts.push({
-        text: `\n\nWAVEFORM DATA DETECTED:
-        ${JSON.stringify(waveformData, null, 2)}
-        Include these in the "graphs" array with type "waveform".`
-      });
+      parsePrompt += `\n\nWAVEFORM DATA DETECTED:\n${JSON.stringify(waveformData, null, 2)}\nInclude these in the "graphs" array with type "waveform".`
     }
 
-    const aiResult = await model.generateContent(contentParts)
-    const aiText = aiResult.response.text()
+    const aiResult = await anthropic.messages.create({
+      model: MODEL,
+      max_tokens: 4096,
+      messages: [{ role: 'user', content: parsePrompt }]
+    })
+    const aiText = (aiResult.content[0] as { type: string; text: string }).text
     
     // Robust JSON Extraction
     const jsonMatch = aiText.match(/\{[\s\S]*\}/);
@@ -181,14 +303,15 @@ Deno.serve(async (req) => {
 
     // 5. Order Lookup & Insertion Logic
     let statusLog = "Parsed successfully. "
+    let foundOrderId: string | null = null
     const barcode = String(parsedData.sample_barcode).trim()
     
     // A. Find Sample (using robust WILDCARD search)
     const { data: sampleList, error: sampleError } = await supabase
         .from('samples')
-        // REMOVED patient_id because it doesn't exist on samples table
-        .select('id, order_id, lab_id, barcode') 
-        .ilike('barcode', `%${barcode}%`) 
+        .select('id, order_id, lab_id, barcode')
+        .eq('lab_id', record.lab_id)
+        .ilike('barcode', `%${barcode}%`)
         .limit(1)
 
     const sample = sampleList && sampleList.length > 0 ? sampleList[0] : null
@@ -196,6 +319,7 @@ Deno.serve(async (req) => {
     if (sampleError || !sample) {
        statusLog += `Warning: Sample with barcode '${barcode}' not found (Lab: ${record.lab_id}).`
     } else {
+        foundOrderId = sample.order_id ?? null
         // B. Process Results
         statusLog += "Sample found. Processing results... "
         
@@ -257,11 +381,19 @@ Deno.serve(async (req) => {
                 statusLog += "No expected analytes found for this order. "
             } else {
                 // D. Use AI to map machine results to expected analytes
+                // Filter to only clinical result codes — skip instrument mode/alert/boundary line codes
+                const NON_CLINICAL_PREFIXES = ['080', '010', '120', '150']
+                const clinicalResults = (parsedData.results || []).filter((r: any) => {
+                    const code = String(r.test_code ?? '')
+                    return !NON_CLINICAL_PREFIXES.some(p => code.startsWith(p)) && r.value !== '' && r.flag !== 'F'
+                })
+
                 const mappingPrompt = `
 You are a laboratory data mapper. Match machine analyzer results to expected lab analytes.
+Output ONLY valid JSON. No markdown fences, no explanation.
 
 MACHINE RESULTS:
-${JSON.stringify(parsedData.results, null, 2)}
+${JSON.stringify(clinicalResults.map((r: any) => ({ test_code: r.test_code, name: r.name, value: r.value, unit: r.unit })), null, 2)}
 
 EXPECTED ANALYTES FOR THIS ORDER:
 ${JSON.stringify(missingAnalytes.map(a => ({
@@ -297,8 +429,12 @@ OUTPUT ONLY valid JSON in this exact format (no markdown, no explanation):
 }
 `
 
-                const aiMappingResult = await model.generateContent(mappingPrompt)
-                const aiMappingText = aiMappingResult.response.text()
+                const aiMappingResult = await anthropic.messages.create({
+                  model: MODEL,
+                  max_tokens: 4096,
+                  messages: [{ role: 'user', content: mappingPrompt }]
+                })
+                const aiMappingText = (aiMappingResult.content[0] as { type: string; text: string }).text
                 
                 // Robust JSON extraction
                 const mappingJsonMatch = aiMappingText.match(/\{[\s\S]*\}/)
@@ -331,7 +467,39 @@ OUTPUT ONLY valid JSON in this exact format (no markdown, no explanation):
                 }
                 
                 console.log(`DEBUG: AI mapped ${analyteMap.size} analytes:`, Array.from(analyteMap.keys()).join(', '))
-            
+
+                // Enrich analyteMap with real order_test_group_id and test_group_id
+                // by querying order_test_groups → test_group_analytes directly,
+                // since v_order_missing_analytes returns null for these fields.
+                const mappedAnalyteIds = Array.from(analyteMap.values()).map((m: any) => m.analyte_id)
+                if (mappedAnalyteIds.length > 0) {
+                    const { data: otgRows } = await supabase
+                        .from('order_test_groups')
+                        .select('id, test_group_id, test_group_analytes!inner(analyte_id)')
+                        .eq('order_id', sample.order_id)
+
+                    if (otgRows) {
+                        const analyteToOTG = new Map<string, { order_test_group_id: string; test_group_id: string }>()
+                        for (const otg of otgRows) {
+                            for (const tga of (otg as any).test_group_analytes || []) {
+                                if (mappedAnalyteIds.includes(tga.analyte_id)) {
+                                    analyteToOTG.set(tga.analyte_id, {
+                                        order_test_group_id: otg.id,
+                                        test_group_id: otg.test_group_id,
+                                    })
+                                }
+                            }
+                        }
+                        for (const [code, mapping] of analyteMap) {
+                            const otgInfo = analyteToOTG.get((mapping as any).analyte_id)
+                            if (otgInfo) {
+                                analyteMap.set(code, { ...(mapping as any), ...otgInfo })
+                            }
+                        }
+                        console.log(`DEBUG: Enriched ${analyteToOTG.size} analytes with order_test_group_id`)
+                    }
+                }
+
             // D. Insert Result Values with Context
             let mappedCount = 0
             let unmappedCount = 0
@@ -379,72 +547,43 @@ OUTPUT ONLY valid JSON in this exact format (no markdown, no explanation):
             }
             statusLog += `Mapped ${mappedCount} analytes. `
             
-            // E. Store analyzer graphs/images if present
-            if (embeddedImages.length > 0 || waveformData.length > 0 || parsedData.graphs?.length > 0) {
-                statusLog += `Processing ${embeddedImages.length} images, ${waveformData.length} waveforms. `
-                
-                // Store images in Supabase Storage
-                const storedImages: Array<{ name: string; url: string; type: string }> = [];
-                for (const img of embeddedImages) {
-                    try {
-                        // Decode base64 and upload to storage
-                        const binaryData = Uint8Array.from(atob(img.data), c => c.charCodeAt(0));
-                        const fileName = `analyzer-graphs/${sample.lab_id}/${sample.order_id}/${img.name}_${Date.now()}.${img.type}`;
-                        
-                        const { data: uploadData, error: uploadError } = await supabase.storage
-                            .from('attachments')
-                            .upload(fileName, binaryData, {
-                                contentType: `image/${img.type}`,
-                                upsert: true
-                            });
-                        
-                        if (!uploadError && uploadData) {
-                            const { data: urlData } = supabase.storage
-                                .from('attachments')
-                                .getPublicUrl(fileName);
-                            
-                            storedImages.push({
-                                name: img.name,
-                                url: urlData?.publicUrl || '',
-                                type: img.type
-                            });
-                            statusLog += `Uploaded ${img.name}. `;
-                        }
-                    } catch (imgErr) {
-                        console.error('Failed to upload analyzer image:', imgErr);
-                    }
+            // E. Save decoded histograms to analyzer_graphs table
+            if (octerHistograms.length > 0) {
+                statusLog += `Saving ${octerHistograms.length} histograms. `
+
+                // Build associated_test map from AI-parsed graphs (test_code → associated_test)
+                const aiGraphMap = new Map<string, string>()
+                for (const g of (parsedData.graphs || [])) {
+                    if (g.test_code) aiGraphMap.set(g.test_code, g.associated_test ?? '')
                 }
-                
-                // Build analyzer_graph_data structure for the order
-                const analyzerGraphData = {
-                    generated_at: new Date().toISOString(),
-                    source: 'analyzer_interface',
-                    instrument: parsedData.instrument,
-                    images: storedImages,
-                    waveforms: waveformData,
-                    ai_analysis: parsedData.graphs || [],
-                };
-                
-                // Store in order's trend_graph_data (or a dedicated field)
-                // We'll merge with existing trend_graph_data if present
-                const { data: existingOrder } = await supabase
-                    .from('orders')
-                    .select('trend_graph_data')
-                    .eq('id', sample.order_id)
-                    .single();
-                
-                const existingData = existingOrder?.trend_graph_data || {};
-                const updatedGraphData = {
-                    ...existingData,
-                    analyzer_graphs: analyzerGraphData
-                };
-                
-                await supabase
-                    .from('orders')
-                    .update({ trend_graph_data: updatedGraphData })
-                    .eq('id', sample.order_id);
-                
-                statusLog += `Stored ${storedImages.length} graph images. `;
+
+                const graphRows = octerHistograms.map(h => ({
+                    lab_id: sample.lab_id,
+                    order_id: sample.order_id,
+                    result_id: resultHeader.id,
+                    raw_message_id: record.id,
+                    test_code: h.testCode,
+                    name: h.name,
+                    associated_test: aiGraphMap.get(h.testCode) ?? null,
+                    histogram_data: h.data,
+                    boundaries: {
+                        leftLine: h.leftLine ?? null,
+                        rightLine: h.rightLine ?? null,
+                        divisionLines: h.divisionLines ?? [],
+                    },
+                    svg_data: generatedHistogramSVGs.find(s => s.testCode === h.testCode)?.svg ?? null,
+                }))
+
+                const { error: graphInsertError } = await supabase
+                    .from('analyzer_graphs')
+                    .insert(graphRows)
+
+                if (graphInsertError) {
+                    console.error('Failed to insert analyzer_graphs', graphInsertError)
+                    statusLog += `Error saving histograms: ${graphInsertError.message}. `
+                } else {
+                    statusLog += `Saved ${graphRows.length} histogram rows. `
+                }
             }
             }
         }
@@ -456,6 +595,7 @@ OUTPUT ONLY valid JSON in this exact format (no markdown, no explanation):
       processing_log: statusLog,
       extracted_images: embeddedImages.length,
       extracted_waveforms: waveformData.length,
+      extracted_histograms: octerHistograms.length,
       graphs_analyzed: parsedData.graphs?.length || 0
     };
     
@@ -466,6 +606,7 @@ OUTPUT ONLY valid JSON in this exact format (no markdown, no explanation):
         ai_result: finalResult,
         ai_confidence: 0.9,
         sample_barcode: parsedData.sample_barcode,
+        order_id: foundOrderId,
       })
       .eq('id', record.id)
 
@@ -480,6 +621,26 @@ OUTPUT ONLY valid JSON in this exact format (no markdown, no explanation):
 
   } catch (error) {
     console.error(error)
+
+    // Mark message as failed so it doesn't stay stuck as 'pending'
+    try {
+      const supabaseFallback = createClient(
+        Deno.env.get('SUPABASE_URL') ?? '',
+        Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
+      )
+      const payload = await req.clone().json().catch(() => null)
+      const recordId = payload?.record?.id
+      if (recordId) {
+        await supabaseFallback
+          .from('analyzer_raw_messages')
+          .update({
+            ai_status: 'failed',
+            ai_result: { error: error.message, failed_at: new Date().toISOString() },
+          })
+          .eq('id', recordId)
+      }
+    } catch (_) { /* best effort */ }
+
     return new Response(JSON.stringify({ error: error.message }), {
       headers: { ...corsHeaders, 'Content-Type': 'application/json' },
       status: 500,

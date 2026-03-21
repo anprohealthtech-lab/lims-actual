@@ -10,7 +10,8 @@ import {
   Printer,
   RefreshCcw,
   TrendingDown,
-  TrendingUp
+  TrendingUp,
+  Users
 } from 'lucide-react';
 import PaymentSummaryReport from '../components/Billing/PaymentSummaryReport';
 import { database } from '../utils/supabase';
@@ -81,9 +82,337 @@ const formatDateTime = (value?: string | null) => {
   });
 };
 
+/* ─── Collection Report (User-based) ─────────────────────────────────────── */
+
+interface CollectionRow {
+  orderId: string;
+  orderDate: string;
+  orderNumber: number | null;
+  patientName: string;
+  referredBy: string;
+  total: number;
+  totalRec: number;
+  currRec: number;
+  due: number;
+  discount: number;
+  mode: string;
+}
+
+interface CollectionGroup {
+  userId: string;
+  userName: string;
+  rows: CollectionRow[];
+  subtotalTotal: number;
+  subtotalTotalRec: number;
+  subtotalCurrRec: number;
+  subtotalDue: number;
+  subtotalDiscount: number;
+}
+
+function CollectionReport() {
+  const todayStr = useMemo(() => new Date().toISOString().split('T')[0], []);
+  const [fromDate, setFromDate] = useState(todayStr);
+  const [toDate, setToDate] = useState(todayStr);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [groups, setGroups] = useState<CollectionGroup[]>([]);
+  const [grandTotal, setGrandTotal] = useState({ total: 0, totalRec: 0, currRec: 0, due: 0, discount: 0 });
+  const [selectedUser, setSelectedUser] = useState<string>('all');
+
+  const loadReport = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const { data, error: err } = await database.payments.getCollectionReport(fromDate, toDate);
+      if (err || !data) throw err || new Error('No data returned');
+
+      const { orders, invoices, payments, users } = data as any;
+
+      // Build invoice map (order_id -> first invoice)
+      const invoiceByOrder = new Map<string, any>();
+      for (const inv of invoices) {
+        if (!invoiceByOrder.has(inv.order_id)) invoiceByOrder.set(inv.order_id, inv);
+      }
+
+      // Build payments map (invoice_id -> payments[])
+      const paymentsByInvoice = new Map<string, any[]>();
+      for (const p of payments) {
+        const arr = paymentsByInvoice.get(p.invoice_id) || [];
+        arr.push(p);
+        paymentsByInvoice.set(p.invoice_id, arr);
+      }
+
+      // Build user map
+      const userMap = new Map<string, string>();
+      for (const u of users) {
+        userMap.set(u.id, u.name || u.email || u.id);
+      }
+
+      // Build rows grouped by user
+      const groupMap = new Map<string, CollectionGroup>();
+
+      for (const order of orders) {
+        const inv = invoiceByOrder.get(order.id);
+        const totalRec = Number(inv?.total_after_discount ?? inv?.total ?? order.final_amount ?? order.total_amount ?? 0);
+        const discount = Number(inv?.discount ?? 0);
+        const total = Number(order.final_amount ?? order.total_amount ?? 0);
+        const invPayments = inv ? (paymentsByInvoice.get(inv.id) || []) : [];
+        const currRec = invPayments.reduce((s: number, p: any) => s + Number(p.amount || 0), 0);
+        const due = Math.max(0, totalRec - currRec);
+
+        // Payment modes: deduplicated, comma-joined
+        const modes = [...new Set(invPayments.map((p: any) => {
+          const m = (p.payment_method || '').toLowerCase();
+          if (m === 'cash') return 'CASH';
+          if (m === 'upi') return 'UPI';
+          if (m === 'card') return 'CARD';
+          if (m === 'bank' || m === 'bank_transfer') return 'ONLINE TRANSFER';
+          return m.toUpperCase();
+        }))].join(' / ') || '—';
+
+        const uid = order.created_by || 'unknown';
+        const uname = userMap.get(uid) || uid;
+        if (!groupMap.has(uid)) {
+          groupMap.set(uid, { userId: uid, userName: uname, rows: [], subtotalTotal: 0, subtotalTotalRec: 0, subtotalCurrRec: 0, subtotalDue: 0, subtotalDiscount: 0 });
+        }
+        const grp = groupMap.get(uid)!;
+        grp.rows.push({
+          orderId: order.id,
+          orderDate: order.order_date,
+          orderNumber: order.order_number,
+          patientName: order.patient_name || '—',
+          referredBy: order.doctor || '—',
+          total,
+          totalRec,
+          currRec,
+          due,
+          discount,
+          mode: modes,
+        });
+        grp.subtotalTotal += total;
+        grp.subtotalTotalRec += totalRec;
+        grp.subtotalCurrRec += currRec;
+        grp.subtotalDue += due;
+        grp.subtotalDiscount += discount;
+      }
+
+      const grpArr = Array.from(groupMap.values());
+      setGroups(grpArr);
+      setGrandTotal({
+        total: grpArr.reduce((s, g) => s + g.subtotalTotal, 0),
+        totalRec: grpArr.reduce((s, g) => s + g.subtotalTotalRec, 0),
+        currRec: grpArr.reduce((s, g) => s + g.subtotalCurrRec, 0),
+        due: grpArr.reduce((s, g) => s + g.subtotalDue, 0),
+        discount: grpArr.reduce((s, g) => s + g.subtotalDiscount, 0),
+      });
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to load collection report');
+    } finally {
+      setLoading(false);
+    }
+  }, [fromDate, toDate]);
+
+  useEffect(() => { loadReport(); }, [loadReport]);
+
+  const fmtCur = (v: number) => `₹${v.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  const fmtDate = (iso: string) => {
+    const d = new Date(iso);
+    return `${String(d.getDate()).padStart(2, '0')}/${String(d.getMonth() + 1).padStart(2, '0')}/${d.getFullYear()}`;
+  };
+
+  const filteredGroups = useMemo(() =>
+    selectedUser === 'all' ? groups : groups.filter(g => g.userId === selectedUser),
+    [groups, selectedUser]
+  );
+
+  const filteredGrandTotal = useMemo(() => ({
+    total: filteredGroups.reduce((s, g) => s + g.subtotalTotal, 0),
+    totalRec: filteredGroups.reduce((s, g) => s + g.subtotalTotalRec, 0),
+    currRec: filteredGroups.reduce((s, g) => s + g.subtotalCurrRec, 0),
+    due: filteredGroups.reduce((s, g) => s + g.subtotalDue, 0),
+    discount: filteredGroups.reduce((s, g) => s + g.subtotalDiscount, 0),
+  }), [filteredGroups]);
+
+  return (
+    <div>
+      <style>{`
+        @media print {
+          @page { size: A4 landscape; margin: 10mm; }
+          .no-print { display: none !important; }
+        }
+      `}</style>
+      {/* Controls — hidden on print */}
+      <div className="no-print flex flex-wrap gap-3 items-end mb-4">
+        {groups.length > 0 && (
+          <div>
+            <label className="block text-xs font-medium text-gray-600 mb-1">Filter by User</label>
+            <select value={selectedUser} onChange={e => setSelectedUser(e.target.value)}
+              className="px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:outline-none min-w-[160px]">
+              <option value="all">All Users</option>
+              {groups.map(g => (
+                <option key={g.userId} value={g.userId}>{g.userName}</option>
+              ))}
+            </select>
+          </div>
+        )}
+        <div>
+          <label className="block text-xs font-medium text-gray-600 mb-1">From Date</label>
+          <input type="date" value={fromDate} onChange={e => setFromDate(e.target.value)}
+            className="px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:outline-none" />
+        </div>
+        <div>
+          <label className="block text-xs font-medium text-gray-600 mb-1">To Date</label>
+          <input type="date" value={toDate} onChange={e => setToDate(e.target.value)}
+            className="px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:outline-none" />
+        </div>
+        <button onClick={loadReport} disabled={loading}
+          className="flex items-center px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 text-sm disabled:opacity-50">
+          {loading ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <RefreshCcw className="h-4 w-4 mr-2" />}
+          Load
+        </button>
+        <button onClick={() => window.print()}
+          className="flex items-center px-4 py-2 border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 text-sm">
+          <Printer className="h-4 w-4 mr-2" />
+          Print
+        </button>
+      </div>
+
+      {error && (
+        <div className="no-print bg-red-50 border border-red-200 text-red-700 rounded-lg p-3 mb-4 flex items-start gap-2 text-sm">
+          <AlertTriangle className="h-4 w-4 mt-0.5 shrink-0" />
+          {error}
+        </div>
+      )}
+
+      {loading && (
+        <div className="no-print flex justify-center py-12">
+          <Loader2 className="h-8 w-8 animate-spin text-blue-500" />
+        </div>
+      )}
+
+      {!loading && groups.length === 0 && !error && (
+        <div className="no-print text-center py-12 text-gray-500">No orders found for the selected date range.</div>
+      )}
+
+      {!loading && groups.length > 0 && filteredGroups.length === 0 && (
+        <div className="no-print text-center py-12 text-gray-500">No orders found for the selected user.</div>
+      )}
+
+      {!loading && filteredGroups.length > 0 && (
+        <div id="collection-report-print" className="space-y-0">
+          {/* Report header (shows on print) */}
+          <div className="hidden print:block mb-4 text-center">
+            <p className="text-sm text-gray-600">
+              From Date: {fmtDate(fromDate + 'T00:00')} &nbsp;&nbsp; To Date: {fmtDate(toDate + 'T00:00')} &nbsp;&nbsp;
+              Generated On: {new Date().toLocaleDateString('en-IN', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}
+            </p>
+          </div>
+
+          <div className="bg-white rounded-lg border border-gray-200 overflow-x-auto">
+            <table className="min-w-full text-sm border-collapse">
+              <thead>
+                <tr className="bg-gray-100 text-gray-700">
+                  <th className="px-3 py-2 text-left font-semibold border border-gray-300 whitespace-nowrap">Sample Date</th>
+                  <th className="px-3 py-2 text-left font-semibold border border-gray-300 whitespace-nowrap">Lab ID</th>
+                  <th className="px-3 py-2 text-left font-semibold border border-gray-300">Patient Name</th>
+                  <th className="px-3 py-2 text-left font-semibold border border-gray-300">Lab Name / Ref By</th>
+                  <th className="px-3 py-2 text-right font-semibold border border-gray-300 whitespace-nowrap">Total</th>
+                  <th className="px-3 py-2 text-right font-semibold border border-gray-300 whitespace-nowrap">Total Rec.</th>
+                  <th className="px-3 py-2 text-right font-semibold border border-gray-300 whitespace-nowrap">Curr. Rec.</th>
+                  <th className="px-3 py-2 text-right font-semibold border border-gray-300 whitespace-nowrap">Due</th>
+                  <th className="px-3 py-2 text-right font-semibold border border-gray-300 whitespace-nowrap">Dis.</th>
+                  <th className="px-3 py-2 text-left font-semibold border border-gray-300 whitespace-nowrap">Mode</th>
+                </tr>
+              </thead>
+              <tbody>
+                {filteredGroups.map(grp => (
+                  <React.Fragment key={grp.userId}>
+                    {/* User name row */}
+                    <tr className="bg-blue-50">
+                      <td colSpan={10} className="px-3 py-1.5 font-semibold text-blue-800 border border-gray-300 text-sm">
+                        User Name: {grp.userName}
+                      </td>
+                    </tr>
+                    {/* Order rows */}
+                    {grp.rows.map(row => (
+                      <tr key={row.orderId} className="hover:bg-gray-50">
+                        <td className="px-3 py-1.5 border border-gray-200 whitespace-nowrap">{fmtDate(row.orderDate)}</td>
+                        <td className="px-3 py-1.5 border border-gray-200 whitespace-nowrap font-mono text-xs">{row.orderNumber || row.orderId.slice(-8).toUpperCase()}</td>
+                        <td className="px-3 py-1.5 border border-gray-200">{row.patientName}</td>
+                        <td className="px-3 py-1.5 border border-gray-200">{row.referredBy}</td>
+                        <td className="px-3 py-1.5 border border-gray-200 text-right">{row.total.toLocaleString('en-IN')}</td>
+                        <td className="px-3 py-1.5 border border-gray-200 text-right">{row.totalRec.toLocaleString('en-IN')}</td>
+                        <td className="px-3 py-1.5 border border-gray-200 text-right">{row.currRec.toLocaleString('en-IN')}</td>
+                        <td className="px-3 py-1.5 border border-gray-200 text-right">{row.due.toLocaleString('en-IN')}</td>
+                        <td className="px-3 py-1.5 border border-gray-200 text-right">{row.discount.toLocaleString('en-IN')}</td>
+                        <td className="px-3 py-1.5 border border-gray-200 text-xs">{row.mode}</td>
+                      </tr>
+                    ))}
+                    {/* User subtotal row */}
+                    <tr className="bg-gray-100 font-semibold text-gray-800">
+                      <td colSpan={4} className="px-3 py-1.5 border border-gray-300 text-right text-xs">User [ {grp.userName} ] Total :</td>
+                      <td className="px-3 py-1.5 border border-gray-300 text-right">{grp.subtotalTotal.toLocaleString('en-IN')}</td>
+                      <td className="px-3 py-1.5 border border-gray-300 text-right">{grp.subtotalTotalRec.toLocaleString('en-IN')}</td>
+                      <td className="px-3 py-1.5 border border-gray-300 text-right">{grp.subtotalCurrRec.toLocaleString('en-IN')}</td>
+                      <td className="px-3 py-1.5 border border-gray-300 text-right">{grp.subtotalDue.toLocaleString('en-IN')}</td>
+                      <td className="px-3 py-1.5 border border-gray-300 text-right">{grp.subtotalDiscount.toLocaleString('en-IN')}</td>
+                      <td className="px-3 py-1.5 border border-gray-300" />
+                    </tr>
+                  </React.Fragment>
+                ))}
+                {/* Grand total */}
+                <tr className="bg-gray-200 font-bold text-gray-900">
+                  <td colSpan={4} className="px-3 py-2 border border-gray-300 text-right">Grand Total :</td>
+                  <td className="px-3 py-2 border border-gray-300 text-right">{filteredGrandTotal.total.toLocaleString('en-IN')}</td>
+                  <td className="px-3 py-2 border border-gray-300 text-right">{filteredGrandTotal.totalRec.toLocaleString('en-IN')}</td>
+                  <td className="px-3 py-2 border border-gray-300 text-right">{filteredGrandTotal.currRec.toLocaleString('en-IN')}</td>
+                  <td className="px-3 py-2 border border-gray-300 text-right">{filteredGrandTotal.due.toLocaleString('en-IN')}</td>
+                  <td className="px-3 py-2 border border-gray-300 text-right">{filteredGrandTotal.discount.toLocaleString('en-IN')}</td>
+                  <td className="px-3 py-2 border border-gray-300" />
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          {/* Summarized Cash Report */}
+          <div className="mt-6 max-w-sm">
+            <div className="bg-white rounded-lg border border-gray-200 overflow-hidden">
+              <div className="bg-gray-100 px-4 py-2 border-b border-gray-300">
+                <p className="text-sm font-semibold text-gray-800 text-center">Summarized Collection Report</p>
+              </div>
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="bg-gray-50 text-gray-700">
+                    <th className="px-4 py-2 text-left font-semibold border-b border-gray-200">User Name</th>
+                    <th className="px-4 py-2 text-right font-semibold border-b border-gray-200">Collection Amount</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {filteredGroups.map(grp => (
+                    <tr key={grp.userId} className="border-b border-gray-100 last:border-0">
+                      <td className="px-4 py-2 text-gray-700">{grp.userName}</td>
+                      <td className="px-4 py-2 text-right font-medium">{fmtCur(grp.subtotalCurrRec)}</td>
+                    </tr>
+                  ))}
+                  <tr className="bg-gray-100 font-bold">
+                    <td className="px-4 py-2">Total</td>
+                    <td className="px-4 py-2 text-right">{fmtCur(filteredGrandTotal.currRec)}</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ─── Main Page ───────────────────────────────────────────────────────────── */
+
 export default function CashReconciliation() {
   const today = useMemo(() => new Date().toISOString().split('T')[0], []);
-  const [activeTab, setActiveTab] = useState<'daily' | 'report'>('daily');
+  const [activeTab, setActiveTab] = useState<'daily' | 'report' | 'collection'>('collection');
   const [selectedDate, setSelectedDate] = useState<string>(today);
   const [locations, setLocations] = useState<LocationOption[]>([]);
   const [selectedLocationId, setSelectedLocationId] = useState<string>('all');
@@ -273,7 +602,7 @@ export default function CashReconciliation() {
 
   return (
     <div className="space-y-6">
-      <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
+      <div className="no-print flex flex-col md:flex-row md:items-center md:justify-between gap-4">
         <div>
           <h1 className="text-3xl font-bold text-gray-900">Cash Reconciliation</h1>
           <p className="text-sm text-gray-500">
@@ -281,6 +610,13 @@ export default function CashReconciliation() {
           </p>
         </div>
         <div className="flex space-x-3">
+          <button
+            onClick={() => setActiveTab('collection')}
+            className={`flex items-center gap-1.5 px-4 py-2 rounded-lg transition-colors ${activeTab === 'collection' ? 'bg-blue-600 text-white' : 'border border-gray-300 text-gray-700 hover:bg-gray-50'}`}
+          >
+            <Users className="h-4 w-4" />
+            Collection Report
+          </button>
           <button
             onClick={() => setActiveTab('daily')}
             className={`px-4 py-2 rounded-lg transition-colors ${activeTab === 'daily' ? 'bg-blue-600 text-white' : 'border border-gray-300 text-gray-700 hover:bg-gray-50'}`}
@@ -654,8 +990,10 @@ export default function CashReconciliation() {
             </div>
           </div>
         </>
-      ) : (
+      ) : activeTab === 'report' ? (
         <PaymentSummaryReport key={`${selectedDate}-${selectedLocationId}-${activeTab}`} />
+      ) : (
+        <CollectionReport />
       )}
     </div>
   );

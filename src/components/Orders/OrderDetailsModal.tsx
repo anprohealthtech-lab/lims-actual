@@ -133,6 +133,7 @@ interface TestGroupResult {
   test_group_name: string;
   group_level_prompt?: string | null;
   default_ai_processing_type?: string | null;
+  ref_range_ai_config?: { enabled?: boolean; consider_age?: boolean } | null;
   order_test_group_id?: string | null;
   order_test_id?: string | null;
   source?: "order_test_groups" | "order_tests";
@@ -845,6 +846,7 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
               code,
               group_level_prompt,
               default_ai_processing_type,
+              ref_range_ai_config,
               lab_id,
               test_group_analytes(
                 analyte_id,
@@ -876,6 +878,7 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
               code,
               group_level_prompt,
               default_ai_processing_type,
+              ref_range_ai_config,
               lab_id,
               test_group_analytes(
                 analyte_id,
@@ -934,6 +937,7 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
           test_group_name: otg.test_groups.name,
           group_level_prompt: otg.test_groups.group_level_prompt || null,
           default_ai_processing_type: otg.test_groups.default_ai_processing_type || null,
+          ref_range_ai_config: otg.test_groups.ref_range_ai_config || null,
           order_test_group_id: otg.id,
           order_test_id: null,
           source: "order_test_groups" as const,
@@ -953,6 +957,13 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
                       rv.analyte_id === tga.analytes.id || (!rv.analyte_id && rv.analyte_name === tga.analytes.name));
                     if (rv) return rv;
                   }
+                  // Final fallback: scan ALL result rows regardless of test_group_id
+                  // (handles Save Draft results which have no test_group_id set)
+                  for (const r of data.results || []) {
+                    const rv = r.result_values?.find((rv: any) =>
+                      rv.analyte_id === tga.analytes.id || rv.analyte_name === tga.analytes.name);
+                    if (rv) return rv;
+                  }
                   return null;
                 })(),
             })) || [],
@@ -966,6 +977,7 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
             test_group_name: ot.test_groups.name,
             group_level_prompt: ot.test_groups.group_level_prompt || null,
             default_ai_processing_type: ot.test_groups.default_ai_processing_type || null,
+            ref_range_ai_config: ot.test_groups.ref_range_ai_config || null,
             order_test_group_id: null,
             order_test_id: ot.id,
             source: "order_tests" as const,
@@ -986,6 +998,13 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
                       if (r.test_group_id !== ot.test_group_id) continue;
                       const rv = r.result_values?.find((rv: any) =>
                         rv.analyte_id === tga.analytes.id || (!rv.analyte_id && rv.analyte_name === tga.analytes.name));
+                      if (rv) return rv;
+                    }
+                    // Final fallback: scan ALL result rows regardless of test_group_id
+                    // (handles Save Draft results which have no test_group_id set)
+                    for (const r of data.results || []) {
+                      const rv = r.result_values?.find((rv: any) =>
+                        rv.analyte_id === tga.analytes.id || rv.analyte_name === tga.analytes.name);
                       if (rv) return rv;
                     }
                     return null;
@@ -1198,7 +1217,8 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
 
     if (imagesToAnalyze.length > 1) {
       setAvailableImagesForAI(imagesToAnalyze);
-      setSelectedImagesForAI(new Set(imagesToAnalyze.map((img: any) => img.id)));
+      // Only auto-select the first image; user must manually select additional images
+      setSelectedImagesForAI(new Set([imagesToAnalyze[0].id]));
       setSelectedBatchForAI({
         id: virtualBatchId,
         batchId: virtualBatchId,
@@ -1223,7 +1243,8 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
       );
     } else {
       setAvailableImagesForAI(imagesToAnalyze);
-      setSelectedImagesForAI(new Set(imagesToAnalyze.map((img: any) => img.id)));
+      // Only auto-select the first image
+      setSelectedImagesForAI(new Set(imagesToAnalyze.length > 0 ? [imagesToAnalyze[0].id] : []));
       setSelectedBatchForAI(null);
       setMultiImageAIInstructions('');
     }
@@ -2574,15 +2595,66 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
   // #region Draft & Submit handlers
   // =========================================================
 
+  // Recompute all calculated analytes from current manualValues snapshot.
+  // Called after any manual value change so calculated rows update live.
+  const recomputeCalculatedValues = React.useCallback((values: ExtractedValue[]): ExtractedValue[] => {
+    const parseVars = (fv: string[] | string | null | undefined): string[] => {
+      if (!fv) return [];
+      if (Array.isArray(fv)) return fv.filter(Boolean);
+      try { return (JSON.parse(fv) as string[]).filter(Boolean); } catch { return []; }
+    };
+
+    // Build lookup: UUID → number, name_lower → number, code_lower → number
+    const lookup = new Map<string, number>();
+    for (const v of values) {
+      if (v.is_calculated) continue;
+      const num = Number(String(v.value ?? "").trim());
+      if (!Number.isFinite(num) || v.value === "") continue;
+      if (v.analyte_id) lookup.set(v.analyte_id, num);
+      if (v.parameter) lookup.set(v.parameter.toLowerCase(), num);
+    }
+
+    return values.map(v => {
+      if (!v.is_calculated || !v.formula) return v;
+
+      // Find analyte definition to get formula_variables
+      let formula = v.formula.trim();
+      const analyteRef = testGroups.flatMap(tg => tg.analytes).find(a => a.id === v.analyte_id || a.name === v.parameter);
+      const vars = parseVars(analyteRef?.formula_variables ?? null);
+
+      for (const variable of vars) {
+        const key = variable.toLowerCase();
+        // 1. UUID via calcDeps
+        const dep = calcDeps.find(d => d.variable_name.toLowerCase() === key);
+        let val: number | undefined = dep ? lookup.get(dep.source_analyte_id) : undefined;
+        // 2. direct key
+        if (val === undefined) val = lookup.get(key);
+        if (val === undefined) return v; // missing source — keep old value
+        formula = formula.replace(new RegExp(`\\b${variable}\\b`, "g"), String(val));
+      }
+
+      if (!/^[0-9+\-*/().\s]+$/.test(formula)) return v;
+      try {
+        // eslint-disable-next-line no-new-func
+        const computed = Function(`"use strict"; return (${formula});`)();
+        if (!Number.isFinite(computed)) return v;
+        return { ...v, value: String(Math.round(computed * 10000) / 10000) };
+      } catch { return v; }
+    });
+  }, [testGroups, calcDeps]);
+
   const handleManualValueChange = React.useCallback((index: number, field: keyof ExtractedValue, value: string) => {
-    setManualValues((prev) =>
-      prev.map((item, i) => {
+    setManualValues((prev) => {
+      const updated = prev.map((item, i) => {
         if (i !== index) return item;
         if (item.is_calculated && field === "value") return item;
         return { ...item, [field]: value };
-      })
-    );
-  }, []);
+      });
+      // Recompute calculated analytes whenever a numeric value changes
+      if (field === "value") return recomputeCalculatedValues(updated);
+      return updated;
+    });
+  }, [recomputeCalculatedValues]);
 
   // Popout input helpers
   const openPopoutInput = (
@@ -3057,14 +3129,19 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
         }
 
         // Upsert result_values for only the analytes we are saving now:
-        const names = rowsToPersist.map((r) => r.parameter);
-
-        // Delete previous entries for these analytes on this result row
-        await supabase
-          .from("result_values")
-          .delete()
-          .eq("result_id", resultRowId)
-          .in("analyte_name", names);
+        // Use analyte_id (UUID) for the delete filter — analyte names may contain characters like "(%)"
+        // that break PostgREST's in() URL parser, causing silent 400 errors and leaving stale records.
+        const analyteIdsToDelete = rowsToPersist
+          .map((r) => r.analyte_id || testGroup.analytes.find((a) => a.name === r.parameter)?.id)
+          .filter(Boolean) as string[];
+        if (analyteIdsToDelete.length > 0) {
+          const { error: deleteError } = await supabase
+            .from("result_values")
+            .delete()
+            .eq("result_id", resultRowId)
+            .in("analyte_id", analyteIdsToDelete);
+          if (deleteError) throw deleteError;
+        }
 
         const resultValuesData = rowsToPersist.map((r) => {
           const analyte = testGroup.analytes.find((a) => a.name === r.parameter)

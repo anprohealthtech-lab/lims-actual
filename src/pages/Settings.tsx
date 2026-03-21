@@ -611,6 +611,7 @@ const Settings: React.FC = () => {
             block_send_on_due: (labData as any).block_send_on_due ?? false,
             report_patient_info_config: (labData as any).report_patient_info_config ?? null,
             print_options: (labData as any).pdf_layout_settings?.printOptions ?? null,
+            result_colors: (labData as any).pdf_layout_settings?.resultColors ?? null,
             _pdf_layout_settings_raw: (labData as any).pdf_layout_settings ?? null,
           });
         }
@@ -927,6 +928,7 @@ const Settings: React.FC = () => {
         pdf_layout_settings: {
           ...(labSettings._pdf_layout_settings_raw || {}),
           printOptions: labSettings.print_options ?? undefined,
+          ...(labSettings.result_colors ? { resultColors: labSettings.result_colors } : {}),
         },
       } as any);
 
@@ -1934,6 +1936,32 @@ const Settings: React.FC = () => {
                             <p className="text-xs text-gray-400">Use ** for critical H/L values.</p>
                           </div>
                         </label>
+                        {/* Bold All Values */}
+                        <label className="flex items-center gap-2 cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={labSettings.print_options?.boldAllValues !== false}
+                            onChange={(e) => setLabSettings(prev => prev ? { ...prev, print_options: { ...(prev.print_options || {}), boldAllValues: e.target.checked } } : prev)}
+                            className="h-4 w-4 text-indigo-600 border-gray-300 rounded"
+                          />
+                          <div>
+                            <span className="text-sm font-medium text-gray-700">Bold All Values</span>
+                            <p className="text-xs text-gray-400">All result values semi-bold (uncheck for normal weight).</p>
+                          </div>
+                        </label>
+                        {/* Bold Abnormal Values */}
+                        <label className="flex items-center gap-2 cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={labSettings.print_options?.boldAbnormalValues !== false}
+                            onChange={(e) => setLabSettings(prev => prev ? { ...prev, print_options: { ...(prev.print_options || {}), boldAbnormalValues: e.target.checked } } : prev)}
+                            className="h-4 w-4 text-indigo-600 border-gray-300 rounded"
+                          />
+                          <div>
+                            <span className="text-sm font-medium text-gray-700">Bold Abnormal Values</span>
+                            <p className="text-xs text-gray-400">Extra bold for high/low values in result table.</p>
+                          </div>
+                        </label>
                         {/* Alternate Row Shading */}
                         <label className="flex items-center gap-2 cursor-pointer">
                           <input
@@ -2033,6 +2061,7 @@ const Settings: React.FC = () => {
                           { key: 'approvedAt', label: 'Approved On' },
                           { key: 'phone', label: 'Phone' },
                           { key: 'sampleCollectedBy', label: 'Collected By' },
+                          ...customPatientFields.map(f => ({ key: `custom_${f.field_key}`, label: f.label })),
                         ].map(field => {
                           const currentFields = labSettings.report_patient_info_config?.fields || ['patientName','patientId','age','gender','collectionDate','sampleId','referringDoctorName','approvedAt'];
                           const isChecked = currentFields.includes(field.key);
@@ -2196,36 +2225,7 @@ const Settings: React.FC = () => {
                           </tbody>
                         </table>
 
-                        {/* Toggle custom fields in PDF patient info */}
-                        <div className="mt-4 pt-4 border-t border-gray-100">
-                          <p className="text-xs font-medium text-gray-600 mb-2">Show in PDF Patient Info Section:</p>
-                          <div className="flex flex-wrap gap-3">
-                            {customPatientFields.map(field => {
-                              const pdfKey = `custom_${field.field_key}`;
-                              const currentFields = labSettings?.report_patient_info_config?.fields || [];
-                              const isChecked = currentFields.includes(pdfKey);
-                              return (
-                                <label key={pdfKey} className="flex items-center gap-2 text-sm cursor-pointer">
-                                  <input
-                                    type="checkbox"
-                                    checked={isChecked}
-                                    onChange={e => {
-                                      if (!labSettings) return;
-                                      const newFields = e.target.checked
-                                        ? [...currentFields, pdfKey]
-                                        : currentFields.filter(f => f !== pdfKey);
-                                      const layout = labSettings.report_patient_info_config?.layout || 'inline';
-                                      setLabSettings(prev => prev ? { ...prev, report_patient_info_config: { layout, fields: newFields } } : prev);
-                                    }}
-                                    className="h-3.5 w-3.5 text-indigo-600 rounded border-gray-300"
-                                  />
-                                  <span className="text-gray-700">{field.label}</span>
-                                </label>
-                              );
-                            })}
-                          </div>
-                          <p className="text-xs text-gray-400 mt-1">Save Lab Settings to apply PDF changes.</p>
-                        </div>
+                        {/* Custom fields for PDF are now managed in the Patient Information Section above */}
                       </div>
                     ) : null}
                   </div>
