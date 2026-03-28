@@ -392,25 +392,23 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
   const handleUpdateAttachedAnalyte = async (updatedAnalyte: any) => {
     try {
         console.log("Updating Attached Analyte", updatedAnalyte);
-        // Update in DB
-        const { error } = await supabase
-            .from('analytes')
-            .update({
-                name: updatedAnalyte.name,
-                unit: updatedAnalyte.unit,
-                reference_range: updatedAnalyte.referenceRange,
-                low_critical: updatedAnalyte.lowCritical,
-                high_critical: updatedAnalyte.highCritical,
-                interpretation_low: updatedAnalyte.interpretationLow,
-                interpretation_normal: updatedAnalyte.interpretationNormal,
-                interpretation_high: updatedAnalyte.interpretationHigh,
-                category: updatedAnalyte.category,
-                is_active: updatedAnalyte.isActive,
-                ai_processing_type: updatedAnalyte.aiProcessingType,
-                ref_range_knowledge: updatedAnalyte.ref_range_knowledge,
-                updated_at: new Date().toISOString()
-            })
-            .eq('id', updatedAnalyte.id);
+        // Update lab-specific analyte settings in lab_analytes (not global analytes table)
+        const labId = await database.getCurrentUserLabId();
+        if (!labId) throw new Error('Unable to determine lab context');
+        const { error } = await database.labAnalytes.updateLabSpecific(labId, updatedAnalyte.id, {
+            name: updatedAnalyte.name,
+            unit: updatedAnalyte.unit,
+            reference_range: updatedAnalyte.referenceRange,
+            low_critical: updatedAnalyte.lowCritical,
+            high_critical: updatedAnalyte.highCritical,
+            interpretation_low: updatedAnalyte.interpretationLow,
+            interpretation_normal: updatedAnalyte.interpretationNormal,
+            interpretation_high: updatedAnalyte.interpretationHigh,
+            category: updatedAnalyte.category,
+            is_active: updatedAnalyte.isActive,
+            ai_processing_type: updatedAnalyte.aiProcessingType,
+            ref_range_knowledge: updatedAnalyte.ref_range_knowledge,
+        });
 
         if (error) throw error;
 

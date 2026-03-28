@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { Edit2, X } from 'lucide-react';
-import { supabase } from '../../utils/supabase';
+import { database } from '../../utils/supabase';
 
 interface Analyte {
   id: string;
@@ -81,22 +81,20 @@ export const useAnalyteEditor = () => {
 
   const handleSave = async (updatedAnalyte: Analyte) => {
     try {
-      // Update in database
-      const { error } = await supabase
-        .from('analytes')
-        .update({
-          name: updatedAnalyte.name,
-          unit: updatedAnalyte.unit,
-          reference_range: updatedAnalyte.reference_range,
-          category: updatedAnalyte.category,
-          method: updatedAnalyte.method,
-          description: updatedAnalyte.description,
-          is_critical: updatedAnalyte.is_critical,
-          normal_range_min: updatedAnalyte.normal_range_min,
-          normal_range_max: updatedAnalyte.normal_range_max,
-          updated_at: new Date().toISOString()
-        })
-        .eq('id', updatedAnalyte.id);
+      // Update lab-specific analyte settings in lab_analytes (not global analytes table)
+      const labId = await database.getCurrentUserLabId();
+      if (!labId) throw new Error('Unable to determine lab context');
+      const { error } = await database.labAnalytes.updateLabSpecific(labId, updatedAnalyte.id, {
+        name: updatedAnalyte.name,
+        unit: updatedAnalyte.unit,
+        reference_range: updatedAnalyte.reference_range,
+        category: updatedAnalyte.category,
+        method: updatedAnalyte.method,
+        description: updatedAnalyte.description,
+        is_critical: updatedAnalyte.is_critical,
+        normal_range_min: updatedAnalyte.normal_range_min,
+        normal_range_max: updatedAnalyte.normal_range_max,
+      });
 
       if (error) throw error;
 

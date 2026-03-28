@@ -5741,6 +5741,7 @@ export const database = {
             analyte_id: data.id,
             is_active: true,
             visible: true,
+            ai_processing_type: data.ai_processing_type || null,
           }]);
       }
 
@@ -6254,6 +6255,10 @@ export const database = {
       code?: string;
       description?: string;
       display_name?: string | null;
+      is_critical?: boolean;
+      normal_range_min?: number | null;
+      normal_range_max?: number | null;
+      ai_processing_type?: string | null;
     }) => {
       const { data, error } = await supabase
         .from("lab_analytes")
