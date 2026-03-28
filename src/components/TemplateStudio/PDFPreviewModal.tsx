@@ -234,7 +234,6 @@ const DUMMY_PATIENT: Record<string, string> = {
   sampleId:            'SMPL-2026-00142',
   referringDoctorName: 'Dr. A. Sharma',
   approvedAt:          '17-Mar-2026 02:07 PM',
-  reportDate:          '17-Mar-2026 02:07 PM',
   patientPhone:        '+91 98765 43210',
   sampleCollectedBy:   'Ravi Kumar',
   orderId:             'ORD-2026-00142',

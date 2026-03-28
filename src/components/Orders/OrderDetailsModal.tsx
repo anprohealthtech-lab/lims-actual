@@ -1045,55 +1045,58 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
       if (analyteIds.length > 0 && data.lab_id) {
         const { data: labAnalytes } = await supabase
           .from('lab_analytes')
-          .select('analyte_id, expected_normal_values, expected_value_flag_map')
+          .select(`
+            analyte_id,
+            name, unit, reference_range,
+            reference_range_male, reference_range_female,
+            expected_normal_values, expected_value_flag_map,
+            is_calculated, formula, formula_variables, formula_description
+          `)
           .eq('lab_id', data.lab_id)
           .in('analyte_id', analyteIds);
 
         if (labAnalytes && labAnalytes.length > 0) {
-          // Create a map for quick lookup
           const labAnalytesMap = new Map(
             labAnalytes.map((la: any) => [la.analyte_id, la])
           );
 
-          // Merge lab-specific expected_normal_values and expected_value_flag_map into analytes
+          // Merge all lab-specific overrides into analytes (lab_analytes takes priority)
           flatAnalytes = flatAnalytes.map((analyte: any) => {
-            const labAnalyte = labAnalytesMap.get(analyte.id);
-            if (labAnalyte) {
-              const updates: any = {};
-              // Parse expected_normal_values
-              if (labAnalyte.expected_normal_values) {
-                let expectedValues = labAnalyte.expected_normal_values;
-                if (typeof expectedValues === 'string') {
-                  try {
-                    expectedValues = JSON.parse(expectedValues);
-                  } catch {
-                    expectedValues = [];
-                  }
-                }
-                if (expectedValues?.length > 0) {
-                  updates.expected_normal_values = expectedValues;
-                }
-              }
-              // Parse expected_value_flag_map
-              if (labAnalyte.expected_value_flag_map) {
-                let flagMap = labAnalyte.expected_value_flag_map;
-                if (typeof flagMap === 'string') {
-                  try { flagMap = JSON.parse(flagMap); } catch { flagMap = {}; }
-                }
-                if (flagMap && Object.keys(flagMap).length > 0) {
-                  updates.expected_value_flag_map = flagMap;
-                }
-              }
-              if (Object.keys(updates).length > 0) {
-                return { ...analyte, ...updates };
-              }
+            const la = labAnalytesMap.get(analyte.id);
+            if (!la) return analyte;
+            const updates: any = {};
+
+            // Display fields — prefer lab-specific if set
+            if (la.name)                updates.name             = la.name;
+            if (la.unit)                updates.unit             = la.unit;
+            if (la.reference_range)     updates.reference_range  = la.reference_range;
+            if (la.reference_range_male)  updates.reference_range_male  = la.reference_range_male;
+            if (la.reference_range_female) updates.reference_range_female = la.reference_range_female;
+
+            // Calculated parameter fields — prefer lab-specific
+            if (la.is_calculated != null) updates.is_calculated       = la.is_calculated;
+            if (la.formula)               updates.formula              = la.formula;
+            if (la.formula_variables)     updates.formula_variables    = la.formula_variables;
+            if (la.formula_description)   updates.formula_description  = la.formula_description;
+
+            // Dropdown options
+            if (la.expected_normal_values) {
+              let v = la.expected_normal_values;
+              if (typeof v === 'string') { try { v = JSON.parse(v); } catch { v = []; } }
+              if (v?.length > 0) updates.expected_normal_values = v;
             }
-            return analyte;
+            if (la.expected_value_flag_map) {
+              let m = la.expected_value_flag_map;
+              if (typeof m === 'string') { try { m = JSON.parse(m); } catch { m = {}; } }
+              if (m && Object.keys(m).length > 0) updates.expected_value_flag_map = m;
+            }
+
+            return Object.keys(updates).length > 0 ? { ...analyte, ...updates } : analyte;
           });
         }
       }
 
-      // Fetch analyte_dependencies for all calculated analytes (for debug display)
+      // Fetch analyte_dependencies; prefer lab-specific rows over global (lab_id IS NULL)
       const calcAnalyteIds = flatAnalytes
         .filter((a: any) => a.is_calculated)
         .map((a: any) => a.id)
@@ -1101,9 +1104,18 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
       if (calcAnalyteIds.length > 0) {
         const { data: depsData } = await supabase
           .from('analyte_dependencies')
-          .select('calculated_analyte_id, source_analyte_id, variable_name')
-          .in('calculated_analyte_id', calcAnalyteIds);
-        setCalcDeps((depsData || []) as typeof calcDeps);
+          .select('calculated_analyte_id, source_analyte_id, variable_name, lab_id')
+          .in('calculated_analyte_id', calcAnalyteIds)
+          .or(`lab_id.eq.${order.lab_id},lab_id.is.null`);
+        // Deduplicate: prefer lab-specific over global for same variable
+        const seen = new Set<string>();
+        const deduped: typeof calcDeps = [];
+        const sorted = [...(depsData || [])].sort((a: any, b: any) => (a.lab_id ? -1 : 1) - (b.lab_id ? -1 : 1));
+        for (const row of sorted as any[]) {
+          const key = `${row.calculated_analyte_id}:${row.variable_name}`;
+          if (!seen.has(key)) { seen.add(key); deduped.push(row); }
+        }
+        setCalcDeps(deduped);
       }
 
       setOrderAnalytes(flatAnalytes);
@@ -2609,7 +2621,9 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
       try { return (JSON.parse(fv) as string[]).filter(Boolean); } catch { return []; }
     };
 
-    // Build lookup: UUID → number, name_lower → number, code_lower → number
+    // Build lookup: UUID → number, name_lower → number
+    // Stores both so formula resolution works even when dep points to a different
+    // copy of the same analyte (different ID, same name)
     const lookup = new Map<string, number>();
     for (const v of values) {
       if (v.is_calculated) continue;
@@ -2618,6 +2632,27 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
       if (v.analyte_id) lookup.set(v.analyte_id, num);
       if (v.parameter) lookup.set(v.parameter.toLowerCase(), num);
     }
+
+    // Helper: resolve a dep variable to a numeric value
+    // 1. dep → source_analyte_id (exact UUID)
+    // 2. dep → source analyte name fallback (handles duplicate analyte IDs)
+    // 3. direct variable name key
+    const allAnalytes = testGroups.flatMap(tg => tg.analytes);
+    const resolveVar = (variable: string): number | undefined => {
+      const key = variable.toLowerCase();
+      const dep = calcDeps.find(d => d.variable_name.toLowerCase() === key);
+      if (dep) {
+        const byId = lookup.get(dep.source_analyte_id);
+        if (byId !== undefined) return byId;
+        // Fallback: find analyte with same name as the dep's source
+        const srcAnalyte = allAnalytes.find(a => a.id === dep.source_analyte_id);
+        if (srcAnalyte) {
+          const byName = lookup.get(srcAnalyte.name?.toLowerCase() ?? '');
+          if (byName !== undefined) return byName;
+        }
+      }
+      return lookup.get(key);
+    };
 
     return values.map(v => {
       if (!v.is_calculated || !v.formula) return v;
@@ -2628,12 +2663,7 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
       const vars = parseVars(analyteRef?.formula_variables ?? null);
 
       for (const variable of vars) {
-        const key = variable.toLowerCase();
-        // 1. UUID via calcDeps
-        const dep = calcDeps.find(d => d.variable_name.toLowerCase() === key);
-        let val: number | undefined = dep ? lookup.get(dep.source_analyte_id) : undefined;
-        // 2. direct key
-        if (val === undefined) val = lookup.get(key);
+        const val = resolveVar(variable);
         if (val === undefined) return v; // missing source — keep old value
         formula = formula.replace(new RegExp(`\\b${variable}\\b`, "g"), String(val));
       }
@@ -3008,9 +3038,16 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
       if (allCalcAnalyteIds.length > 0) {
         const { data: depsData } = await supabase
           .from('analyte_dependencies')
-          .select('calculated_analyte_id, source_analyte_id, variable_name')
-          .in('calculated_analyte_id', allCalcAnalyteIds);
-        allDeps = (depsData || []) as DepRow[];
+          .select('calculated_analyte_id, source_analyte_id, variable_name, lab_id')
+          .in('calculated_analyte_id', allCalcAnalyteIds)
+          .or(`lab_id.eq.${order.lab_id},lab_id.is.null`);
+        // Prefer lab-specific rows over global fallbacks
+        const seen = new Set<string>();
+        const sorted = [...(depsData || [])].sort((a: any, b: any) => (a.lab_id ? -1 : 1) - (b.lab_id ? -1 : 1));
+        for (const row of sorted as any[]) {
+          const key = `${row.calculated_analyte_id}:${row.variable_name}`;
+          if (!seen.has(key)) { seen.add(key); allDeps.push(row as DepRow); }
+        }
       }
 
       // evaluateCalculatedValue now receives the deps slice for this analyte.
@@ -3770,49 +3807,50 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
                           className="w-full px-2 py-1 bg-blue-50 border border-blue-200 rounded text-blue-800 font-medium"
                         />
                       ) : (
-                        <button
-                          onClick={() => openPopoutInput(globalIndex, 'value', value.value, value.parameter)}
-                          className={`w-full px-3 py-2 border rounded-lg text-left transition-colors ${value.value && typeof value.value === 'string' && value.value.trim()
-                            ? 'border-green-300 bg-green-50 hover:bg-green-100 text-green-800'
-                            : 'border-gray-300 hover:border-blue-400 hover:bg-blue-50 text-gray-500'
-                            }`}
-                        >
-                          {value.value || 'Click to enter value...'}
-                        </button>
+                        <input
+                          type="text"
+                          value={value.value || ''}
+                          onChange={(e) => handleManualValueChange(globalIndex, 'value', e.target.value)}
+                          placeholder="Enter value..."
+                          className={`w-full px-3 py-1.5 border rounded-lg focus:outline-none focus:ring-1 focus:ring-blue-500 ${value.value && typeof value.value === 'string' && value.value.trim()
+                            ? 'border-green-300 bg-green-50 text-green-800'
+                            : 'border-gray-300 bg-white text-gray-900'
+                          }`}
+                        />
                       )}
                     </td>
 
-                    {/* ✅ Pop-out Unit Input */}
+                    {/* Unit — inline input */}
                     <td className="px-4 py-3 min-w-[120px]">
-                      <button
-                        onClick={() => openPopoutInput(globalIndex, 'unit', value.unit, value.parameter)}
-                        className={`w-full px-3 py-2 border rounded-lg text-left transition-colors ${value.unit && typeof value.unit === 'string' && value.unit.trim()
-                          ? 'border-blue-300 bg-blue-50 hover:bg-blue-100 text-blue-800'
-                          : 'border-gray-300 hover:border-blue-400 hover:bg-blue-50 text-gray-500'
-                          }`}
-                      >
-                        {value.unit || 'Unit...'}
-                      </button>
+                      <input
+                        type="text"
+                        value={value.unit || ''}
+                        onChange={(e) => handleManualValueChange(globalIndex, 'unit', e.target.value)}
+                        placeholder="Unit..."
+                        className={`w-full px-3 py-1.5 border rounded-lg focus:outline-none focus:ring-1 focus:ring-blue-500 ${value.unit && typeof value.unit === 'string' && value.unit.trim()
+                          ? 'border-blue-300 bg-blue-50 text-blue-800'
+                          : 'border-gray-300 bg-white text-gray-900'
+                        }`}
+                      />
                     </td>
 
-                    {/* ✅ Pop-out Reference Input */}
+                    {/* Reference range — inline input */}
                     <td className="px-4 py-3 min-w-[180px]">
                       <div className="relative">
-                        <button
-                          onClick={() => openPopoutInput(globalIndex, 'reference', value.reference, value.parameter)}
-                          className={`w-full rounded-lg border px-3 py-2 pr-16 text-left transition-colors ${
+                        <input
+                          type="text"
+                          value={value.reference || ''}
+                          onChange={(e) => !value.reference_locked && handleManualValueChange(globalIndex, 'reference', e.target.value)}
+                          readOnly={value.reference_locked}
+                          placeholder="Reference range..."
+                          className={`w-full px-3 py-1.5 pr-8 border rounded-lg focus:outline-none focus:ring-1 focus:ring-blue-500 ${
                             value.reference_locked
-                              ? 'border-amber-300 bg-amber-50 hover:bg-amber-100 text-amber-800'
+                              ? 'border-amber-300 bg-amber-50 text-amber-800 cursor-not-allowed'
                               : value.reference && typeof value.reference === 'string' && value.reference.trim()
-                                ? 'border-purple-300 bg-purple-50 hover:bg-purple-100 text-purple-800'
-                                : 'border-gray-300 hover:border-blue-400 hover:bg-blue-50 text-gray-500'
+                                ? 'border-purple-300 bg-purple-50 text-purple-800'
+                                : 'border-gray-300 bg-white text-gray-900'
                           }`}
-                        >
-                          <span className="flex items-center gap-2">
-                            {value.reference_locked ? <Lock className="h-3.5 w-3.5 flex-shrink-0" /> : null}
-                            <span>{value.reference || 'Reference range...'}</span>
-                          </span>
-                        </button>
+                        />
                         {value.reference_locked ? (
                           <button
                             type="button"

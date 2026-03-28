@@ -137,13 +137,22 @@ export function ResultIntake({ order, onResultProcessed }: Props) {
     if (calculatedIds.length === 0) return
 
     const fetchDeps = async () => {
+      // Fetch both lab-specific and global dependencies; prefer lab-specific when both exist
       const { data } = await supabase
         .from('analyte_dependencies')
-        .select('calculated_analyte_id, variable_name, source_analyte_id')
+        .select('calculated_analyte_id, variable_name, source_analyte_id, lab_id')
         .in('calculated_analyte_id', calculatedIds)
+        .or(`lab_id.eq.${order.lab_id},lab_id.is.null`)
       if (!data) return
+      // Build map preferring lab-specific rows (lab_id != null) over global (lab_id == null)
       const map: Record<string, { variable_name: string; source_analyte_id: string }[]> = {}
-      data.forEach((d: { calculated_analyte_id: string; variable_name: string; source_analyte_id: string }) => {
+      const seen = new Set<string>() // key: `${calculated_analyte_id}:${variable_name}`
+      // Process lab-specific rows first
+      const sorted = [...data].sort((a, b) => (a.lab_id ? -1 : 1) - (b.lab_id ? -1 : 1))
+      sorted.forEach((d: { calculated_analyte_id: string; variable_name: string; source_analyte_id: string; lab_id: string | null }) => {
+        const key = `${d.calculated_analyte_id}:${d.variable_name}`
+        if (seen.has(key)) return // skip global duplicate if lab-specific already added
+        seen.add(key)
         if (!map[d.calculated_analyte_id]) map[d.calculated_analyte_id] = []
         map[d.calculated_analyte_id].push({ variable_name: d.variable_name, source_analyte_id: d.source_analyte_id })
       })
@@ -170,12 +179,25 @@ export function ResultIntake({ order, onResultProcessed }: Props) {
         if (!deps || deps.length === 0) return
 
         // Build scope from source analyte values
+        // Resolution: 1) exact analyte_id  2) name match (handles duplicate analytes with different IDs)
         const scope: Record<string, number> = {}
         let allPresent = true
         for (const dep of deps) {
-          const sourceEntry = prev[dep.source_analyte_id]
-          const sourceAnalyte = allAnalytes.find(a => a.id === dep.source_analyte_id)
-          const rawValue = sourceEntry?.value || sourceAnalyte?.existing_result?.value
+          // 1. Exact ID match
+          let sourceAnalyte = allAnalytes.find(a => a.id === dep.source_analyte_id)
+          let rawValue = (prev[dep.source_analyte_id]?.value) || sourceAnalyte?.existing_result?.value
+
+          // 2. Name-based fallback — dep points to a different copy of the same analyte
+          if (!rawValue || isNaN(parseFloat(rawValue))) {
+            const byName = allAnalytes.find(
+              a => a.id !== dep.source_analyte_id &&
+                   a.name?.toLowerCase() === (sourceAnalyte?.name || dep.variable_name)?.toLowerCase()
+            )
+            if (byName) {
+              rawValue = prev[byName.id]?.value || byName.existing_result?.value
+            }
+          }
+
           if (!rawValue || isNaN(parseFloat(rawValue))) {
             allPresent = false
             break

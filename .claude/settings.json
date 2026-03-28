@@ -1,7 +1,13 @@
 {
   "permissions": {
     "allow": [
-      "Read(//c/Users/Lenovo/.claude/projects/d--LIMS-version-2-project/b0d4c8f2-9112-46be-8229-72045a3550ac/tool-results/**)"
+      "Read(//c/Users/Lenovo/.claude/projects/d--LIMS-version-2-project/b0d4c8f2-9112-46be-8229-72045a3550ac/tool-results/**)",
+      "Bash(mkdir -p \"d:/LIMS version 2/project/supabase/functions/create-patient-portal-user\")",
+      "Bash(mkdir -p \"d:/LIMS version 2/project/supabase/functions/bulk-create-patient-portal-users\")",
+      "Bash(find 'd:\\\\LIMS version 2\\\\project\\\\src' -type f \\\\\\(-name *billing* -o -name *charge* -o -name *invoice* \\\\\\) -iname *.tsx -o -iname *.ts)",
+      "Bash(xargs head:*)",
+      "Bash(wc -l \"d:\\\\LIMS version 2\\\\project\\\\supabase\\\\migrations\"/*.sql)",
+      "Bash(ls -t \"d:\\\\LIMS version 2\\\\project\\\\supabase\\\\migrations\"/*.sql)"
     ]
   }
 }

@@ -72,6 +72,11 @@ import B2BLogin from './pages/B2BLogin';
 import B2BPortal from './pages/B2BPortal';
 import ProtectedB2BRoute from './components/Auth/ProtectedB2BRoute';
 
+// ⬇️ Patient Portal
+import PatientLogin from './pages/PatientLogin';
+import PatientPortal from './pages/PatientPortal';
+import ProtectedPatientRoute from './components/Auth/ProtectedPatientRoute';
+
 // ⬇️ Doctor Sharing Portal (Admin Only)
 import DoctorSharingLogin from './pages/DoctorSharingLogin';
 import DoctorSharingLayout from './pages/DoctorSharingLayout';
@@ -154,6 +159,20 @@ const AppRoutes: React.FC = () => {
           <ProtectedB2BRoute>
             <B2BPortal />
           </ProtectedB2BRoute>
+        }
+      />
+
+      {/* Patient Portal routes */}
+      <Route
+        path="/patient/login"
+        element={<PatientLogin />}
+      />
+      <Route
+        path="/patient/portal"
+        element={
+          <ProtectedPatientRoute>
+            <PatientPortal />
+          </ProtectedPatientRoute>
         }
       />
 

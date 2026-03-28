@@ -1,6 +1,6 @@
 import React from 'react';
 import { useState, useEffect } from 'react';
-import { X, User, Phone, Mail, MapPin, Droplet, FileText, QrCode, Palette, Printer, Edit, Plus, Upload, ExternalLink, Calendar, Gift } from 'lucide-react';
+import { X, User, Phone, Mail, MapPin, Droplet, FileText, QrCode, Palette, Printer, Edit, Plus, Upload, ExternalLink, Calendar, Gift, Smartphone, KeyRound, Copy, Check } from 'lucide-react';
 import { QRCodeCanvas } from 'qrcode.react';
 import { database, supabase, formatAge, LabPatientFieldConfig } from '../../utils/supabase';
 import ExternalReportUploadModal from './ExternalReportUploadModal';
@@ -55,6 +55,10 @@ const PatientDetails: React.FC<PatientDetailsProps> = ({
   const [recentTests, setRecentTests] = useState<any[]>([]);
   const [loadingTests, setLoadingTests] = useState(true);
   const [testsError, setTestsError] = useState<string | null>(null);
+  const [portalLoading, setPortalLoading] = useState(false);
+  const [portalPin, setPortalPin] = useState<string | null>(null);
+  const [portalAction, setPortalAction] = useState<'created' | 'pin_reset' | null>(null);
+  const [pinCopied, setPinCopied] = useState(false);
   const [externalReports, setExternalReports] = useState<any[]>([]);
   const [loadingExternalReports, setLoadingExternalReports] = useState(true);
   const [loyaltyBalance, setLoyaltyBalance] = useState<{ current_balance: number; total_earned: number; total_redeemed: number } | null>(null);
@@ -211,6 +215,44 @@ const PatientDetails: React.FC<PatientDetailsProps> = ({
       console.error('Error loading external reports:', err);
     } finally {
       setLoadingExternalReports(false);
+    }
+  };
+
+  const handleGeneratePortalAccess = async () => {
+    if (!patient.phone) {
+      alert('This patient has no phone number. Add a phone number first.');
+      return;
+    }
+    setPortalLoading(true);
+    setPortalPin(null);
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const supabaseUrl = (supabase as any).supabaseUrl as string;
+      const res = await fetch(`${supabaseUrl}/functions/v1/create-patient-portal-user`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${session?.access_token}`,
+          'apikey': (supabase as any).supabaseKey as string,
+        },
+        body: JSON.stringify({ patient_id: patient.id }),
+      });
+      const json = await res.json();
+      if (!res.ok || json.error) throw new Error(json.error || 'Failed');
+      setPortalPin(json.pin);
+      setPortalAction(json.action);
+    } catch (err) {
+      alert(err instanceof Error ? err.message : 'Failed to generate portal access');
+    } finally {
+      setPortalLoading(false);
+    }
+  };
+
+  const handleCopyPin = () => {
+    if (portalPin) {
+      navigator.clipboard.writeText(portalPin);
+      setPinCopied(true);
+      setTimeout(() => setPinCopied(false), 2000);
     }
   };
 
@@ -657,8 +699,44 @@ const PatientDetails: React.FC<PatientDetailsProps> = ({
             </div>
           )}
 
+          {/* Portal PIN Result */}
+          {portalPin && (
+            <div className="mt-4 p-4 bg-teal-50 border border-teal-200 rounded-lg">
+              <p className="text-sm font-medium text-teal-800 mb-2">
+                {portalAction === 'created' ? 'Portal access created!' : 'PIN reset successfully!'}
+                {' '}Share this PIN with the patient via WhatsApp:
+              </p>
+              <div className="flex items-center gap-3">
+                <span className="font-mono text-2xl font-bold text-teal-700 tracking-widest">{portalPin}</span>
+                <button
+                  onClick={handleCopyPin}
+                  className="flex items-center gap-1.5 px-3 py-1.5 text-sm bg-white border border-teal-300 text-teal-700 rounded-lg hover:bg-teal-50 transition-colors"
+                >
+                  {pinCopied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
+                  {pinCopied ? 'Copied!' : 'Copy PIN'}
+                </button>
+              </div>
+              <p className="text-xs text-teal-600 mt-2">
+                Patient logs in at <span className="font-mono">/patient/login</span> with their mobile number + this PIN.
+              </p>
+            </div>
+          )}
+
           {/* Action Buttons */}
           <div className="flex items-center justify-end space-x-4 pt-6 border-t border-gray-200 flex-wrap gap-y-2">
+
+            <button
+              onClick={handleGeneratePortalAccess}
+              disabled={portalLoading || !patient.phone}
+              className="px-4 py-2 border border-teal-300 text-teal-700 hover:bg-teal-50 rounded-md transition-colors flex items-center disabled:opacity-50 disabled:cursor-not-allowed"
+              title={!patient.phone ? 'No phone number on record' : (portalLoading ? 'Generating...' : 'Generate or reset portal PIN')}
+            >
+              {portalLoading ? (
+                <><div className="animate-spin rounded-full h-4 w-4 border-b-2 border-teal-600 mr-2" />Generating...</>
+              ) : (
+                <><Smartphone className="h-4 w-4 mr-2" />{(patient as any).portal_access_enabled ? 'Reset Portal PIN' : 'Generate Portal Access'}</>
+              )}
+            </button>
 
             <button
               onClick={() => setShowUploadModal(true)}

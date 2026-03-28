@@ -171,6 +171,13 @@ export const SimpleAnalyteEditor: React.FC<SimpleAnalyteEditorProps> = ({
   }, [showSourcePicker]);
 
   const inGroupSet = useMemo(() => new Set(testGroupAnalyteIds), [testGroupAnalyteIds]);
+  // Name set for fallback — a source analyte with a different ID but same name counts as "in group"
+  const inGroupNameSet = useMemo(
+    () => new Set(availableAnalytes.filter(a => inGroupSet.has(a.id)).map(a => a.name.toLowerCase())),
+    [availableAnalytes, inGroupSet]
+  );
+  const isInGroup = (source: { id: string; name: string }) =>
+    inGroupSet.has(source.id) || inGroupNameSet.has(source.name.toLowerCase());
 
   const filteredSourceAnalytes = useMemo(() => {
     const filtered = availableAnalytes.filter(a => {
@@ -184,8 +191,8 @@ export const SimpleAnalyteEditor: React.FC<SimpleAnalyteEditorProps> = ({
     });
     // Sort: analytes in this test group appear first
     filtered.sort((a, b) => {
-      const aIn = inGroupSet.has(a.id) ? 0 : 1;
-      const bIn = inGroupSet.has(b.id) ? 0 : 1;
+      const aIn = isInGroup(a) ? 0 : 1;
+      const bIn = isInGroup(b) ? 0 : 1;
       return aIn - bIn;
     });
     return filtered.slice(0, 30);
@@ -247,7 +254,13 @@ export const SimpleAnalyteEditor: React.FC<SimpleAnalyteEditorProps> = ({
         ? expectedNormalValuesText.split('\n').map(v => v.trim()).filter(Boolean)
         : [];
 
-      // Update lab_analytes table (lab-specific) instead of global analytes
+      // Resolve formula variables from picker or text input
+      const parsedVars = selectedSources.length > 0
+        ? selectedSources.map(s => s.variableName)
+        : formulaVariablesText.split(',').map(v => v.trim()).filter(Boolean);
+
+      // Update lab_analytes table (lab-specific) — formula fields are stored here,
+      // NOT in the global analytes table, so one lab's formula change never affects others.
       const { data, error: updateError } = await database.labAnalytes.updateLabSpecific(
         labId,
         formData.id, // analyte_id
@@ -279,42 +292,26 @@ export const SimpleAnalyteEditor: React.FC<SimpleAnalyteEditorProps> = ({
           expected_normal_values: expected_normal_values,
           // Dropdown value → flag mapping
           expected_value_flag_map: expectedValueFlagMap,
+          // Calculated parameter config — stored at lab level so edits are lab-specific
+          is_calculated: formulaData.is_calculated ?? false,
+          formula: formulaData.formula || null,
+          formula_variables: parsedVars.length > 0 ? parsedVars : [],
+          formula_description: formulaData.formula_description || null,
         }
       );
 
       if (updateError) throw updateError;
 
-      // If calculated fields changed, update the global analytes table too
-      if (formulaData.is_calculated || analyte.is_calculated) {
-        // Use selectedSources variable names if picker was used, else fall back to text input
-        const parsedVars = selectedSources.length > 0
-          ? selectedSources.map(s => s.variableName)
-          : formulaVariablesText.split(',').map(v => v.trim()).filter(Boolean);
-        const { error: globalUpdateError } = await supabase
-          .from('analytes')
-          .update({
-            is_calculated: formulaData.is_calculated,
-            formula: formulaData.formula || null,
-            formula_variables: parsedVars.length > 0 ? parsedVars : null,
-            formula_description: formulaData.formula_description || null,
-          })
-          .eq('id', formData.id);
+      // Save lab-specific analyte_dependencies if source analytes were selected via picker
+      if ((formulaData.is_calculated || analyte.is_calculated) && selectedSources.length > 0) {
+        const deps = selectedSources
+          .filter(s => !s.id.startsWith('_manual_')) // skip manual-only entries
+          .map(s => ({ source_analyte_id: s.id, variable_name: s.variableName }));
 
-        if (globalUpdateError) {
-          console.error('Failed to update global analyte formula:', globalUpdateError);
-        }
-
-        // Save analyte_dependencies if source analytes were selected via picker
-        if (selectedSources.length > 0) {
-          const deps = selectedSources
-            .filter(s => !s.id.startsWith('_manual_')) // skip manual-only entries
-            .map(s => ({ source_analyte_id: s.id, variable_name: s.variableName }));
-
-          if (deps.length > 0) {
-            const { error: depError } = await database.analyteDependencies.setDependencies(formData.id, deps);
-            if (depError) {
-              console.error('Failed to save analyte dependencies:', depError);
-            }
+        if (deps.length > 0) {
+          const { error: depError } = await database.analyteDependencies.setDependencies(formData.id, deps, labId);
+          if (depError) {
+            console.error('Failed to save analyte dependencies:', depError);
           }
         }
       }
@@ -864,15 +861,15 @@ export const SimpleAnalyteEditor: React.FC<SimpleAnalyteEditorProps> = ({
                     {selectedSources.length > 0 && (
                       <div className="mb-3 space-y-2">
                         {selectedSources.map(source => (
-                          <div key={source.id} className={`flex items-center gap-2 bg-white rounded-lg p-2 ${inGroupSet.has(source.id) ? 'border border-green-300' : 'border border-amber-200'}`}>
+                          <div key={source.id} className={`flex items-center gap-2 bg-white rounded-lg p-2 ${isInGroup(source) ? 'border border-green-300' : 'border border-amber-200'}`}>
                             <div className="flex-1 min-w-0">
                               <div className="flex items-center gap-1.5">
                                 <span className="text-sm font-medium text-gray-900 truncate">{source.name}</span>
-                                {inGroupSet.has(source.id) && (
+                                {isInGroup(source) && (
                                   <span className="flex-shrink-0 text-xs px-1.5 py-0.5 bg-green-100 text-green-700 rounded-full font-medium">In group</span>
                                 )}
-                                {!inGroupSet.has(source.id) && source.id && !source.id.startsWith('_manual_') && (
-                                  <span className="flex-shrink-0 text-xs px-1.5 py-0.5 bg-yellow-100 text-yellow-700 rounded-full font-medium" title="This analyte is not in the current test group — formula may not calculate if a different copy is used">⚠ Not in group</span>
+                                {!isInGroup(source) && source.id && !source.id.startsWith('_manual_') && (
+                                  <span className="flex-shrink-0 text-xs px-1.5 py-0.5 bg-yellow-100 text-yellow-700 rounded-full font-medium" title="This analyte is not in the current test group — add it to ensure the formula calculates">⚠ Not in group</span>
                                 )}
                               </div>
                               {source.unit && <div className="text-xs text-gray-500">{source.unit}</div>}
@@ -938,10 +935,10 @@ export const SimpleAnalyteEditor: React.FC<SimpleAnalyteEditorProps> = ({
                                 <div className="p-3 text-sm text-gray-500 text-center">No matching analytes found</div>
                               ) : (
                                 filteredSourceAnalytes.map((a, idx) => {
-                                  const isInGroup = inGroupSet.has(a.id);
+                                  const isInGrp = isInGroup(a);
                                   // Show section header when transitioning from in-group to others
-                                  const prevIsInGroup = idx > 0 ? inGroupSet.has(filteredSourceAnalytes[idx - 1].id) : true;
-                                  const showSeparator = !isInGroup && prevIsInGroup && filteredSourceAnalytes.some(x => inGroupSet.has(x.id));
+                                  const prevIsInGroup = idx > 0 ? isInGroup(filteredSourceAnalytes[idx - 1]) : true;
+                                  const showSeparator = !isInGrp && prevIsInGroup && filteredSourceAnalytes.some(x => isInGroup(x));
                                   return (
                                     <React.Fragment key={a.id}>
                                       {showSeparator && (
@@ -949,13 +946,13 @@ export const SimpleAnalyteEditor: React.FC<SimpleAnalyteEditorProps> = ({
                                           Other analytes
                                         </div>
                                       )}
-                                      {idx === 0 && isInGroup && (
+                                      {idx === 0 && isInGrp && (
                                         <div className="px-3 py-1 bg-green-50 border-b border-green-100 text-xs text-green-700 font-medium uppercase tracking-wide">
                                           In this test group
                                         </div>
                                       )}
                                       <div
-                                        className={`px-3 py-2 cursor-pointer flex items-center justify-between ${isInGroup ? 'hover:bg-green-50 bg-green-50/30' : 'hover:bg-amber-50'}`}
+                                        className={`px-3 py-2 cursor-pointer flex items-center justify-between ${isInGrp ? 'hover:bg-green-50 bg-green-50/30' : 'hover:bg-amber-50'}`}
                                         onClick={() => handleAddSource(a)}
                                       >
                                         <div className="flex items-center gap-2 min-w-0">
@@ -963,7 +960,7 @@ export const SimpleAnalyteEditor: React.FC<SimpleAnalyteEditorProps> = ({
                                             <div className="text-sm font-medium text-gray-900">{a.name}</div>
                                             <div className="text-xs text-gray-500">{a.unit}{a.category ? ` • ${a.category}` : ''}</div>
                                           </div>
-                                          {isInGroup && (
+                                          {isInGrp && (
                                             <span className="flex-shrink-0 text-xs px-1.5 py-0.5 bg-green-100 text-green-700 rounded-full font-medium">
                                               In group
                                             </span>

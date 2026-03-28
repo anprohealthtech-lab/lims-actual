@@ -46,6 +46,20 @@ const CreateInvoiceModal: React.FC<CreateInvoiceModalProps> = ({ orderId, onClos
   // Package display state - track which packages are expanded
   const [expandedPackages, setExpandedPackages] = useState<Set<string>>(new Set());
 
+  // Extra charges (lab billing items)
+  interface OrderBillingItem {
+    id: string;
+    name: string;
+    amount: number;
+    is_shareable_with_doctor: boolean;
+    is_shareable_with_phlebotomist: boolean;
+    is_invoiced: boolean;
+    lab_billing_item_type_id: string | null;
+  }
+  const [orderBillingItems, setOrderBillingItems] = useState<OrderBillingItem[]>([]);
+  const [selectedChargeIds, setSelectedChargeIds] = useState<string[]>([]);
+  const [chargeDiscounts, setChargeDiscounts] = useState<Record<string, { type: 'percent' | 'flat'; value: number; reason: string }>>({});
+
   // Helpers: numeric coercion and currency formatting (null-safe)
   const toNum = (v: any, fallback = 0): number => {
     const n = typeof v === 'number' ? v : Number(v);
@@ -145,6 +159,17 @@ const CreateInvoiceModal: React.FC<CreateInvoiceModalProps> = ({ orderId, onClos
 
       // Default discounts (Account > Location > Doctor) — manual always wins when user applies
       await applyDefaultDiscounts(orderData, normalizedTests || []);
+
+      // Load uninvoiced extra charges for this order
+      const { data: charges } = await supabase
+        .from('order_billing_items')
+        .select('id, name, amount, is_shareable_with_doctor, is_shareable_with_phlebotomist, is_invoiced, lab_billing_item_type_id')
+        .eq('order_id', orderId)
+        .eq('is_invoiced', false)
+        .order('created_at');
+      const chargeList = charges || [];
+      setOrderBillingItems(chargeList);
+      setSelectedChargeIds(chargeList.map((c: OrderBillingItem) => c.id));
     } catch (error) {
       console.error('Error loading order details:', error);
     } finally {
@@ -229,9 +254,17 @@ const CreateInvoiceModal: React.FC<CreateInvoiceModalProps> = ({ orderId, onClos
     return Math.max(0, total);
   };
 
+  const calcChargeLineTotal = (charge: { id: string; amount: number }) => {
+    const d = chargeDiscounts[charge.id];
+    if (!d) return charge.amount;
+    return Math.max(0, d.type === 'percent'
+      ? charge.amount - charge.amount * toNum(d.value) / 100
+      : charge.amount - toNum(d.value));
+  };
+
   const calcTotals = () => {
     const rows = tests.filter(t => selectedTests.includes(t.id));
-    const subtotal = rows.reduce((s, t) => s + toNum(t.price), 0);
+    const testSubtotal = rows.reduce((s, t) => s + toNum(t.price), 0);
     let totalDiscount = 0;
     rows.forEach(t => {
       const d = discounts[t.id];
@@ -239,10 +272,19 @@ const CreateInvoiceModal: React.FC<CreateInvoiceModalProps> = ({ orderId, onClos
       totalDiscount += d.type === 'percent' ? (toNum(t.price) * toNum(d.value) / 100) : toNum(d.value);
     });
     if (globalDiscount) {
-      totalDiscount += globalDiscount.type === 'percent' ? ((subtotal - totalDiscount) * toNum(globalDiscount.value) / 100) : toNum(globalDiscount.value);
+      totalDiscount += globalDiscount.type === 'percent' ? ((testSubtotal - totalDiscount) * toNum(globalDiscount.value) / 100) : toNum(globalDiscount.value);
     }
+    // Extra charges
+    const selectedCharges = orderBillingItems.filter(c => selectedChargeIds.includes(c.id));
+    const chargesSubtotal = selectedCharges.reduce((s, c) => s + toNum(c.amount), 0);
+    selectedCharges.forEach(c => {
+      const d = chargeDiscounts[c.id];
+      if (!d) return;
+      totalDiscount += d.type === 'percent' ? (toNum(c.amount) * toNum(d.value) / 100) : toNum(d.value);
+    });
+    const subtotal = testSubtotal + chargesSubtotal;
     const total = Math.max(0, subtotal - totalDiscount);
-    return { subtotal, totalDiscount, total };
+    return { subtotal, testSubtotal, chargesSubtotal, totalDiscount, total };
   };
 
   const handleDiscountChange = (testId: string, type: 'percent' | 'flat', value: number, reason: string) => {
@@ -384,6 +426,36 @@ const CreateInvoiceModal: React.FC<CreateInvoiceModalProps> = ({ orderId, onClos
             billed_amount: lineTotal,
           })
           .eq('id', test.id);
+      }
+
+      // Extra charges → insert as lab_charge invoice_items and mark invoiced
+      const selectedCharges = orderBillingItems.filter(c => selectedChargeIds.includes(c.id));
+      for (const charge of selectedCharges) {
+        const d = chargeDiscounts[charge.id];
+        const lineTotal = calcChargeLineTotal(charge);
+        const { data: chargeItem } = await supabase.from('invoice_items').insert({
+          lab_id,
+          invoice_id: invoice.id,
+          order_billing_item_id: charge.id,
+          test_name: charge.name,
+          price: toNum(charge.amount),
+          quantity: 1,
+          total: lineTotal,
+          item_type: 'lab_charge',
+          discount_type: d?.type || null,
+          discount_value: d?.value || null,
+          discount_amount: toNum(charge.amount) - lineTotal,
+          discount_reason: d?.reason || null,
+          is_shareable_with_doctor: charge.is_shareable_with_doctor,
+          is_shareable_with_phlebotomist: charge.is_shareable_with_phlebotomist,
+          order_id: orderId,
+        }).select('id').single();
+
+        if (chargeItem?.id) {
+          await supabase.from('order_billing_items')
+            .update({ is_invoiced: true, invoice_item_id: chargeItem.id, updated_at: new Date().toISOString() })
+            .eq('id', charge.id);
+        }
       }
 
       // Order billing flags
@@ -686,10 +758,120 @@ const CreateInvoiceModal: React.FC<CreateInvoiceModalProps> = ({ orderId, onClos
           </div>
         </div>
 
+        {/* Extra Charges (lab billing items) */}
+        {orderBillingItems.length > 0 && (
+          <div className="border rounded-lg mb-6">
+            <div className="bg-amber-50 px-4 py-2 border-b border-amber-200">
+              <h3 className="font-medium text-amber-800 flex items-center gap-2">
+                Billing Items
+                <span className="text-xs text-amber-600 font-normal">({orderBillingItems.length} pending)</span>
+              </h3>
+            </div>
+            <div className="divide-y">
+              {orderBillingItems.map(charge => {
+                const isSelected = selectedChargeIds.includes(charge.id);
+                const cd = chargeDiscounts[charge.id];
+                const lineTotal = calcChargeLineTotal(charge);
+                return (
+                  <div key={charge.id} className={`p-4 ${isSelected ? 'bg-amber-50/40' : 'bg-white'} hover:bg-gray-50`}>
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-3">
+                        <input
+                          type="checkbox"
+                          checked={isSelected}
+                          onChange={e => setSelectedChargeIds(prev =>
+                            e.target.checked ? [...prev, charge.id] : prev.filter(id => id !== charge.id)
+                          )}
+                          className="rounded"
+                        />
+                        <div>
+                          <div className="font-medium flex items-center gap-2">
+                            {charge.name}
+                            {charge.is_shareable_with_doctor && (
+                              <span className="text-xs text-blue-600 bg-blue-50 px-1.5 py-0.5 rounded">Doctor</span>
+                            )}
+                            {charge.is_shareable_with_phlebotomist && (
+                              <span className="text-xs text-orange-600 bg-orange-50 px-1.5 py-0.5 rounded">Phlebotomist</span>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                      <div className="text-right">
+                        <div className="font-bold text-lg">₹{money(lineTotal)}</div>
+                        {cd && <div className="text-sm text-green-600">
+                          -{cd.type === 'percent' ? `${cd.value}%` : `₹${cd.value}`}
+                        </div>}
+                        {cd && <div className="text-sm text-gray-500">Original: ₹{money(charge.amount)}</div>}
+                      </div>
+                    </div>
+                    {/* Discount Controls for charge */}
+                    {isSelected && (
+                      <div className="mt-3 pt-3 border-t bg-gray-50 rounded p-3">
+                        <div className="grid grid-cols-4 gap-3 items-end">
+                          <div>
+                            <label className="block text-xs text-gray-600 mb-1">Discount Type</label>
+                            <select
+                              value={cd?.type || 'percent'}
+                              onChange={e => setChargeDiscounts(prev => ({
+                                ...prev,
+                                [charge.id]: { type: e.target.value as 'percent' | 'flat', value: cd?.value || 0, reason: cd?.reason || 'Discount' }
+                              }))}
+                              className="w-full px-2 py-1 text-sm border rounded"
+                            >
+                              <option value="percent">Percentage</option>
+                              <option value="flat">Fixed Amount</option>
+                            </select>
+                          </div>
+                          <div>
+                            <label className="block text-xs text-gray-600 mb-1">Value</label>
+                            <input
+                              type="number"
+                              min="0"
+                              value={cd?.value || 0}
+                              onChange={e => setChargeDiscounts(prev => ({
+                                ...prev,
+                                [charge.id]: { type: cd?.type || 'percent', value: parseFloat(e.target.value) || 0, reason: cd?.reason || 'Discount' }
+                              }))}
+                              className="w-full px-2 py-1 text-sm border rounded"
+                            />
+                          </div>
+                          <div className="col-span-2">
+                            <label className="block text-xs text-gray-600 mb-1">Reason</label>
+                            <input
+                              type="text"
+                              value={cd?.reason || ''}
+                              onChange={e => setChargeDiscounts(prev => ({
+                                ...prev,
+                                [charge.id]: { type: cd?.type || 'percent', value: cd?.value || 0, reason: e.target.value }
+                              }))}
+                              className="w-full px-2 py-1 text-sm border rounded"
+                              placeholder="Discount reason"
+                            />
+                          </div>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
         {/* Totals */}
         <div className="border-t pt-4">
           <div className="space-y-2 max-w-md ml-auto">
             <div className="flex justify-between text-sm">
+              <span>Tests Subtotal:</span>
+              <span>₹{money(totals.testSubtotal)}</span>
+            </div>
+            {totals.chargesSubtotal > 0 && (
+              <div className="flex justify-between text-sm text-amber-700">
+                <span>Billing Items:</span>
+                <span>+₹{money(totals.chargesSubtotal)}</span>
+              </div>
+            )}
+            <div className="flex justify-between text-sm font-medium border-t pt-1">
               <span>Subtotal:</span>
               <span>₹{money(totals.subtotal)}</span>
             </div>

@@ -473,7 +473,9 @@ serve(async (req) => {
     );
 
     if (!visionResponse.ok) {
-      throw new Error(`Vision API failed: ${visionResponse.statusText}`);
+      const errorBody = await visionResponse.text();
+      console.error("Vision API error body:", errorBody);
+      throw new Error(`Vision API failed: ${visionResponse.statusText} - ${errorBody}`);
     }
 
     const visionData = await visionResponse.json();

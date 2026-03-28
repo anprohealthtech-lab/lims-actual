@@ -239,6 +239,17 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
   // Sample Collection Charge
   const [collectionCharge, setCollectionCharge] = useState<number>(0);
 
+  // Lab Billing Items (extra charges)
+  interface BillingItemType { id: string; name: string; default_amount: number; is_shareable_with_doctor: boolean; is_shareable_with_phlebotomist: boolean; }
+  interface SelectedBillingItem { typeId: string | null; name: string; amount: number; is_shareable_with_doctor: boolean; is_shareable_with_phlebotomist: boolean; }
+  const [billingItemTypes, setBillingItemTypes] = useState<BillingItemType[]>([]);
+  const [selectedBillingItems, setSelectedBillingItems] = useState<SelectedBillingItem[]>([]);
+  const [showAddBillingItem, setShowAddBillingItem] = useState(false);
+  const [newBillingItemTypeId, setNewBillingItemTypeId] = useState('');
+  const [newBillingItemName, setNewBillingItemName] = useState('');
+  const [newBillingItemAmount, setNewBillingItemAmount] = useState('');
+  const extraChargesTotal = selectedBillingItems.reduce((s, i) => s + (Number(i.amount) || 0), 0);
+
   // Loyalty Points
   const [loyaltyEnabled, setLoyaltyEnabled] = useState<boolean>(false);
   const [loyaltyBalance, setLoyaltyBalance] = useState<number>(0);
@@ -1328,7 +1339,7 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
         expected_date: computedExpectedDate,
         doctor: (selectedDoctor && selectedDoctor !== SELF_DOCTOR_ID) ? (doctors.find((d) => d.id === selectedDoctor)?.name || 'Self') : 'Self',
         notes: notes || null,
-        total_amount: calculatedTotal + collectionCharge, // Subtotal (tests + collection charge) before discount
+        total_amount: calculatedTotal + collectionCharge, // Tests + collection only; extra charges tracked separately in order_billing_items
         collection_charge: collectionCharge > 0 ? collectionCharge : null,
         final_amount: finalAmount, // Total after discount
         ...(isAdmin && customOrderDate ? {
@@ -1400,8 +1411,8 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
 
           console.log('📝 Creating invoice for order:', orderId);
 
-          // Subtotal including collection charge for invoice accuracy
-          const invoiceSubtotal = calculatedTotal + collectionCharge;
+          // Subtotal including collection charge + extra charges for invoice accuracy
+          const invoiceSubtotal = calculatedTotal + collectionCharge + extraChargesTotal;
 
           // Create invoice
           const invoiceData = {
@@ -1506,6 +1517,40 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
             } as any);
           }
 
+          // Insert extra lab billing items as order_billing_items + invoice_items
+          if (selectedBillingItems.length > 0) {
+            for (const item of selectedBillingItems) {
+              const { data: obi } = await supabase.from('order_billing_items').insert({
+                lab_id: labId,
+                order_id: orderId,
+                lab_billing_item_type_id: item.typeId || null,
+                name: item.name,
+                amount: item.amount,
+                is_shareable_with_doctor: item.is_shareable_with_doctor,
+                is_shareable_with_phlebotomist: item.is_shareable_with_phlebotomist,
+                is_invoiced: true,
+              }).select('id').single();
+
+              invoiceItemsData.push({
+                invoice_id: invoice.id,
+                order_billing_item_id: obi?.id || null,
+                order_test_id: null,
+                test_name: item.name,
+                price: item.amount,
+                quantity: 1,
+                total: item.amount,
+                item_type: 'lab_charge',
+                is_shareable_with_doctor: item.is_shareable_with_doctor,
+                is_shareable_with_phlebotomist: item.is_shareable_with_phlebotomist,
+                lab_id: labId,
+                order_id: orderId,
+                location_receivable: null,
+                outsourced_lab_id: null,
+                outsourced_cost: null
+              } as any);
+            }
+          }
+
           // ✅ OPTIMIZED: Run invoice items and payment creation in parallel if applicable
           const parallelOps: Promise<any>[] = [];
 
@@ -1513,8 +1558,11 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
             parallelOps.push(
               (async () => {
                 const res = await supabase.from('invoice_items').insert(invoiceItemsData);
-                if (res.error) console.error('Error creating invoice items:', res.error);
-                else console.log(`✅ Added ${invoiceItemsData.length} invoice items`);
+                if (res.error) {
+                  console.error('Error creating invoice items:', res.error);
+                  throw res.error;
+                }
+                console.log(`✅ Added ${invoiceItemsData.length} invoice items`);
                 return res;
               })()
             );
@@ -1609,8 +1657,24 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
           onClose();
         }
       } else {
-        // No invoice created, but still handle loyalty redemption if applicable
+        // No invoice created — save billing items as order_billing_items only
         const orderId = result?.id || result;
+        if (orderId && selectedBillingItems.length > 0) {
+          const labId = await database.getCurrentUserLabId();
+          for (const item of selectedBillingItems) {
+            await supabase.from('order_billing_items').insert({
+              lab_id: labId,
+              order_id: orderId,
+              lab_billing_item_type_id: item.typeId || null,
+              name: item.name,
+              amount: item.amount,
+              is_shareable_with_doctor: item.is_shareable_with_doctor,
+              is_shareable_with_phlebotomist: item.is_shareable_with_phlebotomist,
+              is_invoiced: false,
+            });
+          }
+        }
+        // No invoice created, but still handle loyalty redemption if applicable
         if (loyaltyEnabled && selectedPatient?.id && orderId && loyaltyRedeemEnabled && loyaltyPointsToRedeem > 0) {
           try {
             setSubmissionProgress('Redeeming loyalty points...');
@@ -1672,6 +1736,20 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
     return sum + price;
   }, 0);
 
+  // Load lab billing item types on mount
+  React.useEffect(() => {
+    database.getCurrentUserLabId().then(labId => {
+      if (!labId) return;
+      supabase
+        .from('lab_billing_item_types')
+        .select('id, name, default_amount, is_shareable_with_doctor, is_shareable_with_phlebotomist')
+        .eq('lab_id', labId)
+        .eq('is_active', true)
+        .order('name')
+        .then(({ data }) => setBillingItemTypes(data || []));
+    });
+  }, []);
+
   // Auto-update collection charge from selected test groups
   React.useEffect(() => {
     const autoCharge = selectedTestRows.reduce((sum, t) => sum + (t.collection_charge || 0), 0);
@@ -1681,12 +1759,12 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
 
   // Calculate discount
   const discountAmount = discountValue > 0
-    ? (discountType === 'percentage' ? ((totalAmount + collectionCharge) * discountValue) / 100 : Math.min(discountValue, totalAmount + collectionCharge))
+    ? (discountType === 'percentage' ? ((totalAmount + collectionCharge + extraChargesTotal) * discountValue) / 100 : Math.min(discountValue, totalAmount + collectionCharge + extraChargesTotal))
     : 0;
   const loyaltyDiscountAmount = loyaltyRedeemEnabled && loyaltyPointsToRedeem > 0
     ? loyaltyPointsToRedeem * loyaltyPointValue
     : 0;
-  const finalAmount = Math.max(0, totalAmount + collectionCharge - discountAmount - loyaltyDiscountAmount);
+  const finalAmount = Math.max(0, totalAmount + collectionCharge + extraChargesTotal - discountAmount - loyaltyDiscountAmount);
   const balanceDue = finalAmount - amountPaid;
 
   useEffect(() => {
@@ -1927,6 +2005,9 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
                           setShowPatientDropdown(true);
                         }}
                         onFocus={() => setShowPatientDropdown(true)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Tab') e.preventDefault();
+                        }}
                         onBlur={() => setTimeout(() => setShowPatientDropdown(false), 200)}
                         placeholder="Search by name, phone, or ID…"
                         className="w-full pl-8 pr-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 relative z-0"
@@ -2237,9 +2318,121 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
                     })}
                 </div>
                 <div className="border-t border-green-200 mt-2 pt-2 flex justify-between font-semibold text-green-900">
-                  <span>Total Amount:</span>
+                  <span>Tests Subtotal:</span>
                   <span>₹{totalAmount}</span>
                 </div>
+
+                {/* Extra Charges (Lab Billing Items) */}
+                {selectedBillingItems.length > 0 && (
+                  <div className="mt-2 space-y-1">
+                    {selectedBillingItems.map((item, idx) => (
+                      <div key={idx} className="flex items-center justify-between text-sm bg-amber-50 border border-amber-100 rounded px-2 py-1">
+                        <div className="flex items-center gap-1.5 min-w-0">
+                          <span className="text-amber-700 font-medium truncate">{item.name}</span>
+                          {item.is_shareable_with_doctor && <span className="text-xs text-blue-500 flex-shrink-0">Dr</span>}
+                          {item.is_shareable_with_phlebotomist && <span className="text-xs text-orange-500 flex-shrink-0">Ph</span>}
+                        </div>
+                        <div className="flex items-center gap-1 flex-shrink-0">
+                          <span className="text-amber-800 font-semibold">₹{item.amount}</span>
+                          <button
+                            type="button"
+                            onClick={() => setSelectedBillingItems(prev => prev.filter((_, i) => i !== idx))}
+                            className="text-red-400 hover:text-red-600 ml-1"
+                          >
+                            <X className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                    <div className="flex justify-between text-sm font-semibold text-amber-700 px-1">
+                      <span>Billing Items:</span>
+                      <span>+₹{extraChargesTotal}</span>
+                    </div>
+                  </div>
+                )}
+
+                {/* Add Extra Charge */}
+                {billingItemTypes.length > 0 && (
+                  <div className="mt-2">
+                    {!showAddBillingItem ? (
+                      <button
+                        type="button"
+                        onClick={() => setShowAddBillingItem(true)}
+                        className="w-full flex items-center justify-center gap-1 text-xs text-amber-700 bg-amber-50 border border-dashed border-amber-300 rounded-lg px-3 py-1.5 hover:bg-amber-100 transition-colors"
+                      >
+                        <Plus className="h-3.5 w-3.5" />
+                        Add Billing Item
+                      </button>
+                    ) : (
+                      <div className="border border-amber-200 bg-amber-50 rounded-lg p-2 space-y-2">
+                        <select
+                          value={newBillingItemTypeId}
+                          onChange={e => {
+                            const t = billingItemTypes.find(x => x.id === e.target.value);
+                            setNewBillingItemTypeId(e.target.value);
+                            if (t) { setNewBillingItemName(t.name); setNewBillingItemAmount(String(t.default_amount)); }
+                          }}
+                          className="w-full px-2 py-1 text-xs border border-gray-300 rounded focus:outline-none focus:ring-1 focus:ring-amber-400"
+                        >
+                          <option value="">— Select type —</option>
+                          {billingItemTypes.map(t => (
+                            <option key={t.id} value={t.id}>{t.name} (₹{t.default_amount})</option>
+                          ))}
+                        </select>
+                        <div className="flex gap-2">
+                          <input
+                            type="text"
+                            placeholder="Name"
+                            value={newBillingItemName}
+                            onChange={e => setNewBillingItemName(e.target.value)}
+                            className="flex-1 px-2 py-1 text-xs border border-gray-300 rounded focus:outline-none focus:ring-1 focus:ring-amber-400"
+                          />
+                          <input
+                            type="number"
+                            placeholder="₹"
+                            value={newBillingItemAmount}
+                            onChange={e => setNewBillingItemAmount(e.target.value)}
+                            className="w-20 px-2 py-1 text-xs border border-gray-300 rounded focus:outline-none focus:ring-1 focus:ring-amber-400"
+                          />
+                        </div>
+                        <div className="flex gap-2">
+                          <button
+                            type="button"
+                            disabled={!newBillingItemName.trim() || !newBillingItemAmount}
+                            onClick={() => {
+                              const t = billingItemTypes.find(x => x.id === newBillingItemTypeId);
+                              setSelectedBillingItems(prev => [...prev, {
+                                typeId: newBillingItemTypeId || null,
+                                name: newBillingItemName.trim(),
+                                amount: Number(newBillingItemAmount) || 0,
+                                is_shareable_with_doctor: t?.is_shareable_with_doctor ?? false,
+                                is_shareable_with_phlebotomist: t?.is_shareable_with_phlebotomist ?? false,
+                              }]);
+                              setNewBillingItemTypeId(''); setNewBillingItemName(''); setNewBillingItemAmount('');
+                              setShowAddBillingItem(false);
+                            }}
+                            className="flex-1 text-xs px-3 py-1.5 bg-amber-600 text-white rounded hover:bg-amber-700 disabled:opacity-50 transition-colors"
+                          >
+                            Add
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => { setShowAddBillingItem(false); setNewBillingItemTypeId(''); setNewBillingItemName(''); setNewBillingItemAmount(''); }}
+                            className="text-xs px-3 py-1.5 bg-white border border-gray-300 rounded hover:bg-gray-50 transition-colors"
+                          >Cancel</button>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {extraChargesTotal > 0 && (
+                  <div className="border-t border-amber-200 mt-1 pt-1 flex justify-between font-semibold text-gray-900 text-sm">
+                    <span>Grand Total (incl. charges):</span>
+                    <span>₹{totalAmount + collectionCharge + extraChargesTotal}</span>
+                  </div>
+                )}
+
                 {/* Monthly Billing Indicator */}
                 {selectedAccount && accounts.find(a => a.id === selectedAccount)?.billing_mode === 'monthly' && (
                   <div className="mt-2 bg-purple-50 border border-purple-200 p-3 rounded-lg">
@@ -2447,6 +2640,9 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
                       setShowDoctorDropdown(true);
                     }}
                     onFocus={(e) => { e.target.select(); setShowDoctorDropdown(true); }}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Tab') e.preventDefault();
+                    }}
                     onBlur={() => setTimeout(() => {
                       setShowDoctorDropdown(false);
                       // Only reset to Self/Walk-in if the search field was completely emptied

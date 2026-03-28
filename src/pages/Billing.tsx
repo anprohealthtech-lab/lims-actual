@@ -77,7 +77,7 @@ const Billing: React.FC = () => {
   const [dateFrom, setDateFrom] = useState('');
   const [dateTo, setDateTo] = useState('');
   const [datePreset, setDatePreset] = useState<DateRangePreset>('today');
-  const [pendingScope, setPendingScope] = useState<PendingScope>('pending');
+  const [pendingScope, setPendingScope] = useState<PendingScope>('all');
 
   // Location filtering state
   const [locations, setLocations] = useState<{ id: string; name: string }[]>([]);

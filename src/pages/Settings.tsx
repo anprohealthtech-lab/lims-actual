@@ -7,6 +7,9 @@ import { NotificationTriggerSettings } from '../components/Settings/Notification
 import InvoiceTemplateManager from '../components/Billing/InvoiceTemplateManager';
 import BasicTemplateFormatBuilder from '../components/Reports/BasicTemplateFormatBuilder';
 import AnalyzerAPIKeys from '../components/Settings/AnalyzerAPIKeys';
+import PatientPortalSettings from '../components/Settings/PatientPortalSettings';
+import LabBillingItemSettings from '../components/Settings/LabBillingItemSettings';
+import PriceMasterSettings from '../components/Settings/PriceMasterSettings';
 import {
   Users,
   Shield,
@@ -35,7 +38,9 @@ import {
   Globe,
   MessageSquare,
   Gift,
-  Star
+  Star,
+  Smartphone,
+  Tag
 } from 'lucide-react';
 import { LANGUAGE_DISPLAY_NAMES, type SupportedLanguage } from '../hooks/useAIResultIntelligence';
 import { COUNTRY_CODE_OPTIONS } from '../utils/phoneFormatter';
@@ -504,7 +509,7 @@ const UserFormComponent: React.FC<{
 
 const Settings: React.FC = () => {
   const { user: authUser } = useAuth();
-  const [activeTab, setActiveTab] = useState<'team' | 'permissions' | 'usage' | 'lab' | 'notifications' | 'invoices' | 'analyzer'>('team');
+  const [activeTab, setActiveTab] = useState<'team' | 'permissions' | 'usage' | 'lab' | 'notifications' | 'invoices' | 'analyzer' | 'patient_portal' | 'billing_items' | 'price_masters'>('team');
   const [showUserForm, setShowUserForm] = useState(false);
   const [showEditUserModal, setShowEditUserModal] = useState(false);
   const [selectedUser, setSelectedUser] = useState<User | null>(null);
@@ -786,6 +791,9 @@ const Settings: React.FC = () => {
     { id: 'notifications', name: 'Notifications', icon: Bell },
     { id: 'invoices', name: 'Invoice Templates', icon: FileText },
     { id: 'analyzer', name: 'Analyzer Interface', icon: Activity },
+    { id: 'patient_portal', name: 'Patient Portal', icon: Smartphone },
+    { id: 'billing_items', name: 'Billing Items', icon: FileText },
+    { id: 'price_masters', name: 'Price Masters', icon: Tag },
   ];
 
   const roles = availableRoles.length > 0
@@ -2707,6 +2715,27 @@ const Settings: React.FC = () => {
               </p>
             </div>
             <AnalyzerAPIKeys />
+          </div>
+        )}
+
+        {/* Patient Portal Tab */}
+        {activeTab === 'patient_portal' && labId && (
+          <div className="p-6">
+            <PatientPortalSettings labId={labId} />
+          </div>
+        )}
+
+        {/* Billing Items Tab */}
+        {activeTab === 'billing_items' && labId && (
+          <div className="p-6">
+            <LabBillingItemSettings labId={labId} />
+          </div>
+        )}
+
+        {/* Price Masters Tab */}
+        {activeTab === 'price_masters' && (
+          <div className="p-6">
+            <PriceMasterSettings />
           </div>
         )}
 

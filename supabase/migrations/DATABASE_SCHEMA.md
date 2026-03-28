@@ -59,8 +59,10 @@ CREATE TABLE public.accounts (
   updated_at timestamp with time zone NOT NULL DEFAULT now(),
   contact_person text,
   billing_mode text NOT NULL DEFAULT 'standard'::text CHECK (billing_mode = ANY (ARRAY['standard'::text, 'monthly'::text])),
+  price_master_id uuid,
   CONSTRAINT accounts_pkey PRIMARY KEY (id),
-  CONSTRAINT accounts_lab_id_fkey FOREIGN KEY (lab_id) REFERENCES public.labs(id)
+  CONSTRAINT accounts_lab_id_fkey FOREIGN KEY (lab_id) REFERENCES public.labs(id),
+  CONSTRAINT accounts_price_master_id_fkey FOREIGN KEY (price_master_id) REFERENCES public.price_masters(id)
 );
 CREATE TABLE public.ai_captures (
   id uuid NOT NULL DEFAULT gen_random_uuid(),
@@ -780,6 +782,7 @@ CREATE TABLE public.doctors (
   is_referring_doctor boolean DEFAULT false,
   license_number text,
   notes text,
+  hospital_phone text,
   CONSTRAINT doctors_pkey PRIMARY KEY (id),
   CONSTRAINT doctors_lab_id_fkey FOREIGN KEY (lab_id) REFERENCES public.labs(id)
 );
@@ -930,6 +933,8 @@ CREATE TABLE public.global_test_catalog_analytes (
   header_name text,
   custom_reference_range text,
   created_at timestamp with time zone DEFAULT now(),
+  analyte_name text,
+  test_group_name text,
   CONSTRAINT global_test_catalog_analytes_pkey PRIMARY KEY (id),
   CONSTRAINT global_test_catalog_analytes_catalog_id_fkey FOREIGN KEY (catalog_id) REFERENCES public.global_test_catalog(id),
   CONSTRAINT global_test_catalog_analytes_analyte_id_fkey FOREIGN KEY (analyte_id) REFERENCES public.analytes(id)
@@ -1104,13 +1109,18 @@ CREATE TABLE public.invoice_items (
   outsourced_cost numeric CHECK (outsourced_cost >= 0::numeric),
   outsourced_lab_id uuid,
   location_receivable numeric CHECK (location_receivable >= 0::numeric),
+  item_type text NOT NULL DEFAULT 'test'::text CHECK (item_type = ANY (ARRAY['test'::text, 'lab_charge'::text])),
+  order_billing_item_id uuid,
+  is_shareable_with_doctor boolean NOT NULL DEFAULT false,
+  is_shareable_with_phlebotomist boolean NOT NULL DEFAULT false,
   CONSTRAINT invoice_items_pkey PRIMARY KEY (id),
   CONSTRAINT invoice_items_invoice_id_fkey FOREIGN KEY (invoice_id) REFERENCES public.invoices(id),
   CONSTRAINT invoice_items_order_test_id_fkey FOREIGN KEY (order_test_id) REFERENCES public.order_tests(id),
   CONSTRAINT invoice_items_order_id_fkey FOREIGN KEY (order_id) REFERENCES public.orders(id),
   CONSTRAINT invoice_items_lab_id_fkey FOREIGN KEY (lab_id) REFERENCES public.labs(id),
   CONSTRAINT invoice_items_package_id_fkey FOREIGN KEY (package_id) REFERENCES public.packages(id),
-  CONSTRAINT invoice_items_outsourced_lab_id_fkey FOREIGN KEY (outsourced_lab_id) REFERENCES public.outsourced_labs(id)
+  CONSTRAINT invoice_items_outsourced_lab_id_fkey FOREIGN KEY (outsourced_lab_id) REFERENCES public.outsourced_labs(id),
+  CONSTRAINT invoice_items_order_billing_item_id_fkey FOREIGN KEY (order_billing_item_id) REFERENCES public.order_billing_items(id)
 );
 CREATE TABLE public.invoice_templates (
   id uuid NOT NULL DEFAULT gen_random_uuid(),
@@ -1138,6 +1148,8 @@ CREATE TABLE public.invoice_templates (
   format_type character varying DEFAULT 'a4'::character varying CHECK (format_type::text = ANY (ARRAY['a4'::character varying, 'thermal_80mm'::character varying, 'thermal_58mm'::character varying]::text[])),
   print_mode character varying DEFAULT 'pdf'::character varying CHECK (print_mode::text = ANY (ARRAY['pdf'::character varying, 'thermal'::character varying, 'both'::character varying]::text[])),
   thermal_settings jsonb DEFAULT jsonb_build_object('width_mm', 80, 'paper_size', '80mm', 'font_size', '12px', 'line_spacing', '1.2', 'margins', '5mm', 'barcode_height', '40px', 'barcode_width', '200px', 'barcode_format', 'CODE128', 'include_logo', true, 'logo_height', '40px', 'show_barcode', true, 'auto_cut', false),
+  page_size text NOT NULL DEFAULT 'A4'::text CHECK (page_size = ANY (ARRAY['A4'::text, 'A5'::text, 'Letter'::text])),
+  letterhead_space_mm integer NOT NULL DEFAULT 0,
   CONSTRAINT invoice_templates_pkey PRIMARY KEY (id),
   CONSTRAINT invoice_templates_lab_id_fkey FOREIGN KEY (lab_id) REFERENCES public.labs(id),
   CONSTRAINT invoice_templates_created_by_fkey FOREIGN KEY (created_by) REFERENCES public.users(id),
@@ -1247,6 +1259,7 @@ CREATE TABLE public.lab_analytes (
   lab_specific_method text,
   expected_value_flag_map jsonb DEFAULT '{}'::jsonb,
   display_name text,
+  analyte_name text,
   CONSTRAINT lab_analytes_pkey PRIMARY KEY (id),
   CONSTRAINT lab_analytes_analyte_id_fkey FOREIGN KEY (analyte_id) REFERENCES public.analytes(id),
   CONSTRAINT lab_analytes_lab_id_fkey FOREIGN KEY (lab_id) REFERENCES public.labs(id)
@@ -1263,6 +1276,20 @@ CREATE TABLE public.lab_api_keys (
   CONSTRAINT lab_api_keys_pkey PRIMARY KEY (id),
   CONSTRAINT lab_api_keys_lab_id_fkey FOREIGN KEY (lab_id) REFERENCES public.labs(id),
   CONSTRAINT lab_api_keys_created_by_fkey FOREIGN KEY (created_by) REFERENCES public.users(id)
+);
+CREATE TABLE public.lab_billing_item_types (
+  id uuid NOT NULL DEFAULT gen_random_uuid(),
+  lab_id uuid NOT NULL,
+  name text NOT NULL,
+  description text,
+  default_amount numeric NOT NULL DEFAULT 0 CHECK (default_amount >= 0::numeric),
+  is_shareable_with_doctor boolean NOT NULL DEFAULT false,
+  is_shareable_with_phlebotomist boolean NOT NULL DEFAULT false,
+  is_active boolean NOT NULL DEFAULT true,
+  created_at timestamp with time zone NOT NULL DEFAULT now(),
+  updated_at timestamp with time zone NOT NULL DEFAULT now(),
+  CONSTRAINT lab_billing_item_types_pkey PRIMARY KEY (id),
+  CONSTRAINT lab_billing_item_types_lab_id_fkey FOREIGN KEY (lab_id) REFERENCES public.labs(id)
 );
 CREATE TABLE public.lab_branding_assets (
   id uuid NOT NULL DEFAULT gen_random_uuid(),
@@ -1312,6 +1339,8 @@ CREATE TABLE public.lab_notification_settings (
   max_messages_per_patient_per_day integer DEFAULT 10,
   created_at timestamp with time zone DEFAULT now(),
   updated_at timestamp with time zone DEFAULT now(),
+  name_case_format text DEFAULT 'proper'::text CHECK (name_case_format = ANY (ARRAY['proper'::text, 'upper'::text])),
+  doctor_report_recipients text DEFAULT 'doctor_only'::text CHECK (doctor_report_recipients = ANY (ARRAY['doctor_only'::text, 'both'::text])),
   CONSTRAINT lab_notification_settings_pkey PRIMARY KEY (id),
   CONSTRAINT lab_notification_settings_lab_id_fkey FOREIGN KEY (lab_id) REFERENCES public.labs(id)
 );
@@ -1665,6 +1694,25 @@ CREATE TABLE public.ocr_results (
   CONSTRAINT ocr_results_pkey PRIMARY KEY (id),
   CONSTRAINT ocr_results_attachment_id_fkey FOREIGN KEY (attachment_id) REFERENCES public.attachments(id)
 );
+CREATE TABLE public.order_billing_items (
+  id uuid NOT NULL DEFAULT gen_random_uuid(),
+  lab_id uuid NOT NULL,
+  order_id uuid NOT NULL,
+  lab_billing_item_type_id uuid,
+  name text NOT NULL,
+  amount numeric NOT NULL DEFAULT 0 CHECK (amount >= 0::numeric),
+  notes text,
+  is_shareable_with_doctor boolean NOT NULL DEFAULT false,
+  is_shareable_with_phlebotomist boolean NOT NULL DEFAULT false,
+  is_invoiced boolean NOT NULL DEFAULT false,
+  invoice_item_id uuid,
+  created_at timestamp with time zone NOT NULL DEFAULT now(),
+  updated_at timestamp with time zone NOT NULL DEFAULT now(),
+  CONSTRAINT order_billing_items_pkey PRIMARY KEY (id),
+  CONSTRAINT order_billing_items_lab_id_fkey FOREIGN KEY (lab_id) REFERENCES public.labs(id),
+  CONSTRAINT order_billing_items_order_id_fkey FOREIGN KEY (order_id) REFERENCES public.orders(id),
+  CONSTRAINT order_billing_items_lab_billing_item_type_id_fkey FOREIGN KEY (lab_billing_item_type_id) REFERENCES public.lab_billing_item_types(id)
+);
 CREATE TABLE public.order_test_groups (
   id uuid NOT NULL DEFAULT gen_random_uuid(),
   order_id uuid NOT NULL,
@@ -1933,6 +1981,17 @@ CREATE TABLE public.patient_loyalty_points (
   CONSTRAINT patient_loyalty_points_patient_id_fkey FOREIGN KEY (patient_id) REFERENCES public.patients(id),
   CONSTRAINT patient_loyalty_points_lab_id_fkey FOREIGN KEY (lab_id) REFERENCES public.labs(id)
 );
+CREATE TABLE public.patient_report_access_logs (
+  id uuid NOT NULL DEFAULT gen_random_uuid(),
+  patient_id uuid NOT NULL,
+  order_id uuid,
+  action text NOT NULL CHECK (action = ANY (ARRAY['view_report'::text, 'download_pdf'::text, 'view_order'::text, 'login'::text, 'logout'::text])),
+  accessed_at timestamp with time zone NOT NULL DEFAULT now(),
+  user_agent text,
+  CONSTRAINT patient_report_access_logs_pkey PRIMARY KEY (id),
+  CONSTRAINT patient_report_access_logs_patient_id_fkey FOREIGN KEY (patient_id) REFERENCES public.patients(id),
+  CONSTRAINT patient_report_access_logs_order_id_fkey FOREIGN KEY (order_id) REFERENCES public.orders(id)
+);
 CREATE TABLE public.patients (
   id uuid NOT NULL DEFAULT gen_random_uuid(),
   name character varying NOT NULL,
@@ -1971,12 +2030,17 @@ CREATE TABLE public.patients (
   age_unit text DEFAULT 'years'::text CHECK (age_unit = ANY (ARRAY['years'::text, 'months'::text, 'days'::text])),
   custom_fields jsonb DEFAULT '{}'::jsonb,
   custom_fields_text text DEFAULT (custom_fields)::text,
+  patient_auth_id uuid,
+  portal_access_enabled boolean NOT NULL DEFAULT false,
+  portal_access_sent_at timestamp with time zone,
+  portal_pin_reset_at timestamp with time zone,
   CONSTRAINT patients_pkey PRIMARY KEY (id),
   CONSTRAINT patients_default_doctor_id_fkey FOREIGN KEY (default_doctor_id) REFERENCES public.doctors(id),
   CONSTRAINT patients_default_location_id_fkey FOREIGN KEY (default_location_id) REFERENCES public.locations(id),
   CONSTRAINT patients_lab_id_fkey FOREIGN KEY (lab_id) REFERENCES public.labs(id),
   CONSTRAINT fk_patients_master_patient FOREIGN KEY (master_patient_id) REFERENCES public.patients(id),
-  CONSTRAINT fk_patients_merged_by FOREIGN KEY (merged_by) REFERENCES public.users(id)
+  CONSTRAINT fk_patients_merged_by FOREIGN KEY (merged_by) REFERENCES public.users(id),
+  CONSTRAINT patients_patient_auth_id_fkey FOREIGN KEY (patient_auth_id) REFERENCES auth.users(id)
 );
 CREATE TABLE public.payments (
   id uuid NOT NULL DEFAULT gen_random_uuid(),
@@ -2044,6 +2108,28 @@ CREATE TABLE public.permissions (
   created_at timestamp with time zone DEFAULT now(),
   updated_at timestamp with time zone DEFAULT now(),
   CONSTRAINT permissions_pkey PRIMARY KEY (id)
+);
+CREATE TABLE public.price_master_items (
+  id uuid NOT NULL DEFAULT gen_random_uuid(),
+  price_master_id uuid NOT NULL,
+  test_group_id uuid NOT NULL,
+  price numeric NOT NULL CHECK (price >= 0::numeric),
+  created_at timestamp with time zone NOT NULL DEFAULT now(),
+  updated_at timestamp with time zone NOT NULL DEFAULT now(),
+  CONSTRAINT price_master_items_pkey PRIMARY KEY (id),
+  CONSTRAINT price_master_items_price_master_id_fkey FOREIGN KEY (price_master_id) REFERENCES public.price_masters(id),
+  CONSTRAINT price_master_items_test_group_id_fkey FOREIGN KEY (test_group_id) REFERENCES public.test_groups(id)
+);
+CREATE TABLE public.price_masters (
+  id uuid NOT NULL DEFAULT gen_random_uuid(),
+  lab_id uuid NOT NULL,
+  name text NOT NULL,
+  description text,
+  is_active boolean NOT NULL DEFAULT true,
+  created_at timestamp with time zone NOT NULL DEFAULT now(),
+  updated_at timestamp with time zone NOT NULL DEFAULT now(),
+  CONSTRAINT price_masters_pkey PRIMARY KEY (id),
+  CONSTRAINT price_masters_lab_id_fkey FOREIGN KEY (lab_id) REFERENCES public.labs(id)
 );
 CREATE TABLE public.qc_analyzer_coverage (
   id uuid NOT NULL DEFAULT gen_random_uuid(),
@@ -2882,9 +2968,13 @@ CREATE TABLE public.test_group_analytes (
   header_name text,
   sort_order integer DEFAULT 0,
   section_heading text,
+  analyte_name text,
+  test_group_name text,
+  lab_id uuid,
   CONSTRAINT test_group_analytes_pkey PRIMARY KEY (id),
   CONSTRAINT test_group_analytes_test_group_id_fkey FOREIGN KEY (test_group_id) REFERENCES public.test_groups(id),
-  CONSTRAINT test_group_analytes_analyte_id_fkey FOREIGN KEY (analyte_id) REFERENCES public.analytes(id)
+  CONSTRAINT test_group_analytes_analyte_id_fkey FOREIGN KEY (analyte_id) REFERENCES public.analytes(id),
+  CONSTRAINT test_group_analytes_lab_id_fkey FOREIGN KEY (lab_id) REFERENCES public.labs(id)
 );
 CREATE TABLE public.test_groups (
   id uuid NOT NULL DEFAULT gen_random_uuid(),

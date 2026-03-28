@@ -21,6 +21,13 @@ interface Account {
     payment_terms: number | null;
     is_active: boolean;
     billing_mode?: 'standard' | 'monthly' | null;
+    price_master_id?: string | null;
+}
+
+interface PriceMaster {
+    id: string;
+    name: string;
+    is_active: boolean;
 }
 
 interface AccountPrice {
@@ -54,7 +61,8 @@ const initialFormData: Partial<Account> = {
     credit_limit: 0,
     payment_terms: 30,
     is_active: true,
-    billing_mode: 'standard'
+    billing_mode: 'standard',
+    price_master_id: null,
 };
 
 const initialPortalData = {
@@ -83,6 +91,9 @@ const AccountMaster: React.FC = () => {
     const [loadingPrices, setLoadingPrices] = useState(false);
     const [priceSearchTerm, setPriceSearchTerm] = useState('');
     
+    // Price Masters (for dropdown in form)
+    const [availablePriceMasters, setAvailablePriceMasters] = useState<PriceMaster[]>([]);
+
     // Package Pricing State
     const [priceTab, setPriceTab] = useState<'tests' | 'packages'>('tests');
     const [packages, setPackages] = useState<{ id: string; name: string; code: string; price: number }[]>([]);
@@ -94,6 +105,14 @@ const AccountMaster: React.FC = () => {
             if (id) {
                 setLabId(id);
                 loadAccounts(id);
+                // Load price masters for the form dropdown
+                supabase
+                    .from('price_masters')
+                    .select('id, name, is_active')
+                    .eq('lab_id', id)
+                    .eq('is_active', true)
+                    .order('name')
+                    .then(({ data }) => setAvailablePriceMasters(data || []));
             } else {
                 setError('Lab ID not found. Please try logging in again.');
                 setLoading(false);
@@ -440,7 +459,17 @@ const AccountMaster: React.FC = () => {
                             <tr key={account.id} className="hover:bg-gray-50">
                                 <td className="px-6 py-4">
                                     <div className="text-sm font-medium text-gray-900">{account.name}</div>
-                                    <div className="text-sm text-gray-500">{account.code || '-'}</div>
+                                    <div className="flex items-center gap-2 mt-0.5">
+                                        <span className="text-sm text-gray-500">{account.code || '-'}</span>
+                                        {account.price_master_id && (() => {
+                                            const pm = availablePriceMasters.find(p => p.id === account.price_master_id);
+                                            return pm ? (
+                                                <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-indigo-100 text-indigo-700">
+                                                    {pm.name}
+                                                </span>
+                                            ) : null;
+                                        })()}
+                                    </div>
                                 </td>
                                 <td className="px-6 py-4">
                                     <div className="text-sm text-gray-900">{account.billing_phone}</div>
@@ -522,6 +551,24 @@ const AccountMaster: React.FC = () => {
                                         <label className="block text-sm font-medium mb-1">Default Discount (%)</label>
                                         <input type="number" max="100" value={formData.default_discount_percent || 0} onChange={e => setFormData({ ...formData, default_discount_percent: Number(e.target.value) })} className="w-full border rounded p-2" />
                                     </div>
+                                    {/* Price Master */}
+                                    <div className="col-span-2 border-t pt-4 mt-2">
+                                        <label className="block text-sm font-medium mb-1 text-gray-700">Price Plan (Price Master)</label>
+                                        <select
+                                            value={formData.price_master_id || ''}
+                                            onChange={e => setFormData({ ...formData, price_master_id: e.target.value || null })}
+                                            className="w-full border rounded p-2 text-sm"
+                                        >
+                                            <option value="">— No price plan (use base / per-account prices) —</option>
+                                            {availablePriceMasters.map(pm => (
+                                                <option key={pm.id} value={pm.id}>{pm.name}</option>
+                                            ))}
+                                        </select>
+                                        <p className="text-xs text-gray-500 mt-1">
+                                            When a plan is selected, its test prices take priority over individual account prices. Manage plans in Settings → Price Masters.
+                                        </p>
+                                    </div>
+
                                     <div className="col-span-2 border-t pt-4 mt-2">
                                         <label className="block text-sm font-medium mb-2 text-gray-700">Billing Mode</label>
                                         <div className="flex gap-6">

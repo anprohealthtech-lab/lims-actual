@@ -383,13 +383,23 @@ const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, on
       setRows(flat);
 
       // Load analyte_dependencies for live formula evaluation
+      // Prefer lab-specific rows; fall back to global (lab_id IS NULL) when no lab override exists
       const calcIds = merged.flatMap(tg => tg.analytes.filter(a => a.is_calculated).map(a => a.id)).filter(Boolean) as string[];
       if (calcIds.length > 0) {
         const { data: depsData } = await supabase
           .from("analyte_dependencies")
-          .select("calculated_analyte_id, source_analyte_id, variable_name")
-          .in("calculated_analyte_id", calcIds);
-        setCalcDeps((depsData || []) as DepRow[]);
+          .select("calculated_analyte_id, source_analyte_id, variable_name, lab_id")
+          .in("calculated_analyte_id", calcIds)
+          .or(`lab_id.eq.${data.lab_id},lab_id.is.null`);
+        // Deduplicate: prefer lab-specific over global for same (calculated_analyte_id, variable_name)
+        const seen = new Set<string>();
+        const deduped: DepRow[] = [];
+        const sorted = [...(depsData || [])].sort((a: any, b: any) => (a.lab_id ? -1 : 1) - (b.lab_id ? -1 : 1));
+        for (const row of sorted as any[]) {
+          const key = `${row.calculated_analyte_id}:${row.variable_name}`;
+          if (!seen.has(key)) { seen.add(key); deduped.push(row as DepRow); }
+        }
+        setCalcDeps(deduped);
       }
     } catch (err) {
       console.error("QuickResultEntry load error:", err);

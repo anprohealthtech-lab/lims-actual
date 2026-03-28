@@ -242,6 +242,7 @@ const Dashboard: React.FC = () => {
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const [isCollapsedView, setIsCollapsedView] = useState(false);
   const [isHeaderCollapsed, setIsHeaderCollapsed] = useState(true);
+  const [filtersOpen, setFiltersOpen] = useState(false);
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState<"All" | OrderStatus>("All");
   const [doctorFilter, setDoctorFilter] = useState<string>("All");
@@ -408,6 +409,19 @@ id, patient_id, patient_name, status, priority, order_date, expected_date, total
     const invoiceData = await Promise.all(invoicePromises);
     const invoiceMap = new Map(invoiceData.map((d) => [d.orderId, d]));
 
+    // 3.6) Fetch uninvoiced extra charges (order_billing_items) per order
+    // These are charges added via the order modal but not yet on any invoice.
+    // They must be added to orderAmount so due_amount is correct.
+    const uninvoicedChargesMap = new Map<string, number>();
+    const { data: billingItemsRows } = await supabase
+      .from('order_billing_items')
+      .select('order_id, amount')
+      .in('order_id', orderIds)
+      .eq('is_invoiced', false);
+    (billingItemsRows || []).forEach((row: any) => {
+      uninvoicedChargesMap.set(row.order_id, (uninvoicedChargesMap.get(row.order_id) || 0) + (row.amount || 0));
+    });
+
     // 3.5) Fetch reports with delivery status for these orders
     const reportMap = new Map<
       string,
@@ -494,6 +508,9 @@ id, patient_id, patient_name, status, priority, order_date, expected_date, total
       const doctor_phone = doctorData?.phone || null;
       const doctor_email = doctorData?.email || null;
 
+      // Extra uninvoiced charges for this order (not yet on any invoice)
+      const uninvoicedCharges = uninvoicedChargesMap.get(o.id) || 0;
+
       return {
         id: o.id,
         patient_name: o.patient_name,
@@ -504,11 +521,12 @@ id, patient_id, patient_name, status, priority, order_date, expected_date, total
         order_date: o.order_date,
         expected_date: dynamicExpectedDate,
         tatStarted,
-        total_amount: o.final_amount || o.total_amount,
-        // Use totalInvoiced from aggregated invoices, fallback to order amount
-        final_amount: invoiceInfo?.totalInvoiced 
-          ? Math.max(invoiceInfo.totalInvoiced, o.final_amount || o.total_amount || 0)
-          : (o.final_amount || o.total_amount || 0),
+        // Include uninvoiced charges in displayed total
+        total_amount: (o.final_amount || o.total_amount || 0) + uninvoicedCharges,
+        // Use totalInvoiced from aggregated invoices, fallback to order amount + uninvoiced charges
+        final_amount: invoiceInfo?.totalInvoiced
+          ? Math.max(invoiceInfo.totalInvoiced, (o.final_amount || o.total_amount || 0) + uninvoicedCharges)
+          : ((o.final_amount || o.total_amount || 0) + uninvoicedCharges),
         doctor: o.doctor,
         doctor_phone,
         doctor_email,
@@ -520,12 +538,11 @@ id, patient_id, patient_name, status, priority, order_date, expected_date, total
         sample_collected_at: o.sample_collected_at,
         sample_collected_by: o.sample_collected_by,
 
-        // Billing status: "partial" if totalInvoiced < order amount, else use DB status
+        // Billing status: "partial" if totalInvoiced < order amount+charges, else use DB status
         billing_status: (() => {
           if (!invoiceInfo?.invoices?.length) return o.billing_status;
-          const orderAmount = o.final_amount || o.total_amount || 0;
+          const orderAmount = (o.final_amount || o.total_amount || 0) + uninvoicedCharges;
           const invoicedAmount = invoiceInfo.totalInvoiced || 0;
-          // If invoiced amount is significantly less than order amount, it's partial
           return (orderAmount - invoicedAmount) > 1 ? 'partial' : o.billing_status;
         })(),
         is_billed: o.is_billed,
@@ -533,34 +550,32 @@ id, patient_id, patient_name, status, priority, order_date, expected_date, total
         invoice_id: invoiceInfo?.primaryInvoice?.id || null,
         // Aggregated paid amount across all invoices
         paid_amount: invoiceInfo?.paidAmount || 0,
-        // Due amount = order total - total paid across all invoices
+        // Due amount = effective total (order + uninvoiced charges) - paid - refunded
         due_amount: (() => {
-          const orderAmount = o.final_amount || o.total_amount || 0;
+          const baseOrderAmount = o.final_amount || o.total_amount || 0;
+          // Add uninvoiced charges on top of order amount
+          const orderAmount = baseOrderAmount + uninvoicedCharges;
           const invoicedAmount = invoiceInfo?.totalInvoiced || 0;
           const paidAmount = invoiceInfo?.paidAmount || 0;
           const refundedAmount = invoiceInfo?.totalRefunded || 0;
-          
-          // If no invoices, due = order amount
-          if (!invoiceInfo?.invoices?.length) {
-            return Math.max(0, orderAmount - paidAmount);
-          }
-          
-          // If partially invoiced, due = max(order, invoiced) - paid - refunded
+
+          // effectiveTotal = max(order+uninvoiced, invoiced)
+          // When invoiced, invoice total already includes any invoiced charges
           const effectiveTotal = Math.max(orderAmount, invoicedAmount);
           return Math.max(0, effectiveTotal - paidAmount - refundedAmount);
         })(),
         // Payment status based on aggregated amounts
         payment_status: (() => {
-          if (!invoiceInfo?.invoices?.length) return "unpaid";
-          
-          const orderAmount = o.final_amount || o.total_amount || 0;
-          const invoicedAmount = invoiceInfo.totalInvoiced || 0;
-          const paidAmount = invoiceInfo.paidAmount || 0;
-          const refundedAmount = invoiceInfo.totalRefunded || 0;
-          
+          const baseOrderAmount = o.final_amount || o.total_amount || 0;
+          const orderAmount = baseOrderAmount + uninvoicedCharges;
+          const invoicedAmount = invoiceInfo?.totalInvoiced || 0;
+          const paidAmount = invoiceInfo?.paidAmount || 0;
+          const refundedAmount = invoiceInfo?.totalRefunded || 0;
+
           const effectiveTotal = Math.max(orderAmount, invoicedAmount);
           const netOwed = Math.max(0, effectiveTotal - refundedAmount);
-          
+
+          if (!netOwed) return "unpaid";
           // Allow small float diff (1.0)
           if (paidAmount > 0 && paidAmount >= (netOwed - 1)) return "paid";
           if (paidAmount > 0) return "partial";
@@ -1393,6 +1408,37 @@ id,
     }
   };
 
+  const handlePrintInvoice = async (order: CardOrder) => {
+    try {
+      const { data: invoices } = await database.invoices.getAllByOrderId(order.id);
+      if (!invoices || invoices.length === 0) {
+        alert("Invoice not found. Please create an invoice first.");
+        return;
+      }
+
+      // Ensure primary invoice has a PDF
+      const primaryInvoice = invoices[0];
+      let pdfUrl = primaryInvoice.pdf_url;
+
+      if (!pdfUrl) {
+        const { data: templates } = await database.invoiceTemplates.getAll();
+        const defaultTemplate = templates?.find((t: any) => t.is_default) || templates?.[0];
+        if (!defaultTemplate) {
+          alert("No invoice template found. Please configure templates in Settings.");
+          return;
+        }
+        pdfUrl = await generateInvoicePDF(primaryInvoice.id, defaultTemplate.id);
+      }
+
+      if (pdfUrl) {
+        window.open(`${pdfUrl}?t=${Date.now()}`, '_blank');
+      }
+    } catch (error) {
+      console.error("Error printing invoice:", error);
+      alert("Failed to load invoice for printing. Please try again.");
+    }
+  };
+
   const getBillingBadge = (order: any) => {
     if (order.billing_status === "billed") {
       return (
@@ -1629,180 +1675,198 @@ id,
         {/* Search / Filters */}
         <div className={`bg-white rounded-lg border border-gray-200 shadow-sm ${mobile.cardPadding}`}>
           <div className="flex flex-col gap-3">
-            <div className="relative">
-              <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-400" />
-              <input
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
-                placeholder={mobile.isMobile ? "Search patient..." : "Search by patient, order ID, or patient ID…"}
-                className={`w-full pl-10 pr-4 ${mobile.isMobile ? "py-2.5 text-base" : "py-2"} border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 shadow-sm transition-all`}
-              />
-            </div>
-
-            <div className="flex gap-2 flex-wrap">
-              <select
-                value={statusFilter}
-                onChange={(e) => setStatusFilter(e.target.value as any)}
-                className={`flex-1 min-w-[140px] ${mobile.isMobile ? "px-3 py-2.5 text-base" : "px-3 py-2"} border border-gray-300 rounded-lg bg-white font-medium shadow-sm focus:border-blue-500 focus:ring-2 focus:ring-blue-200`}
-              >
-                {["All", "Order Created", "Sample Collection", "In Progress", "Pending Approval", "Completed", "Delivered"].map((s) => (
-                  <option key={s} value={s}>
-                    {s}
-                  </option>
-                ))}
-              </select>
-
-              <select
-                value={doctorFilter}
-                onChange={(e) => setDoctorFilter(e.target.value)}
-                className={`flex-1 min-w-[140px] ${mobile.isMobile ? "px-3 py-2.5 text-base" : "px-3 py-2"} border border-gray-300 rounded-lg bg-white font-medium shadow-sm focus:border-blue-500 focus:ring-2 focus:ring-blue-200`}
-              >
-                <option value="All">All Ref By</option>
-                {uniqueDoctors.map((doc) => (
-                  <option key={doc} value={doc}>{doc}</option>
-                ))}
-              </select>
-
-              {doctorFilter !== "All" && (
-                <button
-                  onClick={() => setDoctorFilter("All")}
-                  className="px-3 py-1.5 text-xs bg-blue-100 text-blue-700 rounded-lg border border-blue-200 hover:bg-blue-200 font-medium whitespace-nowrap"
-                >
-                  ✕ {doctorFilter}
-                </button>
-              )}
-            </div>
-
-            {/* Date Range */}
-            {mobile.isMobile ? (
-              <div className="bg-gradient-to-br from-gray-50 to-blue-50 rounded-xl p-4 space-y-4 border border-gray-200">
-                <h3 className="text-base font-bold text-gray-900">Date Range:</h3>
-
-                {!allDates && (
-                  <div className="space-y-2">
-                    <div className="flex items-center gap-2">
-                      <label className="text-sm font-medium text-gray-600 w-16">From:</label>
-                      <input
-                        type="date"
-                        value={dateFrom}
-                        onChange={(e) => {
-                          setAllDates(false);
-                          setDateFrom(e.target.value);
-                        }}
-                        className="flex-1 px-3 py-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 bg-white"
-                      />
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <label className="text-sm font-medium text-gray-600 w-16">To:</label>
-                      <input
-                        type="date"
-                        value={dateTo}
-                        onChange={(e) => {
-                          setAllDates(false);
-                          setDateTo(e.target.value);
-                        }}
-                        className="flex-1 px-3 py-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 bg-white"
-                      />
-                    </div>
-                  </div>
-                )}
-
-                <div className="grid grid-cols-2 gap-2">
-                  <button onClick={setToday} className="px-3 py-2.5 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700 font-medium shadow-sm">
-                    Today
-                  </button>
-                  <button onClick={() => setDateRange(7)} className="px-3 py-2.5 text-sm bg-white border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 font-medium">
-                    7 days
-                  </button>
-                  <button onClick={() => setDateRange(30)} className="px-3 py-2.5 text-sm bg-white border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 font-medium">
-                    30 days
-                  </button>
-                  <button onClick={() => setDateRange(90)} className="px-3 py-2.5 text-sm bg-white border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 font-medium">
-                    90 days
-                  </button>
-                  <button
-                    onClick={() => setAllDates(true)}
-                    className="col-span-2 px-3 py-2.5 text-sm bg-white border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 font-medium"
-                  >
-                    All Dates
-                  </button>
-                </div>
-
-                <div className="grid grid-cols-2 gap-2 pt-2 border-t border-gray-200">
-                  <button
-                    onClick={() => setStatusFilter("Pending Approval")}
-                    className={`px-3 py-2.5 text-sm rounded-lg font-medium ${statusFilter === "Pending Approval" ? "bg-orange-500 text-white shadow-sm" : "bg-orange-100 text-orange-700 hover:bg-orange-200"
-                      } `}
-                  >
-                    Pending
-                  </button>
-                  <button
-                    onClick={() => setStatusFilter("All")}
-                    className={`px-3 py-2.5 text-sm rounded-lg font-medium ${statusFilter === "All" ? "bg-gray-700 text-white shadow-sm" : "bg-gray-100 text-gray-700 hover:bg-gray-200"
-                      } `}
-                  >
-                    All
-                  </button>
-                </div>
+            {/* Search row — always visible */}
+            <div className="flex items-center gap-2">
+              <div className="relative flex-1">
+                <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-400" />
+                <input
+                  value={search}
+                  onChange={(e) => setSearch(e.target.value)}
+                  placeholder={mobile.isMobile ? "Search patient..." : "Search by patient, order ID, or patient ID…"}
+                  className={`w-full pl-10 pr-4 ${mobile.isMobile ? "py-2.5 text-base" : "py-2"} border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 shadow-sm transition-all`}
+                />
               </div>
-            ) : (
-              <div className="pt-2 border-t border-gray-100">
-                <div className="flex items-center gap-2 mb-2">
-                  <Calendar className="h-4 w-4 text-gray-600" />
-                  <span className="text-sm font-medium text-gray-700">Date Range:</span>
-                  <button
-                    onClick={() => setAllDates(!allDates)}
-                    className={`ml-2 px-2 py-0.5 text-xs rounded border ${allDates ? "bg-blue-50 border-blue-200 text-blue-700" : "bg-white border-gray-200 text-gray-600"} `}
+              <button
+                onClick={() => setFiltersOpen((o) => !o)}
+                className={`flex items-center gap-1.5 px-3 py-2 rounded-lg border text-sm font-medium transition-colors ${filtersOpen ? "bg-blue-50 border-blue-300 text-blue-700" : "bg-white border-gray-300 text-gray-600 hover:bg-gray-50"}`}
+              >
+                <Filter className="h-4 w-4" />
+                {!mobile.isMobile && "Filters"}
+                {(statusFilter !== "All" || doctorFilter !== "All" || allDates) && (
+                  <span className="ml-0.5 bg-blue-500 text-white text-xs rounded-full w-4 h-4 flex items-center justify-center leading-none">
+                    {[statusFilter !== "All", doctorFilter !== "All", allDates].filter(Boolean).length}
+                  </span>
+                )}
+              </button>
+            </div>
+
+            {/* Collapsible filters */}
+            {filtersOpen && (
+              <div className="flex flex-col gap-3 pt-1 border-t border-gray-100">
+                <div className="flex gap-2 flex-wrap">
+                  <select
+                    value={statusFilter}
+                    onChange={(e) => setStatusFilter(e.target.value as any)}
+                    className={`flex-1 min-w-[140px] ${mobile.isMobile ? "px-3 py-2.5 text-base" : "px-3 py-2"} border border-gray-300 rounded-lg bg-white font-medium shadow-sm focus:border-blue-500 focus:ring-2 focus:ring-blue-200`}
                   >
-                    {allDates ? "All Dates ON" : "All Dates OFF"}
-                  </button>
+                    {["All", "Order Created", "Sample Collection", "In Progress", "Pending Approval", "Completed", "Delivered"].map((s) => (
+                      <option key={s} value={s}>
+                        {s}
+                      </option>
+                    ))}
+                  </select>
+
+                  <select
+                    value={doctorFilter}
+                    onChange={(e) => setDoctorFilter(e.target.value)}
+                    className={`flex-1 min-w-[140px] ${mobile.isMobile ? "px-3 py-2.5 text-base" : "px-3 py-2"} border border-gray-300 rounded-lg bg-white font-medium shadow-sm focus:border-blue-500 focus:ring-2 focus:ring-blue-200`}
+                  >
+                    <option value="All">All Ref By</option>
+                    {uniqueDoctors.map((doc) => (
+                      <option key={doc} value={doc}>{doc}</option>
+                    ))}
+                  </select>
+
+                  {doctorFilter !== "All" && (
+                    <button
+                      onClick={() => setDoctorFilter("All")}
+                      className="px-3 py-1.5 text-xs bg-blue-100 text-blue-700 rounded-lg border border-blue-200 hover:bg-blue-200 font-medium whitespace-nowrap"
+                    >
+                      ✕ {doctorFilter}
+                    </button>
+                  )}
                 </div>
 
-                {!allDates && (
-                  <>
-                    <div className="flex gap-2 mb-2">
-                      <div className="flex-1">
-                        <label className="text-sm text-gray-600 block mb-1">From:</label>
-                        <input
-                          type="date"
-                          value={dateFrom}
-                          onChange={(e) => {
-                            setAllDates(false);
-                            setDateFrom(e.target.value);
-                          }}
-                          className="w-full px-3 py-1.5 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500"
-                        />
-                      </div>
+                {/* Date Range */}
+                {mobile.isMobile ? (
+                  <div className="bg-gradient-to-br from-gray-50 to-blue-50 rounded-xl p-4 space-y-4 border border-gray-200">
+                    <h3 className="text-base font-bold text-gray-900">Date Range:</h3>
 
-                      <div className="flex-1">
-                        <label className="text-sm text-gray-600 block mb-1">To:</label>
-                        <input
-                          type="date"
-                          value={dateTo}
-                          onChange={(e) => {
-                            setAllDates(false);
-                            setDateTo(e.target.value);
-                          }}
-                          className="w-full px-3 py-1.5 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500"
-                        />
+                    {!allDates && (
+                      <div className="space-y-2">
+                        <div className="flex items-center gap-2">
+                          <label className="text-sm font-medium text-gray-600 w-16">From:</label>
+                          <input
+                            type="date"
+                            value={dateFrom}
+                            onChange={(e) => {
+                              setAllDates(false);
+                              setDateFrom(e.target.value);
+                            }}
+                            className="flex-1 px-3 py-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 bg-white"
+                          />
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <label className="text-sm font-medium text-gray-600 w-16">To:</label>
+                          <input
+                            type="date"
+                            value={dateTo}
+                            onChange={(e) => {
+                              setAllDates(false);
+                              setDateTo(e.target.value);
+                            }}
+                            className="flex-1 px-3 py-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 bg-white"
+                          />
+                        </div>
                       </div>
-                    </div>
+                    )}
 
-                    <div className="flex flex-wrap gap-1">
-                      <button onClick={setToday} className="px-3 py-1 text-sm bg-blue-100 text-blue-700 rounded hover:bg-blue-200">
+                    <div className="grid grid-cols-2 gap-2">
+                      <button onClick={setToday} className="px-3 py-2.5 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700 font-medium shadow-sm">
                         Today
                       </button>
-                      <button onClick={() => setDateRange(7)} className="px-3 py-1 text-sm bg-gray-100 text-gray-700 rounded hover:bg-gray-200">
+                      <button onClick={() => setDateRange(7)} className="px-3 py-2.5 text-sm bg-white border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 font-medium">
                         7 days
                       </button>
-                      <button onClick={() => setDateRange(30)} className="px-3 py-1 text-sm bg-gray-100 text-gray-700 rounded hover:bg-gray-200">
+                      <button onClick={() => setDateRange(30)} className="px-3 py-2.5 text-sm bg-white border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 font-medium">
                         30 days
                       </button>
-                      <button onClick={() => setDateRange(90)} className="px-3 py-1 text-sm bg-gray-100 text-gray-700 rounded hover:bg-gray-200">
+                      <button onClick={() => setDateRange(90)} className="px-3 py-2.5 text-sm bg-white border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 font-medium">
                         90 days
                       </button>
+                      <button
+                        onClick={() => setAllDates(true)}
+                        className="col-span-2 px-3 py-2.5 text-sm bg-white border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 font-medium"
+                      >
+                        All Dates
+                      </button>
                     </div>
-                  </>
+
+                    <div className="grid grid-cols-2 gap-2 pt-2 border-t border-gray-200">
+                      <button
+                        onClick={() => setStatusFilter("Pending Approval")}
+                        className={`px-3 py-2.5 text-sm rounded-lg font-medium ${statusFilter === "Pending Approval" ? "bg-orange-500 text-white shadow-sm" : "bg-orange-100 text-orange-700 hover:bg-orange-200"} `}
+                      >
+                        Pending
+                      </button>
+                      <button
+                        onClick={() => setStatusFilter("All")}
+                        className={`px-3 py-2.5 text-sm rounded-lg font-medium ${statusFilter === "All" ? "bg-gray-700 text-white shadow-sm" : "bg-gray-100 text-gray-700 hover:bg-gray-200"} `}
+                      >
+                        All
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="pt-2 border-t border-gray-100">
+                    <div className="flex items-center gap-2 mb-2">
+                      <Calendar className="h-4 w-4 text-gray-600" />
+                      <span className="text-sm font-medium text-gray-700">Date Range:</span>
+                      <button
+                        onClick={() => setAllDates(!allDates)}
+                        className={`ml-2 px-2 py-0.5 text-xs rounded border ${allDates ? "bg-blue-50 border-blue-200 text-blue-700" : "bg-white border-gray-200 text-gray-600"} `}
+                      >
+                        {allDates ? "All Dates ON" : "All Dates OFF"}
+                      </button>
+                    </div>
+
+                    {!allDates && (
+                      <>
+                        <div className="flex gap-2 mb-2">
+                          <div className="flex-1">
+                            <label className="text-sm text-gray-600 block mb-1">From:</label>
+                            <input
+                              type="date"
+                              value={dateFrom}
+                              onChange={(e) => {
+                                setAllDates(false);
+                                setDateFrom(e.target.value);
+                              }}
+                              className="w-full px-3 py-1.5 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500"
+                            />
+                          </div>
+
+                          <div className="flex-1">
+                            <label className="text-sm text-gray-600 block mb-1">To:</label>
+                            <input
+                              type="date"
+                              value={dateTo}
+                              onChange={(e) => {
+                                setAllDates(false);
+                                setDateTo(e.target.value);
+                              }}
+                              className="w-full px-3 py-1.5 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500"
+                            />
+                          </div>
+                        </div>
+
+                        <div className="flex flex-wrap gap-1">
+                          <button onClick={setToday} className="px-3 py-1 text-sm bg-blue-100 text-blue-700 rounded hover:bg-blue-200">
+                            Today
+                          </button>
+                          <button onClick={() => setDateRange(7)} className="px-3 py-1 text-sm bg-gray-100 text-gray-700 rounded hover:bg-gray-200">
+                            7 days
+                          </button>
+                          <button onClick={() => setDateRange(30)} className="px-3 py-1 text-sm bg-gray-100 text-gray-700 rounded hover:bg-gray-200">
+                            30 days
+                          </button>
+                          <button onClick={() => setDateRange(90)} className="px-3 py-1 text-sm bg-gray-100 text-gray-700 rounded hover:bg-gray-200">
+                            90 days
+                          </button>
+                        </div>
+                      </>
+                    )}
+                  </div>
                 )}
               </div>
             )}
@@ -2425,18 +2489,31 @@ id,
                                 </button>
 
                                 {o.billing_status === "billed" && (
-                                  <button
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      handleSendInvoice(o);
-                                    }}
-                                    disabled={!!isSendingInvoice}
-                                    className="inline-flex items-center justify-center px-3 py-1.5 text-sm font-medium rounded-lg text-white bg-purple-600 hover:bg-purple-700 transition-colors"
-                                    title="Generate & Send Invoice via WhatsApp"
-                                  >
-                                    <Receipt className="h-4 w-4 mr-1.5" />
-                                    {isSendingInvoice === o.id ? "..." : "Invoice"}
-                                  </button>
+                                  <>
+                                    <button
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        handlePrintInvoice(o);
+                                      }}
+                                      className="inline-flex items-center justify-center px-3 py-1.5 text-sm font-medium rounded-lg text-white bg-indigo-600 hover:bg-indigo-700 transition-colors"
+                                      title="Print Invoice"
+                                    >
+                                      <Printer className="h-4 w-4 mr-1.5" />
+                                      Print
+                                    </button>
+                                    <button
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        handleSendInvoice(o);
+                                      }}
+                                      disabled={!!isSendingInvoice}
+                                      className="inline-flex items-center justify-center px-3 py-1.5 text-sm font-medium rounded-lg text-white bg-purple-600 hover:bg-purple-700 transition-colors"
+                                      title="Generate & Send Invoice via WhatsApp"
+                                    >
+                                      <Receipt className="h-4 w-4 mr-1.5" />
+                                      {isSendingInvoice === o.id ? "..." : "Invoice"}
+                                    </button>
+                                  </>
                                 )}
 
 

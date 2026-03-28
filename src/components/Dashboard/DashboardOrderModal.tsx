@@ -205,6 +205,24 @@ const DashboardOrderModal: React.FC<DashboardOrderModalProps> = ({
   const [showSendReport, setShowSendReport] = useState(false);
   const [lastGeneratedPdf, setLastGeneratedPdf] = useState<string | null>(order.report_url || null);
 
+  // Extra Charges (Lab Billing Items)
+  const [orderBillingItems, setOrderBillingItems] = useState<Array<{
+    id: string;
+    name: string;
+    amount: number;
+    notes: string | null;
+    is_shareable_with_doctor: boolean;
+    is_shareable_with_phlebotomist: boolean;
+    is_invoiced: boolean;
+    lab_billing_item_type_id: string | null;
+  }>>([]);
+  const [billingItemTypes, setBillingItemTypes] = useState<Array<{ id: string; name: string; default_amount: number; is_shareable_with_doctor: boolean; is_shareable_with_phlebotomist: boolean }>>([]);
+  const [showAddChargeDropdown, setShowAddChargeDropdown] = useState(false);
+  const [addingCharge, setAddingCharge] = useState(false);
+  const [customChargeName, setCustomChargeName] = useState('');
+  const [customChargeAmount, setCustomChargeAmount] = useState('');
+  const [selectedChargeTypeId, setSelectedChargeTypeId] = useState<string>('');
+
   // Discount State
   const [invoiceDiscount, setInvoiceDiscount] = useState<{
     total_discount: number;
@@ -266,6 +284,92 @@ const DashboardOrderModal: React.FC<DashboardOrderModalProps> = ({
 
     fetchInvoiceDiscount();
   }, [order.invoice_id, invoiceRefreshTrigger]);
+
+  // Load order billing items (extra charges) and item type catalog.
+  // order.total_amount = tests + collection ONLY (charges are always separate in order_billing_items).
+  // currentTotal = order.total_amount + sum(all billing items).
+  // currentDue   = currentTotal - paid_amount (when no invoice), or invoice-based due otherwise.
+  useEffect(() => {
+    if (!labId) return;
+    const load = async () => {
+      const [{ data: items }, { data: types }] = await Promise.all([
+        supabase
+          .from('order_billing_items')
+          .select('id, name, amount, notes, is_shareable_with_doctor, is_shareable_with_phlebotomist, is_invoiced, lab_billing_item_type_id')
+          .eq('order_id', order.id)
+          .order('created_at'),
+        supabase
+          .from('lab_billing_item_types')
+          .select('id, name, default_amount, is_shareable_with_doctor, is_shareable_with_phlebotomist')
+          .eq('lab_id', labId)
+          .eq('is_active', true)
+          .order('name'),
+      ]);
+      const chargesList = items || [];
+      setOrderBillingItems(chargesList);
+      setBillingItemTypes(types || []);
+
+      // Recalculate totals: order.total_amount is tests-only; charges are always additive
+      const chargesTotal = chargesList.reduce((s: number, i: any) => s + (i.amount || 0), 0);
+      setCurrentTotal((order.total_amount || 0) + chargesTotal);
+      setCurrentDue(Math.max(0, (order.total_amount || 0) + chargesTotal - (order.paid_amount || 0)));
+    };
+    load();
+  }, [labId, order.id, invoiceRefreshTrigger]);
+
+  // Helper: recompute and persist totals after charges change
+  const recomputeTotalsFromItems = (items: typeof orderBillingItems) => {
+    const chargesTotal = items.reduce((s, i) => s + (i.amount || 0), 0);
+    const newTotal = (order.total_amount || 0) + chargesTotal;
+    const newDue = Math.max(0, newTotal - (order.paid_amount || 0));
+    setCurrentTotal(newTotal);
+    setCurrentDue(newDue);
+  };
+
+  const handleSelectChargeType = (typeId: string) => {
+    const t = billingItemTypes.find(x => x.id === typeId);
+    if (!t) return;
+    setSelectedChargeTypeId(typeId);
+    setCustomChargeName(t.name);
+    setCustomChargeAmount(String(t.default_amount));
+  };
+
+  const handleAddCharge = async () => {
+    if (!labId || !customChargeName.trim() || !customChargeAmount) return;
+    setAddingCharge(true);
+    const chosenType = billingItemTypes.find(x => x.id === selectedChargeTypeId);
+    await supabase.from('order_billing_items').insert({
+      lab_id: labId,
+      order_id: order.id,
+      lab_billing_item_type_id: selectedChargeTypeId || null,
+      name: customChargeName.trim(),
+      amount: Number(customChargeAmount) || 0,
+      is_shareable_with_doctor: chosenType?.is_shareable_with_doctor ?? false,
+      is_shareable_with_phlebotomist: chosenType?.is_shareable_with_phlebotomist ?? false,
+      is_invoiced: false,
+    });
+    // Reload from DB to get accurate list (including existing items)
+    const { data: items } = await supabase
+      .from('order_billing_items')
+      .select('id, name, amount, notes, is_shareable_with_doctor, is_shareable_with_phlebotomist, is_invoiced, lab_billing_item_type_id')
+      .eq('order_id', order.id)
+      .order('created_at');
+    const chargesList = items || [];
+    setOrderBillingItems(chargesList);
+    recomputeTotalsFromItems(chargesList);
+    setCustomChargeName('');
+    setCustomChargeAmount('');
+    setSelectedChargeTypeId('');
+    setShowAddChargeDropdown(false);
+    setAddingCharge(false);
+  };
+
+  const handleRemoveCharge = async (chargeId: string) => {
+    await supabase.from('order_billing_items').delete().eq('id', chargeId);
+    const remaining = orderBillingItems.filter(i => i.id !== chargeId);
+    setOrderBillingItems(remaining);
+    recomputeTotalsFromItems(remaining);
+  };
 
   // Fetch available tests when modal opens
   useEffect(() => {
@@ -1207,7 +1311,11 @@ const DashboardOrderModal: React.FC<DashboardOrderModalProps> = ({
                     </div>
                     <div className="mt-3 flex flex-wrap gap-2">
                       {order.panels && order.panels.length > 0 ? (
-                        order.panels.map((p, idx) => (
+                        Array.from(
+                          new Map(
+                            order.panels.map(p => [p.sample_type || 'Blood', p])
+                          ).values()
+                        ).map((p, idx) => (
                           <div key={idx} className="transform hover:scale-105 transition-transform">
                             <SampleTypeIndicator
                               sampleType={p.sample_type || 'Blood'}
@@ -1532,13 +1640,116 @@ const DashboardOrderModal: React.FC<DashboardOrderModalProps> = ({
                   </h3>
 
                   <div className="space-y-3 mb-5">
-                    {/* Subtotal (before discount) */}
+                    {/* Subtotal row — always show tests-only amount; charges are always shown separately */}
                     <div className="flex justify-between items-center p-2 rounded hover:bg-gray-50 transition-colors">
-                      <span className="text-sm text-gray-600 font-medium">Subtotal</span>
+                      <span className="text-sm text-gray-600 font-medium">
+                        Tests Subtotal
+                      </span>
                       <span className="font-bold text-gray-900 text-base">
-                        ₹{(invoiceDiscount?.subtotal || currentTotal || 0).toLocaleString()}
+                        ₹{(order.total_amount || 0).toLocaleString()}
                       </span>
                     </div>
+
+                    {/* Extra Charges Section */}
+                    {orderBillingItems.length > 0 && (
+                      <div className="bg-amber-50 border border-amber-100 rounded-lg p-3 space-y-1.5">
+                        <div className="flex justify-between items-center mb-1">
+                          <span className="text-xs font-semibold text-amber-800 uppercase tracking-wide">Extra Charges</span>
+                          <span className="text-xs font-bold text-amber-800">+₹{orderBillingItems.reduce((s, c) => s + c.amount, 0).toLocaleString()}</span>
+                        </div>
+                        {orderBillingItems.map(charge => (
+                          <div key={charge.id} className="flex items-center justify-between text-xs">
+                            <div className="flex items-center gap-1.5 min-w-0">
+                              <span className="text-amber-700 truncate">{charge.name}</span>
+                              {charge.is_invoiced && (
+                                <span className="text-green-600 bg-green-50 px-1.5 py-0.5 rounded text-[10px] font-medium flex-shrink-0">Invoiced</span>
+                              )}
+                              {charge.is_shareable_with_doctor && (
+                                <span title="Shared with doctor" className="text-blue-500 flex-shrink-0">👨‍⚕️</span>
+                              )}
+                              {charge.is_shareable_with_phlebotomist && (
+                                <span title="Shared with phlebotomist" className="text-orange-500 flex-shrink-0">🚴</span>
+                              )}
+                            </div>
+                            <div className="flex items-center gap-1 flex-shrink-0">
+                              <span className="font-medium text-amber-800">₹{charge.amount.toLocaleString()}</span>
+                              {!charge.is_invoiced && (
+                                <button
+                                  onClick={() => handleRemoveCharge(charge.id)}
+                                  className="text-red-400 hover:text-red-600 transition-colors ml-1"
+                                  title="Remove charge"
+                                >
+                                  <X className="h-3 w-3" />
+                                </button>
+                              )}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+
+                    {/* Add Charge button (only when not fully billed) */}
+                    {order.billing_status !== 'billed' && (
+                      <div className="relative">
+                        {!showAddChargeDropdown ? (
+                          <button
+                            onClick={() => setShowAddChargeDropdown(true)}
+                            className="w-full flex items-center justify-center gap-1.5 px-3 py-1.5 text-xs text-amber-700 bg-amber-50 border border-dashed border-amber-300 rounded-lg hover:bg-amber-100 transition-colors"
+                          >
+                            <Plus className="h-3.5 w-3.5" />
+                            Add Billing Item
+                          </button>
+                        ) : (
+                          <div className="border border-amber-200 bg-amber-50 rounded-lg p-3 space-y-2">
+                            <div>
+                              <label className="block text-xs text-gray-600 mb-1">Select type or enter custom</label>
+                              <select
+                                value={selectedChargeTypeId}
+                                onChange={e => handleSelectChargeType(e.target.value)}
+                                className="w-full px-2 py-1.5 text-xs border border-gray-300 rounded focus:outline-none focus:ring-1 focus:ring-amber-400"
+                              >
+                                <option value="">— Custom charge —</option>
+                                {billingItemTypes.map(t => (
+                                  <option key={t.id} value={t.id}>{t.name} (₹{t.default_amount})</option>
+                                ))}
+                              </select>
+                            </div>
+                            <div className="flex gap-2">
+                              <input
+                                type="text"
+                                placeholder="Charge name"
+                                value={customChargeName}
+                                onChange={e => setCustomChargeName(e.target.value)}
+                                className="flex-1 px-2 py-1.5 text-xs border border-gray-300 rounded focus:outline-none focus:ring-1 focus:ring-amber-400"
+                              />
+                              <input
+                                type="number"
+                                placeholder="₹ Amount"
+                                value={customChargeAmount}
+                                onChange={e => setCustomChargeAmount(e.target.value)}
+                                className="w-24 px-2 py-1.5 text-xs border border-gray-300 rounded focus:outline-none focus:ring-1 focus:ring-amber-400"
+                              />
+                            </div>
+                            <div className="flex gap-2">
+                              <button
+                                onClick={handleAddCharge}
+                                disabled={addingCharge || !customChargeName.trim() || !customChargeAmount}
+                                className="flex-1 flex items-center justify-center gap-1 px-3 py-1.5 bg-amber-600 text-white text-xs font-medium rounded hover:bg-amber-700 disabled:opacity-50 transition-colors"
+                              >
+                                {addingCharge ? <Loader className="h-3 w-3 animate-spin" /> : <Plus className="h-3 w-3" />}
+                                Add
+                              </button>
+                              <button
+                                onClick={() => { setShowAddChargeDropdown(false); setCustomChargeName(''); setCustomChargeAmount(''); setSelectedChargeTypeId(''); }}
+                                className="px-3 py-1.5 text-xs text-gray-600 bg-white border border-gray-300 rounded hover:bg-gray-50 transition-colors"
+                              >
+                                Cancel
+                              </button>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    )}
 
                     {/* Discount Section - Show if invoice has discount */}
                     {invoiceDiscount && invoiceDiscount.total_discount > 0 && (

@@ -29,6 +29,7 @@ const InvoiceTemplateEditor: React.FC<InvoiceTemplateEditorProps> = ({ templateI
     gjs_html: '',
     gjs_css: '',
     page_size: 'A4' as 'A4' | 'A5' | 'Letter',
+    letterhead_space_mm: 0,
   });
 
   // Load CKEditor from CDN
@@ -189,6 +190,7 @@ const InvoiceTemplateEditor: React.FC<InvoiceTemplateEditorProps> = ({ templateI
         gjs_html: data.gjs_html || '',
         gjs_css: data.gjs_css || '',
         page_size: (data.page_size as 'A4' | 'A5' | 'Letter') || 'A4',
+        letterhead_space_mm: data.letterhead_space_mm || 0,
       });
     } catch (err: any) {
       console.error('Error loading template:', err);
@@ -207,6 +209,7 @@ const InvoiceTemplateEditor: React.FC<InvoiceTemplateEditorProps> = ({ templateI
         gjs_html: templateData.gjs_html,
         gjs_css: templateData.gjs_css,
         page_size: templateData.page_size,
+        letterhead_space_mm: templateData.letterhead_space_mm || 0,
         updated_at: new Date().toISOString(),
       });
 
@@ -414,18 +417,33 @@ const InvoiceTemplateEditor: React.FC<InvoiceTemplateEditorProps> = ({ templateI
             <span>Preview with Data</span>
           </button>
 
-          {/* Page Size selector — lives in the tab bar, right side */}
-          <div className="ml-auto flex items-center gap-2 pb-1">
-            <label className="text-xs font-medium text-gray-500 whitespace-nowrap">Page Size:</label>
-            <select
-              value={templateData.page_size}
-              onChange={(e) => setTemplateData(prev => ({ ...prev, page_size: e.target.value as 'A4' | 'A5' | 'Letter' }))}
-              className="text-sm border border-gray-300 rounded px-2 py-1 focus:outline-none focus:ring-1 focus:ring-blue-500"
-            >
-              <option value="A4">A4 — Full Page</option>
-              <option value="A5">A5 — Half Page</option>
-              <option value="Letter">Letter (US)</option>
-            </select>
+          {/* Page Size + Letterhead Space — lives in the tab bar, right side */}
+          <div className="ml-auto flex items-center gap-4 pb-1">
+            <div className="flex items-center gap-2">
+              <label className="text-xs font-medium text-gray-500 whitespace-nowrap">Letterhead Space:</label>
+              <input
+                type="number"
+                min={0}
+                max={100}
+                value={templateData.letterhead_space_mm}
+                onChange={(e) => setTemplateData(prev => ({ ...prev, letterhead_space_mm: Number(e.target.value) }))}
+                className="text-sm border border-gray-300 rounded px-2 py-1 w-16 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                title="Top margin reserved for pre-printed letterhead (mm)"
+              />
+              <span className="text-xs text-gray-400">mm</span>
+            </div>
+            <div className="flex items-center gap-2">
+              <label className="text-xs font-medium text-gray-500 whitespace-nowrap">Page Size:</label>
+              <select
+                value={templateData.page_size}
+                onChange={(e) => setTemplateData(prev => ({ ...prev, page_size: e.target.value as 'A4' | 'A5' | 'Letter' }))}
+                className="text-sm border border-gray-300 rounded px-2 py-1 focus:outline-none focus:ring-1 focus:ring-blue-500"
+              >
+                <option value="A4">A4 — Full Page</option>
+                <option value="A5">A5 — Half Page</option>
+                <option value="Letter">Letter (US)</option>
+              </select>
+            </div>
           </div>
         </div>
 

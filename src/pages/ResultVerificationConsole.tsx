@@ -830,8 +830,8 @@ const ResultVerificationConsole: React.FC = () => {
     }
   };
 
-  const unapproveAnalyte = async (rv_id: string) => {
-    if (!window.confirm("Revert this analyte back to pending? This will allow re-verification.")) return;
+  const unapproveAnalyte = async (rv_id: string, result_id: string) => {
+    if (!window.confirm("Revert this analyte back to pending? This will allow re-verification and re-entry of results.")) return;
     setBusyFor(rv_id, true);
     const { error } = await supabase
       .from("result_values")
@@ -842,9 +842,14 @@ const ResultVerificationConsole: React.FC = () => {
         verified_by: null,
       })
       .eq("id", rv_id);
-    setBusyFor(rv_id, false);
 
     if (!error) {
+      // Unlock the result so new values can be entered
+      await supabase
+        .from("results")
+        .update({ is_locked: false, locked_reason: null, locked_at: null, locked_by: null })
+        .eq("id", result_id);
+
       setRowsByResult((s) => {
         const next = { ...s };
         for (const rid in next) {
@@ -858,6 +863,7 @@ const ResultVerificationConsole: React.FC = () => {
       });
       await loadPanels();
     }
+    setBusyFor(rv_id, false);
   };
 
   const rejectAnalyte = async (rv_id: string) => {
@@ -1075,6 +1081,12 @@ const ResultVerificationConsole: React.FC = () => {
       .in("id", approvedIds);
 
     if (!error) {
+      // Unlock the result so new values can be entered
+      await supabase
+        .from("results")
+        .update({ is_locked: false, locked_reason: null, locked_at: null, locked_by: null })
+        .eq("id", row.result_id);
+
       setRowsByResult((s) => ({
         ...s,
         [row.result_id]: (s[row.result_id] || []).map((a) =>
@@ -1103,15 +1115,38 @@ const ResultVerificationConsole: React.FC = () => {
       const calcIds = calcRows.map(a => a.analyte_id);
       const srcIds  = srcRows.map(a => a.analyte_id).filter(Boolean) as string[];
 
-      const [{ data: formulas }, { data: deps }, { data: srcAnalytesData }] = await Promise.all([
-        supabase.from('analytes').select('id, formula, formula_variables').in('id', calcIds),
+      const labId = currentLabId || await database.getCurrentUserLabId();
+      const [{ data: labFormulas }, { data: rawDeps }, { data: srcAnalytesData }] = await Promise.all([
+        // Prefer lab_analytes formula over global analytes formula
+        supabase.from('lab_analytes')
+          .select('analyte_id, is_calculated, formula, formula_variables')
+          .eq('lab_id', labId!)
+          .in('analyte_id', calcIds),
         supabase.from('analyte_dependencies')
-          .select('calculated_analyte_id, source_analyte_id, variable_name')
-          .in('calculated_analyte_id', calcIds),
+          .select('calculated_analyte_id, source_analyte_id, variable_name, lab_id')
+          .in('calculated_analyte_id', calcIds)
+          .or(`lab_id.eq.${labId},lab_id.is.null`),
         srcIds.length > 0
           ? supabase.from('analytes').select('id, name, code').in('id', srcIds)
           : Promise.resolve({ data: [] as any[] }),
       ]);
+      // Fall back to global analytes formula for any analyte not in lab_analytes
+      const labFormulaMap = new Map((labFormulas || []).map((r: any) => [r.analyte_id, r]));
+      const globalFormulasNeeded = calcIds.filter(id => !labFormulaMap.has(id));
+      if (globalFormulasNeeded.length > 0) {
+        const { data: globalFormulas } = await supabase.from('analytes').select('id, formula, formula_variables').in('id', globalFormulasNeeded);
+        (globalFormulas || []).forEach((r: any) => labFormulaMap.set(r.id, { analyte_id: r.id, ...r }));
+      }
+      // Remap to match shape expected downstream ({ id, formula, formula_variables })
+      const formulas = Array.from(labFormulaMap.values()).map((r: any) => ({ id: r.analyte_id ?? r.id, formula: r.formula, formula_variables: r.formula_variables }));
+      // Deduplicate deps: prefer lab-specific over global
+      const depSeen = new Set<string>();
+      const deps: { calculated_analyte_id: string; source_analyte_id: string; variable_name: string }[] = [];
+      const depsSorted = [...(rawDeps || [])].sort((a: any, b: any) => (a.lab_id ? -1 : 1) - (b.lab_id ? -1 : 1));
+      for (const row of depsSorted as any[]) {
+        const key = `${row.calculated_analyte_id}:${row.variable_name}`;
+        if (!depSeen.has(key)) { depSeen.add(key); deps.push(row); }
+      }
 
       // Build lookup: analyte_id / param name / code → numeric value
       const valueLookup = new Map<string, number>();
@@ -1179,7 +1214,7 @@ const ResultVerificationConsole: React.FC = () => {
         return;
       }
 
-      await Promise.all(updates.map(upd =>
+      const patchResults = await Promise.all(updates.map(upd =>
         supabase.from('result_values').update({
           value: upd.value,
           calculation_inputs: upd.inputs,
@@ -1189,13 +1224,29 @@ const ResultVerificationConsole: React.FC = () => {
           verify_note: 'Recalculated by verifier',
           verified_at: null,
           verified_by: null,
-        }).eq('id', upd.id)
+        }).eq('id', upd.id).select('id, value')
       ));
+
+      const firstError = patchResults.find(r => r.error);
+      if (firstError?.error) {
+        alert(`Recalculate failed: ${firstError.error.message}`);
+        return;
+      }
+
+      // Only update rows that were confirmed saved by the DB response
+      const savedIds = new Set(
+        patchResults.flatMap(r => (r.data || []).map((d: any) => d.id as string))
+      );
+
+      if (savedIds.size === 0) {
+        alert('Recalculate: no rows were updated — check permissions or verify the result is not locked/approved.');
+        return;
+      }
 
       setRowsByResult(s => ({
         ...s,
         [row.result_id]: (s[row.result_id] || []).map(a => {
-          const upd = updates.find(u => u.id === a.id);
+          const upd = updates.find(u => u.id === a.id && savedIds.has(a.id));
           if (!upd) return a;
           return {
             ...a,
@@ -1210,6 +1261,7 @@ const ResultVerificationConsole: React.FC = () => {
           };
         }),
       }));
+      await loadPanels();
     } finally {
       setRecalculating(prev => ({ ...prev, [row.result_id]: false }));
     }
@@ -1536,7 +1588,7 @@ const ResultVerificationConsole: React.FC = () => {
                   {isAdmin && (
                     <button
                       disabled={isBusy}
-                      onClick={() => unapproveAnalyte(a.id)}
+                      onClick={() => unapproveAnalyte(a.id, a.result_id)}
                       className="inline-flex items-center px-2.5 py-1.5 rounded-lg text-xs font-semibold bg-gradient-to-r from-orange-100 to-amber-100 text-orange-700 hover:from-orange-200 hover:to-amber-200 transition-all duration-200 shadow-sm disabled:opacity-50"
                       title="Admin: Revert to pending without editing"
                     >

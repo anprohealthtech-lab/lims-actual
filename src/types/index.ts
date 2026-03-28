@@ -314,6 +314,31 @@ export interface Payment {
   created_at: string;
 }
 
+export interface PriceMaster {
+  id: string;
+  lab_id: string;
+  name: string;
+  description?: string;
+  is_active: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface PriceMasterItem {
+  id: string;
+  price_master_id: string;
+  test_group_id: string;
+  price: number;
+  created_at: string;
+  updated_at: string;
+  // joined
+  test_group?: {
+    name: string;
+    code: string;
+    price: number; // base price
+  };
+}
+
 export interface Account {
   id: string;
   lab_id: string;
@@ -331,6 +356,7 @@ export interface Account {
   payment_terms: number; // days
   notes?: string;
   is_active: boolean;
+  price_master_id?: string | null;
   created_at: string;
   updated_at: string;
 }

@@ -2238,6 +2238,9 @@ function generateBasicDefaultTemplateHtml(
   line-height: 1.32;
   color: #000;
   font-family: Arial, Helvetica, sans-serif;
+  display: flex;
+  flex-direction: column;
+  min-height: 780px; /* ≈ A4 body height minus default top/bottom margins (180px + 150px) */
 }
 
 .basic-report-template table {
@@ -2487,8 +2490,8 @@ ${flagSymbol === "before" ? `
 }
 
 .basic-report-template .report-footer {
-  margin-top: 20px !important;
-  padding-top: 8px !important;
+  margin-top: auto !important;  /* pushes footer to bottom of available page space */
+  padding-top: 30px !important; /* minimum breathing room above footer */
   display: flex !important;
   justify-content: space-between !important;
   align-items: flex-end !important;
@@ -6783,6 +6786,8 @@ serve(async (req) => {
       let compactPrintPlan: CompactPrintPlan | null = null;
       let orderedGroupIdsForPrint = [...contextTestGroupIds];
       let orderedAnalytesByGroupForPrint = analytesByGroup;
+      // Map of groupId → printOrder, used by the render loop to suppress page breaks between equal-priority groups
+      const printOrderByGroupId = new Map<string, number>();
 
       if (testGroupIdsToFetch.length > 0) {
         const descriptorById = new Map<string, CompactPlanGroupDescriptor>();
@@ -6868,6 +6873,11 @@ serve(async (req) => {
             hasImages: false,
             hasLongText: analytes.some((item: any) => String(item?.value || "").length > 48),
           });
+        }
+
+        // Populate outer-scope map so the render loop can read printOrder per group
+        for (const [id, desc] of descriptorById.entries()) {
+          printOrderByGroupId.set(id, desc.printOrder);
         }
 
         const descriptors = [...descriptorById.values()].sort((a, b) => {
@@ -7278,6 +7288,8 @@ serve(async (req) => {
           : [...analytesByGroup.keys()];
         console.log(`🔀 Groups to render: ${JSON.stringify(groupsToRender)}`);
 
+        // Track previous group's printOrder to suppress page breaks between equal-priority groups
+        let prevRenderedPrintOrder: number | null = null;
         for (const testGroupId of groupsToRender) {
           // Get analytes for this group (may be empty if grouping failed)
           let groupAnalytes = analytesByGroup.get(testGroupId) || [];
@@ -7436,24 +7448,31 @@ serve(async (req) => {
             );
           }
 
-          // Add separator
+          // Add separator — skip page break when this group shares printOrder with the previous group
           const testName = testGroupNames.get(testGroupId) ||
             groupAnalytes[0]?.test_name || groupTemplate?.template_name ||
             `Test Group ${renderedSections.length + 1}`;
+          const currentPrintOrder = printOrderByGroupId.get(testGroupId) ?? 999;
+          // samePageGroup=true only when groups share an EXPLICITLY configured non-zero
+          // print_order. printOrder=0 is the default (unset) value — treat each group
+          // independently so they always get their own page.
+          const samePageGroup = renderedSections.length > 0 &&
+            prevRenderedPrintOrder !== null &&
+            currentPrintOrder !== 999 &&
+            currentPrintOrder !== 0 &&
+            currentPrintOrder === prevRenderedPrintOrder;
+          prevRenderedPrintOrder = currentPrintOrder;
           const sectionHtml = `
-          <div class="test-group-section" data-test-group-id="${testGroupId}">
-            ${
-            renderedSections.length > 0
-              ? `
-              <div class="test-group-separator" style="page-break-before: always;"></div>
-            `
+          <div class="test-group-section" data-test-group-id="${testGroupId}" ${
+            renderedSections.length > 0 && !samePageGroup
+              ? 'style="page-break-before: always; break-before: page;"'
               : ""
-          }
+          }>
             ${bodyContent}
           </div>
         `;
           renderedSections.push(sectionHtml);
-          console.log(`✅ Rendered section for ${testGroupId}`);
+          console.log(`✅ Rendered section for ${testGroupId} (printOrder=${currentPrintOrder}, samePageGroup=${samePageGroup})`);
         }
 
         if (renderedSections.length === 0) {
@@ -8119,20 +8138,27 @@ serve(async (req) => {
           `Print_${filename}`,
           PDFCO_API_KEY!,
           {
-            headerHtml: "",
-            footerHtml: "",
-            // Print version has no header/footer but always keeps minimum 20px margins
-            // so there is space to print on physical letterhead paper.
-            // NOTE: letterhead e-copy uses 0px PDF.co margins (CSS spacers handle spacing),
-            // so we must not inherit those 0px values here — enforce a floor of 20px.
-            margins: `${Math.max(pdfSettings?.margins?.top ?? 20, 20)}px ${Math.max(pdfSettings?.margins?.right ?? 20, 20)}px ${Math.max(pdfSettings?.margins?.bottom ?? 20, 20)}px ${Math.max(pdfSettings?.margins?.left ?? 20, 20)}px`,
-            headerHeight: "0px",
-            footerHeight: "0px",
+            // When Header & Footer mode is on, compact print also respects the configured header/footer
+            headerHtml: isHeaderFooterMode ? headerFooterHtml.headerHtml : "",
+            footerHtml: isHeaderFooterMode ? headerFooterHtml.footerHtml : "",
+            // Header/footer mode: use configured margins directly.
+            // Letterhead mode: enforce minimum 20px so physical letterhead paper has space at top.
+            margins: isHeaderFooterMode
+              ? (pdfSettings?.margins
+                ? `${pdfSettings.margins.top}px ${pdfSettings.margins.right}px ${pdfSettings.margins.bottom}px ${pdfSettings.margins.left}px`
+                : DEFAULT_PDF_SETTINGS.margins)
+              : `${Math.max(pdfSettings?.margins?.top ?? 20, 20)}px ${Math.max(pdfSettings?.margins?.right ?? 20, 20)}px ${Math.max(pdfSettings?.margins?.bottom ?? 20, 20)}px ${Math.max(pdfSettings?.margins?.left ?? 20, 20)}px`,
+            headerHeight: isHeaderFooterMode
+              ? (pdfSettings?.headerHeight ? `${pdfSettings.headerHeight}px` : DEFAULT_PDF_SETTINGS.headerHeight)
+              : "0px",
+            footerHeight: isHeaderFooterMode
+              ? (pdfSettings?.footerHeight ? `${pdfSettings.footerHeight}px` : DEFAULT_PDF_SETTINGS.footerHeight)
+              : "0px",
             scale: pdfSettings?.scale ?? DEFAULT_PDF_SETTINGS.scale,
-            displayHeaderFooter: false,
+            displayHeaderFooter: isHeaderFooterMode,
             paperSize: DEFAULT_PDF_SETTINGS.paperSize,
             mediaType: "print",
-            printBackground: false,
+            printBackground: isHeaderFooterMode,
           },
         )
         : Promise.resolve(null);

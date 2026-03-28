@@ -6815,7 +6815,7 @@ export const database = {
         // Step 2: Update analyte relationships if analytes are provided
         if (updates.analytes && Array.isArray(updates.analytes)) {
           const newAnalyteIds: string[] = updates.analytes;
-          const analyteMetadata: Record<string, { sort_order?: number; section_heading?: string }> =
+          const analyteMetadata: Record<string, { sort_order?: number; section_heading?: string; is_visible?: boolean }> =
             updates.analyteMetadata || {};
 
           // Insert new analytes first (keeps count > 0, preventing the orphan
@@ -6850,6 +6850,7 @@ export const database = {
                   .update({
                     sort_order: meta.sort_order ?? 0,
                     section_heading: meta.section_heading || null,
+                    is_visible: meta.is_visible ?? true,
                   })
                   .eq("test_group_id", id)
                   .eq("analyte_id", analyteId);
@@ -7561,7 +7562,9 @@ export const database = {
     },
 
     /**
-     * Set up all dependencies for a calculated analyte at once
+     * Set up all dependencies for a calculated analyte at once.
+     * Pass labId to store lab-specific dependencies (recommended).
+     * Omit labId only for seeding global/default dependencies.
      */
     setDependencies: async (
       calculatedAnalyteId: string,
@@ -7569,12 +7572,18 @@ export const database = {
         source_analyte_id: string;
         variable_name: string;
       }>,
+      labId?: string,
     ) => {
-      // Delete existing dependencies
-      await supabase
+      // Delete existing dependencies for this analyte scoped to the same lab
+      const deleteQuery = supabase
         .from("analyte_dependencies")
         .delete()
         .eq("calculated_analyte_id", calculatedAnalyteId);
+      if (labId) {
+        await deleteQuery.eq("lab_id", labId);
+      } else {
+        await deleteQuery.is("lab_id", null);
+      }
 
       if (dependencies.length === 0) {
         return { data: [], error: null };
@@ -7597,11 +7606,12 @@ export const database = {
         }
       }
 
-      // Insert new dependencies
+      // Insert new lab-specific dependencies
       const insertData = dependencies.map((dep) => ({
         calculated_analyte_id: calculatedAnalyteId,
         source_analyte_id: dep.source_analyte_id,
         variable_name: dep.variable_name,
+        ...(labId ? { lab_id: labId } : {}),
       }));
 
       const { data, error } = await supabase
@@ -16168,6 +16178,134 @@ Object.assign(database, {
   analytics,
   inventory,
 });
+
+// ─── Price Masters API ────────────────────────────────────────────────────────
+export const priceMasters = {
+  /** List all price master plans for the current lab */
+  getAll: async () => {
+    const lab_id = await database.getCurrentUserLabId();
+    if (!lab_id) return { data: null, error: new Error("No lab_id") };
+    const { data, error } = await supabase
+      .from("price_masters")
+      .select("*")
+      .eq("lab_id", lab_id)
+      .order("name");
+    return { data, error };
+  },
+
+  /** Get a single price master by id */
+  getById: async (id: string) => {
+    const { data, error } = await supabase
+      .from("price_masters")
+      .select("*")
+      .eq("id", id)
+      .single();
+    return { data, error };
+  },
+
+  /** Create a new price master plan */
+  create: async (payload: { name: string; description?: string; is_active?: boolean }) => {
+    const lab_id = await database.getCurrentUserLabId();
+    if (!lab_id) return { data: null, error: new Error("No lab_id") };
+    const { data, error } = await supabase
+      .from("price_masters")
+      .insert([{ ...payload, lab_id }])
+      .select()
+      .single();
+    return { data, error };
+  },
+
+  /** Update an existing price master plan */
+  update: async (id: string, payload: Partial<{ name: string; description: string; is_active: boolean }>) => {
+    const { data, error } = await supabase
+      .from("price_masters")
+      .update(payload)
+      .eq("id", id)
+      .select()
+      .single();
+    return { data, error };
+  },
+
+  /** Delete a price master plan (also cascades items) */
+  delete: async (id: string) => {
+    const { error } = await supabase.from("price_masters").delete().eq("id", id);
+    return { error };
+  },
+
+  // ── Items (test prices within a plan) ──────────────────────────────────────
+
+  /** Get all test prices for a specific plan, joined with test_group info */
+  getItems: async (priceMasterId: string) => {
+    const { data, error } = await supabase
+      .from("price_master_items")
+      .select("*, test_group:test_groups(name, code, price)")
+      .eq("price_master_id", priceMasterId)
+      .order("test_group(name)");
+    return { data, error };
+  },
+
+  /** Upsert a test price within a plan */
+  upsertItem: async (priceMasterId: string, testGroupId: string, price: number) => {
+    const { data, error } = await supabase
+      .from("price_master_items")
+      .upsert(
+        { price_master_id: priceMasterId, test_group_id: testGroupId, price, updated_at: new Date().toISOString() },
+        { onConflict: "price_master_id,test_group_id" }
+      )
+      .select()
+      .single();
+    return { data, error };
+  },
+
+  /** Remove a test price from a plan */
+  deleteItem: async (itemId: string) => {
+    const { error } = await supabase.from("price_master_items").delete().eq("id", itemId);
+    return { error };
+  },
+
+  /**
+   * Resolve the effective price for a test for a given account.
+   * Priority: price_master_items → account_prices → test_groups.price
+   */
+  getEffectivePrice: async (accountId: string, testGroupId: string): Promise<number | null> => {
+    // 1. Get the account to find price_master_id
+    const { data: account } = await supabase
+      .from("accounts")
+      .select("price_master_id")
+      .eq("id", accountId)
+      .single();
+
+    if (account?.price_master_id) {
+      const { data: item } = await supabase
+        .from("price_master_items")
+        .select("price")
+        .eq("price_master_id", account.price_master_id)
+        .eq("test_group_id", testGroupId)
+        .single();
+      if (item) return item.price;
+    }
+
+    // 2. Fall back to account_prices
+    const { data: accountPrice } = await supabase
+      .from("account_prices")
+      .select("price")
+      .eq("account_id", accountId)
+      .eq("test_group_id", testGroupId)
+      .single();
+    if (accountPrice) return accountPrice.price;
+
+    // 3. Fall back to base test price
+    const { data: tg } = await supabase
+      .from("test_groups")
+      .select("price")
+      .eq("id", testGroupId)
+      .single();
+    return tg?.price ?? null;
+  },
+};
+
+// Attach priceMasters to the database object so callers can use database.priceMasters.*
+Object.assign(database, { priceMasters });
 
 /**
  * Format patient age with correct unit abbreviation

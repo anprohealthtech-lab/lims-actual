@@ -1,10 +1,21 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { 
+import {
     Calculator, Download, Search, Calendar,
     ChevronDown, ChevronRight, Users, IndianRupee, FileText,
-    TrendingUp, AlertCircle, RefreshCw
+    TrendingUp, AlertCircle, RefreshCw, Bike, Stethoscope
 } from 'lucide-react';
 import { supabase, database } from '../utils/supabase';
+
+interface PhlebotomistVisit {
+    order_id: string;
+    order_display: string | null;
+    patient_name: string;
+    order_date: string;
+    phlebotomist_name: string | null;
+    phlebotomist_id: string | null;
+    charges: Array<{ name: string; amount: number; is_shareable_with_doctor: boolean }>;
+    total_charges: number;
+}
 
 interface Doctor {
     id: string;
@@ -56,6 +67,11 @@ const DoctorCommissionReport: React.FC = () => {
     const [expandedDoctors, setExpandedDoctors] = useState<Set<string>>(new Set());
     const [searchQuery, setSearchQuery] = useState('');
 
+    // Phlebotomist Visits tab
+    const [activeTab, setActiveTab] = useState<'doctor' | 'phlebotomist'>('doctor');
+    const [phlebotomistVisits, setPhlebotomistVisits] = useState<PhlebotomistVisit[]>([]);
+    const [phlebotomistLoading, setPhlebotomistLoading] = useState(false);
+
     useEffect(() => {
         loadDoctors();
     }, []);
@@ -73,6 +89,62 @@ const DoctorCommissionReport: React.FC = () => {
             setDoctors(data || []);
         } catch (err) {
             console.error('Error loading doctors:', err);
+        }
+    };
+
+    const loadPhlebotomistVisits = async () => {
+        setPhlebotomistLoading(true);
+        try {
+            const labId = await database.getCurrentUserLabId();
+            const { data: items } = await supabase
+                .from('order_billing_items')
+                .select(`
+                    id,
+                    order_id,
+                    name,
+                    amount,
+                    is_shareable_with_doctor,
+                    orders!inner(
+                        id,
+                        order_display,
+                        created_at,
+                        phlebotomist_id,
+                        patients(name),
+                        users!orders_phlebotomist_id_fkey(name)
+                    )
+                `)
+                .eq('is_shareable_with_phlebotomist', true)
+                .eq('lab_id', labId)
+                .gte('created_at', dateFrom)
+                .lte('created_at', dateTo + 'T23:59:59');
+
+            // Group by order
+            const orderMap = new Map<string, PhlebotomistVisit>();
+            for (const item of (items || [])) {
+                const order = (item as any).orders;
+                if (!order) continue;
+                const orderId = item.order_id;
+                if (!orderMap.has(orderId)) {
+                    orderMap.set(orderId, {
+                        order_id: orderId,
+                        order_display: order.order_display,
+                        patient_name: order.patients?.name || '—',
+                        order_date: order.created_at,
+                        phlebotomist_id: order.phlebotomist_id,
+                        phlebotomist_name: order.users?.name || null,
+                        charges: [],
+                        total_charges: 0,
+                    });
+                }
+                const visit = orderMap.get(orderId)!;
+                visit.charges.push({ name: item.name, amount: item.amount, is_shareable_with_doctor: item.is_shareable_with_doctor });
+                visit.total_charges += item.amount;
+            }
+            setPhlebotomistVisits(Array.from(orderMap.values()).sort((a, b) => b.order_date.localeCompare(a.order_date)));
+        } catch (err) {
+            console.error('Error loading phlebotomist visits:', err);
+        } finally {
+            setPhlebotomistLoading(false);
         }
     };
 
@@ -372,7 +444,25 @@ const DoctorCommissionReport: React.FC = () => {
                 <p className="text-gray-600 mt-1">Calculate doctor commissions based on sharing settings</p>
             </div>
 
-            {/* Filters */}
+            {/* Tab Switcher */}
+            <div className="flex gap-1 bg-gray-100 p-1 rounded-xl w-fit">
+                <button
+                    onClick={() => setActiveTab('doctor')}
+                    className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-colors ${activeTab === 'doctor' ? 'bg-white text-emerald-700 shadow-sm' : 'text-gray-600 hover:text-gray-800'}`}
+                >
+                    <Stethoscope className="h-4 w-4" />
+                    Doctor Commission
+                </button>
+                <button
+                    onClick={() => { setActiveTab('phlebotomist'); loadPhlebotomistVisits(); }}
+                    className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-colors ${activeTab === 'phlebotomist' ? 'bg-white text-orange-700 shadow-sm' : 'text-gray-600 hover:text-gray-800'}`}
+                >
+                    <Bike className="h-4 w-4" />
+                    Phlebotomist Visits
+                </button>
+            </div>
+
+            {/* Filters (shared for date range, hidden for phlebo tab's doctor filter) */}
             <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-6">
                 <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
                     {/* Date Range */}
@@ -402,8 +492,14 @@ const DoctorCommissionReport: React.FC = () => {
                         />
                     </div>
 
-                    {/* Doctor Selection */}
-                    <div className="md:col-span-2">
+                    {/* Doctor Selection — only for doctor tab */}
+                    {activeTab === 'phlebotomist' && (
+                        <div className="md:col-span-2 flex items-center gap-2 text-sm text-orange-700 bg-orange-50 rounded-lg px-3 py-2">
+                            <Bike className="h-4 w-4" />
+                            Date range applies to phlebotomist visits. Click Load Visits below.
+                        </div>
+                    )}
+                    <div className={`md:col-span-2 ${activeTab === 'phlebotomist' ? 'hidden' : ''}`}>
                         <label className="block text-sm font-medium text-gray-700 mb-2">
                             <Users className="h-4 w-4 inline mr-1" />
                             Doctors ({selectedDoctorIds.length} selected)
@@ -461,26 +557,34 @@ const DoctorCommissionReport: React.FC = () => {
 
                 {/* Actions */}
                 <div className="mt-4 flex items-center gap-4">
-                    <button
-                        onClick={calculateCommissions}
-                        disabled={loading || selectedDoctorIds.length === 0}
-                        className="flex items-center gap-2 px-6 py-2 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 disabled:opacity-50"
-                    >
-                        {loading ? (
-                            <RefreshCw className="h-4 w-4 animate-spin" />
-                        ) : (
-                            <Calculator className="h-4 w-4" />
-                        )}
-                        Calculate
-                    </button>
-                    
-                    {commissions.length > 0 && (
+                    {activeTab === 'doctor' ? (
+                        <>
+                            <button
+                                onClick={calculateCommissions}
+                                disabled={loading || selectedDoctorIds.length === 0}
+                                className="flex items-center gap-2 px-6 py-2 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 disabled:opacity-50"
+                            >
+                                {loading ? <RefreshCw className="h-4 w-4 animate-spin" /> : <Calculator className="h-4 w-4" />}
+                                Calculate
+                            </button>
+                            {commissions.length > 0 && (
+                                <button
+                                    onClick={handleExportCSV}
+                                    className="flex items-center gap-2 px-4 py-2 border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50"
+                                >
+                                    <Download className="h-4 w-4" />
+                                    Export CSV
+                                </button>
+                            )}
+                        </>
+                    ) : (
                         <button
-                            onClick={handleExportCSV}
-                            className="flex items-center gap-2 px-4 py-2 border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50"
+                            onClick={loadPhlebotomistVisits}
+                            disabled={phlebotomistLoading}
+                            className="flex items-center gap-2 px-6 py-2 bg-orange-500 text-white rounded-lg hover:bg-orange-600 disabled:opacity-50"
                         >
-                            <Download className="h-4 w-4" />
-                            Export CSV
+                            {phlebotomistLoading ? <RefreshCw className="h-4 w-4 animate-spin" /> : <Bike className="h-4 w-4" />}
+                            Load Visits
                         </button>
                     )}
                 </div>
@@ -621,13 +725,139 @@ const DoctorCommissionReport: React.FC = () => {
             )}
 
             {/* Empty State */}
-            {!loading && commissions.length === 0 && (
+            {activeTab === 'doctor' && !loading && commissions.length === 0 && (
                 <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-12 text-center">
                     <Calculator className="h-12 w-12 text-gray-300 mx-auto mb-4" />
                     <h3 className="text-lg font-medium text-gray-900">No Commission Data</h3>
                     <p className="text-gray-500 mt-1">
                         Select doctors and date range, then click Calculate to generate the report
                     </p>
+                </div>
+            )}
+
+            {/* Phlebotomist Visits Tab */}
+            {activeTab === 'phlebotomist' && (
+                <div className="space-y-4">
+                    <div className="flex items-center justify-between">
+                        <div>
+                            <h2 className="text-lg font-semibold text-gray-900 flex items-center gap-2">
+                                <Bike className="h-5 w-5 text-orange-500" />
+                                Phlebotomist Visits with Shareable Charges
+                            </h2>
+                            <p className="text-sm text-gray-500 mt-0.5">
+                                Orders with billing items marked as shareable with phlebotomist.
+                            </p>
+                        </div>
+                        <button
+                            onClick={loadPhlebotomistVisits}
+                            disabled={phlebotomistLoading}
+                            className="flex items-center gap-1.5 px-3 py-2 text-sm text-gray-600 bg-white border border-gray-300 rounded-lg hover:bg-gray-50"
+                        >
+                            <RefreshCw className={`h-3.5 w-3.5 ${phlebotomistLoading ? 'animate-spin' : ''}`} />
+                            Refresh
+                        </button>
+                    </div>
+
+                    {phlebotomistLoading ? (
+                        <div className="bg-white rounded-xl border p-8 flex items-center justify-center">
+                            <RefreshCw className="h-6 w-6 animate-spin text-orange-400" />
+                        </div>
+                    ) : phlebotomistVisits.length === 0 ? (
+                        <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-12 text-center">
+                            <Bike className="h-12 w-12 text-gray-300 mx-auto mb-4" />
+                            <h3 className="text-lg font-medium text-gray-900">No Visits Found</h3>
+                            <p className="text-gray-500 mt-1 text-sm">
+                                No orders in this date range have phlebotomist-shareable billing charges.
+                            </p>
+                        </div>
+                    ) : (
+                        <>
+                            {/* Summary */}
+                            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                                <div className="bg-white rounded-xl border p-5">
+                                    <p className="text-sm text-gray-500">Total Visits</p>
+                                    <p className="text-2xl font-bold text-gray-900 mt-1">{phlebotomistVisits.length}</p>
+                                </div>
+                                <div className="bg-white rounded-xl border p-5">
+                                    <p className="text-sm text-gray-500">Total Charges</p>
+                                    <p className="text-2xl font-bold text-orange-600 mt-1">
+                                        ₹{phlebotomistVisits.reduce((s, v) => s + v.total_charges, 0).toLocaleString()}
+                                    </p>
+                                </div>
+                                <div className="bg-white rounded-xl border p-5">
+                                    <p className="text-sm text-gray-500">Phlebotomists</p>
+                                    <p className="text-2xl font-bold text-gray-900 mt-1">
+                                        {new Set(phlebotomistVisits.map(v => v.phlebotomist_id || 'unassigned')).size}
+                                    </p>
+                                </div>
+                            </div>
+
+                            {/* Grouped by Phlebotomist */}
+                            {(() => {
+                                const groups = new Map<string, { name: string; visits: PhlebotomistVisit[]; total: number }>();
+                                phlebotomistVisits.forEach(v => {
+                                    const key = v.phlebotomist_id || 'unassigned';
+                                    const label = v.phlebotomist_name || 'Unassigned';
+                                    if (!groups.has(key)) groups.set(key, { name: label, visits: [], total: 0 });
+                                    const g = groups.get(key)!;
+                                    g.visits.push(v);
+                                    g.total += v.total_charges;
+                                });
+                                return Array.from(groups.entries()).map(([key, group]) => (
+                                    <div key={key} className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
+                                        <div className="bg-orange-50 border-b border-orange-100 px-5 py-3 flex items-center justify-between">
+                                            <div className="flex items-center gap-2">
+                                                <div className="w-8 h-8 bg-orange-100 rounded-full flex items-center justify-center">
+                                                    <Bike className="h-4 w-4 text-orange-600" />
+                                                </div>
+                                                <div>
+                                                    <span className="font-semibold text-orange-900">{group.name}</span>
+                                                    <span className="ml-2 text-xs text-orange-600">{group.visits.length} visits</span>
+                                                </div>
+                                            </div>
+                                            <span className="font-bold text-orange-700">₹{group.total.toLocaleString()}</span>
+                                        </div>
+                                        <table className="w-full text-sm">
+                                            <thead className="bg-gray-50 border-b">
+                                                <tr>
+                                                    <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Order</th>
+                                                    <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Patient</th>
+                                                    <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Date</th>
+                                                    <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Charges</th>
+                                                    <th className="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase">Total</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody className="divide-y divide-gray-100">
+                                                {group.visits.map(visit => (
+                                                    <tr key={visit.order_id} className="hover:bg-gray-50">
+                                                        <td className="px-4 py-2.5 font-mono text-xs text-gray-700">{visit.order_display || visit.order_id.slice(0, 8)}</td>
+                                                        <td className="px-4 py-2.5 text-gray-900">{visit.patient_name}</td>
+                                                        <td className="px-4 py-2.5 text-gray-500 text-xs">{new Date(visit.order_date).toLocaleDateString()}</td>
+                                                        <td className="px-4 py-2.5">
+                                                            <div className="space-y-0.5">
+                                                                {visit.charges.map((c, i) => (
+                                                                    <div key={i} className="flex items-center gap-1.5 text-xs">
+                                                                        <span className="text-gray-700">{c.name}</span>
+                                                                        {c.is_shareable_with_doctor && (
+                                                                            <span title="Also shared with doctor">
+                                                                                <Stethoscope className="h-3 w-3 text-blue-400" />
+                                                                            </span>
+                                                                        )}
+                                                                        <span className="text-orange-600 font-medium ml-auto">₹{c.amount.toLocaleString()}</span>
+                                                                    </div>
+                                                                ))}
+                                                            </div>
+                                                        </td>
+                                                        <td className="px-4 py-2.5 text-right font-bold text-orange-700">₹{visit.total_charges.toLocaleString()}</td>
+                                                    </tr>
+                                                ))}
+                                            </tbody>
+                                        </table>
+                                    </div>
+                                ));
+                            })()}
+                        </>
+                    )}
                 </div>
             )}
         </div>
