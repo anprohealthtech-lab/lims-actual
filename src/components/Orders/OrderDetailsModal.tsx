@@ -2625,6 +2625,17 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
     // Stores both so formula resolution works even when dep points to a different
     // copy of the same analyte (different ID, same name)
     const lookup = new Map<string, number>();
+    // Inject patient context so formulas like eGFR can use AGE / GENDER_MALE
+    const patientAge = order.patient?.age ? Number(order.patient.age) : null;
+    const patientGender = order.patient?.gender;
+    if (patientAge !== null && Number.isFinite(patientAge)) {
+      lookup.set('age', patientAge);
+    }
+    if (patientGender) {
+      lookup.set('gender_male', patientGender === 'Male' ? 1 : 0);
+      lookup.set('gender_female', patientGender === 'Female' ? 1 : 0);
+      lookup.set('gender', patientGender === 'Male' ? 1 : 0);
+    }
     for (const v of values) {
       if (v.is_calculated) continue;
       const num = Number(String(v.value ?? "").trim());
@@ -2676,7 +2687,7 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
         return { ...v, value: String(Math.round(computed * 10000) / 10000) };
       } catch { return v; }
     });
-  }, [testGroups, calcDeps]);
+  }, [testGroups, calcDeps, order]);
 
   const handleManualValueChange = React.useCallback((index: number, field: keyof ExtractedValue, value: string) => {
     setManualValues((prev) => {
@@ -3556,30 +3567,14 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
     }
   };
 
-  const TestGroupResultEntry: React.FC<{
-    testGroup: TestGroupResult;
-    entryMode: "manual" | "ai";
-  }> = ({ testGroup, entryMode }) => {
-    // ✅ Memoize expensive calculations to prevent re-renders
-    const testGroupValues = React.useMemo(() =>
-      manualValues.filter((v) => testGroup.analytes.some((a) => a.name === v.parameter)),
-      [manualValues, testGroup.analytes]
-    );
-
-    const actionableTestGroupValues = React.useMemo(
-      () => testGroupValues.filter((v) => !v.is_calculated),
-      [testGroupValues]
-    );
-
-    const completedCount = React.useMemo(() =>
-      actionableTestGroupValues.filter((v) => v.value && typeof v.value === 'string' && v.value.trim() !== "").length,
-      [actionableTestGroupValues]
-    );
-
-    const pendingCount = React.useMemo(() =>
-      actionableTestGroupValues.length - completedCount,
-      [actionableTestGroupValues.length, completedCount]
-    );
+  // Plain function (not a React component) so it is called inline and never
+  // unmounts/remounts on parent re-render, preserving input focus.
+  const renderTestGroupEntry = (testGroup: TestGroupResult, entryMode: "manual" | "ai") => {
+    const testGroupValues =
+      manualValues.filter((v) => testGroup.analytes.some((a) => a.name === v.parameter));
+    const actionableTestGroupValues = testGroupValues.filter((v) => !v.is_calculated);
+    const completedCount = actionableTestGroupValues.filter((v) => v.value && typeof v.value === 'string' && v.value.trim() !== "").length;
+    const pendingCount = actionableTestGroupValues.length - completedCount;
 
     return (
       <div className="border border-gray-200 rounded-lg p-3 sm:p-4 mb-4">
@@ -3612,6 +3607,7 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
               {/* Sample Collection Action Buttons */}
               {order.sample_collected_at ? (
                 <button
+                  type="button"
                   onClick={handleMarkSampleNotCollected}
                   disabled={updatingCollection}
                   className="px-3 py-1 text-xs bg-red-100 text-red-700 rounded hover:bg-red-200 disabled:opacity-50 disabled:cursor-not-allowed"
@@ -3633,6 +3629,7 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
                         placeholder="Select collector..."
                       />
                       <button
+                        type="button"
                         onClick={handleMarkSampleCollected}
                         disabled={updatingCollection}
                         className="px-3 py-1 text-xs bg-green-100 text-green-700 rounded hover:bg-green-200 disabled:opacity-50 disabled:cursor-not-allowed whitespace-nowrap"
@@ -3640,6 +3637,7 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
                         {updatingCollection ? 'Collecting...' : 'Confirm'}
                       </button>
                       <button
+                        type="button"
                         onClick={() => setShowPhlebotomistSelector(false)}
                         disabled={updatingCollection}
                         className="px-3 py-1 text-xs bg-gray-100 text-gray-700 rounded hover:bg-gray-200"
@@ -3649,6 +3647,7 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
                     </div>
                   ) : (
                     <button
+                      type="button"
                       onClick={handleMarkSampleCollected}
                       disabled={updatingCollection}
                       className="px-3 py-1 text-xs bg-green-100 text-green-700 rounded hover:bg-green-200 disabled:opacity-50 disabled:cursor-not-allowed"
@@ -3811,6 +3810,8 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
                           type="text"
                           value={value.value || ''}
                           onChange={(e) => handleManualValueChange(globalIndex, 'value', e.target.value)}
+                          onKeyDown={(e) => { if (e.key === 'Enter') e.preventDefault(); }}
+                          autoComplete="off"
                           placeholder="Enter value..."
                           className={`w-full px-3 py-1.5 border rounded-lg focus:outline-none focus:ring-1 focus:ring-blue-500 ${value.value && typeof value.value === 'string' && value.value.trim()
                             ? 'border-green-300 bg-green-50 text-green-800'
@@ -4925,7 +4926,11 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
                   <div className="space-y-4">
                     {testGroups
                       .filter((tg) => !selectedTestGroup || tg.test_group_id === selectedTestGroup)
-                      .map((tg) => <TestGroupResultEntry key={tg.test_group_id} testGroup={tg} entryMode={activeEntryMode} />)}
+                      .map((tg) => (
+                        <React.Fragment key={tg.test_group_id}>
+                          {renderTestGroupEntry(tg, activeEntryMode)}
+                        </React.Fragment>
+                      ))}
                   </div>
                 )}
 

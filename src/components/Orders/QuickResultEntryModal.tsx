@@ -425,6 +425,17 @@ const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, on
 
       // 2. Rebuild value lookup from all non-calculated rows
       const lookup = new Map<string, number>();
+      // Inject patient context so formulas like eGFR can use AGE / GENDER_MALE
+      const patientAge = order.patient?.age ? Number(order.patient.age) : null;
+      const patientGender = order.patient?.gender;
+      if (patientAge !== null && Number.isFinite(patientAge)) {
+        lookup.set('age', patientAge);
+      }
+      if (patientGender) {
+        lookup.set('gender_male', patientGender === 'Male' ? 1 : 0);
+        lookup.set('gender_female', patientGender === 'Female' ? 1 : 0);
+        lookup.set('gender', patientGender === 'Male' ? 1 : 0);
+      }
       for (const r of next) {
         if (r.is_calculated) continue;
         const num = toNumber(r.value);

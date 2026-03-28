@@ -5554,6 +5554,17 @@ export const database = {
           value_type,
           code,
           description,
+          is_calculated,
+          formula,
+          formula_variables,
+          formula_description,
+          is_critical,
+          normal_range_min,
+          normal_range_max,
+          ai_processing_type,
+          name,
+          unit,
+          display_name,
           analytes(*)
         `)
         .eq("lab_id", labId)
@@ -5635,6 +5646,21 @@ export const database = {
               value_type: item.value_type || analyteObj.value_type || "numeric",
               code: item.code || analyteObj.code || "",
               description: item.description || analyteObj.description || "",
+              // Prioritize lab-specific overrides for formula/calculated fields
+              is_calculated: item.is_calculated ?? analyteObj.is_calculated ?? false,
+              formula: item.formula ?? analyteObj.formula ?? null,
+              formula_variables: item.formula_variables ?? analyteObj.formula_variables ?? [],
+              formula_description: item.formula_description ?? analyteObj.formula_description ?? null,
+              // Prioritize lab-specific critical/range fields
+              is_critical: item.is_critical ?? analyteObj.is_critical ?? null,
+              normal_range_min: item.normal_range_min ?? analyteObj.normal_range_min ?? null,
+              normal_range_max: item.normal_range_max ?? analyteObj.normal_range_max ?? null,
+              // Prioritize lab-specific ai_processing_type
+              ai_processing_type: item.ai_processing_type ?? analyteObj.ai_processing_type ?? null,
+              // Prioritize lab-specific name/unit/display_name
+              name: item.name || analyteObj.name,
+              unit: item.unit || analyteObj.unit,
+              display_name: item.display_name ?? analyteObj.display_name ?? null,
             };
           }
           return null;
@@ -6259,6 +6285,10 @@ export const database = {
       normal_range_min?: number | null;
       normal_range_max?: number | null;
       ai_processing_type?: string | null;
+      is_calculated?: boolean;
+      formula?: string | null;
+      formula_variables?: string[];
+      formula_description?: string | null;
     }) => {
       const { data, error } = await supabase
         .from("lab_analytes")
