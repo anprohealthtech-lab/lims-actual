@@ -215,13 +215,108 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
 
       const [analytesRes, labsRes, tgaRes] = await Promise.all(requests);
 
-      // Fetch all linked analytes directly (bypasses lab_analytes visibility filter)
-      let linkedRes: any = null;
+      // Fetch all linked analytes with lab_analytes as source of truth.
+      // lab_analytes is always the authoritative source for test-group-linked analytes.
+      // Global analytes table is only used as fallback for fields not present in lab_analytes.
+      let allLinkedData: any[] = [];
       if (testGroup?.id) {
-        linkedRes = await supabase
-          .from('test_group_analytes')
-          .select('analyte_id, analytes!inner(id, name, unit, reference_range, category, is_active)')
-          .eq('test_group_id', testGroup.id);
+        const labId = await database.getCurrentUserLabId();
+        if (labId) {
+          // Step 1: get analyte_ids for this test group
+          const { data: tgaIds } = await supabase
+            .from('test_group_analytes')
+            .select('analyte_id')
+            .eq('test_group_id', testGroup.id);
+
+          const linkedIds = (tgaIds || []).map((r: any) => r.analyte_id).filter(Boolean);
+
+          if (linkedIds.length > 0) {
+            // Step 2: fetch from lab_analytes (source of truth) joined with global analytes for fallback fields
+            const { data: laRows } = await supabase
+              .from('lab_analytes')
+              .select(`
+                analyte_id,
+                name, unit, reference_range, method,
+                low_critical, high_critical,
+                interpretation_low, interpretation_normal, interpretation_high,
+                lab_specific_reference_range,
+                lab_specific_interpretation_low,
+                lab_specific_interpretation_normal,
+                lab_specific_interpretation_high,
+                value_type, expected_normal_values, expected_value_flag_map,
+                expected_value_codes, default_value,
+                is_calculated, formula, formula_variables, formula_description,
+                is_critical, normal_range_min, normal_range_max,
+                ai_processing_type, group_ai_mode, ai_prompt_override,
+                ref_range_knowledge, display_name, is_active,
+                analytes!inner(id, name, unit, reference_range, category, is_active, is_global, is_calculated, formula, formula_variables, formula_description)
+              `)
+              .eq('lab_id', labId)
+              .in('analyte_id', linkedIds);
+
+            if (laRows) {
+              // Helper: parse jsonb that Supabase may return as a raw JSON string
+              const parseJsonb = <T,>(val: any, fallback: T): T => {
+                if (val === null || val === undefined) return fallback;
+                if (typeof val === 'string') {
+                  try { return JSON.parse(val) as T; } catch { return fallback; }
+                }
+                return val as T;
+              };
+
+              allLinkedData = (laRows as any[]).map((la: any) => {
+                const global = Array.isArray(la.analytes) ? la.analytes[0] : la.analytes;
+
+                const expectedNormalValues = parseJsonb<string[]>(la.expected_normal_values, []);
+                const expectedValueFlagMap = parseJsonb<Record<string, string>>(la.expected_value_flag_map, {});
+                const expectedValueCodes   = parseJsonb<Record<string, string>>(la.expected_value_codes, {});
+                const refRangeKnowledge    = parseJsonb<any>(la.ref_range_knowledge, {});
+                // formula_variables may be stored as JSON string "[]" or an actual array
+                const laFormulaVars  = parseJsonb<string[]>(la.formula_variables, []);
+                const glbFormulaVars = parseJsonb<string[]>(global?.formula_variables, []);
+
+                return {
+                  // Identity — always from global analytes
+                  id: la.analyte_id,
+                  category: global?.category || 'General',
+                  is_global: global?.is_global ?? false,
+                  // All display/entry fields — lab_analytes is source of truth, global is fallback
+                  name: la.name || global?.name,
+                  unit: la.unit || global?.unit,
+                  // Use ?? not || so explicit empty string (user cleared field) is respected
+                  reference_range: la.lab_specific_reference_range ?? la.reference_range ?? global?.reference_range,
+                  referenceRange:  la.lab_specific_reference_range ?? la.reference_range ?? global?.reference_range,
+                  method: la.method,
+                  low_critical: la.low_critical,
+                  high_critical: la.high_critical,
+                  interpretation_low:    la.lab_specific_interpretation_low    || la.interpretation_low,
+                  interpretation_normal: la.lab_specific_interpretation_normal || la.interpretation_normal,
+                  interpretation_high:   la.lab_specific_interpretation_high   || la.interpretation_high,
+                  value_type: la.value_type || null,
+                  expected_normal_values: expectedNormalValues,
+                  expected_value_flag_map: expectedValueFlagMap,
+                  expected_value_codes: expectedValueCodes,
+                  default_value: la.default_value ?? null,
+                  // Formula: lab_analytes wins, fall back to global
+                  // (calculated analytes from AI configurator store formula on global table initially)
+                  is_calculated:    la.is_calculated    ?? global?.is_calculated    ?? false,
+                  formula:          la.formula          ?? global?.formula          ?? null,
+                  formula_variables: laFormulaVars.length > 0 ? laFormulaVars : glbFormulaVars,
+                  formula_description: la.formula_description ?? global?.formula_description ?? null,
+                  is_critical:     la.is_critical ?? false,
+                  normal_range_min: la.normal_range_min,
+                  normal_range_max: la.normal_range_max,
+                  ai_processing_type: la.ai_processing_type,
+                  group_ai_mode: la.group_ai_mode,
+                  ai_prompt_override: la.ai_prompt_override ?? null,
+                  ref_range_knowledge: refRangeKnowledge,
+                  display_name: la.display_name ?? null,
+                  is_active: la.is_active,
+                };
+              });
+            }
+          }
+        }
       }
 
       if (analytesRes.error) {
@@ -248,16 +343,8 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
         setAnalyteMetadata(meta);
       }
 
-      if (linkedRes && !linkedRes.error && linkedRes.data) {
-        const linked = (linkedRes.data as any[]).map((row: any) => {
-          const a = Array.isArray(row.analytes) ? row.analytes[0] : row.analytes;
-          if (!a) return null;
-          return {
-            ...a,
-            referenceRange: a.reference_range,
-          };
-        }).filter(Boolean);
-        setAllLinkedAnalytes(linked);
+      if (allLinkedData.length > 0) {
+        setAllLinkedAnalytes(allLinkedData);
       }
     } catch (error) {
       console.error('Error loading data:', error);
@@ -389,47 +476,13 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
     }
   };
 
-  const handleUpdateAttachedAnalyte = async (updatedAnalyte: any) => {
-    try {
-        console.log("Updating Attached Analyte", updatedAnalyte);
-        // Update lab-specific analyte settings in lab_analytes (not global analytes table)
-        const labId = await database.getCurrentUserLabId();
-        if (!labId) throw new Error('Unable to determine lab context');
-        const { error } = await database.labAnalytes.updateLabSpecific(labId, updatedAnalyte.id, {
-            name: updatedAnalyte.name,
-            unit: updatedAnalyte.unit,
-            reference_range: updatedAnalyte.referenceRange,
-            low_critical: updatedAnalyte.lowCritical,
-            high_critical: updatedAnalyte.highCritical,
-            interpretation_low: updatedAnalyte.interpretationLow,
-            interpretation_normal: updatedAnalyte.interpretationNormal,
-            interpretation_high: updatedAnalyte.interpretationHigh,
-            category: updatedAnalyte.category,
-            is_active: updatedAnalyte.isActive,
-            ai_processing_type: updatedAnalyte.aiProcessingType,
-            ref_range_knowledge: updatedAnalyte.ref_range_knowledge,
-        });
-
-        if (error) throw error;
-
-        // Update local state 'analytes' array to reflect changes immediately
-        setAnalytes(prev => prev.map(a => a.id === updatedAnalyte.id ? {
-            ...a,
-            name: updatedAnalyte.name,
-            unit: updatedAnalyte.unit,
-            referenceRange: updatedAnalyte.referenceRange,
-            category: updatedAnalyte.category,
-            // ... map other fields if needed for display ...
-        } : a));
-        
-        // Also refresh data to be sure
-        await loadData();
-
-        setEditingAttachedAnalyte(null);
-    } catch (err: any) {
-        console.error("Error updating attached analyte:", err);
-        alert("Failed to update analyte: " + err.message);
-    }
+  const handleUpdateAttachedAnalyte = async (_updatedAnalyte: any) => {
+    // SimpleAnalyteEditor already saved all fields to lab_analytes directly.
+    // Do not save again here — a second partial save would strip fields like
+    // value_type, expected_value_codes, default_value that were just written.
+    // Just reload from DB (lab_analytes is now source of truth) and close.
+    await loadData();
+    setEditingAttachedAnalyte(null);
   };
 
   const categories = [
@@ -438,10 +491,16 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
     'Serology',
     'Microbiology',
     'Immunology',
-    'Molecular Biology',
+    'Immunohematology',
+    'Blood Banking',
+    'Molecular Diagnostics',
+    'Clinical Pathology',
     'Histopathology',
     'Cytology',
-    'Clinical Pathology',
+    'Toxicology',
+    'Endocrinology',
+    'Cardiology',
+    'General',
   ];
 
   const sampleTypes = [
@@ -464,11 +523,15 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
     try {
       const labId = await database.getCurrentUserLabId();
       if (!labId) throw new Error('Unable to determine lab context');
+      console.log('[SyncFromGlobal] lab_id:', labId, 'test_group_name:', testGroup.name);
       const { data, error: fnError } = await supabase.functions.invoke('onboarding-lab', {
         body: { lab_id: labId, mode: 'single', test_group_name: testGroup.name }
       });
       if (fnError) throw new Error(fnError.message);
-      if (!data?.success) throw new Error(data?.error || 'Sync failed');
+      if (!data?.success) {
+        if (data?.debug) console.error('[SyncFromGlobal] debug:', data.debug);
+        throw new Error(data?.error || 'Sync failed');
+      }
       const parts = [];
       if (data.analytesAdded) parts.push(`${data.analytesAdded} added`);
       if (data.analytesUpdated) parts.push(`${data.analytesUpdated} updated`);
@@ -567,11 +630,10 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
   // This ensures hidden/inactive lab_analytes are still shown, AND newly added analytes appear too
   const selectedAnalyteDetails = (() => {
     const linkedIds = new Set(allLinkedAnalytes.map((a: any) => a.id));
-    // Existing linked analytes (may include hidden/inactive ones)
-    const base = allLinkedAnalytes.map((linked: any) => {
-      const rich = analytes.find(a => a.id === linked.id);
-      return rich || linked;
-    });
+    // Existing linked analytes — use lab_analytes data as source of truth.
+    // Do NOT replace with global analyte: it lacks lab-specific fields like
+    // expected_value_codes, value_type, default_value, reference_range overrides.
+    const base = allLinkedAnalytes.map((linked: any) => linked);
     // Newly checked analytes not yet in the DB-fetched list
     const newlyAdded = analytes.filter(a =>
       formData.selectedAnalytes.includes(a.id) && !linkedIds.has(a.id)

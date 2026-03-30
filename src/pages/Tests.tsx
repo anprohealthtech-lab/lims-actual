@@ -1,6 +1,7 @@
-import React, { useState, useEffect } from 'react';
-import { Plus, Edit2, Trash2, Search, Filter, X, Save, AlertCircle, Beaker, Layers, Package, DollarSign, Eye, EyeOff, Edit, Link2, Calculator, RefreshCw, Brain } from 'lucide-react';
+import React, { useState, useEffect, useRef } from 'react';
+import { Plus, Edit2, Trash2, Search, Filter, X, Save, AlertCircle, Beaker, Layers, Package, DollarSign, Eye, EyeOff, Edit, Link2, Calculator, RefreshCw, Brain, ChevronDown, ShieldAlert } from 'lucide-react';
 import { database, supabase } from '../utils/supabase';
+import { useAuth } from '../contexts/AuthContext';
 import TestGroupForm from '../components/Tests/TestGroupForm';
 import TestForm from '../components/Tests/TestForm';
 import AnalyteForm from '../components/Tests/AnalyteForm';
@@ -124,6 +125,8 @@ interface PackageType {
 
 const Tests: React.FC = () => {
   console.log('🔵 Tests.tsx page is opening/rendering');
+  const { user } = useAuth();
+  const [isAdmin, setIsAdmin] = useState(false);
 
   const normalizeAIProcessingType = (type?: string | null): string => {
     const normalized = (type || '').trim().toUpperCase();
@@ -184,6 +187,12 @@ const Tests: React.FC = () => {
   const [syncing, setSyncing] = useState(false);
   const [syncMode, setSyncMode] = useState<'sync' | 'reset' | null>(null);
   const [syncStatus, setSyncStatus] = useState<string>('');
+  const [showDangerDropdown, setShowDangerDropdown] = useState(false);
+  const [dangerModal, setDangerModal] = useState<'sync' | 'reset' | null>(null);
+  const [dangerStep, setDangerStep] = useState<1 | 2>(1);
+  const [dangerChecked, setDangerChecked] = useState(false);
+  const [dangerTypeInput, setDangerTypeInput] = useState('');
+  const dangerDropdownRef = useRef<HTMLDivElement>(null);
 
   // State for AI Configurator
   const [showAIConfigurator, setShowAIConfigurator] = useState(false);
@@ -384,6 +393,40 @@ const Tests: React.FC = () => {
     }
   };
 
+  // Fetch admin role
+  React.useEffect(() => {
+    if (!user?.id) return;
+    supabase.from('users').select('role').eq('id', user.id).single().then(({ data }) => {
+      setIsAdmin(data?.role?.toLowerCase() === 'admin');
+    });
+  }, [user?.id]);
+
+  // Close danger dropdown on outside click
+  React.useEffect(() => {
+    const handler = (e: MouseEvent) => {
+      if (dangerDropdownRef.current && !dangerDropdownRef.current.contains(e.target as Node)) {
+        setShowDangerDropdown(false);
+      }
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, []);
+
+  const openDangerModal = (mode: 'sync' | 'reset') => {
+    setDangerModal(mode);
+    setDangerStep(1);
+    setDangerChecked(false);
+    setDangerTypeInput('');
+    setShowDangerDropdown(false);
+  };
+
+  const closeDangerModal = () => {
+    setDangerModal(null);
+    setDangerStep(1);
+    setDangerChecked(false);
+    setDangerTypeInput('');
+  };
+
   // Load data on component mount
   React.useEffect(() => {
     console.log('📊 Loading data from database...');
@@ -551,7 +594,24 @@ const Tests: React.FC = () => {
     loadLabFlagOptions();
   }, []);
 
-  const categories = ['All', 'Hematology', 'Biochemistry', 'Serology', 'Microbiology', 'Immunology'];
+  const categories = [
+    'All',
+    'Hematology',
+    'Biochemistry',
+    'Serology',
+    'Microbiology',
+    'Immunology',
+    'Immunohematology',
+    'Blood Banking',
+    'Molecular Diagnostics',
+    'Clinical Pathology',
+    'Histopathology',
+    'Cytology',
+    'Toxicology',
+    'Endocrinology',
+    'Cardiology',
+    'General',
+  ];
 
   const filteredPackages = (packages || []).filter(pkg => {
     const matchesSearch = pkg.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
@@ -1202,16 +1262,9 @@ const Tests: React.FC = () => {
   };
 
   // Sync test groups and analytes from global catalog
-  const handleSyncFromGlobal = async () => {
+  const handleSyncFromGlobal = async (skipConfirm = false) => {
     if (syncing) return;
-
-    const confirmed = window.confirm(
-      'This will sync your test groups and analytes from the global catalog with AI configuration.\n\n' +
-      'Existing test groups will be updated with AI settings. New test groups from the global catalog will be added.\n\n' +
-      'Do you want to continue?'
-    );
-
-    if (!confirmed) return;
+    if (!skipConfirm) { openDangerModal('sync'); return; }
 
     setSyncing(true);
     setSyncMode('sync');
@@ -1344,25 +1397,9 @@ const Tests: React.FC = () => {
   };
 
   // Reset test groups to defaults from global catalog (deletes all and recreates)
-  const handleResetToDefaults = async () => {
+  const handleResetToDefaults = async (skipConfirm = false) => {
     if (syncing) return;
-
-    const confirmed = window.confirm(
-      '⚠️ WARNING: This will DELETE ALL your existing test groups and restore them from the global catalog.\n\n' +
-      'This action cannot be undone. All custom test groups and modifications will be lost.\n\n' +
-      'This will also remove any duplicate test entries.\n\n' +
-      'Are you sure you want to continue?'
-    );
-
-    if (!confirmed) return;
-
-    // Double confirmation for destructive action
-    const doubleConfirm = window.confirm(
-      'Please confirm again: DELETE all test groups and restore defaults?\n\n' +
-      'Type "yes" in your mind and click OK to proceed.'
-    );
-
-    if (!doubleConfirm) return;
+    if (!skipConfirm) { openDangerModal('reset'); return; }
 
     setSyncing(true);
     setSyncMode('reset');
@@ -1613,24 +1650,45 @@ const Tests: React.FC = () => {
             <p className="text-gray-500 text-sm">Manage analytes, test groups, and diagnostic panels</p>
           </div>
           <div className="flex space-x-2">
-            <button
-              onClick={handleSyncFromGlobal}
-              disabled={syncing}
-              className="flex items-center px-3 py-1.5 text-sm border border-green-500 text-green-600 rounded-lg hover:bg-green-50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-              title="Sync test groups and analytes from global catalog with AI configuration"
-            >
-              <RefreshCw className={`h-4 w-4 mr-1 ${syncing ? 'animate-spin' : ''}`} />
-              {syncing ? 'Syncing...' : 'Sync from Global'}
-            </button>
-            <button
-              onClick={handleResetToDefaults}
-              disabled={syncing}
-              className="flex items-center px-3 py-1.5 text-sm border border-red-500 text-red-600 rounded-lg hover:bg-red-50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-              title="Delete all test groups and restore from global catalog (removes duplicates)"
-            >
-              <Trash2 className="h-4 w-4 mr-1" />
-              Reset to Defaults
-            </button>
+            {isAdmin && <div className="relative" ref={dangerDropdownRef}>
+              <button
+                onClick={() => setShowDangerDropdown(v => !v)}
+                disabled={syncing}
+                className="flex items-center px-3 py-1.5 text-sm border border-orange-400 text-orange-600 rounded-lg hover:bg-orange-50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                title="Admin-only dangerous catalog operations"
+              >
+                <ShieldAlert className="h-4 w-4 mr-1" />
+                Catalog Actions
+                <ChevronDown className="h-3.5 w-3.5 ml-1" />
+              </button>
+              {showDangerDropdown && (
+                <div className="absolute right-0 mt-1 w-56 bg-white border border-gray-200 rounded-lg shadow-lg z-50 overflow-hidden">
+                  <div className="px-3 py-2 bg-orange-50 border-b border-orange-100">
+                    <p className="text-xs font-semibold text-orange-700 uppercase tracking-wide">Admin Only — Destructive</p>
+                  </div>
+                  <button
+                    onClick={() => openDangerModal('sync')}
+                    className="w-full flex items-center px-3 py-2.5 text-sm text-green-700 hover:bg-green-50 transition-colors text-left"
+                  >
+                    <RefreshCw className="h-4 w-4 mr-2 flex-shrink-0" />
+                    <span>
+                      <span className="font-medium block">Sync from Global</span>
+                      <span className="text-xs text-gray-500">Updates AI config, adds missing tests</span>
+                    </span>
+                  </button>
+                  <button
+                    onClick={() => openDangerModal('reset')}
+                    className="w-full flex items-center px-3 py-2.5 text-sm text-red-700 hover:bg-red-50 transition-colors text-left border-t border-gray-100"
+                  >
+                    <Trash2 className="h-4 w-4 mr-2 flex-shrink-0" />
+                    <span>
+                      <span className="font-medium block">Reset to Defaults</span>
+                      <span className="text-xs text-gray-500">Deletes ALL tests & restores from global</span>
+                    </span>
+                  </button>
+                </div>
+              )}
+            </div>}
             <button
               onClick={() => setShowAnalyteForm(true)}
               className="flex items-center px-3 py-1.5 text-sm border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors"
@@ -2327,6 +2385,109 @@ const Tests: React.FC = () => {
           </div>
         )}
       </div>
+
+      {/* Danger Action Confirmation Modal */}
+      {dangerModal && (
+        <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-xl shadow-2xl w-full max-w-md">
+            {/* Header */}
+            <div className={`flex items-center gap-3 px-5 py-4 rounded-t-xl ${dangerModal === 'reset' ? 'bg-red-50 border-b border-red-200' : 'bg-amber-50 border-b border-amber-200'}`}>
+              <ShieldAlert className={`h-5 w-5 flex-shrink-0 ${dangerModal === 'reset' ? 'text-red-600' : 'text-amber-600'}`} />
+              <div>
+                <p className={`font-semibold ${dangerModal === 'reset' ? 'text-red-800' : 'text-amber-800'}`}>
+                  {dangerModal === 'reset' ? 'Reset All Tests to Defaults' : 'Sync from Global Catalog'}
+                </p>
+                <p className="text-xs text-gray-500">Step {dangerStep} of 2 — Admin confirmation required</p>
+              </div>
+            </div>
+
+            <div className="px-5 py-4">
+              {dangerStep === 1 ? (
+                <>
+                  <div className={`rounded-lg p-3 mb-4 text-sm ${dangerModal === 'reset' ? 'bg-red-50 border border-red-200 text-red-800' : 'bg-amber-50 border border-amber-200 text-amber-800'}`}>
+                    {dangerModal === 'reset' ? (
+                      <>
+                        <p className="font-semibold mb-1">⚠️ This will permanently delete ALL test groups and restore them from the global catalog.</p>
+                        <ul className="list-disc list-inside space-y-0.5 text-xs mt-2">
+                          <li>All custom lab-level pricing will be lost</li>
+                          <li>All custom test group modifications will be lost</li>
+                          <li>All analyte-level customizations will be lost</li>
+                          <li>This action <strong>cannot be undone</strong></li>
+                        </ul>
+                      </>
+                    ) : (
+                      <>
+                        <p className="font-semibold mb-1">This will push AI config and analyte settings from the global catalog to your lab.</p>
+                        <ul className="list-disc list-inside space-y-0.5 text-xs mt-2">
+                          <li>Existing test groups will have AI settings overwritten</li>
+                          <li>New tests from global catalog will be added</li>
+                          <li>Lab-level pricing and custom fields are preserved</li>
+                        </ul>
+                      </>
+                    )}
+                  </div>
+                  <label className="flex items-start gap-2.5 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={dangerChecked}
+                      onChange={e => setDangerChecked(e.target.checked)}
+                      className="mt-0.5 h-4 w-4 accent-orange-500"
+                    />
+                    <span className="text-sm text-gray-700">
+                      I understand the risks and want to proceed with this action
+                    </span>
+                  </label>
+                </>
+              ) : (
+                <>
+                  <p className="text-sm text-gray-700 mb-3">
+                    Type <strong className="font-mono">{dangerModal === 'reset' ? 'RESET' : 'SYNC'}</strong> below to confirm:
+                  </p>
+                  <input
+                    type="text"
+                    value={dangerTypeInput}
+                    onChange={e => setDangerTypeInput(e.target.value)}
+                    placeholder={dangerModal === 'reset' ? 'Type RESET' : 'Type SYNC'}
+                    autoFocus
+                    className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-orange-400"
+                  />
+                  <p className="text-xs text-gray-400 mt-1.5">Case-sensitive</p>
+                </>
+              )}
+            </div>
+
+            <div className="flex justify-end gap-2 px-5 py-3 border-t border-gray-100">
+              <button
+                onClick={closeDangerModal}
+                className="px-4 py-2 text-sm text-gray-600 border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors"
+              >
+                Cancel
+              </button>
+              {dangerStep === 1 ? (
+                <button
+                  disabled={!dangerChecked}
+                  onClick={() => setDangerStep(2)}
+                  className="px-4 py-2 text-sm font-medium bg-orange-500 text-white rounded-lg hover:bg-orange-600 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                >
+                  Continue →
+                </button>
+              ) : (
+                <button
+                  disabled={dangerTypeInput !== (dangerModal === 'reset' ? 'RESET' : 'SYNC')}
+                  onClick={() => {
+                    closeDangerModal();
+                    if (dangerModal === 'sync') handleSyncFromGlobal(true);
+                    else handleResetToDefaults(true);
+                  }}
+                  className={`px-4 py-2 text-sm font-medium text-white rounded-lg transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${dangerModal === 'reset' ? 'bg-red-600 hover:bg-red-700' : 'bg-green-600 hover:bg-green-700'}`}
+                >
+                  {dangerModal === 'reset' ? 'Delete & Reset' : 'Sync Now'}
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </>
   );
 };

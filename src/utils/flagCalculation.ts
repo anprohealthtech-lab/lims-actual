@@ -20,6 +20,7 @@ export interface ResultValue {
   low_critical?: string | number;
   high_critical?: string | number;
   expected_normal_values?: string[];
+  value_type?: string;
   flag?: string;
 }
 
@@ -33,17 +34,21 @@ export interface ResultValue {
  * - Semi-quantitative values (1+, 2+, Trace)
  */
 export const calculateFlag = (
-  value: string, 
-  referenceRange: string, 
+  value: string,
+  referenceRange: string,
   patientGender?: string,
   lowCritical?: string | number,
   highCritical?: string | number,
   referenceRangeMale?: string,
   referenceRangeFemale?: string,
-  expectedNormalValues?: string[]
+  expectedNormalValues?: string[],
+  valueType?: string
 ): string => {
   if (!value) return '';
-  
+  // Qualitative analytes intentionally skip auto flag calculation.
+  // Flag assignment for qualitative is explicit-only (via expected_value_flag_map on selection).
+  if (valueType === 'qualitative') return '';
+
   const config: AnalyteConfig = {
     reference_range: referenceRange,
     reference_range_male: referenceRangeMale,
@@ -52,7 +57,7 @@ export const calculateFlag = (
     high_critical: highCritical,
     expected_normal_values: expectedNormalValues
   };
-  
+
   const result = determineFlag(value, config, { gender: patientGender });
   return flagToDisplayString(result.flag);
 };
@@ -110,14 +115,15 @@ export const calculateFlagsForResults = (values: ResultValue[], patientGender?: 
   return values.map(value => ({
     ...value,
     flag: value.flag || calculateFlag(
-      value.value, 
-      value.reference_range, 
+      value.value,
+      value.reference_range,
       patientGender,
       value.low_critical,
       value.high_critical,
       value.reference_range_male,
       value.reference_range_female,
-      value.expected_normal_values
+      value.expected_normal_values,
+      value.value_type
     )
   }));
 };

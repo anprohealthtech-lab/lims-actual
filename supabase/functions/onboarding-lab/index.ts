@@ -35,12 +35,17 @@ serve(async (req) => {
     if (isSingle) {
       if (!test_group_name) throw new Error('test_group_name is required for single mode');
 
+      console.log(`🔍 SINGLE mode: lab_id="${lab_id}", test_group_name="${test_group_name}"`);
+
       // Find entry in global catalog (case-insensitive)
-      const { data: catalogEntry } = await supabaseClient
+      const { data: catalogEntry, error: catalogError } = await supabaseClient
         .from('global_test_catalog')
         .select('id, name, code, group_interpretation, default_ai_processing_type, group_level_prompt, ai_config')
         .ilike('name', test_group_name)
+        .limit(1)
         .maybeSingle();
+
+      console.log(`📚 Global catalog lookup: found=${!!catalogEntry}, name="${catalogEntry?.name}", error=${catalogError?.message}`);
 
       if (!catalogEntry) {
         return new Response(JSON.stringify({
@@ -49,18 +54,29 @@ serve(async (req) => {
         }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
       }
 
-      // Find lab's test group by name
-      const { data: labGroup } = await supabaseClient
+      // Find lab's test group by name (limit(1) guards against duplicate names in the same lab)
+      const { data: labGroup, error: labGroupError } = await supabaseClient
         .from('test_groups')
-        .select('id, name, group_interpretation')
+        .select('id, name, lab_id, group_interpretation')
         .eq('lab_id', lab_id)
         .ilike('name', test_group_name)
+        .limit(1)
         .maybeSingle();
 
+      console.log(`🏥 Lab group lookup: found=${!!labGroup}, name="${labGroup?.name}", lab_id_match="${labGroup?.lab_id}", error=${labGroupError?.message}`);
+
       if (!labGroup) {
+        // Also check if group exists under a different lab_id (to help diagnose mismatches)
+        const { data: anyMatch } = await supabaseClient
+          .from('test_groups')
+          .select('id, name, lab_id')
+          .ilike('name', test_group_name)
+          .limit(3);
+        console.log(`🔎 Same-name groups in ANY lab: ${JSON.stringify(anyMatch)}`);
         return new Response(JSON.stringify({
           success: false,
           error: `'${test_group_name}' not found in this lab's test groups`,
+          debug: { lab_id_used: lab_id, any_matches: anyMatch },
         }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
       }
 

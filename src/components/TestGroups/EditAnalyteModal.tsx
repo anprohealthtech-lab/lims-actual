@@ -155,11 +155,19 @@ export const EditAnalyteModal: React.FC<EditAnalyteModalProps> = ({
                 className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
               >
                 <option value="Hematology">Hematology</option>
-                <option value="Chemistry">Chemistry</option>
-                <option value="Immunology">Immunology</option>
+                <option value="Biochemistry">Biochemistry</option>
+                <option value="Serology">Serology</option>
                 <option value="Microbiology">Microbiology</option>
+                <option value="Immunology">Immunology</option>
+                <option value="Immunohematology">Immunohematology</option>
                 <option value="Blood Banking">Blood Banking</option>
+                <option value="Molecular Diagnostics">Molecular Diagnostics</option>
                 <option value="Clinical Pathology">Clinical Pathology</option>
+                <option value="Histopathology">Histopathology</option>
+                <option value="Cytology">Cytology</option>
+                <option value="Toxicology">Toxicology</option>
+                <option value="Endocrinology">Endocrinology</option>
+                <option value="Cardiology">Cardiology</option>
                 <option value="General">General</option>
               </select>
             </div>

@@ -24,6 +24,10 @@ interface AnalyteRow {
   is_existing: boolean;
   expected_normal_values: string[];
   expected_value_flag_map: Record<string, string>;
+  value_type?: string;
+  expected_value_codes?: Record<string, string>;
+  default_value?: string;
+  is_default?: boolean;
   formula?: string | null;
   formula_variables?: string[] | string | null;
 }
@@ -45,6 +49,8 @@ interface TestGroup {
     formula_variables?: string[] | string | null;
     expected_normal_values?: string[];
     expected_value_flag_map?: Record<string, string>;
+    value_type?: string;
+    expected_value_codes?: Record<string, string>;
     existing_result?: { value: string; unit?: string; reference_range?: string; flag?: string } | null;
   }[];
 }
@@ -202,7 +208,7 @@ const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, on
               id, name, ref_range_ai_config,
               test_group_analytes(
                 analyte_id, sort_order, display_order,
-                analytes(id, name, code, unit, reference_range, is_calculated, formula, formula_variables, expected_normal_values, expected_value_flag_map)
+                analytes(id, name, code, unit, reference_range, is_calculated, formula, formula_variables, expected_normal_values, expected_value_flag_map, value_type, expected_value_codes)
               )
             )
           ),
@@ -212,7 +218,7 @@ const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, on
               id, name, ref_range_ai_config,
               test_group_analytes(
                 analyte_id, sort_order, display_order,
-                analytes(id, name, code, unit, reference_range, is_calculated, formula, formula_variables, expected_normal_values, expected_value_flag_map)
+                analytes(id, name, code, unit, reference_range, is_calculated, formula, formula_variables, expected_normal_values, expected_value_flag_map, value_type, expected_value_codes)
               )
             )
           ),
@@ -293,7 +299,7 @@ const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, on
       if (allAnalyteIds.length > 0 && data.lab_id) {
         const { data: la } = await supabase
           .from("lab_analytes")
-          .select("analyte_id, expected_normal_values, expected_value_flag_map")
+          .select("analyte_id, expected_normal_values, expected_value_flag_map, value_type, expected_value_codes, default_value")
           .eq("lab_id", data.lab_id)
           .in("analyte_id", allAnalyteIds);
         if (la) labAnalytesMap = new Map(la.map((x: any) => [x.analyte_id, x]));
@@ -363,17 +369,40 @@ const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, on
           if (la?.expected_value_flag_map) {
             try { const p = typeof la.expected_value_flag_map === "string" ? JSON.parse(la.expected_value_flag_map) : la.expected_value_flag_map; if (Object.keys(p).length) envMap = p; } catch { /* */ }
           }
+          // value_type and expected_value_codes: lab override wins if set
+          let envValueType: string | undefined = a.value_type;
+          let envCodes: Record<string, string> = a.expected_value_codes || {};
+          if (la?.value_type) {
+            envValueType = la.value_type;
+          }
+          if (la?.expected_value_codes) {
+            try {
+              const p = typeof la.expected_value_codes === "string" ? JSON.parse(la.expected_value_codes) : la.expected_value_codes;
+              if (p && Object.keys(p).length) envCodes = p;
+            } catch { /* */ }
+          }
+          const envDefaultValue: string = la?.default_value || "";
+          const hasExisting = !!(a.existing_result?.value);
+          // Pre-fill default only for new (unsaved) results
+          const prefillValue = hasExisting
+            ? a.existing_result!.value
+            : (envDefaultValue || "");
           return {
             analyte_id: a.id,
             parameter: a.name,
-            value: a.existing_result?.value || "",
+            value: prefillValue,
             unit: a.existing_result?.unit || a.units || "",
             reference: a.existing_result?.reference_range || a.reference_range || "",
             flag: a.existing_result?.flag || "",
             is_calculated: !!a.is_calculated,
-            is_existing: !!(a.existing_result?.value),
+            is_existing: hasExisting,
             expected_normal_values: envValues,
             expected_value_flag_map: envMap,
+            value_type: envValueType,
+            expected_value_codes: envCodes,
+            default_value: envDefaultValue,
+            // Mark as default-prefilled so the UI can style it differently
+            is_default: !hasExisting && !!envDefaultValue,
             formula: a.formula,
             formula_variables: a.formula_variables,
           };
@@ -419,7 +448,7 @@ const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, on
       // 1. Update the edited row
       const next = prev.map((r, i) => {
         if (i !== idx) return r;
-        const auto = calculateFlag(value, r.reference);
+        const auto = calculateFlag(value, r.reference, undefined, undefined, undefined, undefined, undefined, undefined, r.value_type);
         return { ...r, value, flag: auto || r.flag };
       });
 
@@ -455,7 +484,7 @@ const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, on
         const vars = parseFormulaVars(r.formula_variables);
         const calcVal = evalFormula(r.formula, vars, lookup, calcDeps, r.analyte_id);
         if (!calcVal) return r;
-        const autoFlag = calculateFlag(calcVal, r.reference);
+        const autoFlag = calculateFlag(calcVal, r.reference, undefined, undefined, undefined, undefined, undefined, undefined, r.value_type);
         return { ...r, value: calcVal, flag: autoFlag || r.flag };
       });
     });
@@ -494,7 +523,7 @@ const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, on
     setSaving(true);
     setMessage(null);
     try {
-      const resultValues = valid.map(r => ({ parameter: r.parameter, value: r.value, unit: r.unit, reference_range: r.reference, flag: r.flag }));
+      const resultValues = valid.map(r => ({ parameter: r.parameter, value: r.value, unit: r.unit, reference_range: r.reference, flag: r.flag, value_type: r.value_type }));
       const withFlags = calculateFlagsForResults(resultValues);
 
       const payload = {
@@ -590,7 +619,7 @@ const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, on
                 const hit = resolved.find(res => res.id === r.analyte_id || res.name === r.parameter);
                 if (!hit?.used_reference_range) return r;
                 const newRef = hit.used_reference_range;
-                const autoFlag = calculateFlag(r.value, newRef, order.patient?.gender ?? undefined);
+                const autoFlag = calculateFlag(r.value, newRef, order.patient?.gender ?? undefined, undefined, undefined, undefined, undefined, undefined, r.value_type);
                 return { ...r, reference: newRef, flag: r.flag || autoFlag || "" };
               });
             }
@@ -704,6 +733,12 @@ const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, on
             r.value,
             r.reference,
             order.patient?.gender ?? undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            r.value_type,
           );
           return {
           result_id: resultRowId!,
@@ -854,18 +889,25 @@ const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, on
                   <tbody>
                     {groupRows.map(({ row, globalIdx }) => {
                       const isCalc = row.is_calculated;
-                      const hasDropdown = row.expected_normal_values.length > 0;
+                      const isQualitative = row.value_type === 'qualitative';
+                      const hasCodes = isQualitative && Object.keys(row.expected_value_codes || {}).length > 0;
+                      // qualitative with codes → combobox text input; qualitative/others with options → select
+                      const hasDropdown = !isQualitative && row.expected_normal_values.length > 0;
                       const hasDraftValue = row.value.trim() !== "";
+                      const isDefault = !!row.is_default;
                       const flagLabel = flagOptions.find(f => f.value === row.flag);
                       const flagColor = row.flag === "" ? "text-green-700" : row.flag?.includes("critical") ? "text-red-700 font-semibold" : row.flag === "H" || row.flag === "L" ? "text-orange-600 font-medium" : "text-gray-700";
+                      // Row bg: default-prefilled = amber tint, manually entered = green tint, blank = plain
+                      const rowBg = isDefault ? "bg-amber-50/50" : hasDraftValue ? "bg-green-50/40" : "hover:bg-blue-50/30";
 
                       return (
-                        <tr key={row.analyte_id} className={`border-b transition-colors ${hasDraftValue ? "bg-green-50/40" : "hover:bg-blue-50/30"}`}>
+                        <tr key={row.analyte_id} className={`border-b transition-colors ${rowBg}`}>
 
                           {/* Analyte name + ref range hint */}
                           <td className="px-4 py-2.5">
                             <span className={`font-medium ${isCalc ? "text-blue-700" : "text-gray-800"}`}>{row.parameter}</span>
                             {isCalc && <span className="ml-1.5 text-xs text-blue-400 italic">auto</span>}
+                            {isDefault && <span className="ml-1.5 text-xs text-amber-600 bg-amber-100 px-1 py-0.5 rounded">default</span>}
                             {row.reference && (
                               <div className="text-xs text-gray-400 mt-0.5">{row.reference}</div>
                             )}
@@ -877,6 +919,46 @@ const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, on
                               <div className="px-2 py-1.5 bg-blue-50 border border-blue-200 rounded text-blue-800 text-sm font-medium min-h-[34px] flex items-center">
                                 {row.value || <span className="text-blue-300 italic">calculated</span>}
                               </div>
+                            ) : isQualitative ? (
+                              // Qualitative: free-text with quick-code resolution.
+                              // Amber border/bg when pre-filled by default; purple when manually entered.
+                              <div className="relative">
+                                <input
+                                  ref={el => { valueRefs.current[globalIdx] = el; }}
+                                  type="text"
+                                  list={hasCodes ? `qcodes-${globalIdx}` : undefined}
+                                  value={row.value}
+                                  placeholder={hasCodes ? "type code or value..." : "value..."}
+                                  onChange={e => {
+                                    const typed = e.target.value;
+                                    if (hasCodes && typed.trim()) {
+                                      const key = typed.trim().toUpperCase();
+                                      const resolved = row.expected_value_codes![key];
+                                      if (resolved) {
+                                        setRows(prev => prev.map((r, i) => i !== globalIdx ? r : { ...r, value: resolved, is_default: false }));
+                                        return;
+                                      }
+                                    }
+                                    setRows(prev => prev.map((r, i) => i !== globalIdx ? r : { ...r, value: typed, is_default: false }));
+                                  }}
+                                  onKeyDown={e => handleKeyDown(e, globalIdx)}
+                                  className={`w-full px-2 py-1.5 border rounded text-sm focus:outline-none focus:ring-2 ${
+                                    isDefault
+                                      ? "border-amber-300 bg-amber-50 text-amber-800 italic focus:ring-amber-400"
+                                      : row.value
+                                        ? "border-purple-300 bg-purple-50 font-medium focus:ring-purple-400"
+                                        : "border-gray-300 focus:ring-purple-400"
+                                  }`}
+                                  autoFocus={globalIdx === inputableIndexes[0]}
+                                />
+                                {hasCodes && (
+                                  <datalist id={`qcodes-${globalIdx}`}>
+                                    {Object.entries(row.expected_value_codes!).map(([code, val]) => (
+                                      <option key={code} value={val}>{code} → {val}</option>
+                                    ))}
+                                  </datalist>
+                                )}
+                              </div>
                             ) : hasDropdown ? (
                               <select
                                 ref={el => { valueRefs.current[globalIdx] = el; }}
@@ -884,10 +966,14 @@ const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, on
                                 onChange={e => {
                                   const val = e.target.value;
                                   const autoFlag = row.expected_value_flag_map[val] ?? "";
-                                  setRows(prev => prev.map((r, i) => i !== globalIdx ? r : { ...r, value: val, flag: autoFlag }));
+                                  setRows(prev => prev.map((r, i) => i !== globalIdx ? r : { ...r, value: val, flag: autoFlag, is_default: false }));
                                 }}
                                 onKeyDown={e => handleKeyDown(e, globalIdx)}
-                                className={`w-full px-2 py-1.5 border rounded text-sm focus:outline-none focus:ring-2 focus:ring-green-400 ${row.value ? "border-green-300 bg-green-50" : "border-gray-300"}`}
+                                className={`w-full px-2 py-1.5 border rounded text-sm focus:outline-none focus:ring-2 ${
+                                  isDefault
+                                    ? "border-amber-300 bg-amber-50 text-amber-800 italic focus:ring-amber-400"
+                                    : row.value ? "border-green-300 bg-green-50 focus:ring-green-400" : "border-gray-300 focus:ring-green-400"
+                                }`}
                               >
                                 <option value="">Select...</option>
                                 {row.expected_normal_values.map(opt => (
@@ -900,10 +986,16 @@ const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, on
                                 type="text"
                                 value={row.value}
                                 placeholder={row.reference ? `e.g. ${row.reference.split("-")[0]?.trim()}` : "value..."}
-                                onChange={e => setRowField(globalIdx, "value", e.target.value)}
+                                onChange={e => {
+                                  setRows(prev => prev.map((r, i) => i !== globalIdx ? r : { ...r, value: e.target.value, is_default: false }));
+                                }}
                                 onBlur={e => handleValueBlur(globalIdx, e.target.value)}
                                 onKeyDown={e => handleKeyDown(e, globalIdx)}
-                                className={`w-full px-2 py-1.5 border rounded text-sm focus:outline-none focus:ring-2 focus:ring-green-400 ${row.value ? "border-green-400 bg-green-50 font-medium" : "border-gray-300"}`}
+                                className={`w-full px-2 py-1.5 border rounded text-sm focus:outline-none focus:ring-2 ${
+                                  isDefault
+                                    ? "border-amber-300 bg-amber-50 text-amber-800 italic focus:ring-amber-400"
+                                    : row.value ? "border-green-400 bg-green-50 font-medium focus:ring-green-400" : "border-gray-300 focus:ring-green-400"
+                                }`}
                                 autoFocus={globalIdx === inputableIndexes[0]}
                               />
                             )}

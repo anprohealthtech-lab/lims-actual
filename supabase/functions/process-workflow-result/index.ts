@@ -632,10 +632,14 @@ async function upsertResultValuesFromParsed(
 
 function calculateFlagFromValue(rv: any): string | null {
   if (!rv.value) return null;
-  
+
   const analyteData = rv.analytes;
+
+  // Qualitative analytes intentionally skip auto flag calculation.
+  if (analyteData?.value_type === 'qualitative') return null;
+
   const refRange = analyteData?.reference_range || rv.reference_range;
-  
+
   if (!refRange) return null;
   
   const value = parseFloat(rv.value);

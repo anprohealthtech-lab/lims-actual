@@ -5565,6 +5565,7 @@ export const database = {
           name,
           unit,
           display_name,
+          default_value,
           analytes(*)
         `)
         .eq("lab_id", labId)
@@ -5661,6 +5662,8 @@ export const database = {
               name: item.name || analyteObj.name,
               unit: item.unit || analyteObj.unit,
               display_name: item.display_name ?? analyteObj.display_name ?? null,
+              // Lab-level default value for result entry pre-fill
+              default_value: item.default_value ?? null,
             };
           }
           return null;

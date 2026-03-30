@@ -41,6 +41,9 @@ interface SimpleAnalyteEditorProps {
     ref_range_knowledge?: any;
     expected_normal_values?: string[];
     expected_value_flag_map?: Record<string, string>;
+    value_type?: string;
+    expected_value_codes?: Record<string, string>;
+    default_value?: string | null;
     // Calculated parameter fields
     is_calculated?: boolean;
     formula?: string;
@@ -69,6 +72,12 @@ export const SimpleAnalyteEditor: React.FC<SimpleAnalyteEditorProps> = ({
   // Separate state for expected_normal_values as newline-separated text
   const [expectedNormalValuesText, setExpectedNormalValuesText] = useState(
     analyte.expected_normal_values?.join('\n') || ''
+  );
+  const [valueType, setValueType] = useState<string>(analyte.value_type || '');
+  const [defaultValue, setDefaultValue] = useState<string>(analyte.default_value || '');
+  // Quick codes state: array of { code, value } pairs for UI editing
+  const [quickCodes, setQuickCodes] = useState<Array<{ code: string; value: string }>>(
+    Object.entries(analyte.expected_value_codes || {}).map(([code, value]) => ({ code, value }))
   );
   // Formula state for calculated parameters
   const [formulaData, setFormulaData] = useState({
@@ -253,6 +262,10 @@ export const SimpleAnalyteEditor: React.FC<SimpleAnalyteEditorProps> = ({
       const expected_normal_values = expectedNormalValuesText
         ? expectedNormalValuesText.split('\n').map(v => v.trim()).filter(Boolean)
         : [];
+      // Build expected_value_codes map from quick codes rows (filter blank entries)
+      const expected_value_codes = quickCodes
+        .filter(r => r.code.trim() && r.value.trim())
+        .reduce<Record<string, string>>((acc, r) => { acc[r.code.trim().toUpperCase()] = r.value.trim(); return acc; }, {});
 
       // Resolve formula variables from picker or text input
       const parsedVars = selectedSources.length > 0
@@ -288,10 +301,20 @@ export const SimpleAnalyteEditor: React.FC<SimpleAnalyteEditorProps> = ({
           lab_specific_interpretation_normal: formData.interpretation_normal,
           lab_specific_interpretation_high: formData.interpretation_high,
           ref_range_knowledge: formData.ref_range_knowledge,
-          // Dropdown options for qualitative values
+          // Value type (numeric, qualitative, semi_quantitative, descriptive)
+          value_type: valueType || null,
+          // Default pre-fill value for result entry
+          default_value: defaultValue.trim() || null,
+          // Dropdown options for qualitative/dropdown values
           expected_normal_values: expected_normal_values,
-          // Dropdown value → flag mapping
-          expected_value_flag_map: expectedValueFlagMap,
+          // Dropdown value → flag mapping (not used for qualitative type)
+          expected_value_flag_map: valueType === 'qualitative' ? {} : expectedValueFlagMap,
+          // Quick code shortcuts for qualitative type
+          expected_value_codes: Object.keys(expected_value_codes).length > 0 ? expected_value_codes : null,
+          // AI processing config — stored at lab level so labs can override global defaults
+          ai_processing_type: (formData as any).ai_processing_type || null,
+          group_ai_mode: formData.group_ai_mode || null,
+          ai_prompt_override: formData.ai_prompt_override ?? null,
           // Calculated parameter config — stored at lab level so edits are lab-specific
           is_calculated: formulaData.is_calculated ?? false,
           formula: formulaData.formula || null,
@@ -316,7 +339,7 @@ export const SimpleAnalyteEditor: React.FC<SimpleAnalyteEditorProps> = ({
         }
       }
 
-      onSave({ ...formData, expected_normal_values, expected_value_flag_map: expectedValueFlagMap, ...formulaData });
+      onSave({ ...formData, value_type: valueType || null, default_value: defaultValue.trim() || null, expected_normal_values, expected_value_flag_map: valueType === 'qualitative' ? {} : expectedValueFlagMap, expected_value_codes: Object.keys(expected_value_codes).length > 0 ? expected_value_codes : null, ...formulaData });
     } catch (error) {
       console.error('Failed to update analyte:', error);
       setError(error instanceof Error ? error.message : 'Failed to update analyte');
@@ -418,6 +441,24 @@ export const SimpleAnalyteEditor: React.FC<SimpleAnalyteEditorProps> = ({
               </div>
 
               <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Value Type</label>
+                <select
+                  value={valueType}
+                  onChange={(e) => setValueType(e.target.value)}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                >
+                  <option value="">Default (auto-detect)</option>
+                  <option value="numeric">Numeric — auto flag H/L/H*/L*</option>
+                  <option value="qualitative">Qualitative — no auto flag, free text + quick codes</option>
+                  <option value="semi_quantitative">Semi-Quantitative — 1+/2+/Trace patterns</option>
+                  <option value="descriptive">Descriptive — free text, never flagged</option>
+                </select>
+                <p className="text-xs text-gray-500 mt-1">
+                  <strong>Qualitative</strong>: use for Blood Group, Culture results, etc. Supports quick-code shortcuts and optional ref range display. No auto flag calculation.
+                </p>
+              </div>
+
+              <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">Category *</label>
                 <select
                   value={formData.category}
@@ -427,15 +468,16 @@ export const SimpleAnalyteEditor: React.FC<SimpleAnalyteEditorProps> = ({
                 >
                   <option value="">Select Category</option>
                   <option value="Hematology">Hematology</option>
-                  <option value="Chemistry">Chemistry</option>
-                  <option value="Immunology">Immunology</option>
+                  <option value="Biochemistry">Biochemistry</option>
+                  <option value="Serology">Serology</option>
                   <option value="Microbiology">Microbiology</option>
-                  <option value="Blood Banking">Blood Banking</option>
+                  <option value="Immunology">Immunology</option>
                   <option value="Immunohematology">Immunohematology</option>
-                  <option value="Clinical Pathology">Clinical Pathology</option>
+                  <option value="Blood Banking">Blood Banking</option>
                   <option value="Molecular Diagnostics">Molecular Diagnostics</option>
-                  <option value="Cytology">Cytology</option>
+                  <option value="Clinical Pathology">Clinical Pathology</option>
                   <option value="Histopathology">Histopathology</option>
+                  <option value="Cytology">Cytology</option>
                   <option value="Toxicology">Toxicology</option>
                   <option value="Endocrinology">Endocrinology</option>
                   <option value="Cardiology">Cardiology</option>
@@ -534,66 +576,175 @@ export const SimpleAnalyteEditor: React.FC<SimpleAnalyteEditorProps> = ({
                 <p className="text-xs text-red-600 mt-1">Values requiring immediate physician notification</p>
               </div>
 
-              {/* Expected Normal Values - Dropdown Options */}
+              {/* Expected Values section — behaviour differs by value_type */}
               <div className="mt-4 pt-4 border-t border-blue-200">
-                <label className="block text-sm font-medium text-gray-700 mb-1">
-                  Expected Values (Dropdown Options)
-                </label>
-                <textarea
-                  value={expectedNormalValuesText}
-                  onChange={(e) => setExpectedNormalValuesText(e.target.value)}
-                  rows={4}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                  placeholder="Enter one value per line, e.g.:&#10;Negative&#10;Positive&#10;Reactive&#10;Non-Reactive"
-                />
-                <p className="text-xs text-gray-500 mt-1">
-                  For qualitative analytes (HIV, Blood Group, etc.). Enter one option per line. When set, users will see a dropdown instead of free text input.
-                </p>
-                {expectedNormalValuesText && (
-                  <div className="mt-2 flex flex-wrap gap-2">
-                    {expectedNormalValuesText.split('\n').filter(v => v.trim()).map((val, idx) => (
-                      <span key={idx} className="px-2 py-1 bg-blue-100 text-blue-800 rounded text-xs">
-                        {val.trim()}
-                      </span>
-                    ))}
-                  </div>
-                )}
-                {/* Flag Mapping for each dropdown option */}
-                {expectedNormalValuesText && expectedNormalValuesText.split('\n').filter(v => v.trim()).length > 0 && (
-                  <div className="mt-3 bg-white border border-blue-200 rounded-lg p-3">
-                    <h5 className="text-sm font-medium text-gray-700 mb-2 flex items-center">
-                      <Flag className="h-4 w-4 mr-1.5 text-orange-500" />
-                      Flag Mapping (auto-set flag when value is selected)
-                    </h5>
-                    <div className="space-y-2">
-                      {expectedNormalValuesText.split('\n').filter(v => v.trim()).map((val, idx) => {
-                        const trimmed = val.trim();
-                        return (
-                          <div key={idx} className="flex items-center gap-3">
-                            <span className="text-sm text-gray-800 min-w-[140px] font-medium">{trimmed}</span>
-                            <span className="text-gray-400 text-xs">&rarr;</span>
-                            <select
-                              value={expectedValueFlagMap[trimmed] ?? ''}
-                              onChange={(e) => {
-                                setExpectedValueFlagMap(prev => ({
-                                  ...prev,
-                                  [trimmed]: e.target.value
-                                }));
-                              }}
-                              className="px-2 py-1.5 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                            >
-                              {labFlagOptions.map((opt, i) => (
-                                <option key={i} value={opt.value}>{opt.label}{opt.value ? ` (${opt.value})` : ''}</option>
-                              ))}
-                            </select>
+                {valueType === 'qualitative' ? (
+                  <>
+                    {/* Qualitative: quick codes + optional values list */}
+                    <div className="mb-3">
+                      <label className="block text-sm font-medium text-gray-700 mb-1">
+                        Quick Codes
+                        <span className="ml-1 text-xs text-gray-400 font-normal">(shorthand for fast entry)</span>
+                      </label>
+                      <p className="text-xs text-gray-500 mb-2">
+                        Define short codes that auto-fill the full value during result entry. E.g. type "P" → "Positive". Codes are case-insensitive.
+                      </p>
+                      <div className="space-y-2">
+                        {quickCodes.map((row, idx) => (
+                          <div key={idx} className="flex items-center gap-2">
+                            <input
+                              type="text"
+                              value={row.code}
+                              onChange={e => setQuickCodes(prev => prev.map((r, i) => i === idx ? { ...r, code: e.target.value.toUpperCase() } : r))}
+                              placeholder="Code"
+                              maxLength={6}
+                              className="w-20 px-2 py-1.5 border border-gray-300 rounded-md text-sm font-mono focus:ring-2 focus:ring-purple-400 focus:outline-none uppercase"
+                            />
+                            <span className="text-gray-400 text-xs">→</span>
+                            <input
+                              type="text"
+                              value={row.value}
+                              onChange={e => setQuickCodes(prev => prev.map((r, i) => i === idx ? { ...r, value: e.target.value } : r))}
+                              placeholder="Full value"
+                              className="flex-1 px-2 py-1.5 border border-gray-300 rounded-md text-sm focus:ring-2 focus:ring-purple-400 focus:outline-none"
+                            />
+                            <button
+                              type="button"
+                              onClick={() => setQuickCodes(prev => prev.filter((_, i) => i !== idx))}
+                              className="text-red-400 hover:text-red-600 text-xs px-1"
+                            >✕</button>
                           </div>
-                        );
-                      })}
+                        ))}
+                        <button
+                          type="button"
+                          onClick={() => setQuickCodes(prev => [...prev, { code: '', value: '' }])}
+                          className="mt-1 text-sm text-purple-600 hover:text-purple-800 flex items-center gap-1"
+                        >
+                          <Plus className="h-3.5 w-3.5" /> Add code
+                        </button>
+                      </div>
                     </div>
-                    <p className="text-xs text-gray-500 mt-2">
-                      When a user selects a dropdown value during result entry, the flag will auto-set to the mapped value.
+
+                    {/* Optional values list for autocomplete suggestions */}
+                    <div className="mt-3">
+                      <label className="block text-sm font-medium text-gray-700 mb-1">
+                        Allowed Values
+                        <span className="ml-1 text-xs text-gray-400 font-normal">(optional — shown as autocomplete suggestions)</span>
+                      </label>
+                      <textarea
+                        value={expectedNormalValuesText}
+                        onChange={e => setExpectedNormalValuesText(e.target.value)}
+                        rows={3}
+                        className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-purple-400 focus:border-transparent"
+                        placeholder="Enter one value per line, e.g.:&#10;Non-Reactive&#10;Reactive&#10;Equivocal"
+                      />
+                      <p className="text-xs text-gray-500 mt-1">
+                        Optional. If set, these appear as suggestions in the result entry field. Quick codes above take priority for keyboard shortcut entry.
+                      </p>
+                    </div>
+
+                    {/* Default value for result entry pre-fill */}
+                    <div className="mt-3">
+                      <label className="block text-sm font-medium text-gray-700 mb-1">
+                        Default Value
+                        <span className="ml-1 text-xs text-gray-400 font-normal">(pre-filled in result entry)</span>
+                      </label>
+                      <input
+                        type="text"
+                        value={defaultValue}
+                        onChange={e => setDefaultValue(e.target.value)}
+                        placeholder={quickCodes.length > 0 ? `e.g. ${quickCodes[0]?.value || 'Non-Reactive'}` : 'e.g. Non-Reactive'}
+                        className="w-full px-3 py-2 border border-amber-300 rounded-md focus:ring-2 focus:ring-amber-400 focus:border-transparent bg-amber-50"
+                      />
+                      <p className="text-xs text-gray-500 mt-1">
+                        When a new result is being entered, this value is shown pre-filled (amber highlight). The tech can change or clear it before submitting.
+                      </p>
+                    </div>
+
+                    <p className="text-xs text-blue-600 bg-blue-50 rounded px-2 py-1 mt-2">
+                      Flag auto-calculation is disabled for Qualitative type. Use the Reference Range field above to show a descriptive normal value (e.g. "Negative") in reports.
                     </p>
-                  </div>
+                  </>
+                ) : (
+                  <>
+                    {/* Non-qualitative: dropdown options + flag mapping */}
+                    <label className="block text-sm font-medium text-gray-700 mb-1">
+                      Expected Values (Dropdown Options)
+                    </label>
+                    <textarea
+                      value={expectedNormalValuesText}
+                      onChange={(e) => setExpectedNormalValuesText(e.target.value)}
+                      rows={4}
+                      className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                      placeholder="Enter one value per line, e.g.:&#10;Negative&#10;Positive&#10;Reactive&#10;Non-Reactive"
+                    />
+                    <p className="text-xs text-gray-500 mt-1">
+                      Enter one option per line. When set, users will see a dropdown instead of free text input.
+                    </p>
+                    {expectedNormalValuesText && (
+                      <div className="mt-2 flex flex-wrap gap-2">
+                        {expectedNormalValuesText.split('\n').filter(v => v.trim()).map((val, idx) => (
+                          <span key={idx} className="px-2 py-1 bg-blue-100 text-blue-800 rounded text-xs">
+                            {val.trim()}
+                          </span>
+                        ))}
+                      </div>
+                    )}
+                    {/* Default value for result entry pre-fill */}
+                    <div className="mt-3">
+                      <label className="block text-sm font-medium text-gray-700 mb-1">
+                        Default Value
+                        <span className="ml-1 text-xs text-gray-400 font-normal">(pre-filled in result entry)</span>
+                      </label>
+                      <input
+                        type="text"
+                        value={defaultValue}
+                        onChange={e => setDefaultValue(e.target.value)}
+                        placeholder="e.g. Negative, 0, Normal"
+                        className="w-full px-3 py-2 border border-amber-300 rounded-md focus:ring-2 focus:ring-amber-400 focus:border-transparent bg-amber-50"
+                      />
+                      <p className="text-xs text-gray-500 mt-1">
+                        Pre-fills this value in result entry for new results (amber highlight). Tech can change before submitting.
+                      </p>
+                    </div>
+
+                    {expectedNormalValuesText && expectedNormalValuesText.split('\n').filter(v => v.trim()).length > 0 && (
+                      <div className="mt-3 bg-white border border-blue-200 rounded-lg p-3">
+                        <h5 className="text-sm font-medium text-gray-700 mb-2 flex items-center">
+                          <Flag className="h-4 w-4 mr-1.5 text-orange-500" />
+                          Flag Mapping (auto-set flag when value is selected)
+                        </h5>
+                        <div className="space-y-2">
+                          {expectedNormalValuesText.split('\n').filter(v => v.trim()).map((val, idx) => {
+                            const trimmed = val.trim();
+                            return (
+                              <div key={idx} className="flex items-center gap-3">
+                                <span className="text-sm text-gray-800 min-w-[140px] font-medium">{trimmed}</span>
+                                <span className="text-gray-400 text-xs">&rarr;</span>
+                                <select
+                                  value={expectedValueFlagMap[trimmed] ?? ''}
+                                  onChange={(e) => {
+                                    setExpectedValueFlagMap(prev => ({
+                                      ...prev,
+                                      [trimmed]: e.target.value
+                                    }));
+                                  }}
+                                  className="px-2 py-1.5 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                                >
+                                  {labFlagOptions.map((opt, i) => (
+                                    <option key={i} value={opt.value}>{opt.label}{opt.value ? ` (${opt.value})` : ''}</option>
+                                  ))}
+                                </select>
+                              </div>
+                            );
+                          })}
+                        </div>
+                        <p className="text-xs text-gray-500 mt-2">
+                          When a user selects a dropdown value during result entry, the flag will auto-set to the mapped value.
+                        </p>
+                      </div>
+                    )}
+                  </>
                 )}
               </div>
             </div>
