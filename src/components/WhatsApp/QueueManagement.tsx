@@ -101,7 +101,7 @@ const QueueManagement: React.FC = () => {
         setLoading(true);
         try {
             // Fetch PDF Queue with order details for location filtering
-            let pdfQuery = supabase
+            const { data: pdfData, error: pdfError } = await supabase
                 .from('pdf_generation_queue')
                 .select(`
                     *,
@@ -116,23 +116,22 @@ const QueueManagement: React.FC = () => {
                 .order('created_at', { ascending: false })
                 .limit(100);
 
-            // Apply location filter if selected
-            if (selectedLocationId !== 'all') {
-                pdfQuery = pdfQuery.eq('orders.location_id', selectedLocationId);
-            } else if (userLocationIds.length > 0) {
-                // Filter by user's accessible locations
-                pdfQuery = pdfQuery.in('orders.location_id', userLocationIds);
-            }
-
-            const { data: pdfData, error: pdfError } = await pdfQuery;
-
             if (pdfError) console.error('Error fetching PDF queue:', pdfError);
-            else setPdfQueue(pdfData || []);
+            else {
+                // Apply location filter client-side to avoid PostgREST embedded resource filter issues
+                let filtered = pdfData || [];
+                if (selectedLocationId !== 'all') {
+                    filtered = filtered.filter(item => item.orders?.location_id === selectedLocationId);
+                } else if (userLocationIds.length > 0) {
+                    filtered = filtered.filter(item => userLocationIds.includes(item.orders?.location_id || ''));
+                }
+                setPdfQueue(filtered);
+            }
 
             // Fetch Notification Queue
             // NOTE: notification_queue doesn't have location_id, but has order_id
             // We can join through orders -> locations for location filtering
-            let notifQuery = supabase
+            const { data: notifData, error: notifError } = await supabase
                 .from('notification_queue')
                 .select(`
                     *,
@@ -142,17 +141,17 @@ const QueueManagement: React.FC = () => {
                 .order('created_at', { ascending: false })
                 .limit(100);
 
-            // Apply location filter through orders relationship
-            if (selectedLocationId !== 'all') {
-                notifQuery = notifQuery.eq('orders.location_id', selectedLocationId);
-            } else if (userLocationIds.length > 0) {
-                notifQuery = notifQuery.in('orders.location_id', userLocationIds);
-            }
-
-            const { data: notifData, error: notifError } = await notifQuery;
-
             if (notifError) console.error('Error fetching notification queue:', notifError);
-            else setNotificationQueue(notifData || []);
+            else {
+                // Apply location filter client-side to avoid PostgREST embedded resource filter issues
+                let filtered = notifData || [];
+                if (selectedLocationId !== 'all') {
+                    filtered = filtered.filter(item => item.orders?.location_id === selectedLocationId);
+                } else if (userLocationIds.length > 0) {
+                    filtered = filtered.filter(item => userLocationIds.includes(item.orders?.location_id || ''));
+                }
+                setNotificationQueue(filtered);
+            }
         } catch (err) {
             console.error('Error fetching queues:', err);
         } finally {

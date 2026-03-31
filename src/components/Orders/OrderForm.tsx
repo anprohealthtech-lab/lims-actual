@@ -1252,8 +1252,8 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
 
     // Doctor is optional — 'SELF' means self-referred / walk-in
 
-    if (selectedTests.length === 0) {
-      errors.push('❌ Tests: Please select at least one test');
+    if (selectedTests.length === 0 && selectedBillingItems.length === 0) {
+      errors.push('❌ Tests or Billing Items: Please select at least one test or add a billing item');
     }
 
     if (
@@ -2211,8 +2211,9 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
               </div>
             )}
 
-            {selectedTests.length > 0 && (
+            {(selectedTests.length > 0 || selectedBillingItems.length > 0 || billingItemTypes.length > 0) && (
               <div className="bg-green-50 border border-green-200 rounded-lg p-4">
+                {selectedTests.length > 0 && (<>
                 <h4 className="font-medium text-green-900 mb-2 flex items-center gap-2">
                   <TestTube className="h-4 w-4" />
                   Selected Tests & Packages ({selectedTests.length})
@@ -2321,6 +2322,7 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
                   <span>Tests Subtotal:</span>
                   <span>₹{totalAmount}</span>
                 </div>
+                </>)}
 
                 {/* Extra Charges (Lab Billing Items) */}
                 {selectedBillingItems.length > 0 && (
@@ -2445,9 +2447,11 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
                     </p>
                   </div>
                 )}
+                {selectedTests.length > 0 && (
                 <div className="mt-2 text-xs text-green-700 bg-green-100 p-2 rounded">
                   💡 Tip: Select "In-house" for tests performed in your lab, or choose an outsourced lab if test is sent externally
                 </div>
+                )}
               </div>
             )}
           </section>
@@ -2876,7 +2880,7 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
           </section>
 
           {/* Discount & Payment Section */}
-          {selectedTests.length > 0 && (
+          {(selectedTests.length > 0 || selectedBillingItems.length > 0) && (
             <section className="space-y-4 border-t pt-4">
               <h3 className="text-lg font-medium text-gray-900 flex items-center gap-2">
                 <DollarSign className="h-5 w-5" />
@@ -2885,10 +2889,12 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
 
               {/* Amount Breakdown */}
               <div className="bg-gray-50 p-4 rounded-lg space-y-2">
+                {selectedTests.length > 0 && (
                 <div className="flex justify-between text-sm">
                   <span className="text-gray-600">Subtotal ({selectedTests.length} tests)</span>
                   <span className="font-medium">{currencySymbol}{totalAmount.toLocaleString()}</span>
                 </div>
+                )}
 
                 {/* Sample Collection Charge */}
                 <div className="flex items-center justify-between text-sm border-t pt-2">
@@ -3107,10 +3113,10 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
           {/* Actions */}
           <div className="flex items-center justify-between border-t pt-6">
             <div className="text-sm text-gray-600">
-              {selectedTests.length > 0 ? (
-                <span className="font-medium">Total: {currencySymbol}{totalAmount}</span>
+              {(selectedTests.length > 0 || selectedBillingItems.length > 0) ? (
+                <span className="font-medium">Total: {currencySymbol}{finalAmount}</span>
               ) : (
-                <span>Select tests now or continue—tests can be added later.</span>
+                <span>Select tests or add billing items to proceed.</span>
               )}
             </div>
             <div className="flex items-center gap-3">
@@ -3133,7 +3139,7 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
                     <span>Creating Order...</span>
                   </>
                 ) : (
-                  <span>Create Order{selectedTests.length > 0 ? ` – ${currencySymbol}${finalAmount}` : ''}</span>
+                  <span>Create Order{(selectedTests.length > 0 || selectedBillingItems.length > 0) ? ` – ${currencySymbol}${finalAmount}` : ''}</span>
                 )}
               </button>
             </div>

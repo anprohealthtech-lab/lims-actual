@@ -2240,7 +2240,7 @@ function generateBasicDefaultTemplateHtml(
   font-family: Arial, Helvetica, sans-serif;
   display: flex;
   flex-direction: column;
-  min-height: 780px; /* ≈ A4 body height minus default top/bottom margins (180px + 150px) */
+  min-height: ${printOptions?._isCompact ? '0' : '780px'}; /* ≈ A4 body height minus default top/bottom margins (180px + 150px) */
 }
 
 .basic-report-template table {
@@ -2572,6 +2572,7 @@ ${flagSymbol === "before" ? `
     const hasCalcInGroup = analytes.some((a: { is_auto_calculated?: boolean; is_calculated?: boolean }) =>
       a.is_auto_calculated || a.is_calculated
     );
+    let hasNumericInGroup = false;
 
     const specimenText = analytes[0]?.specimen
       ? `<div class="center-subtitle">Specimen: ${analytes[0].specimen}</div>`
@@ -2631,10 +2632,14 @@ ${flagSymbol === "before" ? `
         const unitText = String(unit || "").trim().toLowerCase();
         const refText = String(refRange || "").trim();
         const hasNumericRef = /\d/.test(refText);
+        const valueTypeRaw = String(analyte.value_type || "").toLowerCase();
         const isDescriptive =
-          unitText === "n/a" || unitText === "na" || unitText === "-" ||
+          valueTypeRaw !== "qualitative" &&
+          (unitText === "n/a" || unitText === "na" || unitText === "-" ||
           unitText === "none" || unitText === "not applicable" ||
-          (!unitText && refText && !hasNumericRef);
+          (!unitText && refText && !hasNumericRef));
+
+        if (!isDescriptive && valueTypeRaw !== "qualitative") hasNumericInGroup = true;
 
         const isNumericHigh = canonicalFlag === "high" || canonicalFlag === "critical_high";
         const isNumericLow = canonicalFlag === "low" || canonicalFlag === "critical_low";
@@ -2717,7 +2722,7 @@ ${flagSymbol === "before" ? `
           if (hasCalcInGroup && calcMarker === "asterisk") parts.push("* Calculated parameter");
           if (printOptions?.flagAsterisk) parts.push("** Abnormal value");
           if (printOptions?.flagAsterisk && printOptions?.flagAsteriskCritical) parts.push("*** Critical value");
-          if (showFlagLegend && flagSymbol !== "none") parts.push("H = High &nbsp; L = Low &nbsp; A = Abnormal &nbsp; H* = Critical High &nbsp; L* = Critical Low");
+          if (showFlagLegend && flagSymbol !== "none" && hasNumericInGroup) parts.push("H = High &nbsp; L = Low &nbsp; A = Abnormal &nbsp; H* = Critical High &nbsp; L* = Critical Low");
           return parts.length ? `<p class="calculated-note">${parts.join(" &nbsp;|&nbsp; ")}</p>` : "";
         })()}
         ${_basicGroupInterp ? `<div class="limsv2-report group-interpretation" style="margin-top:8px;padding:6px 0;border-top:1px solid #ddd;font-size:inherit;">${_basicGroupInterp}</div>` : ''}
@@ -7400,6 +7405,28 @@ serve(async (req) => {
             const groupSectionContent = sectionContentByGroup.has(testGroupId)
               ? sectionContentByGroup.get(testGroupId)
               : (sectionContentByGroup.size === 0 && renderedSections.length === 0 ? groupFullContext?.sectionContent : undefined);
+            // Suppress min-height when this group shares a non-zero printOrder with its
+            // neighbour (same-priority pair flows on one page — min-height would push the
+            // second group off the page even though the page-break is suppressed).
+            const _groupPrintOrder = printOrderByGroupId.get(testGroupId) ?? 999;
+            const _isSamePageAsPrev = renderedSections.length > 0 &&
+              prevRenderedPrintOrder !== null &&
+              _groupPrintOrder !== 999 &&
+              _groupPrintOrder !== 0 &&
+              _groupPrintOrder === prevRenderedPrintOrder;
+            const _groupsArr = groupsToRender as string[];
+            const _groupIdx = _groupsArr.indexOf(testGroupId);
+            const _nextGId = _groupIdx >= 0 ? _groupsArr[_groupIdx + 1] : undefined;
+            const _nextGPrintOrder = _nextGId ? (printOrderByGroupId.get(_nextGId) ?? 999) : null;
+            const _isSamePageAsNext = _nextGPrintOrder !== null &&
+              _nextGPrintOrder !== 0 &&
+              _nextGPrintOrder !== 999 &&
+              _nextGPrintOrder === _groupPrintOrder;
+            const _suppressMinHeight = _isSamePageAsPrev || _isSamePageAsNext;
+            const _groupPrintOptions = _suppressMinHeight
+              ? { ...(mergePrintOptions(pdfSettings, testGroupPrintOptions.get(testGroupId)) ?? {}), _isCompact: true }
+              : mergePrintOptions(pdfSettings, testGroupPrintOptions.get(testGroupId)) ?? undefined;
+
             renderedHtml = generateDefaultTemplateHtml(
               groupContext,
               testGroupNames,
@@ -7411,7 +7438,7 @@ serve(async (req) => {
               labSettings?.show_methodology ?? true,
               labSettings?.show_interpretation ?? false,
               labSettings?.report_patient_info_config,
-              mergePrintOptions(pdfSettings, testGroupPrintOptions.get(testGroupId)) ?? undefined,
+              _groupPrintOptions,
               customPatientFieldConfigs ?? [],
               testGroupId,
               testGroupInterpretations,
@@ -7711,6 +7738,7 @@ serve(async (req) => {
               11,
             ),
             alternateRows: false,
+            _isCompact: true,
           };
           effectivePrintOptionsForCss = compactPrintOptions;
 

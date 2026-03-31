@@ -299,7 +299,7 @@ const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, on
       if (allAnalyteIds.length > 0 && data.lab_id) {
         const { data: la } = await supabase
           .from("lab_analytes")
-          .select("analyte_id, expected_normal_values, expected_value_flag_map, value_type, expected_value_codes, default_value")
+          .select("analyte_id, expected_normal_values, expected_value_flag_map, value_type, expected_value_codes, default_value, reference_range, lab_specific_reference_range")
           .eq("lab_id", data.lab_id)
           .in("analyte_id", allAnalyteIds);
         if (la) labAnalytesMap = new Map(la.map((x: any) => [x.analyte_id, x]));
@@ -392,7 +392,7 @@ const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, on
             parameter: a.name,
             value: prefillValue,
             unit: a.existing_result?.unit || a.units || "",
-            reference: a.existing_result?.reference_range || a.reference_range || "",
+            reference: a.existing_result?.reference_range ?? (la != null ? (la.lab_specific_reference_range ?? la.reference_range ?? a.reference_range) : a.reference_range) ?? "",
             flag: a.existing_result?.flag || "",
             is_calculated: !!a.is_calculated,
             is_existing: hasExisting,

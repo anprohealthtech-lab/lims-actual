@@ -331,5 +331,58 @@ class SecureGeminiAIService {
 export const geminiAI = new SecureGeminiAIService();
 export { SecureGeminiAIService as GeminiAIService };
 
+// ─── Analyte Configuration ───────────────────────────────────────────────────
+
+export interface AnalyteConfigurationResponse {
+  name: string;
+  code: string;
+  unit: string;
+  reference_range: string;
+  low_critical: string | null;
+  high_critical: string | null;
+  interpretation_low: string;
+  interpretation_normal: string;
+  interpretation_high: string;
+  category: string;
+  value_type: 'numeric' | 'qualitative' | 'semi_quantitative' | 'descriptive';
+  expected_normal_values: string[];
+  description: string;
+  ai_processing_type: string;
+  group_ai_mode: 'individual' | 'group_only' | 'both';
+  ai_prompt_override: string | null;
+  is_calculated: boolean;
+  formula: string | null;
+  formula_variables: string[];
+  formula_description: string | null;
+  confidence: number;
+  reasoning: string;
+}
+
+/**
+ * Generate a complete analyte configuration using AI
+ */
+export async function generateAnalyteConfiguration(
+  analyteName: string,
+  options?: { description?: string; category?: string }
+): Promise<AnalyteConfigurationResponse> {
+  const { data, error } = await supabase.functions.invoke('ai-analyte-configurator', {
+    body: {
+      analyteName,
+      description: options?.description,
+      category: options?.category,
+    },
+  });
+
+  if (error) {
+    throw new Error(`Edge Function failed: ${error.message || 'Unknown error'}`);
+  }
+
+  if (!data?.success) {
+    throw new Error(data?.error || 'AI analyte configurator returned unsuccessful response');
+  }
+
+  return data.data as AnalyteConfigurationResponse;
+}
+
 // Export the generateTestConfiguration function directly for easier use
 export const generateTestConfiguration = geminiAI.generateTestConfiguration.bind(geminiAI);

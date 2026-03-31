@@ -1,5 +1,6 @@
 import React, { useState, useMemo, useRef, useEffect } from 'react';
-import { X, Beaker, AlertTriangle, Settings, Brain, Calculator, Search, Plus, Trash2, ChevronDown, Flag } from 'lucide-react';
+import { X, Beaker, AlertTriangle, Settings, Brain, Calculator, Search, Plus, Trash2, ChevronDown, Flag, Sparkles, Loader2, CheckCircle, ChevronUp } from 'lucide-react';
+import { generateAnalyteConfiguration, AnalyteConfigurationResponse } from '../../utils/geminiAI';
 
 interface SourceAnalyte {
   id: string;
@@ -112,6 +113,15 @@ const AnalyteForm: React.FC<AnalyteFormProps> = ({ onClose, onSubmit, analyte, a
   const [showSourcePicker, setShowSourcePicker] = useState(false);
   const formulaInputRef = useRef<HTMLInputElement>(null);
   const sourcePickerRef = useRef<HTMLDivElement>(null);
+
+  // AI helper state
+  const [showAiHelper, setShowAiHelper] = useState(false);
+  const [aiPromptText, setAiPromptText] = useState('');
+  const [aiCategoryHint, setAiCategoryHint] = useState('');
+  const [isAiGenerating, setIsAiGenerating] = useState(false);
+  const [aiSuggestion, setAiSuggestion] = useState<AnalyteConfigurationResponse | null>(null);
+  const [aiError, setAiError] = useState<string | null>(null);
+  const [aiApplied, setAiApplied] = useState(false);
 
   // Generate a variable slug from analyte name
   const generateVariableSlug = (name: string): string => {
@@ -268,6 +278,59 @@ const AnalyteForm: React.FC<AnalyteFormProps> = ({ onClose, onSubmit, analyte, a
     { value: 'both', label: 'Both Individual & Group Processing', description: 'AI can process this analyte individually or as part of a group.' },
   ];
 
+  const handleAiGenerate = async () => {
+    const nameToUse = aiPromptText.trim() || formData.name.trim();
+    if (!nameToUse) {
+      setAiError('Please enter an analyte name or description.');
+      return;
+    }
+    setIsAiGenerating(true);
+    setAiError(null);
+    setAiSuggestion(null);
+    setAiApplied(false);
+    try {
+      const result = await generateAnalyteConfiguration(nameToUse, {
+        description: aiPromptText.trim() !== nameToUse ? aiPromptText.trim() : undefined,
+        category: aiCategoryHint || undefined,
+      });
+      setAiSuggestion(result);
+    } catch (err) {
+      setAiError(err instanceof Error ? err.message : 'AI generation failed. Please try again.');
+    } finally {
+      setIsAiGenerating(false);
+    }
+  };
+
+  const handleAiApply = () => {
+    if (!aiSuggestion) return;
+    setFormData(prev => ({
+      ...prev,
+      name: aiSuggestion.name || prev.name,
+      code: aiSuggestion.code || prev.code,
+      unit: aiSuggestion.unit || prev.unit,
+      referenceRange: aiSuggestion.reference_range || prev.referenceRange,
+      lowCritical: aiSuggestion.low_critical ?? prev.lowCritical,
+      highCritical: aiSuggestion.high_critical ?? prev.highCritical,
+      interpretationLow: aiSuggestion.interpretation_low || prev.interpretationLow,
+      interpretationNormal: aiSuggestion.interpretation_normal || prev.interpretationNormal,
+      interpretationHigh: aiSuggestion.interpretation_high || prev.interpretationHigh,
+      category: aiSuggestion.category || prev.category,
+      value_type: aiSuggestion.value_type || prev.value_type,
+      description: aiSuggestion.description || prev.description,
+      aiProcessingType: aiSuggestion.ai_processing_type || prev.aiProcessingType,
+      groupAiMode: aiSuggestion.group_ai_mode || prev.groupAiMode,
+      aiPromptOverride: aiSuggestion.ai_prompt_override || prev.aiPromptOverride,
+      isCalculated: aiSuggestion.is_calculated ?? prev.isCalculated,
+      formula: aiSuggestion.formula ?? prev.formula,
+      formulaVariables: aiSuggestion.formula_variables?.join(', ') ?? prev.formulaVariables,
+      formulaDescription: aiSuggestion.formula_description ?? prev.formulaDescription,
+      expectedNormalValues: aiSuggestion.expected_normal_values?.join('\n') || prev.expectedNormalValues,
+    }));
+    setAiApplied(true);
+    setAiSuggestion(null);
+    setShowAiHelper(false);
+  };
+
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
 
@@ -336,6 +399,135 @@ const AnalyteForm: React.FC<AnalyteFormProps> = ({ onClose, onSubmit, analyte, a
         </div>
 
         <form onSubmit={handleSubmit} className="p-6 space-y-6">
+
+          {/* AI Analyte Helper */}
+          <div className="border border-purple-200 rounded-lg overflow-hidden">
+            <button
+              type="button"
+              onClick={() => { setShowAiHelper(v => !v); setAiError(null); setAiSuggestion(null); }}
+              className="w-full flex items-center justify-between px-4 py-3 bg-purple-50 hover:bg-purple-100 transition-colors"
+            >
+              <span className="flex items-center gap-2 text-sm font-medium text-purple-800">
+                <Sparkles className="h-4 w-4 text-purple-600" />
+                Generate with AI
+                {aiApplied && (
+                  <span className="flex items-center gap-1 text-xs text-green-700 bg-green-100 px-2 py-0.5 rounded-full">
+                    <CheckCircle className="h-3 w-3" /> Applied
+                  </span>
+                )}
+              </span>
+              {showAiHelper ? <ChevronUp className="h-4 w-4 text-purple-600" /> : <ChevronDown className="h-4 w-4 text-purple-600" />}
+            </button>
+
+            {showAiHelper && (
+              <div className="p-4 space-y-3 bg-white">
+                <p className="text-xs text-gray-500">
+                  Describe the analyte and AI will fill all fields — name, unit, reference range, interpretations, AI config, and more.
+                </p>
+
+                <div>
+                  <label className="block text-xs font-medium text-gray-700 mb-1">
+                    Analyte name or description *
+                  </label>
+                  <input
+                    type="text"
+                    value={aiPromptText}
+                    onChange={e => setAiPromptText(e.target.value)}
+                    onKeyDown={e => e.key === 'Enter' && (e.preventDefault(), handleAiGenerate())}
+                    placeholder='e.g. "Hemoglobin" or "Serum creatinine for kidney function"'
+                    className="w-full px-3 py-2 text-sm border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-purple-500"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-xs font-medium text-gray-700 mb-1">
+                    Category hint (optional)
+                  </label>
+                  <select
+                    value={aiCategoryHint}
+                    onChange={e => setAiCategoryHint(e.target.value)}
+                    className="w-full px-3 py-2 text-sm border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-purple-500"
+                  >
+                    <option value="">Auto-detect</option>
+                    {['Hematology','Biochemistry','Serology','Endocrinology','Coagulation','Urinalysis',
+                      'Microbiology','Immunology','Molecular Biology','Lipid Profile','Liver Function',
+                      'Kidney Function','Thyroid','Diabetes','Hormones','Electrolytes','Cardiac',
+                      'Tumor Markers','Vitamins & Minerals','Allergy'].map(c => (
+                      <option key={c} value={c}>{c}</option>
+                    ))}
+                  </select>
+                </div>
+
+                {aiError && (
+                  <div className="flex items-start gap-2 p-3 bg-red-50 border border-red-200 rounded-md text-xs text-red-700">
+                    <AlertTriangle className="h-4 w-4 mt-0.5 flex-shrink-0" />
+                    {aiError}
+                  </div>
+                )}
+
+                {/* AI Preview */}
+                {aiSuggestion && (
+                  <div className="border border-purple-200 rounded-md bg-purple-50 p-3 space-y-2">
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-semibold text-purple-800">AI Suggestion Preview</span>
+                      <span className="text-xs text-purple-600 bg-purple-100 px-2 py-0.5 rounded-full">
+                        {Math.round((aiSuggestion.confidence || 0) * 100)}% confidence
+                      </span>
+                    </div>
+                    <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs text-gray-700">
+                      <div><span className="font-medium">Name:</span> {aiSuggestion.name}</div>
+                      <div><span className="font-medium">Code:</span> {aiSuggestion.code}</div>
+                      <div><span className="font-medium">Unit:</span> {aiSuggestion.unit}</div>
+                      <div><span className="font-medium">Ref. Range:</span> {aiSuggestion.reference_range}</div>
+                      <div><span className="font-medium">Category:</span> {aiSuggestion.category}</div>
+                      <div><span className="font-medium">Value Type:</span> {aiSuggestion.value_type}</div>
+                      <div><span className="font-medium">AI Processing:</span> {aiSuggestion.ai_processing_type}</div>
+                      <div><span className="font-medium">Group AI Mode:</span> {aiSuggestion.group_ai_mode}</div>
+                      {aiSuggestion.low_critical && <div><span className="font-medium">Critical Low:</span> {aiSuggestion.low_critical}</div>}
+                      {aiSuggestion.high_critical && <div><span className="font-medium">Critical High:</span> {aiSuggestion.high_critical}</div>}
+                      {aiSuggestion.expected_normal_values?.length > 0 && (
+                        <div className="col-span-2"><span className="font-medium">Expected Values:</span> {aiSuggestion.expected_normal_values.join(', ')}</div>
+                      )}
+                    </div>
+                    {aiSuggestion.reasoning && (
+                      <p className="text-xs text-purple-700 italic border-t border-purple-200 pt-2">{aiSuggestion.reasoning}</p>
+                    )}
+                    <div className="flex gap-2 pt-1">
+                      <button
+                        type="button"
+                        onClick={handleAiApply}
+                        className="flex-1 flex items-center justify-center gap-1 px-3 py-1.5 bg-purple-600 text-white text-xs rounded-md hover:bg-purple-700 transition-colors"
+                      >
+                        <CheckCircle className="h-3.5 w-3.5" />
+                        Apply to Form
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setAiSuggestion(null)}
+                        className="px-3 py-1.5 text-xs border border-gray-300 rounded-md hover:bg-gray-50 transition-colors text-gray-600"
+                      >
+                        Discard
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+                <button
+                  type="button"
+                  onClick={handleAiGenerate}
+                  disabled={isAiGenerating}
+                  className="w-full flex items-center justify-center gap-2 px-4 py-2 bg-purple-600 text-white text-sm rounded-md hover:bg-purple-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                >
+                  {isAiGenerating ? (
+                    <><Loader2 className="h-4 w-4 animate-spin" /> Generating...</>
+                  ) : (
+                    <><Sparkles className="h-4 w-4" /> Generate Configuration</>
+                  )}
+                </button>
+              </div>
+            )}
+          </div>
+
           {/* Basic Information */}
           <div className="space-y-4">
             <h3 className="text-lg font-medium text-gray-900 flex items-center">

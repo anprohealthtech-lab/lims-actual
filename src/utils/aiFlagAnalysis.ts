@@ -262,14 +262,16 @@ const mergeAnalyteWithLabOverride = (baseAnalyte?: AnalyteContext, labOverride?:
     id: base?.id || labOverride?.analyte_id,
     name: resolvedName,
     unit: labOverride?.lab_specific_unit || labOverride?.unit || base?.unit,
-    reference_range: labOverride?.lab_specific_reference_range || labOverride?.reference_range || base?.reference_range,
+    reference_range: labOverride != null
+      ? (labOverride.lab_specific_reference_range ?? labOverride.reference_range ?? base?.reference_range)
+      : base?.reference_range,
     reference_range_male:
-      labOverride?.lab_specific_reference_range_male ||
-      labOverride?.reference_range_male ||
+      labOverride?.lab_specific_reference_range_male ??
+      labOverride?.reference_range_male ??
       base?.reference_range_male,
     reference_range_female:
-      labOverride?.lab_specific_reference_range_female ||
-      labOverride?.reference_range_female ||
+      labOverride?.lab_specific_reference_range_female ??
+      labOverride?.reference_range_female ??
       base?.reference_range_female,
     low_critical:
       labOverride?.lab_specific_low_critical ||
@@ -568,7 +570,8 @@ export async function applyFlagAnalysis(
       ai_interpretation: r.interpretation,
       ai_audit_status: r.auditStatus as any,
       // Update reference_range to the gender-resolved range so display matches the flag
-      ...(r.resolvedReferenceRange ? { reference_range: r.resolvedReferenceRange } : {}),
+      // Use !== undefined so that an explicit empty string (lab override cleared range) also gets written
+      ...(r.resolvedReferenceRange !== undefined ? { reference_range: r.resolvedReferenceRange } : {}),
       // Enriched analyte snapshot fields for PDF template
       ...(r.enrichedSnapshot ? {
         normal_range_min: r.enrichedSnapshot.normal_range_min,
