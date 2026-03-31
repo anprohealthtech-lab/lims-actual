@@ -208,7 +208,7 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
         requests.push(
           supabase
             .from('test_group_analytes')
-            .select('analyte_id, sort_order, section_heading, is_visible')
+            .select('analyte_id, lab_analyte_id, sort_order, section_heading, is_visible')
             .eq('test_group_id', testGroup.id) as unknown as Promise<any>
         );
       }
@@ -222,49 +222,72 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
       if (testGroup?.id) {
         const labId = await database.getCurrentUserLabId();
         if (labId) {
-          // Step 1: get analyte_ids for this test group
-          const { data: tgaIds } = await supabase
-            .from('test_group_analytes')
-            .select('analyte_id')
-            .eq('test_group_id', testGroup.id);
+          // Use TGA rows already fetched above (includes lab_analyte_id)
+          const tgaRows = tgaRes?.data || [];
 
-          const linkedIds = (tgaIds || []).map((r: any) => r.analyte_id).filter(Boolean);
+          const withLabAnalyte = (tgaRows || []).filter((r: any) => r.lab_analyte_id);
+          const withoutLabAnalyte = (tgaRows || []).filter((r: any) => !r.lab_analyte_id);
+
+          const labAnalyteIds = withLabAnalyte.map((r: any) => r.lab_analyte_id);
+          const fallbackAnalyteIds = withoutLabAnalyte.map((r: any) => r.analyte_id).filter(Boolean);
+
+          const LA_SELECT = `
+            id, analyte_id,
+            name, unit, reference_range, method,
+            low_critical, high_critical,
+            interpretation_low, interpretation_normal, interpretation_high,
+            lab_specific_reference_range,
+            lab_specific_interpretation_low,
+            lab_specific_interpretation_normal,
+            lab_specific_interpretation_high,
+            value_type, expected_normal_values, expected_value_flag_map,
+            expected_value_codes, default_value,
+            is_calculated, formula, formula_variables, formula_description,
+            is_critical, normal_range_min, normal_range_max,
+            ai_processing_type, group_ai_mode, ai_prompt_override,
+            ref_range_knowledge, display_name, is_active,
+            analytes!inner(id, name, unit, reference_range, category, is_active, is_global, is_calculated, formula, formula_variables, formula_description)
+          `;
+
+          // Fetch by lab_analyte_id (exact, no duplicates)
+          const [directRes, fallbackRes] = await Promise.all([
+            labAnalyteIds.length > 0
+              ? supabase.from('lab_analytes').select(LA_SELECT).in('id', labAnalyteIds)
+              : Promise.resolve({ data: [] }),
+            fallbackAnalyteIds.length > 0
+              ? supabase.from('lab_analytes').select(LA_SELECT).eq('lab_id', labId).in('analyte_id', fallbackAnalyteIds)
+              : Promise.resolve({ data: [] }),
+          ]);
+
+          // Merge: prefer direct rows; for fallback, deduplicate by analyte_id (take first)
+          const seenAnalyteIds = new Set<string>();
+          const laRows: any[] = [];
+          for (const la of ((directRes.data || []) as any[])) {
+            if (!seenAnalyteIds.has(la.analyte_id)) {
+              seenAnalyteIds.add(la.analyte_id);
+              laRows.push(la);
+            }
+          }
+          for (const la of ((fallbackRes.data || []) as any[])) {
+            if (!seenAnalyteIds.has(la.analyte_id)) {
+              seenAnalyteIds.add(la.analyte_id);
+              laRows.push(la);
+            }
+          }
+
+          const linkedIds = laRows.map((la: any) => la.analyte_id);
 
           if (linkedIds.length > 0) {
-            // Step 2: fetch from lab_analytes (source of truth) joined with global analytes for fallback fields
-            const { data: laRows } = await supabase
-              .from('lab_analytes')
-              .select(`
-                analyte_id,
-                name, unit, reference_range, method,
-                low_critical, high_critical,
-                interpretation_low, interpretation_normal, interpretation_high,
-                lab_specific_reference_range,
-                lab_specific_interpretation_low,
-                lab_specific_interpretation_normal,
-                lab_specific_interpretation_high,
-                value_type, expected_normal_values, expected_value_flag_map,
-                expected_value_codes, default_value,
-                is_calculated, formula, formula_variables, formula_description,
-                is_critical, normal_range_min, normal_range_max,
-                ai_processing_type, group_ai_mode, ai_prompt_override,
-                ref_range_knowledge, display_name, is_active,
-                analytes!inner(id, name, unit, reference_range, category, is_active, is_global, is_calculated, formula, formula_variables, formula_description)
-              `)
-              .eq('lab_id', labId)
-              .in('analyte_id', linkedIds);
+            // Helper: parse jsonb that Supabase may return as a raw JSON string
+            const parseJsonb = <T,>(val: any, fallback: T): T => {
+              if (val === null || val === undefined) return fallback;
+              if (typeof val === 'string') {
+                try { return JSON.parse(val) as T; } catch { return fallback; }
+              }
+              return val as T;
+            };
 
-            if (laRows) {
-              // Helper: parse jsonb that Supabase may return as a raw JSON string
-              const parseJsonb = <T,>(val: any, fallback: T): T => {
-                if (val === null || val === undefined) return fallback;
-                if (typeof val === 'string') {
-                  try { return JSON.parse(val) as T; } catch { return fallback; }
-                }
-                return val as T;
-              };
-
-              allLinkedData = (laRows as any[]).map((la: any) => {
+            allLinkedData = laRows.map((la: any) => {
                 const global = Array.isArray(la.analytes) ? la.analytes[0] : la.analytes;
 
                 const expectedNormalValues = parseJsonb<string[]>(la.expected_normal_values, []);
@@ -313,8 +336,7 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
                   display_name: la.display_name ?? null,
                   is_active: la.is_active,
                 };
-              });
-            }
+            });
           }
         }
       }

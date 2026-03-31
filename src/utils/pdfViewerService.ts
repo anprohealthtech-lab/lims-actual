@@ -382,46 +382,43 @@ export const generateViewerPDF = async (
     const contentWidth = pageWidth - 2 * margin;
     let yPos = margin;
 
-    // ============ Helper Function: Add Header Image ============
+    // ============ Helper Function: Add Letterhead as Full-Page Background ============
+    // Letterhead is rendered as a full A4 background image (same as server-side PDF generation).
+    // Content overlays on top with a fixed top margin matching the letterhead's header area.
+    // 35mm top ≈ 130px at 96dpi (matches server-side topSpacerHeight default).
+    const LETTERHEAD_TOP_MARGIN = 35;   // mm — space for letterhead header area
+    const LETTERHEAD_BOTTOM_MARGIN = 32; // mm — space for letterhead footer area
+
+    let _cachedLetterheadBase64: string | null = null;
+    let _cachedLetterheadFormat: 'PNG' | 'JPEG' = 'PNG';
+
     const addHeaderImage = async (): Promise<{ success: boolean; headerHeight: number }> => {
       if (!data.lab.headerUrl) {
         return { success: false, headerHeight: 0 };
       }
-      
+
       try {
-        const response = await fetch(data.lab.headerUrl);
-        if (response.ok) {
+        // Load and cache the letterhead image so it's only fetched once
+        if (!_cachedLetterheadBase64) {
+          const response = await fetch(data.lab.headerUrl);
+          if (!response.ok) return { success: false, headerHeight: 0 };
           const blob = await response.blob();
-          const base64 = await new Promise<string>((resolve) => {
+          _cachedLetterheadBase64 = await new Promise<string>((resolve) => {
             const reader = new FileReader();
             reader.onloadend = () => resolve(reader.result as string);
             reader.readAsDataURL(blob);
           });
-          
-          // Determine image format
-          let imgFormat: 'PNG' | 'JPEG' = 'PNG';
-          if (base64.includes('image/jpeg') || base64.includes('image/jpg')) {
-            imgFormat = 'JPEG';
-          }
-          
-          // Add header image full page width, height proportional to image aspect ratio
-          // Cap at 35mm so it doesn't dominate the page
-          const headerImg = new Image();
-          const headerDims = await new Promise<{ w: number; h: number }>((resolve) => {
-            headerImg.onload = () => resolve({ w: headerImg.naturalWidth, h: headerImg.naturalHeight });
-            headerImg.onerror = () => resolve({ w: 4, h: 1 }); // fallback 4:1 ratio
-            headerImg.src = base64;
-          });
-          const maxHeaderH = 30; // mm cap
-          const naturalHeaderH = (headerDims.h / headerDims.w) * pageWidth;
-          const headerHeight = Math.min(naturalHeaderH, maxHeaderH);
-          doc.addImage(base64, imgFormat, 0, 0, pageWidth, headerHeight, undefined, 'FAST');
-          return { success: true, headerHeight };
+          _cachedLetterheadFormat = (_cachedLetterheadBase64.includes('image/jpeg') || _cachedLetterheadBase64.includes('image/jpg'))
+            ? 'JPEG' : 'PNG';
         }
+
+        // Draw letterhead as full A4 background — content overlays on top
+        doc.addImage(_cachedLetterheadBase64, _cachedLetterheadFormat, 0, 0, pageWidth, pageHeight, undefined, 'FAST');
+        return { success: true, headerHeight: LETTERHEAD_TOP_MARGIN };
       } catch (error) {
-        console.warn('Failed to load header image:', error);
+        console.warn('Failed to load letterhead image:', error);
       }
-      
+
       return { success: false, headerHeight: 0 };
     };
 
@@ -435,8 +432,8 @@ export const generateViewerPDF = async (
     if (headerResult.success) {
       headerImageLoaded = true;
       headerHeight = headerResult.headerHeight;
-      yPos = headerHeight + 3;
-      console.log('✅ Header image loaded from URL');
+      yPos = LETTERHEAD_TOP_MARGIN;
+      console.log('✅ Letterhead loaded as full-page background');
     }
 
     // Fallback to text header if no image
@@ -466,12 +463,16 @@ export const generateViewerPDF = async (
       }
     }
 
-    // Header line
-    yPos += 3;
-    doc.setDrawColor(59, 130, 246);
-    doc.setLineWidth(0.5);
-    doc.line(margin, yPos, pageWidth - margin, yPos);
-    yPos += 8;
+    // Header line — only draw when using text fallback header (letterhead image has its own design)
+    if (!headerImageLoaded) {
+      yPos += 3;
+      doc.setDrawColor(59, 130, 246);
+      doc.setLineWidth(0.5);
+      doc.line(margin, yPos, pageWidth - margin, yPos);
+      yPos += 8;
+    } else {
+      yPos += 3;
+    }
 
     // ============ DRAFT Watermark ============
     if (data.meta.isDraft) {
@@ -562,7 +563,7 @@ export const generateViewerPDF = async (
             doc.addPage();
             // Add header to new page
             const newPageHeader = await addHeaderImage();
-            yPos = newPageHeader.success ? newPageHeader.headerHeight + 3 : margin;
+            yPos = newPageHeader.success ? LETTERHEAD_TOP_MARGIN : margin;
         }
 
         // Test Header
@@ -614,11 +615,11 @@ export const generateViewerPDF = async (
         let rowIndex = 0;
         for (const result of groupResults) {
             // Check if we need a new page
-            if (yPos > pageHeight - 20) {
+            if (yPos > pageHeight - LETTERHEAD_BOTTOM_MARGIN) {
                 doc.addPage();
                 // Add header to new page
                 const newPageHeader = await addHeaderImage();
-                yPos = newPageHeader.success ? newPageHeader.headerHeight + 3 : margin;
+                yPos = newPageHeader.success ? LETTERHEAD_TOP_MARGIN : margin;
                 
                 // Re-add table header on new page
                 doc.setFillColor(59, 130, 246);
@@ -705,7 +706,7 @@ export const generateViewerPDF = async (
         doc.addPage();
         // Add header to new page
         const newPageHeader = await addHeaderImage();
-        yPos = newPageHeader.success ? newPageHeader.headerHeight + 3 : margin;
+        yPos = newPageHeader.success ? LETTERHEAD_TOP_MARGIN : margin;
       }
 
       // Section header
@@ -740,7 +741,7 @@ export const generateViewerPDF = async (
         doc.addPage();
         // Add header to new page
         const newPageHeader = await addHeaderImage();
-        yPos = newPageHeader.success ? newPageHeader.headerHeight + 3 : margin;
+        yPos = newPageHeader.success ? LETTERHEAD_TOP_MARGIN : margin;
       }
 
       // Section header (no emojis - jsPDF doesn't support them properly)
@@ -760,7 +761,7 @@ export const generateViewerPDF = async (
           doc.addPage();
           // Add header to new page
           const newPageHeader = await addHeaderImage();
-          yPos = newPageHeader.success ? newPageHeader.headerHeight + 3 : margin;
+          yPos = newPageHeader.success ? LETTERHEAD_TOP_MARGIN : margin;
         }
 
         // Trend item header
@@ -849,7 +850,7 @@ export const generateViewerPDF = async (
       
       // Add header to new page
       const summaryPageHeader = await addHeaderImage();
-      yPos = summaryPageHeader.success ? summaryPageHeader.headerHeight + 5 : margin;
+      yPos = summaryPageHeader.success ? LETTERHEAD_TOP_MARGIN : margin;
 
       // Section header (no emojis - jsPDF doesn't support them properly)
       doc.setFontSize(12);
@@ -934,11 +935,11 @@ export const generateViewerPDF = async (
       for (let i = 0; i < data.attachments.length; i++) {
         const attachment = data.attachments[i];
         
-        if (yPos > pageHeight - 30) {
+        if (yPos > pageHeight - LETTERHEAD_BOTTOM_MARGIN) {
           doc.addPage();
           // Add header to new page
           const attachmentPageHeader = await addHeaderImage();
-          yPos = attachmentPageHeader.success ? attachmentPageHeader.headerHeight + 3 : margin;
+          yPos = attachmentPageHeader.success ? LETTERHEAD_TOP_MARGIN : margin;
         }
 
         // Attachment card
@@ -1104,8 +1105,8 @@ export const generateViewerPDF = async (
       doc.text('DRAFT REPORT - Some results may still be pending verification', pageWidth / 2, yPos + 7, { align: 'center' });
     }
 
-    // Page footer
-    const footerY = pageHeight - 10;
+    // Page footer text — placed inside the safe content area (above letterhead footer)
+    const footerY = pageHeight - LETTERHEAD_BOTTOM_MARGIN + 5;
     doc.setFontSize(7);
     doc.setTextColor(150, 150, 150);
     doc.text('This is a computer-generated report preview.', pageWidth / 2, footerY, { align: 'center' });

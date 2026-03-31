@@ -92,6 +92,9 @@ interface ExtractedValue {
   is_calculated?: boolean;
   expected_normal_values?: string[];
   expected_value_flag_map?: Record<string, string>;
+  expected_value_codes?: Record<string, string>;
+  value_type?: string;
+  default_value?: string;
   verify_note?: string; // Re-run request note from verifier
   is_rerun?: boolean; // Indicates this is a re-run request
   ai_color_observation?: string; // Color strip: observed pad color + reason for selected value
@@ -731,6 +734,8 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
             is_calculated: !!analyte.is_calculated,
             expected_normal_values: analyte.expected_normal_values || [],
             expected_value_flag_map: analyte.expected_value_flag_map || {},
+            expected_value_codes: analyte.expected_value_codes || {},
+            value_type: analyte.value_type || undefined,
             verify_note: isRerun && existingResult?.verify_note ? existingResult.verify_note : undefined,
             is_rerun: isRerun,
           };
@@ -852,6 +857,7 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
               lab_id,
               test_group_analytes(
                 analyte_id,
+                lab_analyte_id,
                 analytes(
                   id,
                   name,
@@ -865,6 +871,26 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
                   is_calculated,
                   formula,
                   formula_variables
+                ),
+                lab_analytes(
+                  id,
+                  name,
+                  code,
+                  unit,
+                  reference_range,
+                  lab_specific_reference_range,
+                  reference_range_male,
+                  reference_range_female,
+                  expected_normal_values,
+                  expected_value_flag_map,
+                  expected_value_codes,
+                  value_type,
+                  default_value,
+                  method,
+                  is_calculated,
+                  formula,
+                  formula_variables,
+                  formula_description
                 )
               )
             )
@@ -884,6 +910,7 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
               lab_id,
               test_group_analytes(
                 analyte_id,
+                lab_analyte_id,
                 analytes(
                   id,
                   name,
@@ -897,6 +924,26 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
                   is_calculated,
                   formula,
                   formula_variables
+                ),
+                lab_analytes(
+                  id,
+                  name,
+                  code,
+                  unit,
+                  reference_range,
+                  lab_specific_reference_range,
+                  reference_range_male,
+                  reference_range_female,
+                  expected_normal_values,
+                  expected_value_flag_map,
+                  expected_value_codes,
+                  value_type,
+                  default_value,
+                  method,
+                  is_calculated,
+                  formula,
+                  formula_variables,
+                  formula_description
                 )
               )
             )
@@ -944,31 +991,51 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
           order_test_id: null,
           source: "order_test_groups" as const,
           analytes:
-            otg.test_groups.test_group_analytes?.map((tga: any) => ({
-              ...tga.analytes,
-              code: tga.analytes.code || otg.test_groups.code,
-              units: tga.analytes.unit,
-              existing_result: (() => {
-                  const byOtgId = data.results?.find((r: any) => r.order_test_group_id === otg.id);
-                  const fromPrimary = byOtgId?.result_values?.find((rv: any) =>
-                    rv.analyte_id === tga.analytes.id || (!rv.analyte_id && rv.analyte_name === tga.analytes.name));
-                  if (fromPrimary) return fromPrimary;
-                  for (const r of data.results || []) {
-                    if (r.test_group_id !== otg.test_groups.id) continue;
-                    const rv = r.result_values?.find((rv: any) =>
-                      rv.analyte_id === tga.analytes.id || (!rv.analyte_id && rv.analyte_name === tga.analytes.name));
-                    if (rv) return rv;
-                  }
-                  // Final fallback: scan ALL result rows regardless of test_group_id
-                  // (handles Save Draft results which have no test_group_id set)
-                  for (const r of data.results || []) {
-                    const rv = r.result_values?.find((rv: any) =>
-                      rv.analyte_id === tga.analytes.id || rv.analyte_name === tga.analytes.name);
-                    if (rv) return rv;
-                  }
-                  return null;
-                })(),
-            })) || [],
+            otg.test_groups.test_group_analytes?.map((tga: any) => {
+              const a = tga.analytes;
+              const la = tga.lab_analyte_id ? tga.lab_analytes : null;
+              return {
+                ...a,
+                lab_analyte_id: tga.lab_analyte_id || la?.id || null,
+                name: la?.name || a.name,
+                unit: la?.unit || a.unit,
+                reference_range: la?.lab_specific_reference_range ?? la?.reference_range ?? a.reference_range,
+                reference_range_male: la?.reference_range_male ?? undefined,
+                reference_range_female: la?.reference_range_female ?? undefined,
+                expected_normal_values: la?.expected_normal_values ?? a.expected_normal_values,
+                expected_value_flag_map: la?.expected_value_flag_map ?? a.expected_value_flag_map,
+                expected_value_codes: la?.expected_value_codes ?? a.expected_value_codes ?? {},
+                value_type: la?.value_type ?? a.value_type,
+                default_value: la?.default_value ?? null,
+                method: la?.method ?? a.method,
+                is_calculated: la?.is_calculated ?? a.is_calculated,
+                formula: la?.formula ?? a.formula,
+                formula_variables: la?.formula_variables ?? a.formula_variables,
+                formula_description: la?.formula_description ?? undefined,
+                code: a.code || otg.test_groups.code,
+                units: la?.unit || a.unit,
+                existing_result: (() => {
+                    const byOtgId = data.results?.find((r: any) => r.order_test_group_id === otg.id);
+                    const fromPrimary = byOtgId?.result_values?.find((rv: any) =>
+                      rv.analyte_id === a.id || (!rv.analyte_id && rv.analyte_name === a.name));
+                    if (fromPrimary) return fromPrimary;
+                    for (const r of data.results || []) {
+                      if (r.test_group_id !== otg.test_groups.id) continue;
+                      const rv = r.result_values?.find((rv: any) =>
+                        rv.analyte_id === a.id || (!rv.analyte_id && rv.analyte_name === a.name));
+                      if (rv) return rv;
+                    }
+                    // Final fallback: scan ALL result rows regardless of test_group_id
+                    // (handles Save Draft results which have no test_group_id set)
+                    for (const r of data.results || []) {
+                      const rv = r.result_values?.find((rv: any) =>
+                        rv.analyte_id === a.id || rv.analyte_name === a.name);
+                      if (rv) return rv;
+                    }
+                    return null;
+                  })(),
+              };
+            }) || [],
         })) || [];
 
       const tgFromOT =
@@ -984,34 +1051,52 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
             order_test_id: ot.id,
             source: "order_tests" as const,
             analytes:
-              ot.test_groups.test_group_analytes?.map((tga: any) => ({
-                ...tga.analytes,
-                code: tga.analytes.code || ot.test_groups.code,
-                units: tga.analytes.unit,
-                existing_result: (() => {
-                    // Primary: result row explicitly linked to this order_test
-                    const byOrderTestId = data.results?.find((r: any) => r.order_test_id === ot.id);
-                    const fromPrimary = byOrderTestId?.result_values?.find((rv: any) =>
-                      rv.analyte_id === tga.analytes.id || (!rv.analyte_id && rv.analyte_name === tga.analytes.name));
-                    if (fromPrimary) return fromPrimary;
-                    // Fallback: any result row for this order/test_group that has the analyte value
-                    // (handles orphaned result rows where results.order_test_id was not set)
-                    for (const r of data.results || []) {
-                      if (r.test_group_id !== ot.test_group_id) continue;
-                      const rv = r.result_values?.find((rv: any) =>
-                        rv.analyte_id === tga.analytes.id || (!rv.analyte_id && rv.analyte_name === tga.analytes.name));
-                      if (rv) return rv;
-                    }
-                    // Final fallback: scan ALL result rows regardless of test_group_id
-                    // (handles Save Draft results which have no test_group_id set)
-                    for (const r of data.results || []) {
-                      const rv = r.result_values?.find((rv: any) =>
-                        rv.analyte_id === tga.analytes.id || rv.analyte_name === tga.analytes.name);
-                      if (rv) return rv;
-                    }
-                    return null;
-                  })(),
-              })) || [],
+              ot.test_groups.test_group_analytes?.map((tga: any) => {
+                const a = tga.analytes;
+                const la = tga.lab_analyte_id ? tga.lab_analytes : null;
+                return {
+                  ...a,
+                  lab_analyte_id: tga.lab_analyte_id || la?.id || null,
+                  name: la?.name || a.name,
+                  unit: la?.unit || a.unit,
+                  reference_range: la?.lab_specific_reference_range ?? la?.reference_range ?? a.reference_range,
+                  reference_range_male: la?.reference_range_male ?? undefined,
+                  reference_range_female: la?.reference_range_female ?? undefined,
+                  expected_normal_values: la?.expected_normal_values ?? a.expected_normal_values,
+                  expected_value_flag_map: la?.expected_value_flag_map ?? a.expected_value_flag_map,
+                  expected_value_codes: la?.expected_value_codes ?? a.expected_value_codes ?? {},
+                  value_type: la?.value_type ?? a.value_type,
+                  default_value: la?.default_value ?? null,
+                  method: la?.method ?? a.method,
+                  is_calculated: la?.is_calculated ?? a.is_calculated,
+                  formula: la?.formula ?? a.formula,
+                  formula_variables: la?.formula_variables ?? a.formula_variables,
+                  formula_description: la?.formula_description ?? undefined,
+                  code: a.code || ot.test_groups.code,
+                  units: la?.unit || a.unit,
+                  existing_result: (() => {
+                      // Primary: result row explicitly linked to this order_test
+                      const byOrderTestId = data.results?.find((r: any) => r.order_test_id === ot.id);
+                      const fromPrimary = byOrderTestId?.result_values?.find((rv: any) =>
+                        rv.analyte_id === a.id || (!rv.analyte_id && rv.analyte_name === a.name));
+                      if (fromPrimary) return fromPrimary;
+                      // Fallback: any result row for this order/test_group that has the analyte value
+                      for (const r of data.results || []) {
+                        if (r.test_group_id !== ot.test_group_id) continue;
+                        const rv = r.result_values?.find((rv: any) =>
+                          rv.analyte_id === a.id || (!rv.analyte_id && rv.analyte_name === a.name));
+                        if (rv) return rv;
+                      }
+                      // Final fallback: scan ALL result rows regardless of test_group_id
+                      for (const r of data.results || []) {
+                        const rv = r.result_values?.find((rv: any) =>
+                          rv.analyte_id === a.id || rv.analyte_name === a.name);
+                        if (rv) return rv;
+                      }
+                      return null;
+                    })(),
+                };
+              }) || [],
           })) || [];
 
       // Merge by test_group_id and union analytes
@@ -1040,7 +1125,8 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
       // Build flat analytes for initial manual seed (hide already-submitted ones)
       let flatAnalytes = merged.flatMap((tg) => tg.analytes);
 
-      // Fetch lab_analytes to get lab-specific expected_normal_values
+      // Fallback enrichment: fetch lab_analytes for analytes that didn't get
+      // lab-specific overrides from the primary query (legacy rows without lab_analyte_id)
       const analyteIds = flatAnalytes.map((a: any) => a.id).filter(Boolean);
       if (analyteIds.length > 0 && data.lab_id) {
         const { data: labAnalytes } = await supabase
@@ -1050,15 +1136,19 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
             name, unit, reference_range,
             reference_range_male, reference_range_female,
             expected_normal_values, expected_value_flag_map,
+            expected_value_codes, value_type, default_value,
             is_calculated, formula, formula_variables, formula_description
           `)
           .eq('lab_id', data.lab_id)
-          .in('analyte_id', analyteIds);
+          .in('analyte_id', analyteIds)
+          .order('created_at', { ascending: true });
 
         if (labAnalytes && labAnalytes.length > 0) {
-          const labAnalytesMap = new Map(
-            labAnalytes.map((la: any) => [la.analyte_id, la])
-          );
+          // Deduplicate: keep only the first (earliest) row per analyte_id
+          const labAnalytesMap = new Map<string, any>();
+          for (const la of labAnalytes) {
+            if (!labAnalytesMap.has(la.analyte_id)) labAnalytesMap.set(la.analyte_id, la);
+          }
 
           // Merge all lab-specific overrides into analytes (lab_analytes takes priority)
           flatAnalytes = flatAnalytes.map((analyte: any) => {
@@ -1090,6 +1180,15 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
               if (typeof m === 'string') { try { m = JSON.parse(m); } catch { m = {}; } }
               if (m && Object.keys(m).length > 0) updates.expected_value_flag_map = m;
             }
+
+            // Quick codes, value type, default value
+            if (la.expected_value_codes) {
+              let c = la.expected_value_codes;
+              if (typeof c === 'string') { try { c = JSON.parse(c); } catch { c = {}; } }
+              if (c && Object.keys(c).length > 0) updates.expected_value_codes = c;
+            }
+            if (la.value_type) updates.value_type = la.value_type;
+            if (la.default_value) updates.default_value = la.default_value;
 
             return Object.keys(updates).length > 0 ? { ...analyte, ...updates } : analyte;
           });
@@ -3225,6 +3324,7 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
           return {
             result_id: resultRowId!,
             analyte_id: analyte?.id || r.analyte_id || undefined,
+            lab_analyte_id: analyte?.lab_analyte_id || null,
             analyte_name: r.parameter,
             parameter: r.parameter,
             value: r.value && r.value.trim() !== "" ? r.value : null,
@@ -3787,6 +3887,22 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
                               handleManualValueChange(globalIndex, "flag", flagMap[e.target.value]);
                             }
                           }}
+                          onKeyDown={(e) => {
+                            // Quick code resolution: e.g. pressing "1" selects "Non-Reactive"
+                            const codes = value.expected_value_codes;
+                            if (codes && Object.keys(codes).length > 0 && e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) {
+                              const code = e.key.toUpperCase();
+                              const resolved = codes[code];
+                              if (resolved) {
+                                e.preventDefault();
+                                handleManualValueChange(globalIndex, "value", resolved);
+                                const flagMap = value.expected_value_flag_map;
+                                if (flagMap && flagMap[resolved] !== undefined) {
+                                  handleManualValueChange(globalIndex, "flag", flagMap[resolved]);
+                                }
+                              }
+                            }
+                          }}
                           disabled={!!value.is_calculated}
                           className={`w-full px-3 py-2 border rounded-lg transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500 ${value.value && typeof value.value === 'string' && value.value.trim()
                             ? 'border-green-300 bg-green-50 text-green-800'
@@ -3796,6 +3912,13 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
                           <option value="">Select value...</option>
                           {value.expected_normal_values.map((opt: string) => (
                             <option key={opt} value={opt}>{opt}</option>
+                          ))}
+                          {/* Show quick code hints if available */}
+                          {value.expected_value_codes && Object.keys(value.expected_value_codes).length > 0 && (
+                            <option disabled>── Quick codes ──</option>
+                          )}
+                          {value.expected_value_codes && Object.entries(value.expected_value_codes).map(([code, val]) => (
+                            <option key={`hint-${code}`} disabled>{code} → {val}</option>
                           ))}
                         </select>
                       ) : value.is_calculated ? (

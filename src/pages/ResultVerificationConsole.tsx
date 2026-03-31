@@ -591,8 +591,8 @@ const ResultVerificationConsole: React.FC = () => {
   }, []);
 
   /* ----------------- Load panels with lab filter ----------------- */
-  const loadPanels = async () => {
-    setLoading(true);
+  const loadPanels = async (silent = false) => {
+    if (!silent) setLoading(true);
     setErr(null);
 
     // Get current lab ID for filtering
@@ -600,7 +600,7 @@ const ResultVerificationConsole: React.FC = () => {
     if (!labId) {
       setErr("No lab context found. Please log in again.");
       setPanels([]);
-      setLoading(false);
+      if (!silent) setLoading(false);
       return;
     }
 
@@ -629,7 +629,7 @@ const ResultVerificationConsole: React.FC = () => {
     } else {
       setPanels((data || []) as PanelRow[]);
     }
-    setLoading(false);
+    if (!silent) setLoading(false);
   };
 
   useEffect(() => {
@@ -780,7 +780,9 @@ const ResultVerificationConsole: React.FC = () => {
 
   const toggleOpen = async (row: PanelRow) => {
     const k = row.result_id;
+    const savedScroll = window.scrollY;
     setOpen((s) => ({ ...s, [k]: !s[k] }));
+    requestAnimationFrame(() => window.scrollTo({ top: savedScroll, behavior: 'instant' as ScrollBehavior }));
     if (!rowsByResult[k]) await ensureAnalytesLoaded(k);
     if (!attachmentsByOrder[row.order_id]) await loadAttachments(row.order_id);
   };
@@ -826,7 +828,7 @@ const ResultVerificationConsole: React.FC = () => {
         }
         return next;
       });
-      await loadPanels();
+      await loadPanels(true);
     }
   };
 
@@ -861,7 +863,7 @@ const ResultVerificationConsole: React.FC = () => {
         }
         return next;
       });
-      await loadPanels();
+      await loadPanels(true);
     }
     setBusyFor(rv_id, false);
   };
@@ -887,7 +889,7 @@ const ResultVerificationConsole: React.FC = () => {
         }
         return next;
       });
-      await loadPanels();
+      await loadPanels(true);
     }
   };
 
@@ -923,12 +925,13 @@ const ResultVerificationConsole: React.FC = () => {
         }
         return next;
       });
-      await loadPanels();
+      await loadPanels(true);
       alert("Analyte sent back for re-run");
     }
   };
 
   // Edit analyte value inline — works for all statuses (pending / approved / rejected)
+  const [showAISuggestionMap, setShowAISuggestionMap] = useState<Record<string, boolean>>({});
   const [recalculating, setRecalculating] = useState<Record<string, boolean>>({});
   const [editingAnalyteId, setEditingAnalyteId] = useState<string | null>(null);
   const [editValues, setEditValues] = useState<{
@@ -1055,7 +1058,7 @@ const ResultVerificationConsole: React.FC = () => {
           // Don't block the approval - extras are optional
         }
 
-        await loadPanels();
+        await loadPanels(true);
       }
     } finally {
       setBusyFor(row.result_id, false);
@@ -1095,7 +1098,7 @@ const ResultVerificationConsole: React.FC = () => {
             : a
         ),
       }));
-      await loadPanels();
+      await loadPanels(true);
     }
     setBusyFor(row.result_id, false);
   };
@@ -1261,7 +1264,7 @@ const ResultVerificationConsole: React.FC = () => {
           };
         }),
       }));
-      await loadPanels();
+      await loadPanels(true);
     } finally {
       setRecalculating(prev => ({ ...prev, [row.result_id]: false }));
     }
@@ -1389,12 +1392,15 @@ const ResultVerificationConsole: React.FC = () => {
     );
   };
 
-  const AnalyteRowView: React.FC<{ a: Analyte; patientId: string }> = ({ a, patientId }) => {
+  // Render function (not a React.FC) — keeps it inside the parent closure so it can
+  // read state directly, but React never treats it as a component type, so it never
+  // unmounts/remounts on re-render. Fixes scroll-to-top and input focus loss.
+  const renderAnalyteRow = (a: Analyte, patientId: string) => {
     const status = a.verify_status || "pending";
     const isBusy = !!busy[a.id];
     const cacheKey = `${patientId}-${a.parameter}`;
     const hasTrend = trendData[cacheKey] && trendData[cacheKey].length > 0;
-    const [showAISuggestion, setShowAISuggestion] = useState(false);
+    const showAISuggestion = !!showAISuggestionMap[a.id];
     const isEditing = editingAnalyteId === a.id;
     const isRerunRequest = a.verify_note && a.verify_note.toUpperCase().includes("RE-RUN");
 
@@ -1447,7 +1453,7 @@ const ResultVerificationConsole: React.FC = () => {
                 </span>
               )}
               <button
-                onClick={() => setShowAISuggestion(!showAISuggestion)}
+                onClick={() => setShowAISuggestionMap(prev => ({ ...prev, [a.id]: !prev[a.id] }))}
                 className="inline-flex items-center text-purple-600 hover:text-purple-800 transition-colors"
                 title="Toggle AI suggestions"
               >
@@ -1733,7 +1739,7 @@ const ResultVerificationConsole: React.FC = () => {
     }
   };
 
-  const PanelCard: React.FC<{ row: PanelRow }> = ({ row }) => {
+  const renderPanelCard = (row: PanelRow) => {
     const isOpen = !!open[row.result_id];
     const analytes = rowsByResult[row.result_id] || [];
     const isSelected = selectedPanels.has(row.result_id);
@@ -2112,7 +2118,7 @@ const ResultVerificationConsole: React.FC = () => {
                 </thead>
                 <tbody className="divide-y divide-gray-100">
                   {analytes.map((a) => (
-                    <AnalyteRowView key={a.id} a={a} patientId={row.patient_id} />
+                    <React.Fragment key={a.id}>{renderAnalyteRow(a, row.patient_id)}</React.Fragment>
                   ))}
                 </tbody>
               </table>
@@ -3262,7 +3268,7 @@ const ResultVerificationConsole: React.FC = () => {
             {/* Panel Cards */}
             <div className="space-y-6">
               {filteredPanels.map((row) => (
-                <PanelCard key={row.result_id} row={row} />
+                <React.Fragment key={row.result_id}>{renderPanelCard(row)}</React.Fragment>
               ))}
             </div>
           </div>

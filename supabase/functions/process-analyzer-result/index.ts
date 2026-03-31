@@ -503,6 +503,24 @@ OUTPUT ONLY valid JSON in this exact format (no markdown, no explanation):
             // D. Insert Result Values with Context
             let mappedCount = 0
             let unmappedCount = 0
+
+            // Batch-resolve lab_analyte_id for all mapped analytes
+            const allMappedAnalyteIds = Array.from(analyteMap.values()).map((m: any) => m.analyte_id).filter(Boolean) as string[]
+            const labAnalyteIdMap = new Map<string, string>()
+            if (allMappedAnalyteIds.length > 0) {
+              const { data: laRows } = await supabase
+                .from('lab_analytes')
+                .select('id, analyte_id')
+                .eq('lab_id', sample.lab_id)
+                .in('analyte_id', allMappedAnalyteIds)
+                .order('created_at', { ascending: true })
+              if (laRows) {
+                for (const la of laRows) {
+                  if (!labAnalyteIdMap.has(la.analyte_id)) labAnalyteIdMap.set(la.analyte_id, la.id)
+                }
+              }
+            }
+
             for (const item of parsedData.results) {
                 const machineCode = item.test_code?.toUpperCase()
                 
@@ -523,6 +541,7 @@ OUTPUT ONLY valid JSON in this exact format (no markdown, no explanation):
                 const { error: valError } = await supabase.from('result_values').insert({
                     result_id: resultHeader.id,
                     analyte_id: mapping.analyte_id,
+                    lab_analyte_id: labAnalyteIdMap.get(mapping.analyte_id) || null,
                     parameter: finalParamName,
                     analyte_name: finalParamName,
                     value: item.value, 

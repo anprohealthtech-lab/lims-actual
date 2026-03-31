@@ -370,9 +370,26 @@ const Tests: React.FC = () => {
 
       // 3. Link Analytes to Test Group
       if (newTestGroup && finalAnalyteIds.length > 0) {
+        // Resolve lab_analyte_id for each analyte
+        let labAnalyteMap: Record<string, string> = {};
+        if (newTestGroup.lab_id) {
+          const { data: laRows } = await supabase
+            .from('lab_analytes')
+            .select('id, analyte_id')
+            .eq('lab_id', newTestGroup.lab_id)
+            .in('analyte_id', finalAnalyteIds.map(a => a.id))
+            .order('created_at', { ascending: true });
+          if (laRows) {
+            for (const la of laRows) {
+              if (!labAnalyteMap[la.analyte_id]) labAnalyteMap[la.analyte_id] = la.id;
+            }
+          }
+        }
+
         const relationships = finalAnalyteIds.map((a, index) => ({
           test_group_id: newTestGroup.id,
           analyte_id: a.id,
+          lab_analyte_id: labAnalyteMap[a.id] || null,
           is_visible: true,
           display_order: index + 1
         }));
@@ -914,9 +931,9 @@ const Tests: React.FC = () => {
           setEditingAnalyte({
             ...analyte,
             name: labAnalyte.name || analyte.name,
-            unit: labAnalyte.unit || analyte.unit,
+            unit: labAnalyte.unit ?? analyte.unit,
             category: labAnalyte.category || analyte.category,
-            referenceRange: labAnalyte.lab_specific_reference_range || labAnalyte.reference_range || analyte.referenceRange,
+            referenceRange: (labAnalyte.lab_specific_reference_range ?? labAnalyte.reference_range ?? analyte.referenceRange) ?? '',
             lowCritical: normalizeNumber(labAnalyte.low_critical) ?? analyte.lowCritical,
             highCritical: normalizeNumber(labAnalyte.high_critical) ?? analyte.highCritical,
             interpretation: {
@@ -1208,6 +1225,49 @@ const Tests: React.FC = () => {
       console.error('Unexpected error:', error);
       alert('Failed to update analyte. Please try again.');
     }
+  };
+
+  // Handler for SimpleAnalyteEditor which already saves to lab_analytes directly.
+  // Do NOT save to DB again — a second partial save strips fields like
+  // value_type, expected_value_codes, default_value, formula that were just written.
+  const handleSimpleEditorSave = (formData: any) => {
+    if (!editingAnalyte) return;
+
+    const transformedAnalyte = {
+      ...editingAnalyte,
+      name: formData.name,
+      unit: formData.unit,
+      referenceRange: formData.reference_range ?? editingAnalyte.referenceRange,
+      lowCritical: formData.low_critical ?? editingAnalyte.lowCritical,
+      highCritical: formData.high_critical ?? editingAnalyte.highCritical,
+      interpretation: {
+        low: formData.interpretation_low ?? editingAnalyte.interpretationLow,
+        normal: formData.interpretation_normal ?? editingAnalyte.interpretationNormal,
+        high: formData.interpretation_high ?? editingAnalyte.interpretationHigh,
+      },
+      category: formData.category ?? editingAnalyte.category,
+      isActive: formData.is_active ?? editingAnalyte.isActive,
+      interpretationLow: formData.interpretation_low ?? editingAnalyte.interpretationLow,
+      interpretationNormal: formData.interpretation_normal ?? editingAnalyte.interpretationNormal,
+      interpretationHigh: formData.interpretation_high ?? editingAnalyte.interpretationHigh,
+      method: formData.method ?? editingAnalyte.method,
+      description: formData.description ?? editingAnalyte.description,
+      isCritical: formData.is_critical ?? editingAnalyte.isCritical,
+      aiProcessingType: formData.ai_processing_type ?? editingAnalyte.aiProcessingType,
+      groupAiMode: formData.group_ai_mode ?? editingAnalyte.groupAiMode,
+      aiPromptOverride: formData.ai_prompt_override ?? editingAnalyte.aiPromptOverride,
+      ref_range_knowledge: formData.ref_range_knowledge,
+      expected_normal_values: formData.expected_normal_values || [],
+      expected_value_flag_map: formData.expected_value_flag_map || {},
+      isCalculated: formData.is_calculated ?? editingAnalyte.isCalculated ?? false,
+      formula: formData.formula ?? editingAnalyte.formula ?? '',
+      formulaVariables: formData.formula_variables ?? editingAnalyte.formulaVariables ?? [],
+      formulaDescription: formData.formula_description ?? editingAnalyte.formulaDescription ?? '',
+    };
+
+    setAnalytes(prev => prev.map(a => a.id === editingAnalyte.id ? transformedAnalyte : a));
+    setShowEditAnalyteModal(false);
+    setEditingAnalyte(null);
   };
 
   const handleUpdateTest = (formData: any) => {
@@ -2206,7 +2266,7 @@ const Tests: React.FC = () => {
               onClose={handleCloseAnalyteForm}
               onSubmit={editingAnalyte ? handleUpdateAnalyte : handleAddAnalyte}
               analyte={editingAnalyte}
-              availableAnalytes={analytes.filter(a => !a.isCalculated).map(a => ({
+              availableAnalytes={analytes.filter(a => a.id !== undefined).map(a => ({
                 id: a.id,
                 name: a.name,
                 unit: a.unit,
@@ -2330,9 +2390,9 @@ const Tests: React.FC = () => {
                 display_name: (editingAnalyte as any).display_name || null,
               }}
               availableAnalytes={analytes
-                .filter(a => !a.isCalculated && a.id !== editingAnalyte.id)
+                .filter(a => a.id !== editingAnalyte.id)
                 .map(a => ({ id: a.id, name: a.name, unit: a.unit || '', category: a.category }))}
-              onSave={handleUpdateAnalyte}
+              onSave={handleSimpleEditorSave}
               onCancel={handleCloseAnalyteModal}
             />
           )

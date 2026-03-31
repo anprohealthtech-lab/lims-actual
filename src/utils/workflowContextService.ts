@@ -339,11 +339,19 @@ export async function fetchAnalyteCatalog(testGroupId: string): Promise<Array<{
       .from('test_group_analytes')
       .select(`
         analyte_id,
+        lab_analyte_id,
         analytes (
           id,
           name,
           unit,
           reference_range
+        ),
+        lab_analytes (
+          id,
+          name,
+          unit,
+          reference_range,
+          lab_specific_reference_range
         )
       `)
       .eq('test_group_id', testGroupId);
@@ -353,15 +361,16 @@ export async function fetchAnalyteCatalog(testGroupId: string): Promise<Array<{
     return (data ?? [])
       .map((row: any) => {
         const analyte = row.analytes ?? {};
-        const name = analyte?.name;
+        const la = row.lab_analyte_id ? row.lab_analytes : null;
+        const name = la?.name || analyte?.name;
         if (!name || typeof name !== 'string' || name.trim().length === 0) {
           return null;
         }
         return {
           id: row.analyte_id ?? analyte?.id ?? null,
           name,
-          unit: analyte?.unit ?? null,
-          reference_range: analyte?.reference_range ?? null,
+          unit: la?.unit ?? analyte?.unit ?? null,
+          reference_range: la?.lab_specific_reference_range ?? la?.reference_range ?? analyte?.reference_range ?? null,
         };
       })
       .filter((entry): entry is NonNullable<typeof entry> => entry !== null);

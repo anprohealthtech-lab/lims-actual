@@ -983,6 +983,29 @@ async function persistExtractedValues(params: PersistParams): Promise<PersistSum
   }
 
   const lookup = buildAnalyteLookup(params.analyteCatalog);
+
+  // Batch-resolve lab_analyte_id for all catalog analytes
+  const catalogAnalyteIds = params.analyteCatalog.map(a => a.id).filter(Boolean);
+  const labAnalyteIdMap = new Map<string, string>();
+  if (params.labId && catalogAnalyteIds.length > 0) {
+    try {
+      const laUrl = new URL(`${SUPABASE_URL}/rest/v1/lab_analytes`);
+      laUrl.searchParams.set("select", "id,analyte_id");
+      laUrl.searchParams.set("lab_id", `eq.${params.labId}`);
+      laUrl.searchParams.set("analyte_id", `in.(${catalogAnalyteIds.join(",")})`);
+      laUrl.searchParams.set("order", "created_at.asc");
+      const laRes = await fetch(laUrl, { headers: baseHeaders() });
+      if (laRes.ok) {
+        const laRows = await laRes.json() as Array<{ id: string; analyte_id: string }>;
+        for (const la of laRows) {
+          if (!labAnalyteIdMap.has(la.analyte_id)) labAnalyteIdMap.set(la.analyte_id, la.id);
+        }
+      }
+    } catch (e) {
+      console.warn("lab_analyte_id batch resolve failed (non-blocking):", e);
+    }
+  }
+
   const rowsByKey = new Map<string, Record<string, unknown>>();
 
   normalizedEntries.forEach(({ key, raw }) => {
@@ -1096,6 +1119,7 @@ async function persistExtractedValues(params: PersistParams): Promise<PersistSum
       order_test_group_id: params.orderTestGroupId,
       order_test_id: params.orderTestId,
       analyte_id: analyteId,
+      lab_analyte_id: analyteId ? (labAnalyteIdMap.get(analyteId) || null) : null,
       analyte_name: parameterName,
       parameter: parameterName,
       value: valueString,

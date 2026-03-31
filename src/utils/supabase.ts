@@ -2881,8 +2881,10 @@ export const database = {
         .from("test_group_analytes")
         .select(
           `analyte_id,
+           lab_analyte_id,
            created_at,
-           analytes!inner ( id, name, code, unit, reference_range, value_type )`,
+           analytes!inner ( id, name, code, unit, reference_range, value_type ),
+           lab_analytes ( id, name, code, unit, reference_range, lab_specific_reference_range, value_type )`,
         )
         .eq("test_group_id", testGroupId)
         .order("created_at", { ascending: true });
@@ -2891,23 +2893,33 @@ export const database = {
         return { data: [], error };
       }
 
-      // Get lab-specific overrides for these analytes
-      const analyteIds = (data || []).map((row: any) => row.analyte_id).filter(
-        Boolean,
-      );
+      // Build lab_analytes map: prefer direct lab_analyte_id join, fallback to analyte_id+lab_id
+      const rowsWithLabAnalyte = (data || []).filter((r: any) => r.lab_analyte_id && r.lab_analytes);
+      const rowsWithoutLabAnalyte = (data || []).filter((r: any) => !r.lab_analyte_id || !r.lab_analytes);
 
       let labAnalytesMap: Record<string, any> = {};
-      if (analyteIds.length > 0) {
+
+      // Direct lab_analyte_id rows — no ambiguity
+      for (const row of rowsWithLabAnalyte) {
+        labAnalytesMap[row.analyte_id] = row.lab_analytes;
+      }
+
+      // Fallback for legacy rows without lab_analyte_id
+      const fallbackIds = rowsWithoutLabAnalyte.map((r: any) => r.analyte_id).filter(Boolean);
+      if (fallbackIds.length > 0) {
         const { data: labAnalytes } = await supabase
           .from("lab_analytes")
           .select("*")
           .eq("lab_id", labId)
-          .in("analyte_id", analyteIds);
+          .in("analyte_id", fallbackIds)
+          .order("created_at", { ascending: true });
 
         if (labAnalytes) {
-          labAnalytesMap = Object.fromEntries(
-            labAnalytes.map((la: any) => [la.analyte_id, la]),
-          );
+          for (const la of labAnalytes) {
+            if (!labAnalytesMap[la.analyte_id]) {
+              labAnalytesMap[la.analyte_id] = la;
+            }
+          }
         }
       }
 
@@ -3846,10 +3858,29 @@ export const database = {
         // Create a map of analyte names to IDs
         const analyteMap = new Map(analytes?.map((a) => [a.name, a.id]) || []);
 
+        // Resolve lab_analyte_id for each analyte in the lab context
+        const labId = rest.lab_id || result.lab_id;
+        const resolvedAnalyteIds = values.map((v: any) => v.analyte_id || analyteMap.get(v.parameter)).filter(Boolean) as string[];
+        const labAnalyteMap = new Map<string, string>();
+        if (labId && resolvedAnalyteIds.length > 0) {
+          const { data: laRows } = await supabase
+            .from('lab_analytes')
+            .select('id, analyte_id')
+            .eq('lab_id', labId)
+            .in('analyte_id', resolvedAnalyteIds)
+            .order('created_at', { ascending: true });
+          if (laRows) {
+            for (const la of laRows) {
+              if (!labAnalyteMap.has(la.analyte_id)) labAnalyteMap.set(la.analyte_id, la.id);
+            }
+          }
+        }
+
         const resultValuesToInsert = values.map((val: any) => ({
           result_id: result.id,
           order_id: result.order_id, // Add order_id for trigger compatibility
           analyte_id: val.analyte_id || analyteMap.get(val.parameter) || null, // Use provided ID or map parameter name
+          lab_analyte_id: val.lab_analyte_id || labAnalyteMap.get(val.analyte_id || analyteMap.get(val.parameter) || '') || null,
           parameter: val.parameter, // Keep parameter name as well
           value: val.value,
           unit: val.unit,
@@ -3918,10 +3949,29 @@ export const database = {
         // Create a map of analyte names to IDs
         const analyteMap = new Map(analytes?.map((a) => [a.name, a.id]) || []);
 
+        // Resolve lab_analyte_id for each analyte in the lab context
+        const labId = rest.lab_id || result.lab_id;
+        const resolvedAnalyteIds = values.map((v: any) => v.analyte_id || analyteMap.get(v.parameter)).filter(Boolean) as string[];
+        const labAnalyteMapUpd = new Map<string, string>();
+        if (labId && resolvedAnalyteIds.length > 0) {
+          const { data: laRows } = await supabase
+            .from('lab_analytes')
+            .select('id, analyte_id')
+            .eq('lab_id', labId)
+            .in('analyte_id', resolvedAnalyteIds)
+            .order('created_at', { ascending: true });
+          if (laRows) {
+            for (const la of laRows) {
+              if (!labAnalyteMapUpd.has(la.analyte_id)) labAnalyteMapUpd.set(la.analyte_id, la.id);
+            }
+          }
+        }
+
         const resultValuesToInsert = values.map((val: any) => ({
           result_id: id,
           order_id: result.order_id, // Add order_id for trigger compatibility
           analyte_id: val.analyte_id || analyteMap.get(val.parameter) || null, // Use provided ID or map parameter name
+          lab_analyte_id: val.lab_analyte_id || labAnalyteMapUpd.get(val.analyte_id || analyteMap.get(val.parameter) || '') || null,
           parameter: val.parameter, // Keep parameter name as well
           value: val.value,
           unit: val.unit,
@@ -6527,14 +6577,38 @@ export const database = {
             group_interpretation,
             test_group_analytes(
               analyte_id,
+              lab_analyte_id,
               sort_order,
               section_heading,
+              is_visible,
               analytes(
                 id,
                 name,
                 code,
                 unit,
                 reference_range,
+                ai_processing_type,
+                ai_prompt_override,
+                group_ai_mode,
+                ref_range_knowledge
+              ),
+              lab_analytes(
+                id,
+                name,
+                unit,
+                reference_range,
+                lab_specific_reference_range,
+                value_type,
+                expected_normal_values,
+                expected_value_codes,
+                expected_value_flag_map,
+                default_value,
+                method,
+                low_critical,
+                high_critical,
+                is_calculated,
+                formula,
+                formula_variables,
                 ai_processing_type,
                 ai_prompt_override,
                 group_ai_mode,
@@ -6596,14 +6670,38 @@ export const database = {
             group_interpretation,
             test_group_analytes(
               analyte_id,
+              lab_analyte_id,
               sort_order,
               section_heading,
+              is_visible,
               analytes(
                 id,
                 name,
                 code,
                 unit,
                 reference_range,
+                ai_processing_type,
+                ai_prompt_override,
+                group_ai_mode,
+                ref_range_knowledge
+              ),
+              lab_analytes(
+                id,
+                name,
+                unit,
+                reference_range,
+                lab_specific_reference_range,
+                value_type,
+                expected_normal_values,
+                expected_value_codes,
+                expected_value_flag_map,
+                default_value,
+                method,
+                low_critical,
+                high_critical,
+                is_calculated,
+                formula,
+                formula_variables,
                 ai_processing_type,
                 ai_prompt_override,
                 group_ai_mode,
@@ -6661,14 +6759,38 @@ export const database = {
             ref_range_ai_config,
             test_group_analytes(
               analyte_id,
+              lab_analyte_id,
               sort_order,
               section_heading,
+              is_visible,
               analytes(
                 id,
                 name,
                 code,
                 unit,
                 reference_range,
+                ai_processing_type,
+                ai_prompt_override,
+                group_ai_mode,
+                ref_range_knowledge
+              ),
+              lab_analytes(
+                id,
+                name,
+                unit,
+                reference_range,
+                lab_specific_reference_range,
+                value_type,
+                expected_normal_values,
+                expected_value_codes,
+                expected_value_flag_map,
+                default_value,
+                method,
+                low_critical,
+                high_critical,
+                is_calculated,
+                formula,
+                formula_variables,
                 ai_processing_type,
                 ai_prompt_override,
                 group_ai_mode,
@@ -6757,11 +6879,29 @@ export const database = {
 
         // Step 2: Create test group analyte relationships
         if (testGroupData.analytes && testGroupData.analytes.length > 0) {
+          const labId = testGroup.lab_id || testGroupData.lab_id || null;
+
+          // Resolve lab_analyte_id for each analyte (direct FK, avoids duplicate-join risk)
+          let labAnalyteMap: Record<string, string> = {};
+          if (labId) {
+            const { data: laRows } = await supabase
+              .from("lab_analytes")
+              .select("id, analyte_id")
+              .eq("lab_id", labId)
+              .in("analyte_id", testGroupData.analytes)
+              .order("created_at", { ascending: true });
+            // Keep only the first encountered per analyte_id (earliest = canonical)
+            for (const la of (laRows || [])) {
+              if (!labAnalyteMap[la.analyte_id]) labAnalyteMap[la.analyte_id] = la.id;
+            }
+          }
+
           const analyteRelations = testGroupData.analytes.map((
             analyteId: string,
           ) => ({
             test_group_id: testGroup.id,
             analyte_id: analyteId,
+            lab_analyte_id: labAnalyteMap[analyteId] || null,
           }));
 
           const { error: relationError } = await supabase
@@ -6856,12 +6996,28 @@ export const database = {
           const analyteMetadata: Record<string, { sort_order?: number; section_heading?: string; is_visible?: boolean }> =
             updates.analyteMetadata || {};
 
+          // Resolve lab_analyte_id for each analyte_id (use the test group's lab_id)
+          let labAnalyteMap: Record<string, string> = {};
+          const labId = data?.lab_id || null;
+          if (labId && newAnalyteIds.length > 0) {
+            const { data: laRows } = await supabase
+              .from("lab_analytes")
+              .select("id, analyte_id")
+              .eq("lab_id", labId)
+              .in("analyte_id", newAnalyteIds)
+              .order("created_at", { ascending: true });
+            for (const la of (laRows || [])) {
+              if (!labAnalyteMap[la.analyte_id]) labAnalyteMap[la.analyte_id] = la.id;
+            }
+          }
+
           // Insert new analytes first (keeps count > 0, preventing the orphan
           // auto-link trigger from firing during the subsequent delete step)
           if (newAnalyteIds.length > 0) {
             const analyteRelations = newAnalyteIds.map((analyteId: string) => ({
               test_group_id: id,
               analyte_id: analyteId,
+              lab_analyte_id: labAnalyteMap[analyteId] || null,
             }));
 
             const { error: insertError } = await supabase
@@ -6879,20 +7035,22 @@ export const database = {
               return { data, error: insertError };
             }
 
-            // Update sort_order and section_heading for each analyte
+            // Update sort_order, section_heading, and lab_analyte_id for each analyte
             for (const analyteId of newAnalyteIds) {
               const meta = analyteMetadata[analyteId];
-              if (meta) {
-                await supabase
-                  .from("test_group_analytes")
-                  .update({
-                    sort_order: meta.sort_order ?? 0,
-                    section_heading: meta.section_heading || null,
-                    is_visible: meta.is_visible ?? true,
-                  })
-                  .eq("test_group_id", id)
-                  .eq("analyte_id", analyteId);
-              }
+              const labAnalyteId = labAnalyteMap[analyteId] || null;
+              const updatePayload: Record<string, any> = {
+                sort_order: meta?.sort_order ?? 0,
+                section_heading: meta?.section_heading || null,
+                is_visible: meta?.is_visible ?? true,
+              };
+              // Always backfill lab_analyte_id when we have it resolved
+              if (labAnalyteId) updatePayload.lab_analyte_id = labAnalyteId;
+              await supabase
+                .from("test_group_analytes")
+                .update(updatePayload)
+                .eq("test_group_id", id)
+                .eq("analyte_id", analyteId);
             }
           }
 

@@ -59,7 +59,7 @@ const DEFAULT_PDF_SETTINGS = {
 // Comprehensive baseline CSS for report styling (server-side)
 const BASELINE_CSS = `
 /* LIMS Report Baseline CSS - Server-Side */
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Noto+Sans:wght@400;700&family=Noto+Sans+Devanagari&family=Noto+Sans+Gujarati&family=Noto+Sans+Tamil&family=Noto+Sans+Telugu&family=Noto+Sans+Kannada&family=Noto+Sans+Bengali&family=Noto+Sans+Gurmukhi&family=Noto+Sans+Malayalam&family=Noto+Sans+Oriya&display=swap');
+/* FIX: Removed duplicate @import — fonts loaded via <link> tags in buildPdfBodyDocumentV2 */
 
 :root {
   --report-font-family: "Inter", "Noto Sans", "Noto Sans Gujarati", "Noto Sans Devanagari", "Noto Sans Tamil", "Noto Sans Telugu", "Noto Sans Kannada", "Noto Sans Bengali", "Noto Sans Gurmukhi", "Noto Sans Malayalam", "Noto Sans Oriya", Arial, sans-serif;
@@ -2428,7 +2428,7 @@ ${flagSymbol === "before" ? `
 }
 
 .basic-report-template .main-group-row td {
-  padding: 0 !important;
+  padding: 8px 0 5px 0 !important;
   border: none !important;
 }
 
@@ -3605,10 +3605,11 @@ function buildPdfBodyDocumentV2(
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<!-- Load Google Fonts for Indian Languages -->
+<!-- Load Google Fonts: Inter (primary) + Noto Sans (Unicode fallback) -->
+<!-- FIX: Removed 9 unused Indian script Noto variants — saves ~200-400KB from PDF embed -->
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Noto+Sans:wght@400;700&family=Noto+Sans+Bengali:wght@400;700&family=Noto+Sans+Devanagari:wght@400;700&family=Noto+Sans+Gujarati:wght@400;700&family=Noto+Sans+Gurmukhi:wght@400;700&family=Noto+Sans+Kannada:wght@400;700&family=Noto+Sans+Malayalam:wght@400;700&family=Noto+Sans+Oriya:wght@400;700&family=Noto+Sans+Tamil:wght@400;700&family=Noto+Sans+Telugu:wght@400;700&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Noto+Sans:wght@400;700&display=swap" rel="stylesheet">
 <style id="lims-report-baseline">${BASELINE_CSS}</style>
 ${(!bodyHtml.includes('basic-report-template') && !bodyHtml.includes('report-table')) ? `<style id="lims-report-ckeditor">${CKEDITOR_CSS}</style>` : ''}
 ${
@@ -4718,15 +4719,13 @@ function generateReportExtrasHtml(extras: {
     html += '<h3 style="margin-bottom: 10px;">Historical Trends</h3>';
 
     for (const chart of extras.trend_charts) {
-      if (chart.image_base64) {
-        html += `<div class="trend-chart" style="margin: 10px 0;">`;
-        html += `<img src="${chart.image_base64}" alt="${
-          chart.analyte_name || "Trend"
-        }" style="max-width: 100%; height: auto;" />`;
+      const imgSrc = chart.image_base64 || chart.image_url;
+      if (imgSrc) {
+        html += `<div class="trend-chart" style="margin: 10px 0; page-break-inside: avoid;">`;
         if (chart.analyte_name) {
-          html +=
-            `<p style="font-size: 11px; text-align: center; margin-top: 5px;">${chart.analyte_name}</p>`;
+          html += `<p style="font-size: 12px; font-weight: 600; margin-bottom: 5px;">${chart.analyte_name}</p>`;
         }
+        html += `<img src="${imgSrc}" alt="${chart.analyte_name || "Trend"}" style="max-width: 100%; height: auto;" />`;
         html += `</div>`;
       }
     }
@@ -5068,10 +5067,10 @@ function applyLetterheadImageTransform(url: string): string {
 
     // If transformations already exist, replace them for letterhead-quality
     if (url.includes("/tr:")) {
-      return url.replace(/\/tr:[^/]+/, "/tr:w-2480,h-3508,c-force,q-95,f-png");
+      return url.replace(/\/tr:[^/]+/, "/tr:w-1240,h-1754,c-force,q-75,f-jpg"); // FIX: was w-2480,h-3508,q-95,f-png (~85% smaller)
     }
     if (url.includes("?tr=")) {
-      return url.replace(/\?tr=[^&]+/, "?tr=w-2480,h-3508,c-force,q-95,f-png");
+      return url.replace(/\?tr=[^&]+/, "?tr=w-1240,h-1754,c-force,q-75,f-jpg"); // FIX: was w-2480,h-3508,q-95,f-png
     }
 
     // Insert transformation path segment
@@ -5079,10 +5078,10 @@ function applyLetterheadImageTransform(url: string): string {
     const insertIndex = pathParts.findIndex((p: string) =>
       p && !p.includes(".")
     ) + 1;
-    pathParts.splice(insertIndex, 0, "tr:w-2480,h-3508,c-force,q-95,f-png");
+    pathParts.splice(insertIndex, 0, "tr:w-1240,h-1754,c-force,q-75,f-jpg"); // FIX: was w-2480,h-3508,q-95,f-png
     urlObj.pathname = pathParts.join("/");
 
-    console.log("📸 Applied letterhead ImageKit transform: 2480x3508 q95 png");
+    console.log("📸 Applied letterhead ImageKit transform: 1240x1754 q75 jpg (reduced from 2480x3508 q95 png)");
     return urlObj.toString();
   } catch (e) {
     console.log("⚠️ Could not apply letterhead transform:", e);
@@ -6553,10 +6552,36 @@ serve(async (req) => {
         .eq("order_id", orderId)
         .not("report_extras", "is", null);
 
+      // Convert trend_graph_data.analytes[] into trend_charts format (new format uses image_url per analyte)
+      let trendChartsFromOrder: any[] = [];
+      if (orderExtras?.trend_graph_data) {
+        const td = typeof orderExtras.trend_graph_data === "string"
+          ? JSON.parse(orderExtras.trend_graph_data)
+          : orderExtras.trend_graph_data;
+        if (td.include_in_report && td.analytes?.length > 0) {
+          trendChartsFromOrder = td.analytes.map((a: any) => ({
+            analyte_name: a.analyte_name,
+            image_url: a.image_url || null,
+            image_base64: null,
+            data: (a.dataPoints || []).map((dp: any) => ({
+              order_date: dp.date || dp.timestamp || "",
+              value: dp.value,
+              unit: a.unit,
+              reference_range: `${a.reference_range?.min}-${a.reference_range?.max}`,
+              flag: dp.flag || null,
+            })),
+            reference_range: `${a.reference_range?.min}-${a.reference_range?.max}`,
+            unit: a.unit,
+            generated_at: a.image_generated_at || new Date().toISOString(),
+          }));
+          console.log(`📊 Converted ${trendChartsFromOrder.length} trend analytes from trend_graph_data (${trendChartsFromOrder.filter(c => c.image_url).length} with image_url)`);
+        }
+      }
+
       // Merge all report extras into one object
       const reportExtras = {
-        // From report_extras table
-        trend_charts: reportExtrasTable?.trend_charts || [],
+        // From report_extras table + order-level trend analytes merged
+        trend_charts: [...(reportExtrasTable?.trend_charts || []), ...trendChartsFromOrder],
         clinical_summary: reportExtrasTable?.clinical_summary || "",
         // From orders table
         trend_graph_data: orderExtras?.trend_graph_data,
@@ -7057,8 +7082,11 @@ serve(async (req) => {
           // Order aliases
           sampleId: baseContext.order?.sampleId || "",
           orderId: baseContext.orderId || "",
-          orderDate: baseContext.order?.orderDate ||
-            baseContext.meta?.orderDate || "",
+          orderDate: (() => {
+            const raw = baseContext.order?.orderDate || baseContext.meta?.orderDate || "";
+            const m = raw.match(/^(\d{4})-(\d{2})-(\d{2})/);
+            return m ? `${m[3]}-${m[2]}-${m[1]}` : raw; // ISO → DD-MM-YYYY to match approvedAt format
+          })(),
           collectionDate: baseContext.order?.sampleCollectedAtFormatted ||
             baseContext.order?.sampleCollectedAt || "",
           sampleCollectedBy: baseContext.order?.sampleCollectedBy || "",

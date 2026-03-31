@@ -264,9 +264,11 @@ CREATE TABLE public.analyte_dependencies (
   source_analyte_id uuid NOT NULL,
   variable_name text NOT NULL,
   created_at timestamp with time zone DEFAULT now(),
+  lab_id uuid,
   CONSTRAINT analyte_dependencies_pkey PRIMARY KEY (id),
   CONSTRAINT analyte_dependencies_calculated_analyte_id_fkey FOREIGN KEY (calculated_analyte_id) REFERENCES public.analytes(id),
-  CONSTRAINT analyte_dependencies_source_analyte_id_fkey FOREIGN KEY (source_analyte_id) REFERENCES public.analytes(id)
+  CONSTRAINT analyte_dependencies_source_analyte_id_fkey FOREIGN KEY (source_analyte_id) REFERENCES public.analytes(id),
+  CONSTRAINT analyte_dependencies_lab_id_fkey FOREIGN KEY (lab_id) REFERENCES public.labs(id)
 );
 CREATE TABLE public.analyte_flag_rules (
   id uuid NOT NULL DEFAULT gen_random_uuid(),
@@ -324,6 +326,7 @@ CREATE TABLE public.analytes (
   ref_range_knowledge jsonb DEFAULT '{}'::jsonb,
   expected_value_flag_map jsonb DEFAULT '{}'::jsonb,
   visible boolean NOT NULL DEFAULT true,
+  expected_value_codes jsonb,
   CONSTRAINT analytes_pkey PRIMARY KEY (id)
 );
 CREATE TABLE public.analyzer_comm_log (
@@ -1260,6 +1263,15 @@ CREATE TABLE public.lab_analytes (
   expected_value_flag_map jsonb DEFAULT '{}'::jsonb,
   display_name text,
   analyte_name text,
+  is_calculated boolean DEFAULT false,
+  formula text,
+  formula_variables jsonb DEFAULT '[]'::jsonb,
+  formula_description text,
+  ai_processing_type text CHECK (ai_processing_type IS NULL OR length(ai_processing_type) < 500),
+  expected_value_codes jsonb,
+  default_value text,
+  ai_prompt_override text,
+  group_ai_mode text,
   CONSTRAINT lab_analytes_pkey PRIMARY KEY (id),
   CONSTRAINT lab_analytes_analyte_id_fkey FOREIGN KEY (analyte_id) REFERENCES public.analytes(id),
   CONSTRAINT lab_analytes_lab_id_fkey FOREIGN KEY (lab_id) REFERENCES public.labs(id)

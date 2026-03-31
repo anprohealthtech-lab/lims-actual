@@ -49,37 +49,16 @@ const ManualEntryForm: React.FC<ManualEntryFormProps> = ({ order, testGroup, onS
     status: 'out_of_stock' | 'low_stock';
   }>>([]);
 
-  // Helper to determine if analyte expects categorical values
+  // Helper to determine if analyte expects categorical values — uses DB config first
   const getCategoricalOptions = (analyte: any): string[] | null => {
-    const name = analyte.name.toLowerCase();
-    
-    // Check for positive/negative tests
-    if (
-      name.includes('hiv') ||
-      name.includes('hbsag') ||
-      name.includes('hcv') ||
-      name.includes('vdrl') ||
-      name.includes('antibody') ||
-      name.includes('antigen') ||
-      (analyte.reference_range && analyte.reference_range.toLowerCase().includes('negative'))
-    ) {
-      return ['Negative', 'Positive', 'Reactive', 'Non-Reactive'];
+    // Priority 1: lab_analytes expected_normal_values from DB
+    if (analyte.expected_normal_values && Array.isArray(analyte.expected_normal_values) && analyte.expected_normal_values.length > 0) {
+      return analyte.expected_normal_values;
     }
-    
-    // Check for blood group
-    if (name.includes('blood group') || name.includes('abo')) {
-      return ['A+', 'A-', 'B+', 'B-', 'AB+', 'AB-', 'O+', 'O-'];
+    // Priority 2: value_type explicitly set to qualitative (free-text qualitative, no dropdown)
+    if (analyte.value_type === 'qualitative') {
+      return null;
     }
-    
-    // Check for presence/absence
-    if (
-      name.includes('culture') ||
-      name.includes('growth') ||
-      name.includes('presence')
-    ) {
-      return ['Absent', 'Present', 'No Growth', 'Growth Detected'];
-    }
-    
     return null;
   };
 
@@ -90,6 +69,7 @@ const ManualEntryForm: React.FC<ManualEntryFormProps> = ({ order, testGroup, onS
         .from('test_group_analytes')
         .select(`
           analyte_id,
+          lab_analyte_id,
           analytes!inner(
             id,
             name,
@@ -98,20 +78,52 @@ const ManualEntryForm: React.FC<ManualEntryFormProps> = ({ order, testGroup, onS
             low_critical,
             high_critical,
             category
+          ),
+          lab_analytes(
+            id,
+            name,
+            unit,
+            reference_range,
+            lab_specific_reference_range,
+            low_critical,
+            high_critical,
+            method,
+            expected_normal_values,
+            expected_value_flag_map,
+            expected_value_codes,
+            value_type,
+            default_value,
+            is_calculated,
+            formula,
+            formula_variables
           )
         `)
         .eq('test_group_id', testGroup.id);
 
       if (!error && data) {
-        const analyteList = data.map(item => ({
-          id: item.analytes.id,
-          name: item.analytes.name,
-          unit: item.analytes.unit || '',
-          reference_range: item.analytes.reference_range || '',
-          low_critical: item.analytes.low_critical,
-          high_critical: item.analytes.high_critical,
-          category: item.analytes.category
-        }));
+        const analyteList = data.map(item => {
+          const a = item.analytes;
+          const la = item.lab_analyte_id ? item.lab_analytes : null;
+          return {
+            id: a.id,
+            lab_analyte_id: item.lab_analyte_id || la?.id || null,
+            name: la?.name || a.name,
+            unit: la?.unit || a.unit || '',
+            reference_range: la?.lab_specific_reference_range ?? la?.reference_range ?? a.reference_range ?? '',
+            low_critical: la?.low_critical ?? a.low_critical,
+            high_critical: la?.high_critical ?? a.high_critical,
+            category: a.category,
+            method: la?.method ?? undefined,
+            expected_normal_values: la?.expected_normal_values ?? [],
+            expected_value_flag_map: la?.expected_value_flag_map ?? {},
+            expected_value_codes: la?.expected_value_codes ?? {},
+            value_type: la?.value_type ?? undefined,
+            default_value: la?.default_value ?? null,
+            is_calculated: la?.is_calculated ?? false,
+            formula: la?.formula ?? null,
+            formula_variables: la?.formula_variables ?? [],
+          };
+        });
         setAnalytes(analyteList);
         
         // Initialize form data
@@ -319,6 +331,7 @@ const ManualEntryForm: React.FC<ManualEntryFormProps> = ({ order, testGroup, onS
           const analyte = analytes.find(a => a.id === analyteId);
           return {
             analyte_id: analyteId,
+            lab_analyte_id: analyte?.lab_analyte_id || null,
             parameter: analyte?.name || '',
             value: data.value,
             unit: data.unit,

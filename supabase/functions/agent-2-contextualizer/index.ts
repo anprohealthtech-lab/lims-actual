@@ -100,12 +100,20 @@ serve(async (req) => {
           *,
           test_group_analytes(
             analyte_id,
+            lab_analyte_id,
             analytes(
               id,
               name,
               unit,
               reference_range,
               ai_processing_type
+            ),
+            lab_analytes(
+              id,
+              name,
+              unit,
+              reference_range,
+              lab_specific_reference_range
             )
           )
         `)
@@ -119,7 +127,16 @@ serve(async (req) => {
           category: testGroup.category,
           sample_type: testGroup.sample_type
         }
-        analytes = testGroup.test_group_analytes?.map((tga: any) => tga.analytes) || []
+        analytes = testGroup.test_group_analytes?.map((tga: any) => {
+          const a = tga.analytes;
+          const la = tga.lab_analyte_id ? tga.lab_analytes : null;
+          return {
+            ...a,
+            name: la?.name || a?.name,
+            unit: la?.unit || a?.unit,
+            reference_range: la?.lab_specific_reference_range ?? la?.reference_range ?? a?.reference_range,
+          };
+        }) || []
       }
     }
 

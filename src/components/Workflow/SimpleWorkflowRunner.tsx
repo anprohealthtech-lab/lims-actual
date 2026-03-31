@@ -214,11 +214,19 @@ const SimpleWorkflowRunner: React.FC<SimpleWorkflowRunnerProps> = ({
           .from('test_group_analytes')
           .select(`
             analyte_id,
+            lab_analyte_id,
             analytes (
               id,
               name,
               unit,
               reference_range
+            ),
+            lab_analytes (
+              id,
+              name,
+              unit,
+              reference_range,
+              lab_specific_reference_range
             )
           `)
           .eq('test_group_id', testGroupId)
@@ -230,16 +238,17 @@ const SimpleWorkflowRunner: React.FC<SimpleWorkflowRunnerProps> = ({
         const catalog = (data ?? [])
           .map((row: any) => {
             const analyte = row.analytes ?? {}
-            const name: string | null = analyte?.name ?? null
+            const la = row.lab_analyte_id ? row.lab_analytes : null
+            const name: string | null = la?.name || analyte?.name || null
             if (!name || typeof name !== 'string' || name.trim().length === 0) {
               return null
             }
             return {
               id: (row.analyte_id ?? analyte?.id ?? null) as string | null,
               name,
-              unit: analyte?.unit ?? null,
-              reference_range: analyte?.reference_range ?? null,
-              code: null, // analytes table doesn't have code column
+              unit: la?.unit ?? analyte?.unit ?? null,
+              reference_range: la?.lab_specific_reference_range ?? la?.reference_range ?? analyte?.reference_range ?? null,
+              code: null,
             } satisfies AnalyteCatalogEntry
           })
           .filter((entry): entry is AnalyteCatalogEntry => entry !== null)

@@ -260,9 +260,19 @@ const AnalyteForm: React.FC<AnalyteFormProps> = ({ onClose, onSubmit, analyte, a
     'Serology',
     'Microbiology',
     'Immunology',
+    'Immunohematology',
+    'Blood Banking',
     'Molecular Biology',
+    'Molecular Diagnostics',
+    'Clinical Pathology',
     'Histopathology',
     'Cytology',
+    'Toxicology',
+    'Endocrinology',
+    'Endocrinology/Immunology',
+    'Cardiology',
+    'Urinalysis',
+    'General',
   ];
 
   const aiProcessingTypes = [

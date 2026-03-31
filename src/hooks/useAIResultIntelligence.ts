@@ -10,6 +10,9 @@
 import { useState, useCallback } from 'react';
 import { database } from '../utils/supabase';
 
+const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL as string;
+const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY as string;
+
 // Types matching the Netlify function
 export interface AnalyteData {
   id: string;
@@ -221,7 +224,7 @@ interface AIResultIntelligenceState {
   error: string | null;
 }
 
-const NETLIFY_FUNCTION_URL = '/.netlify/functions/ai-result-intelligence';
+const AI_FUNCTION_URL = `${SUPABASE_URL}/functions/v1/ai-result-intelligence`;
 
 /**
  * Hook for AI-powered result intelligence
@@ -239,10 +242,12 @@ export function useAIResultIntelligence() {
     setState({ loading: true, error: null });
     
     try {
-      const response = await fetch(NETLIFY_FUNCTION_URL, {
+      const response = await fetch(AI_FUNCTION_URL, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
+          'Authorization': `Bearer ${SUPABASE_ANON_KEY}`,
+          'apikey': SUPABASE_ANON_KEY,
         },
         body: JSON.stringify(body),
       });

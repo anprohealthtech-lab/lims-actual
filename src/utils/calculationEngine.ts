@@ -58,6 +58,7 @@ export interface PatientData {
 
 export interface CalculationResult {
   analyte_id: string;
+  lab_analyte_id?: string | null;
   parameter: string;
   value: string;
   unit?: string;
@@ -82,6 +83,7 @@ export const calculationEngine = {
     const { data, error } = await supabase
       .from('test_group_analytes')
       .select(`
+        lab_analyte_id,
         analytes!inner(
           id,
           name,
@@ -92,6 +94,15 @@ export const calculationEngine = {
           reference_range,
           category,
           is_calculated
+        ),
+        lab_analytes(
+          id,
+          formula,
+          formula_variables,
+          unit,
+          reference_range,
+          lab_specific_reference_range,
+          is_calculated
         )
       `)
       .eq('test_group_id', testGroupId)
@@ -99,16 +110,21 @@ export const calculationEngine = {
 
     if (error || !data) return [];
 
-    return data.map((item: any) => ({
-      id: item.analytes.id,
-      name: item.analytes.name,
-      formula: item.analytes.formula,
-      formula_variables: item.analytes.formula_variables || [],
-      formula_description: item.analytes.formula_description,
-      unit: item.analytes.unit,
-      reference_range: item.analytes.reference_range,
-      category: item.analytes.category
-    }));
+    return data.map((item: any) => {
+      const a = item.analytes;
+      const la = item.lab_analyte_id ? item.lab_analytes : null;
+      return {
+        id: a.id,
+        lab_analyte_id: item.lab_analyte_id || la?.id || null,
+        name: a.name,
+        formula: la?.formula ?? a.formula,
+        formula_variables: la?.formula_variables ?? a.formula_variables ?? [],
+        formula_description: a.formula_description,
+        unit: la?.unit ?? a.unit,
+        reference_range: la?.lab_specific_reference_range ?? la?.reference_range ?? a.reference_range,
+        category: a.category
+      };
+    });
   },
 
   /**
@@ -205,6 +221,7 @@ export const calculationEngine = {
       if (!allDepsPresent) {
         results.push({
           analyte_id: analyte.id,
+          lab_analyte_id: analyte.lab_analyte_id || null,
           parameter: analyte.name,
           value: '',
           unit: analyte.unit,
@@ -226,6 +243,7 @@ export const calculationEngine = {
 
         results.push({
           analyte_id: analyte.id,
+          lab_analyte_id: analyte.lab_analyte_id || null,
           parameter: analyte.name,
           value: String(roundedResult),
           unit: analyte.unit,
@@ -239,6 +257,7 @@ export const calculationEngine = {
       } catch (err: any) {
         results.push({
           analyte_id: analyte.id,
+          lab_analyte_id: analyte.lab_analyte_id || null,
           parameter: analyte.name,
           value: '',
           unit: analyte.unit,
@@ -277,6 +296,7 @@ export const calculationEngine = {
       test_group_id: testGroupId,
       lab_id: labId,
       analyte_id: calc.analyte_id,
+      lab_analyte_id: calc.lab_analyte_id || null,
       parameter: calc.parameter,
       value: calc.value,
       unit: calc.unit || '',

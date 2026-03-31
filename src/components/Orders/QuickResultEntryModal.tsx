@@ -5,7 +5,7 @@
 
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import ReactDOM from "react-dom";
-import { X, Save, CheckCircle, ChevronDown, Loader2 } from "lucide-react";
+import { X, Save, CheckCircle, ChevronDown, Loader2, RefreshCw } from "lucide-react";
 import { supabase, database } from "../../utils/supabase";
 import { useAuth } from "../../contexts/AuthContext";
 import { calculateFlag, calculateFlagsForResults } from "../../utils/flagCalculation";
@@ -15,6 +15,7 @@ import SectionEditor, { SectionEditorRef } from "../Results/SectionEditor";
 
 interface AnalyteRow {
   analyte_id: string;
+  lab_analyte_id?: string | null;
   parameter: string;
   value: string;
   unit: string;
@@ -207,8 +208,9 @@ const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, on
             test_groups(
               id, name, ref_range_ai_config,
               test_group_analytes(
-                analyte_id, sort_order, display_order,
-                analytes(id, name, code, unit, reference_range, is_calculated, formula, formula_variables, expected_normal_values, expected_value_flag_map, value_type, expected_value_codes)
+                analyte_id, lab_analyte_id, sort_order, display_order,
+                analytes(id, name, code, unit, reference_range, is_calculated, formula, formula_variables, expected_normal_values, expected_value_flag_map, value_type, expected_value_codes),
+                lab_analytes(id, name, unit, reference_range, lab_specific_reference_range, is_calculated, formula, formula_variables, expected_normal_values, expected_value_flag_map, value_type, expected_value_codes, default_value)
               )
             )
           ),
@@ -217,8 +219,9 @@ const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, on
             test_groups(
               id, name, ref_range_ai_config,
               test_group_analytes(
-                analyte_id, sort_order, display_order,
-                analytes(id, name, code, unit, reference_range, is_calculated, formula, formula_variables, expected_normal_values, expected_value_flag_map, value_type, expected_value_codes)
+                analyte_id, lab_analyte_id, sort_order, display_order,
+                analytes(id, name, code, unit, reference_range, is_calculated, formula, formula_variables, expected_normal_values, expected_value_flag_map, value_type, expected_value_codes),
+                lab_analytes(id, name, unit, reference_range, lab_specific_reference_range, is_calculated, formula, formula_variables, expected_normal_values, expected_value_flag_map, value_type, expected_value_codes, default_value)
               )
             )
           ),
@@ -239,6 +242,9 @@ const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, on
           return ao - bo;
         }).map((tga: any) => {
           const a = tga.analytes;
+          // Prefer lab_analytes config when lab_analyte_id is set (no join ambiguity)
+          // la fields override global analyte fields for is_calculated, formula, reference_range, etc.
+          const la = tga.lab_analyte_id ? tga.lab_analytes : null;
           const resultRow = results?.find((r: any) =>
             (otgId && r.order_test_group_id === otgId) ||
             (otId && r.order_test_id === otId) ||
@@ -256,7 +262,23 @@ const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, on
               if (found) { existing = found; break; }
             }
           }
-          return { ...a, units: a?.unit, existing_result: existing };
+          // Merge: spread global analyte fields first, then override with lab_analytes fields
+          const merged = la ? {
+            ...a,
+            lab_analyte_id: tga.lab_analyte_id || la.id || null,
+            name: la.name || a?.name,
+            unit: la.unit || a?.unit,
+            reference_range: la.lab_specific_reference_range ?? la.reference_range ?? a?.reference_range,
+            is_calculated: la.is_calculated ?? a?.is_calculated,
+            formula: la.formula ?? a?.formula,
+            formula_variables: la.formula_variables ?? a?.formula_variables,
+            expected_normal_values: la.expected_normal_values ?? a?.expected_normal_values,
+            expected_value_flag_map: la.expected_value_flag_map ?? a?.expected_value_flag_map,
+            value_type: la.value_type ?? a?.value_type,
+            expected_value_codes: la.expected_value_codes ?? a?.expected_value_codes,
+            default_value: la.default_value ?? null,
+          } : a;
+          return { ...merged, units: merged?.unit, existing_result: existing };
         }).filter(Boolean);
 
       const tgFromOTG: TestGroup[] = (data.order_test_groups || [])
@@ -293,16 +315,23 @@ const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, on
         return acc;
       }, []);
 
-      // Fetch lab-specific expected_normal_values overrides
+      // Fetch lab_analytes overrides for analytes that didn't have lab_analyte_id set yet
+      // (fallback for rows pre-dating the lab_analyte_id migration)
       const allAnalyteIds = merged.flatMap(tg => tg.analytes.map(a => a.id)).filter(Boolean);
       let labAnalytesMap = new Map<string, any>();
       if (allAnalyteIds.length > 0 && data.lab_id) {
         const { data: la } = await supabase
           .from("lab_analytes")
-          .select("analyte_id, expected_normal_values, expected_value_flag_map, value_type, expected_value_codes, default_value, reference_range, lab_specific_reference_range")
+          .select("analyte_id, expected_normal_values, expected_value_flag_map, value_type, expected_value_codes, default_value, reference_range, lab_specific_reference_range, is_calculated, formula, formula_variables")
           .eq("lab_id", data.lab_id)
-          .in("analyte_id", allAnalyteIds);
-        if (la) labAnalytesMap = new Map(la.map((x: any) => [x.analyte_id, x]));
+          .in("analyte_id", allAnalyteIds)
+          .order("created_at", { ascending: true });
+        // Deduplicate: keep only the first (earliest) row per analyte_id
+        if (la) {
+          for (const x of la as any[]) {
+            if (!labAnalytesMap.has(x.analyte_id)) labAnalytesMap.set(x.analyte_id, x);
+          }
+        }
       }
 
       setTestGroups(merged);
@@ -389,12 +418,14 @@ const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, on
             : (envDefaultValue || "");
           return {
             analyte_id: a.id,
+            lab_analyte_id: a.lab_analyte_id || null,
             parameter: a.name,
             value: prefillValue,
             unit: a.existing_result?.unit || a.units || "",
             reference: a.existing_result?.reference_range ?? (la != null ? (la.lab_specific_reference_range ?? la.reference_range ?? a.reference_range) : a.reference_range) ?? "",
             flag: a.existing_result?.flag || "",
-            is_calculated: !!a.is_calculated,
+            // lab_analytes overrides win for calculated-param fields
+            is_calculated: la?.is_calculated != null ? !!la.is_calculated : !!a.is_calculated,
             is_existing: hasExisting,
             expected_normal_values: envValues,
             expected_value_flag_map: envMap,
@@ -403,17 +434,17 @@ const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, on
             default_value: envDefaultValue,
             // Mark as default-prefilled so the UI can style it differently
             is_default: !hasExisting && !!envDefaultValue,
-            formula: a.formula,
-            formula_variables: a.formula_variables,
+            formula: la?.formula ?? a.formula ?? null,
+            formula_variables: la?.formula_variables ?? a.formula_variables ?? null,
           };
         })
       );
 
-      setRows(flat);
-
       // Load analyte_dependencies for live formula evaluation
       // Prefer lab-specific rows; fall back to global (lab_id IS NULL) when no lab override exists
-      const calcIds = merged.flatMap(tg => tg.analytes.filter(a => a.is_calculated).map(a => a.id)).filter(Boolean) as string[];
+      // Use flat (which has lab_analytes overrides applied) so lab-level is_calculated=true is respected
+      const calcIds = flat.filter(r => r.is_calculated).map(r => r.analyte_id).filter(Boolean) as string[];
+      let loadedDeps: DepRow[] = [];
       if (calcIds.length > 0) {
         const { data: depsData } = await supabase
           .from("analyte_dependencies")
@@ -422,14 +453,43 @@ const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, on
           .or(`lab_id.eq.${data.lab_id},lab_id.is.null`);
         // Deduplicate: prefer lab-specific over global for same (calculated_analyte_id, variable_name)
         const seen = new Set<string>();
-        const deduped: DepRow[] = [];
         const sorted = [...(depsData || [])].sort((a: any, b: any) => (a.lab_id ? -1 : 1) - (b.lab_id ? -1 : 1));
         for (const row of sorted as any[]) {
           const key = `${row.calculated_analyte_id}:${row.variable_name}`;
-          if (!seen.has(key)) { seen.add(key); deduped.push(row as DepRow); }
+          if (!seen.has(key)) { seen.add(key); loadedDeps.push(row as DepRow); }
         }
-        setCalcDeps(deduped);
+        setCalcDeps(loadedDeps);
       }
+
+      // Auto-evaluate formulas on load using existing_result values (locked/saved analytes)
+      // so calculated params (e.g. MCHC, Bilirubin Indirect) show correct values immediately
+      const patientAgeLoad = order.patient?.age ? Number(order.patient.age) : null;
+      const patientGenderLoad = order.patient?.gender;
+      const lookup = new Map<string, number>();
+      if (patientAgeLoad !== null && Number.isFinite(patientAgeLoad)) lookup.set('age', patientAgeLoad);
+      if (patientGenderLoad) {
+        lookup.set('gender_male', patientGenderLoad === 'Male' ? 1 : 0);
+        lookup.set('gender_female', patientGenderLoad === 'Female' ? 1 : 0);
+        lookup.set('gender', patientGenderLoad === 'Male' ? 1 : 0);
+      }
+      for (const r of flat) {
+        if (r.is_calculated) continue;
+        const num = toNumber(r.value);
+        if (num !== null) {
+          if (r.analyte_id) lookup.set(r.analyte_id, num);
+          lookup.set(r.parameter.toLowerCase(), num);
+          lookup.set(toVariableSlug(r.parameter), num);
+        }
+      }
+      const flatWithCalc = flat.map(r => {
+        if (!r.is_calculated || !r.formula || r.is_existing) return r;
+        const vars = parseFormulaVars(r.formula_variables);
+        const calcVal = evalFormula(r.formula, vars, lookup, loadedDeps, r.analyte_id);
+        if (!calcVal) return r;
+        const autoFlag = calculateFlag(calcVal, r.reference, undefined, undefined, undefined, undefined, undefined, undefined, r.value_type);
+        return { ...r, value: calcVal, flag: autoFlag || r.flag };
+      });
+      setRows(flatWithCalc);
     } catch (err) {
       console.error("QuickResultEntry load error:", err);
     } finally {
@@ -465,6 +525,21 @@ const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, on
         lookup.set('gender_female', patientGender === 'Female' ? 1 : 0);
         lookup.set('gender', patientGender === 'Male' ? 1 : 0);
       }
+      // Seed lookup with already-saved analyte values (existing_result) so formulas
+      // that depend on previously entered analytes (e.g. MCHC = HGB / HCT * 100)
+      // still evaluate correctly when those dependencies are already in is_existing state.
+      for (const tg of testGroups) {
+        for (const a of tg.analytes) {
+          if (a.is_calculated) continue;
+          const savedVal = a.existing_result?.value;
+          const num = toNumber(savedVal);
+          if (num !== null) {
+            if (a.id) lookup.set(a.id, num);
+            lookup.set(a.name.toLowerCase(), num);
+            lookup.set(toVariableSlug(a.name), num);
+          }
+        }
+      }
       for (const r of next) {
         if (r.is_calculated) continue;
         const num = toNumber(r.value);
@@ -488,7 +563,53 @@ const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, on
         return { ...r, value: calcVal, flag: autoFlag || r.flag };
       });
     });
-  }, [calcDeps]);
+  }, [calcDeps, testGroups]);
+
+  // Recalculate all formula-based analytes using saved (existing_result) + pending row values.
+  // Called manually via the "↻" button when auto-calc didn't fire (e.g. all deps already saved).
+  const handleRecalculate = useCallback(() => {
+    setRows(prev => {
+      const lookup = new Map<string, number>();
+      const patientAge = order.patient?.age ? Number(order.patient.age) : null;
+      const patientGender = order.patient?.gender;
+      if (patientAge !== null && Number.isFinite(patientAge)) lookup.set('age', patientAge);
+      if (patientGender) {
+        lookup.set('gender_male', patientGender === 'Male' ? 1 : 0);
+        lookup.set('gender_female', patientGender === 'Female' ? 1 : 0);
+        lookup.set('gender', patientGender === 'Male' ? 1 : 0);
+      }
+      // Seed from already-saved analyte values
+      for (const tg of testGroups) {
+        for (const a of tg.analytes) {
+          if (a.is_calculated) continue;
+          const num = toNumber(a.existing_result?.value);
+          if (num !== null) {
+            if (a.id) lookup.set(a.id, num);
+            lookup.set(a.name.toLowerCase(), num);
+            lookup.set(toVariableSlug(a.name), num);
+          }
+        }
+      }
+      // Seed from current pending row values
+      for (const r of prev) {
+        if (r.is_calculated) continue;
+        const num = toNumber(r.value);
+        if (num !== null) {
+          if (r.analyte_id) lookup.set(r.analyte_id, num);
+          lookup.set(r.parameter.toLowerCase(), num);
+          lookup.set(toVariableSlug(r.parameter), num);
+        }
+      }
+      return prev.map(r => {
+        if (!r.is_calculated || !r.formula) return r;
+        const vars = parseFormulaVars(r.formula_variables);
+        const calcVal = evalFormula(r.formula, vars, lookup, calcDeps, r.analyte_id);
+        if (!calcVal) return r;
+        const autoFlag = calculateFlag(calcVal, r.reference, undefined, undefined, undefined, undefined, undefined, undefined, r.value_type);
+        return { ...r, value: calcVal, flag: autoFlag || r.flag };
+      });
+    });
+  }, [calcDeps, testGroups, order.patient]);
 
   // ── Keyboard navigation ─────────────────────────────────────────────────────
 
@@ -660,6 +781,7 @@ const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, on
             const existingRow = workingRows.find(r => r.analyte_id === a.id);
             return {
               analyte_id: a.id,
+              lab_analyte_id: a.lab_analyte_id || null,
               parameter: a.name,
               value: existingRow?.value?.trim() ? existingRow.value : calcVal,
               unit: existingRow?.unit || a.units || "",
@@ -711,9 +833,59 @@ const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, on
           existingStatusByKey.set(groupKey, savedLocked);
         }
 
-        // Skip groups whose result is already approved/verified — do not overwrite locked results
+        // For locked results (already approved/verified/reported), only insert truly
+        // missing analytes — do not delete/overwrite existing result_values.
         const existingStatus = existingStatusByKey.get(groupKey);
-        if (existingStatus === 'LOCKED') continue;
+        const isGroupLocked = existingStatus === 'LOCKED';
+
+        if (isGroupLocked) {
+          // Fetch which analyte_ids already have values in this result row
+          const analyteIdsToCheck = toPersist.map(r => r.analyte_id).filter(Boolean) as string[];
+          if (analyteIdsToCheck.length === 0) continue;
+
+          const { data: alreadySaved } = await supabase
+            .from("result_values")
+            .select("analyte_id")
+            .eq("result_id", resultRowId!)
+            .in("analyte_id", analyteIdsToCheck);
+
+          const alreadySavedIds = new Set((alreadySaved || []).map((rv: any) => rv.analyte_id));
+          const trulyMissing = toPersist.filter(r => r.analyte_id && !alreadySavedIds.has(r.analyte_id));
+          if (trulyMissing.length === 0) continue;
+
+          // Insert only the missing analyte values; unlock the result row so a fresh PDF can be generated
+          const missingValueRows = trulyMissing.map(r => {
+            const autoFlag = r.flag || calculateFlag(r.value, r.reference, order.patient?.gender ?? undefined, undefined, undefined, undefined, undefined, undefined, r.value_type);
+            return {
+              result_id: resultRowId!,
+              analyte_id: r.analyte_id || null,
+              lab_analyte_id: r.lab_analyte_id || null,
+              analyte_name: r.parameter,
+              parameter: r.parameter,
+              value: r.value || null,
+              unit: r.unit || "",
+              reference_range: r.reference || "",
+              flag: autoFlag || null,
+              flag_source: r.flag ? "manual" : (autoFlag ? "auto_numeric" : undefined),
+              is_auto_calculated: r.is_calculated,
+              order_id: order.id,
+              test_group_id: tg.test_group_id,
+              lab_id: userLabId,
+              ...(tg.order_test_group_id && { order_test_group_id: tg.order_test_group_id }),
+              ...(tg.order_test_id && { order_test_id: tg.order_test_id }),
+            };
+          });
+          const { error: mve } = await supabase.from("result_values").insert(missingValueRows);
+          if (mve) throw mve;
+
+          // Unlock the result row so a fresh report can be generated with complete data
+          await supabase
+            .from("results")
+            .update({ is_locked: false, locked_reason: null })
+            .eq("id", resultRowId!);
+
+          continue;
+        }
 
         // Delete + re-insert result_values for these analytes
         // Use analyte_id (UUID) for the filter — analyte names may contain characters like "(%)"
@@ -743,6 +915,7 @@ const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, on
           return {
           result_id: resultRowId!,
           analyte_id: r.analyte_id || null,
+          lab_analyte_id: r.lab_analyte_id || null,
           analyte_name: r.parameter,
           parameter: r.parameter,
           value: r.value || null,
@@ -891,8 +1064,8 @@ const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, on
                       const isCalc = row.is_calculated;
                       const isQualitative = row.value_type === 'qualitative';
                       const hasCodes = isQualitative && Object.keys(row.expected_value_codes || {}).length > 0;
-                      // qualitative with codes → combobox text input; qualitative/others with options → select
-                      const hasDropdown = !isQualitative && row.expected_normal_values.length > 0;
+                      // If expected_normal_values exist, always show dropdown regardless of value_type
+                      const hasDropdown = row.expected_normal_values.length > 0;
                       const hasDraftValue = row.value.trim() !== "";
                       const isDefault = !!row.is_default;
                       const flagLabel = flagOptions.find(f => f.value === row.flag);
@@ -916,11 +1089,61 @@ const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, on
                           {/* Value input */}
                           <td className="px-4 py-2">
                             {isCalc ? (
-                              <div className="px-2 py-1.5 bg-blue-50 border border-blue-200 rounded text-blue-800 text-sm font-medium min-h-[34px] flex items-center">
-                                {row.value || <span className="text-blue-300 italic">calculated</span>}
+                              <div className="flex items-center gap-1.5">
+                                <div className="flex-1 px-2 py-1.5 bg-blue-50 border border-blue-200 rounded text-blue-800 text-sm font-medium min-h-[34px] flex items-center">
+                                  {row.value || <span className="text-blue-300 italic">calculated</span>}
+                                </div>
+                                <button
+                                  type="button"
+                                  title="Recalculate from saved values"
+                                  onClick={handleRecalculate}
+                                  className="p-1.5 text-blue-500 hover:text-blue-700 hover:bg-blue-100 rounded transition-colors"
+                                >
+                                  <RefreshCw className="h-3.5 w-3.5" />
+                                </button>
                               </div>
+                            ) : hasDropdown ? (
+                              <select
+                                ref={el => { valueRefs.current[globalIdx] = el; }}
+                                value={row.value}
+                                onChange={e => {
+                                  const val = e.target.value;
+                                  const autoFlag = row.expected_value_flag_map[val] ?? "";
+                                  setRows(prev => prev.map((r, i) => i !== globalIdx ? r : { ...r, value: val, flag: autoFlag, is_default: false }));
+                                }}
+                                onKeyDown={e => {
+                                  // Quick code resolution: e.g. pressing "1" selects "Non-Reactive"
+                                  if (hasCodes && e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) {
+                                    const code = e.key.toUpperCase();
+                                    const resolved = (row.expected_value_codes || {})[code];
+                                    if (resolved) {
+                                      e.preventDefault();
+                                      const autoFlag = row.expected_value_flag_map[resolved] ?? "";
+                                      setRows(prev => prev.map((r, i) => i !== globalIdx ? r : { ...r, value: resolved, flag: autoFlag, is_default: false }));
+                                      focusNext(globalIdx);
+                                      return;
+                                    }
+                                  }
+                                  handleKeyDown(e, globalIdx);
+                                }}
+                                className={`w-full px-2 py-1.5 border rounded text-sm focus:outline-none focus:ring-2 ${
+                                  isDefault
+                                    ? "border-amber-300 bg-amber-50 text-amber-800 italic focus:ring-amber-400"
+                                    : row.value ? "border-green-300 bg-green-50 focus:ring-green-400" : "border-gray-300 focus:ring-green-400"
+                                }`}
+                              >
+                                <option value="">Select...</option>
+                                {row.expected_normal_values.map(opt => (
+                                  <option key={opt} value={opt}>{opt}</option>
+                                ))}
+                                {/* Show quick code hints if available */}
+                                {hasCodes && <option disabled>── Quick codes ──</option>}
+                                {hasCodes && Object.entries(row.expected_value_codes || {}).map(([code, val]) => (
+                                  <option key={`hint-${code}`} disabled>{code} → {val}</option>
+                                ))}
+                              </select>
                             ) : isQualitative ? (
-                              // Qualitative: free-text with quick-code resolution.
+                              // Qualitative without dropdown values: free-text with quick-code resolution.
                               // Amber border/bg when pre-filled by default; purple when manually entered.
                               <div className="relative">
                                 <input
@@ -959,27 +1182,6 @@ const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, on
                                   </datalist>
                                 )}
                               </div>
-                            ) : hasDropdown ? (
-                              <select
-                                ref={el => { valueRefs.current[globalIdx] = el; }}
-                                value={row.value}
-                                onChange={e => {
-                                  const val = e.target.value;
-                                  const autoFlag = row.expected_value_flag_map[val] ?? "";
-                                  setRows(prev => prev.map((r, i) => i !== globalIdx ? r : { ...r, value: val, flag: autoFlag, is_default: false }));
-                                }}
-                                onKeyDown={e => handleKeyDown(e, globalIdx)}
-                                className={`w-full px-2 py-1.5 border rounded text-sm focus:outline-none focus:ring-2 ${
-                                  isDefault
-                                    ? "border-amber-300 bg-amber-50 text-amber-800 italic focus:ring-amber-400"
-                                    : row.value ? "border-green-300 bg-green-50 focus:ring-green-400" : "border-gray-300 focus:ring-green-400"
-                                }`}
-                              >
-                                <option value="">Select...</option>
-                                {row.expected_normal_values.map(opt => (
-                                  <option key={opt} value={opt}>{opt}</option>
-                                ))}
-                              </select>
                             ) : (
                               <input
                                 ref={el => { valueRefs.current[globalIdx] = el; }}

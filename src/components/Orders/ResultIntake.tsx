@@ -25,6 +25,7 @@ interface Analyte {
   is_calculated?: boolean
   formula?: string
   formula_variables?: string[]
+  lab_analyte_id?: string | null
   existing_result?: {
     id: string
     value: string | null
@@ -59,6 +60,7 @@ interface Props {
 
 type Entry = {
   analyte_id: string
+  lab_analyte_id?: string | null
   analyte_name: string
   value: string
   unit: string
@@ -111,6 +113,7 @@ export function ResultIntake({ order, onResultProcessed }: Props) {
         if (!isCompleted(a)) {
           next[a.id] = {
             analyte_id: a.id,
+            lab_analyte_id: a.lab_analyte_id || null,
             analyte_name: a.name,
             value: '',
             unit: a.units || a.unit || '',
@@ -417,6 +420,7 @@ export function ResultIntake({ order, onResultProcessed }: Props) {
             lab_id: order.lab_id,
             test_group_id: tgId,
             analyte_id: v.analyte_id,
+            lab_analyte_id: v.lab_analyte_id || null,
             analyte_name: v.analyte_name,
             parameter: v.analyte_name,
             value: v.value,

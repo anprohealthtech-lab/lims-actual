@@ -343,6 +343,23 @@ OUTPUT JSON:
   }
   
   // Insert result values
+  // Batch-resolve lab_analyte_id for all mapped analytes
+  const allMappedAnalyteIds = Array.from(analyteMap.values()).map((m: any) => m.analyte_id).filter(Boolean) as string[]
+  const labAnalyteIdMap = new Map<string, string>()
+  if (allMappedAnalyteIds.length > 0) {
+    const { data: laRows } = await supabase
+      .from('lab_analytes')
+      .select('id, analyte_id')
+      .eq('lab_id', labId)
+      .in('analyte_id', allMappedAnalyteIds)
+      .order('created_at', { ascending: true })
+    if (laRows) {
+      for (const la of laRows) {
+        if (!labAnalyteIdMap.has(la.analyte_id)) labAnalyteIdMap.set(la.analyte_id, la.id)
+      }
+    }
+  }
+
   for (const item of parsedData.results) {
     const code = (item.analyzer_code || item.test_code)?.toUpperCase()
     const mapping = analyteMap.get(code)
@@ -358,6 +375,7 @@ OUTPUT JSON:
       order_id: order.id,
       lab_id: labId,
       analyte_id: mapping.analyte_id,
+      lab_analyte_id: labAnalyteIdMap.get(mapping.analyte_id) || null,
       parameter: mapping.analyte_name,
       analyte_name: mapping.analyte_name,
       value: item.value,

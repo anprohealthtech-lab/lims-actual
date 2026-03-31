@@ -365,9 +365,27 @@ const AIUploadPanel: React.FC<AIUploadPanelProps> = ({ order, testGroup, onUploa
         .single();
       if (resultErr) throw resultErr;
 
+      // Batch-resolve lab_analyte_id for all extracted analytes
+      const extractedAnalyteIds = extracted.map((p: any) => p.analyte_id).filter(Boolean) as string[];
+      const labAnalyteMap = new Map<string, string>();
+      if (extractedAnalyteIds.length > 0) {
+        const { data: laRows } = await supabase
+          .from('lab_analytes')
+          .select('id, analyte_id')
+          .eq('lab_id', labId)
+          .in('analyte_id', extractedAnalyteIds)
+          .order('created_at', { ascending: true });
+        if (laRows) {
+          for (const la of laRows) {
+            if (!labAnalyteMap.has(la.analyte_id)) labAnalyteMap.set(la.analyte_id, la.id);
+          }
+        }
+      }
+
       const values = extracted.map((p: any) => ({
         result_id: resultRow.id,
         analyte_id: p.analyte_id || null,
+        lab_analyte_id: (p.analyte_id && labAnalyteMap.get(p.analyte_id)) || null,
         analyte_name: p.parameter,
         parameter: p.parameter,
         value: p.value,
@@ -429,9 +447,24 @@ const AIUploadPanel: React.FC<AIUploadPanelProps> = ({ order, testGroup, onUploa
             .eq('name', item.parameter)
             .single();
 
+          // Resolve lab_analyte_id
+          let labAnalyteId: string | null = null;
+          if (analyte?.id) {
+            const { data: laRow } = await supabase
+              .from('lab_analytes')
+              .select('id')
+              .eq('lab_id', order.lab_id)
+              .eq('analyte_id', analyte.id)
+              .order('created_at', { ascending: true })
+              .limit(1)
+              .maybeSingle();
+            labAnalyteId = laRow?.id || null;
+          }
+
           return {
             result_id: resultId,
             analyte_id: analyte?.id,
+            lab_analyte_id: labAnalyteId,
             analyte_name: item.parameter,
             parameter: item.parameter,
             value: item.value,

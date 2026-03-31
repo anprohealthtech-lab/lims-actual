@@ -349,7 +349,7 @@ async function getTestContext(orderId?: string, testGroupId?: string, analyteIds
     }
 
     if (testGroupId) {
-      const select = 'id,name,code,lab_id,default_ai_processing_type,test_group_analytes(analyte_id,analytes(id,name,unit,reference_range))';
+      const select = 'id,name,code,lab_id,default_ai_processing_type,test_group_analytes(analyte_id,lab_analyte_id,analytes(id,name,unit,reference_range),lab_analytes(id,name,unit,reference_range,lab_specific_reference_range))';
       const tgParams = new URLSearchParams({
         id: `eq.${testGroupId}`,
         select,
@@ -373,12 +373,16 @@ async function getTestContext(orderId?: string, testGroupId?: string, analyteIds
           };
 
           const analytesFromGroup = Array.isArray(group.test_group_analytes)
-            ? group.test_group_analytes.map((tga: any) => ({
-                id: tga.analytes?.id || tga.analyte_id,
-                name: tga.analytes?.name,
-                unit: tga.analytes?.unit,
-                reference_range: tga.analytes?.reference_range,
-              }))
+            ? group.test_group_analytes.map((tga: any) => {
+                const a = tga.analytes;
+                const la = tga.lab_analyte_id ? tga.lab_analytes : null;
+                return {
+                  id: a?.id || tga.analyte_id,
+                  name: la?.name || a?.name,
+                  unit: la?.unit || a?.unit,
+                  reference_range: la?.lab_specific_reference_range ?? la?.reference_range ?? a?.reference_range,
+                };
+              })
             : [];
 
           if (analytesFromGroup.length) {

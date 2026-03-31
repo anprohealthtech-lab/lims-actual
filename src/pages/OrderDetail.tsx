@@ -131,6 +131,7 @@ export default function OrderDetail() {
               lab_id,
               test_group_analytes(
                 analyte_id,
+                lab_analyte_id,
                 analytes(
                   id,
                   name,
@@ -138,6 +139,16 @@ export default function OrderDetail() {
                   reference_range,
                   ai_processing_type,
                   ai_prompt_override,
+                  is_calculated,
+                  formula,
+                  formula_variables
+                ),
+                lab_analytes(
+                  id,
+                  name,
+                  unit,
+                  reference_range,
+                  lab_specific_reference_range,
                   is_calculated,
                   formula,
                   formula_variables
@@ -158,6 +169,7 @@ export default function OrderDetail() {
               lab_id,
               test_group_analytes(
                 analyte_id,
+                lab_analyte_id,
                 analytes(
                   id,
                   name,
@@ -165,6 +177,16 @@ export default function OrderDetail() {
                   reference_range,
                   ai_processing_type,
                   ai_prompt_override,
+                  is_calculated,
+                  formula,
+                  formula_variables
+                ),
+                lab_analytes(
+                  id,
+                  name,
+                  unit,
+                  reference_range,
+                  lab_specific_reference_range,
                   is_calculated,
                   formula,
                   formula_variables
@@ -222,17 +244,28 @@ export default function OrderDetail() {
             order_test_group_id: otg.id,
             order_test_id: null,
             analytes:
-              otg.test_groups.test_group_analytes?.map((tga: any) => ({
-                ...tga.analytes,
-                code: otg.test_groups.code,
-                units: tga.analytes.unit,
-                existing_result:
-                  data.results
-                    ?.find((r: any) => r.order_test_group_id === otg.id)
-                    ?.result_values?.find(
-                      (rv: any) => rv.analyte_id === tga.analytes.id
-                    ) || null,
-              })) || [],
+              otg.test_groups.test_group_analytes?.map((tga: any) => {
+                const a = tga.analytes;
+                const la = tga.lab_analyte_id ? tga.lab_analytes : null;
+                return {
+                  ...a,
+                  lab_analyte_id: tga.lab_analyte_id || la?.id || null,
+                  name: la?.name || a.name,
+                  unit: la?.unit || a.unit,
+                  reference_range: la?.lab_specific_reference_range ?? la?.reference_range ?? a.reference_range,
+                  is_calculated: la?.is_calculated ?? a.is_calculated,
+                  formula: la?.formula ?? a.formula,
+                  formula_variables: la?.formula_variables ?? a.formula_variables,
+                  code: otg.test_groups.code,
+                  units: la?.unit || a.unit,
+                  existing_result:
+                    data.results
+                      ?.find((r: any) => r.order_test_group_id === otg.id)
+                      ?.result_values?.find(
+                        (rv: any) => rv.analyte_id === a.id
+                      ) || null,
+                };
+              }) || [],
           })) || [];
 
       const testGroupsFromOT =
@@ -244,17 +277,28 @@ export default function OrderDetail() {
             order_test_group_id: null,
             order_test_id: ot.id,
             analytes:
-              ot.test_groups.test_group_analytes?.map((tga: any) => ({
-                ...tga.analytes,
-                code: ot.test_groups.code,
-                units: tga.analytes.unit,
-                existing_result:
-                  data.results
-                    ?.find((r: any) => r.order_test_id === ot.id)
-                    ?.result_values?.find(
-                      (rv: any) => rv.analyte_id === tga.analytes.id
-                    ) || null,
-              })) || [],
+              ot.test_groups.test_group_analytes?.map((tga: any) => {
+                const a = tga.analytes;
+                const la = tga.lab_analyte_id ? tga.lab_analytes : null;
+                return {
+                  ...a,
+                  lab_analyte_id: tga.lab_analyte_id || la?.id || null,
+                  name: la?.name || a.name,
+                  unit: la?.unit || a.unit,
+                  reference_range: la?.lab_specific_reference_range ?? la?.reference_range ?? a.reference_range,
+                  is_calculated: la?.is_calculated ?? a.is_calculated,
+                  formula: la?.formula ?? a.formula,
+                  formula_variables: la?.formula_variables ?? a.formula_variables,
+                  code: ot.test_groups.code,
+                  units: la?.unit || a.unit,
+                  existing_result:
+                    data.results
+                      ?.find((r: any) => r.order_test_id === ot.id)
+                      ?.result_values?.find(
+                        (rv: any) => rv.analyte_id === a.id
+                      ) || null,
+                };
+              }) || [],
           })) || [];
 
       // Merge by test_group_id & union analytes
