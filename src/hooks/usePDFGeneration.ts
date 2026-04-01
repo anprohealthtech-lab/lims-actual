@@ -39,7 +39,7 @@ export const usePDFGeneration = () => {
   const lastBundleRef = useRef<PreparedPDFBundle | null>(null);
   const lastReportDataRef = useRef<ReportData | null>(null);
 
-  const generatePDF = useCallback(async (orderId: string, forceDraft = false) => {
+  const generatePDF = useCallback(async (orderId: string, forceDraft = false, draftVariant: 'ecopy' | 'print' = 'ecopy') => {
     setState({
       isGenerating: true,
       stage: 'Initializing...',
@@ -55,7 +55,7 @@ export const usePDFGeneration = () => {
       if (!authData?.session) {
         throw new Error('Not authenticated');
       }
-      
+
       // Get current user ID for WhatsApp integration
       const triggeredByUserId = authData.session.user?.id;
 
@@ -74,15 +74,19 @@ export const usePDFGeneration = () => {
       }
 
       const result = response.data;
-      
+
       if (!result || !result.pdfUrl) {
         throw new Error('No PDF URL returned from Edge Function');
       }
 
       setState(prev => ({ ...prev, stage: 'PDF generated, downloading...', progress: 80 }));
 
-      // Download the E-Copy PDF (Edge function returns 'pdfUrl' for e-copy)
-      const pdfUrl = result.pdfUrl;
+      // Choose eCopy or Print URL based on draftVariant
+      const usePrint = draftVariant === 'print' && !!result.printPdfUrl;
+      if (draftVariant === 'print' && !result.printPdfUrl) {
+        console.warn('Print PDF URL not available, falling back to eCopy');
+      }
+      const pdfUrl = usePrint ? result.printPdfUrl : result.pdfUrl;
       const fetchResponse = await fetch(pdfUrl);
       
       if (fetchResponse.ok) {
@@ -93,7 +97,7 @@ export const usePDFGeneration = () => {
         const { data: context } = await database.reports.getTemplateContext(orderId);
         const safePatientName = context?.patient?.name?.replace(/\s+/g, '_') || 'Patient';
         const isDraft = result.status === 'draft';
-        const filename = `${safePatientName}_${orderId}${isDraft ? '_DRAFT' : ''}.pdf`;
+        const filename = `${safePatientName}_${orderId}${isDraft ? '_DRAFT' : ''}${usePrint ? '_PRINT' : ''}.pdf`;
         
         const link = document.createElement('a');
         link.href = downloadUrl;

@@ -734,10 +734,13 @@ const Reports: React.FC = () => {
     setViewingOrder(group);
   };
 
-  const handleDownload = useCallback(async (orderId: string, forceDraft = false) => {
+  const isTempPdfUrl = (url?: string | null): boolean =>
+    !!url && url.includes('pdf-temp-files.s3.amazonaws.com');
+
+  const handleDownload = useCallback(async (orderId: string, forceDraft = false, draftVariant: 'ecopy' | 'print' = 'ecopy') => {
     try {
       setGeneratingOrderId(orderId);
-      await generatePDF(orderId, forceDraft);
+      await generatePDF(orderId, forceDraft, draftVariant);
       // Keep button disabled for 3 seconds after generation to prevent double-clicking
       // The queue polling will show the actual status
       setTimeout(async () => {
@@ -760,12 +763,12 @@ const Reports: React.FC = () => {
     }
   }, [generatePDF, loadApprovedResults]);
 
-  const handleRetryStuckJob = useCallback(async (orderId: string, forceDraft = false) => {
+  const handleRetryStuckJob = useCallback(async (orderId: string, forceDraft = false, draftVariant: 'ecopy' | 'print' = 'ecopy') => {
     try {
       await supabase.from('pdf_generation_queue').delete().eq('order_id', orderId);
       setPdfQueueStatus(prev => { const next = new Map(prev); next.delete(orderId); return next; });
       setGeneratingOrderId(null);
-      await handleDownload(orderId, forceDraft);
+      await handleDownload(orderId, forceDraft, draftVariant);
     } catch (error) {
       console.error('Retry stuck job failed:', error);
       alert('Retry failed: ' + (error instanceof Error ? error.message : 'Unknown error'));
@@ -2183,16 +2186,16 @@ const Reports: React.FC = () => {
                               /* Already generated */
                               <>
                                 <button
-                                  className="flex items-center space-x-1 px-2 py-1 text-xs bg-green-600 text-white rounded hover:bg-green-700 transition-colors"
+                                  className={`flex items-center space-x-1 px-2 py-1 text-xs rounded transition-colors ${isTempPdfUrl((group.results[0] as ApprovedResult)?.final_report?.pdf_url) ? 'bg-amber-500 text-white hover:bg-amber-600' : 'bg-green-600 text-white hover:bg-green-700'}`}
                                   onClick={() => {
                                     const finalReport = (group.results[0] as ApprovedResult)?.final_report;
-                                    if (finalReport?.pdf_url) window.open(finalReport.pdf_url, '_blank');
-                                    else handleDownload(group.order_id, false);
+                                    if (finalReport?.pdf_url && !isTempPdfUrl(finalReport.pdf_url)) window.open(finalReport.pdf_url, '_blank');
+                                    else void handleLetterheadGeneration(group.order_id);
                                   }}
-                                  title="Download final report"
+                                  title={isTempPdfUrl((group.results[0] as ApprovedResult)?.final_report?.pdf_url) ? 'PDF link expired — click to regenerate' : 'Download final report'}
                                 >
                                   <Download className="w-3.5 h-3.5" />
-                                  <span>Download</span>
+                                  <span>{isTempPdfUrl((group.results[0] as ApprovedResult)?.final_report?.pdf_url) ? 'Re-generate' : 'Download'}</span>
                                 </button>
 
                                 <button
@@ -2300,15 +2303,26 @@ const Reports: React.FC = () => {
                           </>
                         ) : (
                           <>
-                            <button
-                              className={`flex items-center space-x-1 px-2 py-1 text-xs bg-amber-600 text-white rounded hover:bg-amber-700 transition-colors ${(generatingOrderId === group.order_id || pdfQueueStatus.get(group.order_id)?.status === 'processing') ? 'opacity-50 cursor-not-allowed' : ''}`}
-                              onClick={() => handleDownload(group.order_id, true)}
-                              disabled={generatingOrderId === group.order_id || pdfQueueStatus.get(group.order_id)?.status === 'processing'}
-                              title="Generate draft report"
-                            >
-                              {(generatingOrderId === group.order_id || pdfQueueStatus.get(group.order_id)?.status === 'processing') ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Download className="w-3.5 h-3.5" />}
-                              <span>Draft</span>
-                            </button>
+                            <div className="flex items-center gap-0.5">
+                              <button
+                                className={`flex items-center space-x-1 px-2 py-1 text-xs bg-amber-600 text-white rounded-l hover:bg-amber-700 transition-colors ${(generatingOrderId === group.order_id || pdfQueueStatus.get(group.order_id)?.status === 'processing') ? 'opacity-50 cursor-not-allowed' : ''}`}
+                                onClick={() => handleDownload(group.order_id, true, 'ecopy')}
+                                disabled={generatingOrderId === group.order_id || pdfQueueStatus.get(group.order_id)?.status === 'processing'}
+                                title="Generate eCopy draft (letterhead)"
+                              >
+                                {(generatingOrderId === group.order_id || pdfQueueStatus.get(group.order_id)?.status === 'processing') ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Download className="w-3.5 h-3.5" />}
+                                <span>eCopy</span>
+                              </button>
+                              <button
+                                className={`flex items-center space-x-1 px-2 py-1 text-xs bg-amber-500 text-white rounded-r hover:bg-amber-600 transition-colors border-l border-amber-700 ${(generatingOrderId === group.order_id || pdfQueueStatus.get(group.order_id)?.status === 'processing') ? 'opacity-50 cursor-not-allowed' : ''}`}
+                                onClick={() => handleDownload(group.order_id, true, 'print')}
+                                disabled={generatingOrderId === group.order_id || pdfQueueStatus.get(group.order_id)?.status === 'processing'}
+                                title="Generate print draft (no letterhead)"
+                              >
+                                <Printer className="w-3.5 h-3.5" />
+                                <span>Print</span>
+                              </button>
+                            </div>
                             {(() => {
                               const job = pdfQueueStatus.get(group.order_id);
                               const isStuck = job && (job.status === 'processing' || job.status === 'pending') &&
@@ -2488,19 +2502,19 @@ const Reports: React.FC = () => {
                               ) : (
                                 <>
                                   <button
-                                    className="flex-1 flex items-center justify-center space-x-1 px-3 py-2 text-sm bg-green-600 text-white rounded-md hover:bg-green-700 transition-colors"
+                                    className={`flex-1 flex items-center justify-center space-x-1 px-3 py-2 text-sm rounded-md transition-colors ${isTempPdfUrl((group.results[0] as ApprovedResult)?.final_report?.pdf_url) ? 'bg-amber-500 text-white hover:bg-amber-600' : 'bg-green-600 text-white hover:bg-green-700'}`}
                                     onClick={() => {
                                       const finalReport = (group.results[0] as ApprovedResult)?.final_report;
-                                      if (finalReport?.pdf_url) {
+                                      if (finalReport?.pdf_url && !isTempPdfUrl(finalReport.pdf_url)) {
                                         window.open(finalReport.pdf_url, '_blank');
                                       } else {
-                                        handleDownload(group.order_id, false);
+                                        void handleLetterheadGeneration(group.order_id);
                                       }
                                     }}
-                                    title="Download final report"
+                                    title={isTempPdfUrl((group.results[0] as ApprovedResult)?.final_report?.pdf_url) ? 'PDF link expired — click to regenerate' : 'Download final report'}
                                   >
                                     <Download className="w-4 h-4" />
-                                    <span>Download</span>
+                                    <span>{isTempPdfUrl((group.results[0] as ApprovedResult)?.final_report?.pdf_url) ? 'Re-generate' : 'Download'}</span>
                                   </button>
                                   {false && (
                                     <>
@@ -2642,26 +2656,40 @@ const Reports: React.FC = () => {
                             </>
                           ) : (
                             <>
-                              <button
-                                className={`flex-1 flex items-center justify-center space-x-1 px-3 py-2 text-sm bg-amber-600 text-white rounded-md hover:bg-amber-700 transition-colors ${(generatingOrderId === group.order_id || pdfQueueStatus.get(group.order_id)?.status === 'processing')
-                                  ? 'opacity-50 cursor-not-allowed'
-                                  : ''
-                                  }`}
-                                onClick={() => handleDownload(group.order_id, true)}
-                                disabled={generatingOrderId === group.order_id || pdfQueueStatus.get(group.order_id)?.status === 'processing'}
-                              >
-                                {(generatingOrderId === group.order_id || pdfQueueStatus.get(group.order_id)?.status === 'processing') ? (
-                                  <div className="flex items-center space-x-1">
-                                    <Loader2 className="w-4 h-4 animate-spin" />
-                                    {pdfQueueStatus.get(group.order_id)?.progress_percent && (
-                                      <span className="text-xs">{pdfQueueStatus.get(group.order_id).progress_percent}%</span>
-                                    )}
-                                  </div>
-                                ) : (
-                                  <Download className="w-4 h-4" />
-                                )}
-                                <span>{(generatingOrderId === group.order_id || pdfQueueStatus.get(group.order_id)?.status === 'processing') ? 'Gen...' : 'Draft'}</span>
-                              </button>
+                              <div className="flex-1 flex items-center gap-0.5">
+                                <button
+                                  className={`flex-1 flex items-center justify-center space-x-1 px-3 py-2 text-sm bg-amber-600 text-white rounded-l-md hover:bg-amber-700 transition-colors ${(generatingOrderId === group.order_id || pdfQueueStatus.get(group.order_id)?.status === 'processing')
+                                    ? 'opacity-50 cursor-not-allowed'
+                                    : ''
+                                    }`}
+                                  onClick={() => handleDownload(group.order_id, true, 'ecopy')}
+                                  disabled={generatingOrderId === group.order_id || pdfQueueStatus.get(group.order_id)?.status === 'processing'}
+                                  title="Generate eCopy draft (letterhead)"
+                                >
+                                  {(generatingOrderId === group.order_id || pdfQueueStatus.get(group.order_id)?.status === 'processing') ? (
+                                    <div className="flex items-center space-x-1">
+                                      <Loader2 className="w-4 h-4 animate-spin" />
+                                      {pdfQueueStatus.get(group.order_id)?.progress_percent && (
+                                        <span className="text-xs">{pdfQueueStatus.get(group.order_id).progress_percent}%</span>
+                                      )}
+                                    </div>
+                                  ) : (
+                                    <Download className="w-4 h-4" />
+                                  )}
+                                  <span>{(generatingOrderId === group.order_id || pdfQueueStatus.get(group.order_id)?.status === 'processing') ? 'Gen...' : 'eCopy'}</span>
+                                </button>
+                                <button
+                                  className={`flex items-center justify-center px-3 py-2 text-sm bg-amber-500 text-white rounded-r-md hover:bg-amber-600 transition-colors border-l border-amber-700 ${(generatingOrderId === group.order_id || pdfQueueStatus.get(group.order_id)?.status === 'processing')
+                                    ? 'opacity-50 cursor-not-allowed'
+                                    : ''
+                                    }`}
+                                  onClick={() => handleDownload(group.order_id, true, 'print')}
+                                  disabled={generatingOrderId === group.order_id || pdfQueueStatus.get(group.order_id)?.status === 'processing'}
+                                  title="Generate print draft (no letterhead)"
+                                >
+                                  <Printer className="w-4 h-4" />
+                                </button>
+                              </div>
                               {(() => {
                                 const job = pdfQueueStatus.get(group.order_id);
                                 const isStuck = job && (job.status === 'processing' || job.status === 'pending') &&

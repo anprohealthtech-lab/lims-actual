@@ -5241,9 +5241,7 @@ async function uploadPdfToStorage(
       if (attempt < maxRetries) {
         // Wait before retry with longer delays for PDF.co to finalize
         // PDF.co sometimes needs time to make files available
-        const waitTime = variant === "print"
-          ? Math.min(3000 * attempt, 10000) // Print: 3s, 6s, 9s, 12s (up to 10s max)
-          : Math.min(1000 * Math.pow(2, attempt - 1), 5000); // Normal: exponential backoff
+        const waitTime = Math.min(2000 * attempt, 10000); // 2s, 4s, 6s, 8s, 10s (all variants)
         console.log(`  ⏳ Waiting ${waitTime}ms before retry...`);
         await new Promise((resolve) => setTimeout(resolve, waitTime));
       }
@@ -8257,6 +8255,7 @@ serve(async (req) => {
         context.patientId || "unknown",
         filename,
         "final",
+        5,
       );
 
       const printUploadPromise = printPdfCoUrl
@@ -8280,8 +8279,47 @@ serve(async (req) => {
         printUploadPromise,
       ]);
 
-      const storageUrl = eCopyResult.publicUrl;
+      let storageUrl = eCopyResult.publicUrl;
       let printStorageUrl: string | null = printResult?.publicUrl || null;
+
+      // If eCopy used temp fallback (path is empty), attempt one final delayed retry
+      // before giving up and keeping the temp URL as last resort
+      if (eCopyResult.path === "" && pdfCoUrl) {
+        console.warn(
+          "⚠️ eCopy fell back to temp URL — waiting 15s then attempting one final retry...",
+        );
+        await new Promise((resolve) => setTimeout(resolve, 15000));
+        try {
+          const retryResult = await uploadPdfToStorage(
+            supabaseClient,
+            pdfCoUrl,
+            orderId,
+            job.lab_id,
+            context.patientId || "unknown",
+            filename,
+            "final",
+            3,
+          );
+          if (retryResult.path !== "") {
+            storageUrl = retryResult.publicUrl;
+            console.log(
+              "✅ Final delayed retry succeeded — eCopy saved to storage:",
+              storageUrl,
+            );
+          } else {
+            console.warn(
+              "⚠️ Final delayed retry also returned temp URL — keeping temp URL as last resort:",
+              storageUrl,
+            );
+          }
+        } catch (retryErr) {
+          console.warn(
+            "⚠️ Final delayed retry threw — keeping temp URL as last resort:",
+            retryErr instanceof Error ? retryErr.message : String(retryErr),
+          );
+          // storageUrl already holds the temp URL — leave it unchanged
+        }
+      }
 
       console.log(
         `✅ PDFs uploaded in ${Date.now() - uploadStartTime}ms (parallel)`,

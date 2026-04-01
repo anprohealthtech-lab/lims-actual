@@ -56,7 +56,10 @@ export const ReportPreviewModal: React.FC<ReportPreviewModalProps> = ({
                 .limit(1)
                 .maybeSingle();
 
-            if (reportData?.pdf_url) {
+            const isTempPdfUrl = (url?: string | null) =>
+                !!url && url.includes('pdf-temp-files.s3.amazonaws.com');
+
+            if (reportData?.pdf_url && !isTempPdfUrl(reportData.pdf_url)) {
                 // Use the already-generated PDF directly — matches what was actually sent
                 setPdfUrl(reportData.pdf_url);
                 setFinalReportUrl(reportData.pdf_url);

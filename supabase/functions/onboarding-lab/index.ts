@@ -83,7 +83,7 @@ serve(async (req) => {
       // Load analyte metadata from catalog junction table
       const { data: catalogMeta } = await supabaseClient
         .from('global_test_catalog_analytes')
-        .select('analyte_id, section_heading, sort_order, display_order, is_visible, is_header, header_name, custom_reference_range')
+        .select('analyte_id, section_heading, sort_order, display_order, is_visible, is_header, header_name, custom_reference_range, custom_name, custom_unit, custom_interpretation_low, custom_interpretation_normal, custom_interpretation_high, custom_method, custom_expected_normal_values, custom_expected_value_codes, default_value, display_name, custom_value_type')
         .eq('catalog_id', catalogEntry.id)
         .order('sort_order', { ascending: true });
 
@@ -102,14 +102,48 @@ serve(async (req) => {
       let analytesHydrated = 0;
 
       if (toAdd.length > 0) {
-        // Ensure analytes exist in lab_analytes (FK guard)
-        const labAnalytePayload = toAdd.map((m: any) => ({ lab_id, analyte_id: m.analyte_id, is_active: true, visible: true }));
+        // Ensure new analytes exist in lab_analytes (FK guard)
+        const labAnalytePayload = toAdd.map((m: any) => {
+          const entry: Record<string, any> = { lab_id, analyte_id: m.analyte_id, is_active: true, visible: true };
+          if (m.custom_name != null) entry.lab_specific_name = m.custom_name;
+          if (m.custom_unit != null) entry.lab_specific_unit = m.custom_unit;
+          if (m.custom_interpretation_low != null) entry.lab_specific_interpretation_low = m.custom_interpretation_low;
+          if (m.custom_interpretation_normal != null) entry.lab_specific_interpretation_normal = m.custom_interpretation_normal;
+          if (m.custom_interpretation_high != null) entry.lab_specific_interpretation_high = m.custom_interpretation_high;
+          if (m.custom_method != null) entry.lab_specific_method = m.custom_method;
+          if (m.custom_reference_range != null) entry.lab_specific_reference_range = m.custom_reference_range;
+          if (m.custom_value_type != null) entry.value_type = m.custom_value_type;
+          if (m.default_value != null) entry.default_value = m.default_value;
+          if (m.display_name != null) entry.display_name = m.display_name;
+          if (m.custom_expected_normal_values != null && m.custom_expected_normal_values !== '[]') entry.expected_normal_values = m.custom_expected_normal_values;
+          if (m.custom_expected_value_codes != null && m.custom_expected_value_codes !== '{}') entry.expected_value_codes = m.custom_expected_value_codes;
+          return entry;
+        });
         await supabaseClient.from('lab_analytes').upsert(labAnalytePayload, { onConflict: 'lab_id,analyte_id', ignoreDuplicates: true });
         analytesHydrated = toAdd.length;
+      }
 
+      // Build analyte_id → lab_analytes.id map for ALL analytes in this group (toAdd + toUpdate).
+      // Run after the above upsert so any newly added lab_analytes rows are present.
+      const allGroupAnalyteIds = [...new Set([
+        ...toAdd.map((m: any) => m.analyte_id),
+        ...toUpdate.map((m: any) => m.analyte_id),
+      ])];
+      const singleLabAnalyteIdMap = new Map<string, string>();
+      if (allGroupAnalyteIds.length > 0) {
+        const { data: singleLabAnalyteRows } = await supabaseClient
+          .from('lab_analytes')
+          .select('id, analyte_id')
+          .eq('lab_id', lab_id)
+          .in('analyte_id', allGroupAnalyteIds);
+        for (const row of (singleLabAnalyteRows || [])) singleLabAnalyteIdMap.set(row.analyte_id, row.id);
+      }
+
+      if (toAdd.length > 0) {
         const linkPayload = toAdd.map((m: any) => ({
           test_group_id: labGroup.id,
           analyte_id: m.analyte_id,
+          lab_analyte_id: singleLabAnalyteIdMap.get(m.analyte_id) ?? null,
           is_visible: m.is_visible ?? true,
           sort_order: m.sort_order,
           display_order: m.display_order ?? m.sort_order,
@@ -127,7 +161,7 @@ serve(async (req) => {
         else console.error('Single mode link error:', linkErr);
       }
 
-      // Update sort_order and section_heading for already-linked analytes
+      // Update sort_order, section_heading, and lab_analyte_id for already-linked analytes
       if (toUpdate.length > 0) {
         for (const m of toUpdate) {
           await supabaseClient
@@ -136,6 +170,10 @@ serve(async (req) => {
               sort_order: m.sort_order,
               display_order: m.display_order ?? m.sort_order,
               section_heading: m.section_heading ?? null,
+              // Backfill lab_analyte_id if it was missing (e.g. rows created before this fix)
+              ...(singleLabAnalyteIdMap.get(m.analyte_id)
+                ? { lab_analyte_id: singleLabAnalyteIdMap.get(m.analyte_id) }
+                : {}),
             })
             .eq('test_group_id', labGroup.id)
             .eq('analyte_id', m.analyte_id);
@@ -311,12 +349,12 @@ serve(async (req) => {
 
     // Bulk-fetch analyte metadata (section_heading, sort_order) from junction table
     const allCatalogIds = (globalTestGroups || []).map((g: any) => g.id);
-    const catalogAnalyteMeta = new Map<string, { analyte_id: string; section_heading: string | null; sort_order: number; display_order: number | null; is_visible: boolean; is_header: boolean; header_name: string | null; custom_reference_range: string | null }[]>();
+    const catalogAnalyteMeta = new Map<string, { analyte_id: string; section_heading: string | null; sort_order: number; display_order: number | null; is_visible: boolean; is_header: boolean; header_name: string | null; custom_reference_range: string | null; custom_name: string | null; custom_unit: string | null; custom_interpretation_low: string | null; custom_interpretation_normal: string | null; custom_interpretation_high: string | null; custom_method: string | null; custom_expected_normal_values: any; custom_expected_value_codes: any; default_value: string | null; display_name: string | null; custom_value_type: string | null }[]>();
     if (allCatalogIds.length > 0) {
       for (let i = 0; i < allCatalogIds.length; i += 500) {
         const { data: metaRows } = await supabaseClient
           .from('global_test_catalog_analytes')
-          .select('catalog_id, analyte_id, section_heading, sort_order, display_order, is_visible, is_header, header_name, custom_reference_range')
+          .select('catalog_id, analyte_id, section_heading, sort_order, display_order, is_visible, is_header, header_name, custom_reference_range, custom_name, custom_unit, custom_interpretation_low, custom_interpretation_normal, custom_interpretation_high, custom_method, custom_expected_normal_values, custom_expected_value_codes, default_value, display_name, custom_value_type')
           .in('catalog_id', allCatalogIds.slice(i, i + 500))
           .order('sort_order', { ascending: true });
         for (const row of (metaRows || [])) {
@@ -461,6 +499,8 @@ serve(async (req) => {
       }
       // validAnalyteIdsSet: only IDs that actually exist in the analytes table (safe to FK-reference)
       let validAnalyteIdsSet = new Set<string>();
+      // analyte_id → lab_analytes.id map — populated inside the if block below once lab_analytes are hydrated
+      const labAnalyteIdMap = new Map<string, string>();
       if (allCatalogAnalyteIds.size > 0) {
         // Verify these analyte IDs actually exist in the analytes table
         const catalogIds = [...allCatalogAnalyteIds];
@@ -529,9 +569,31 @@ serve(async (req) => {
         }
 
         const allValidIds = [...validAnalyteIdsSet];
-        const catalogLabPayload = allValidIds.map(aid => ({
-          lab_id: lab_id, analyte_id: aid, is_active: true, visible: true
-        }));
+        // Build analyte_id → first-seen catalog custom fields map so lab_analytes gets populated
+        const analyteCustomFieldsMap = new Map<string, Record<string, any>>();
+        for (const metaList of catalogAnalyteMeta.values()) {
+          for (const m of metaList) {
+            if (!analyteCustomFieldsMap.has(m.analyte_id)) {
+              const custom: Record<string, any> = {};
+              if (m.custom_name != null) custom.lab_specific_name = m.custom_name;
+              if (m.custom_unit != null) custom.lab_specific_unit = m.custom_unit;
+              if (m.custom_interpretation_low != null) custom.lab_specific_interpretation_low = m.custom_interpretation_low;
+              if (m.custom_interpretation_normal != null) custom.lab_specific_interpretation_normal = m.custom_interpretation_normal;
+              if (m.custom_interpretation_high != null) custom.lab_specific_interpretation_high = m.custom_interpretation_high;
+              if (m.custom_method != null) custom.lab_specific_method = m.custom_method;
+              if (m.custom_reference_range != null) custom.lab_specific_reference_range = m.custom_reference_range;
+              if (m.custom_value_type != null) custom.value_type = m.custom_value_type;
+              if (m.default_value != null) custom.default_value = m.default_value;
+              if (m.display_name != null) custom.display_name = m.display_name;
+              if (m.custom_expected_normal_values != null && m.custom_expected_normal_values !== '[]') custom.expected_normal_values = m.custom_expected_normal_values;
+              if (m.custom_expected_value_codes != null && m.custom_expected_value_codes !== '{}') custom.expected_value_codes = m.custom_expected_value_codes;
+              if (Object.keys(custom).length > 0) analyteCustomFieldsMap.set(m.analyte_id, custom);
+            }
+          }
+        }
+
+        // Pass 1: ensure all analyte rows exist (ignoreDuplicates — never clobbers existing rows)
+        const catalogLabPayload = allValidIds.map(aid => ({ lab_id: lab_id, analyte_id: aid, is_active: true, visible: true }));
         for (let i = 0; i < catalogLabPayload.length; i += 500) {
           const { error: cErr } = await supabaseClient
             .from('lab_analytes')
@@ -539,12 +601,39 @@ serve(async (req) => {
           if (cErr) console.error(`Error hydrating catalog analytes (chunk ${i}):`, cErr);
         }
         console.log(`   ✅ Ensured ${allValidIds.length} catalog analytes in lab_analytes`);
+
+        // Pass 2: apply catalog custom fields (section A created rows without them; this fills them in)
+        // Upsert WITHOUT ignoreDuplicates so ON CONFLICT only updates the custom columns in the payload,
+        // leaving is_active / visible and other lab-admin settings untouched.
+        const customFieldsPayload = [...analyteCustomFieldsMap.entries()]
+          .filter(([aid]) => validAnalyteIdsSet.has(aid))
+          .map(([aid, custom]) => ({ lab_id: lab_id, analyte_id: aid, ...custom }));
+        if (customFieldsPayload.length > 0) {
+          for (let i = 0; i < customFieldsPayload.length; i += 500) {
+            const { error: cfErr } = await supabaseClient
+              .from('lab_analytes')
+              .upsert(customFieldsPayload.slice(i, i + 500), { onConflict: 'lab_id,analyte_id' });
+            if (cfErr) console.error(`Error applying catalog custom fields (chunk ${i}):`, cfErr);
+          }
+          console.log(`   📝 Applied catalog custom fields to ${customFieldsPayload.length} analytes`);
+        }
         stats.analytesHydrated += allValidIds.length;
+
+        // Populate analyte_id → lab_analytes.id map to set lab_analyte_id in test_group_analytes
+        for (let i = 0; i < allValidIds.length; i += 1000) {
+          const { data: laRows } = await supabaseClient
+            .from('lab_analytes')
+            .select('id, analyte_id')
+            .eq('lab_id', lab_id)
+            .in('analyte_id', allValidIds.slice(i, i + 1000));
+          for (const row of (laRows || [])) labAnalyteIdMap.set(row.analyte_id, row.id);
+        }
+        console.log(`   📍 lab_analyte_id map: ${labAnalyteIdMap.size} entries`);
       }
 
       // --- BATCH INSERT analyte links for newly created groups ---
       const analyteLinksPayload: {
-        test_group_id: string; analyte_id: string; is_visible: boolean;
+        test_group_id: string; analyte_id: string; lab_analyte_id?: string | null; is_visible: boolean;
         sort_order?: number; display_order?: number | null;
         section_heading?: string | null; is_header?: boolean; header_name?: string | null;
         custom_reference_range?: string | null;
@@ -560,6 +649,7 @@ serve(async (req) => {
             analyteLinksPayload.push({
               test_group_id: newId,
               analyte_id: m.analyte_id,
+              lab_analyte_id: labAnalyteIdMap.get(m.analyte_id) ?? null,
               is_visible: m.is_visible,
               sort_order: m.sort_order,
               display_order: m.display_order,
@@ -574,7 +664,7 @@ serve(async (req) => {
           const analyteIds: string[] = (gtg as any)._resolvedAnalyteIds
             || parseAnalyteIds(gtg.analytes).filter((id: string) => UUID_RE.test(id) && validAnalyteIdsSet.has(id));
           for (let idx = 0; idx < analyteIds.length; idx++) {
-            analyteLinksPayload.push({ test_group_id: newId, analyte_id: analyteIds[idx], is_visible: true, sort_order: idx });
+            analyteLinksPayload.push({ test_group_id: newId, analyte_id: analyteIds[idx], lab_analyte_id: labAnalyteIdMap.get(analyteIds[idx]) ?? null, is_visible: true, sort_order: idx });
           }
         }
       }
@@ -619,7 +709,7 @@ serve(async (req) => {
       // Non-destructive: only ADD missing analytes — never delete existing lab-custom links
       if ((isSync || isReset) && toUpdate.length > 0) {
         const resyncPayload: {
-          test_group_id: string; analyte_id: string; is_visible: boolean;
+          test_group_id: string; analyte_id: string; lab_analyte_id?: string | null; is_visible: boolean;
           sort_order?: number; display_order?: number | null;
           section_heading?: string | null; is_header?: boolean; header_name?: string | null;
           custom_reference_range?: string | null;
@@ -632,6 +722,7 @@ serve(async (req) => {
               resyncPayload.push({
                 test_group_id: existingId,
                 analyte_id: m.analyte_id,
+                lab_analyte_id: labAnalyteIdMap.get(m.analyte_id) ?? null,
                 is_visible: m.is_visible,
                 sort_order: m.sort_order,
                 display_order: m.display_order,
@@ -645,7 +736,7 @@ serve(async (req) => {
             const analyteIds: string[] = (gtg as any)._resolvedAnalyteIds
               || parseAnalyteIds(gtg.analytes).filter((id: string) => UUID_RE.test(id) && validAnalyteIdsSet.has(id));
             for (let idx = 0; idx < analyteIds.length; idx++) {
-              resyncPayload.push({ test_group_id: existingId, analyte_id: analyteIds[idx], is_visible: true, sort_order: idx });
+              resyncPayload.push({ test_group_id: existingId, analyte_id: analyteIds[idx], lab_analyte_id: labAnalyteIdMap.get(analyteIds[idx]) ?? null, is_visible: true, sort_order: idx });
             }
           }
         }
