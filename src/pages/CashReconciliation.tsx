@@ -128,10 +128,12 @@ function CollectionReport() {
 
       const { orders, invoices, payments, users } = data as any;
 
-      // Build invoice map (order_id -> first invoice)
-      const invoiceByOrder = new Map<string, any>();
+      // Build invoice map (order_id -> ALL invoices) to support multi-invoice orders
+      const invoicesByOrder = new Map<string, any[]>();
       for (const inv of invoices) {
-        if (!invoiceByOrder.has(inv.order_id)) invoiceByOrder.set(inv.order_id, inv);
+        const arr = invoicesByOrder.get(inv.order_id) || [];
+        arr.push(inv);
+        invoicesByOrder.set(inv.order_id, arr);
       }
 
       // Build payments map (invoice_id -> payments[])
@@ -152,15 +154,21 @@ function CollectionReport() {
       const groupMap = new Map<string, CollectionGroup>();
 
       for (const order of orders) {
-        const inv = invoiceByOrder.get(order.id);
-        const totalRec = Number(inv?.total_after_discount ?? inv?.total ?? order.final_amount ?? order.total_amount ?? 0);
-        const discount = Number(inv?.discount ?? 0);
+        const orderInvoices = invoicesByOrder.get(order.id) || [];
+
+        // Sum across ALL invoices for this order
+        const totalRec = orderInvoices.length > 0
+          ? orderInvoices.reduce((s: number, inv: any) => s + Number(inv.total_after_discount ?? inv.total ?? 0), 0)
+          : Number(order.final_amount ?? order.total_amount ?? 0);
+        const discount = orderInvoices.reduce((s: number, inv: any) => s + Number(inv.discount ?? 0), 0);
         const total = Number(order.final_amount ?? order.total_amount ?? 0);
-        const invPayments = inv ? (paymentsByInvoice.get(inv.id) || []) : [];
+
+        // Collect payments from ALL invoices for this order
+        const invPayments = orderInvoices.flatMap((inv: any) => paymentsByInvoice.get(inv.id) || []);
         const currRec = invPayments.reduce((s: number, p: any) => s + Number(p.amount || 0), 0);
         const due = Math.max(0, totalRec - currRec);
 
-        // Payment modes: deduplicated, comma-joined
+        // Payment modes: deduplicated across all invoices, comma-joined
         const modes = [...new Set(invPayments.map((p: any) => {
           const m = (p.payment_method || '').toLowerCase();
           if (m === 'cash') return 'CASH';

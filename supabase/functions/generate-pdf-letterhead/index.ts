@@ -1545,8 +1545,8 @@ function buildDeterministicCompactPlan(
     const aManual = a.manualOrderIndex ?? Number.MAX_SAFE_INTEGER;
     const bManual = b.manualOrderIndex ?? Number.MAX_SAFE_INTEGER;
     if (aManual !== bManual) return aManual - bManual;
-    const aPriority = a.reportPriority ?? Number.MAX_SAFE_INTEGER;
-    const bPriority = b.reportPriority ?? Number.MAX_SAFE_INTEGER;
+    const aPriority = (a.reportPriority != null && a.reportPriority > 0) ? a.reportPriority : Number.MAX_SAFE_INTEGER;
+    const bPriority = (b.reportPriority != null && b.reportPriority > 0) ? b.reportPriority : Number.MAX_SAFE_INTEGER;
     if (aPriority !== bPriority) return aPriority - bPriority;
     if (a.printOrder !== b.printOrder) return a.printOrder - b.printOrder;
     return String(a.createdAt || "").localeCompare(String(b.createdAt || ""));
@@ -1798,6 +1798,8 @@ const PATIENT_INFO_FIELD_MAP: Record<string, { label: string; placeholder: strin
   approvedAt:           { label: 'Approved On',      placeholder: '{{approvedAt}}' },
   phone:                { label: 'Phone',            placeholder: '{{patientPhone}}' },
   sampleCollectedBy:    { label: 'Collected By',     placeholder: '{{sampleCollectedBy}}' },
+  receivedAt:           { label: 'Received Date/Time', placeholder: '{{receivedAt}}' },
+  collectionCenter:     { label: 'Collection Center', placeholder: '{{collectionCenter}}' },
 };
 
 function buildPatientInfoHtml(
@@ -2285,16 +2287,42 @@ function generateBasicDefaultTemplateHtml(
   font-weight: normal;
 }
 
+.basic-report-template .report-title-bar {
+  display: flex !important;
+  align-items: center !important;
+  border-top: 1.5px solid #000 !important;
+  border-bottom: 1.5px solid #000 !important;
+  padding: 4px 0 !important;
+  margin: 6px 0 10px !important;
+}
+
 .basic-report-template .report-main-title {
   text-align: center !important;
   font-size: ${titlePx + 1}px !important;
-  border-top: 1.5px solid #000 !important;
-  border-bottom: 1.5px solid #000 !important;
-  padding: 5px 0 !important;
-  margin: 6px 0 10px !important;
+  border: none !important;
+  padding: 0 !important;
+  margin: 0 !important;
   font-weight: 700 !important;
   color: #000 !important;
   line-height: 1.2 !important;
+  flex: 1 !important;
+}
+
+.basic-report-template .report-title-spacer {
+  width: 110px !important;
+  flex-shrink: 0 !important;
+}
+
+.basic-report-template .report-title-barcode {
+  width: 110px !important;
+  flex-shrink: 0 !important;
+  text-align: right !important;
+}
+
+.basic-report-template .report-title-barcode img {
+  height: 36px !important;
+  display: block !important;
+  margin-left: auto !important;
 }
 
 .basic-report-template .patient-header-table {
@@ -2538,12 +2566,19 @@ ${flagSymbol === "before" ? `
     ? noColorCss.replace(/\.basic-report-template/g, `[data-test-group-id="${groupId}"] .basic-report-template`)
     : noColorCss;
 
+  const reportTitleBarHtml = `
+    <div class="report-title-bar">
+      <div class="report-title-spacer"></div>
+      <h2 class="report-main-title">TEST REPORT</h2>
+      <div class="report-title-barcode">
+        <img src="https://barcodeapi.org/api/code128/{{sampleId}}" alt="{{sampleId}}" onerror="this.style.display='none';" />
+      </div>
+    </div>
+  `;
+
   const patientInfoHtml = patientInfoConfig
     ? buildPatientInfoHtml(patientInfoConfig, '#5a7f3a', extraFieldConfigs)
     : `
-    <div class="report-header-top">
-      <h2 class="report-main-title">TEST REPORT</h2>
-    </div>
     <figure class="table" style="margin: 0 0 10px;">
       <table class="patient-header-table">
         <tbody>
@@ -2790,6 +2825,7 @@ ${flagSymbol === "before" ? `
   const innerHtml = `
     ${scopedCss}
     <div class="basic-report-template" style="font-family: Arial, Helvetica, sans-serif; font-size: ${basePx}px; color: #000;">
+      ${reportTitleBarHtml}
       ${patientInfoHtml}
       ${testResultsHtml}
       ${reportSectionsHtml}
@@ -6754,6 +6790,7 @@ serve(async (req) => {
       const testGroupStyles = new Map<string, string>(); // groupId → 'beautiful'|'classic'
       const testGroupPrintOptions = new Map<string, Record<string, unknown>>(); // groupId → print_options JSONB
       const testGroupInterpretations = new Map<string, string>(); // groupId → group_interpretation HTML
+      const testGroupCodes = new Map<string, string>(); // groupId → test_groups.code
       const testGroupIdsToFetch = [
         ...new Set(
           [...contextTestGroupIds, ...analytesByGroup.keys()].filter((id) =>
@@ -6782,7 +6819,7 @@ serve(async (req) => {
         // Also fetch default_template_style and print_options for all groups
         const { data: testGroupsData } = await supabaseClient
           .from("test_groups")
-          .select("id, name, default_template_style, print_options, group_interpretation")
+          .select("id, name, code, default_template_style, print_options, group_interpretation")
           .in("id", testGroupIdsToFetch);
 
         if (testGroupsData) {
@@ -6799,6 +6836,9 @@ serve(async (req) => {
               }
               if (tg.group_interpretation) {
                 testGroupInterpretations.set(tg.id, tg.group_interpretation);
+              }
+              if (tg.code) {
+                testGroupCodes.set(tg.id, tg.code);
               }
             }
           }
@@ -6912,8 +6952,8 @@ serve(async (req) => {
           const aManual = a.manualOrderIndex ?? Number.MAX_SAFE_INTEGER;
           const bManual = b.manualOrderIndex ?? Number.MAX_SAFE_INTEGER;
           if (aManual !== bManual) return aManual - bManual;
-          const aPriority = a.reportPriority ?? Number.MAX_SAFE_INTEGER;
-          const bPriority = b.reportPriority ?? Number.MAX_SAFE_INTEGER;
+          const aPriority = (a.reportPriority != null && a.reportPriority > 0) ? a.reportPriority : Number.MAX_SAFE_INTEGER;
+          const bPriority = (b.reportPriority != null && b.reportPriority > 0) ? b.reportPriority : Number.MAX_SAFE_INTEGER;
           if (aPriority !== bPriority) return aPriority - bPriority;
           if (a.printOrder !== b.printOrder) return a.printOrder - b.printOrder;
           return a.groupName.localeCompare(b.groupName);
@@ -6965,6 +7005,13 @@ serve(async (req) => {
         contextTestGroupIds = context.testGroupIds || orderedGroupIdsForPrint;
         orderedAnalytesByGroupForPrint = buildOrderedAnalytesByGroup(analytesByGroup, orderedGroupIdsForPrint);
 
+        console.log("ðŸ“ Group report priorities:", descriptors.map((d) => ({
+          groupId: d.groupId,
+          groupName: d.groupName,
+          reportPriority: d.reportPriority,
+          printOrder: d.printOrder,
+          manualOrderIndex: d.manualOrderIndex ?? null,
+        })));
         console.log("ðŸ“ Compact print planning:", {
           requestedMode: printLayoutMode,
           resolvedMode: compactPrintPlan?.layoutMode || "standard",
@@ -7087,6 +7134,10 @@ serve(async (req) => {
           })(),
           collectionDate: baseContext.order?.sampleCollectedAtFormatted ||
             baseContext.order?.sampleCollectedAt || "",
+          receivedAt: baseContext.order?.sampleReceivedAtFormatted ||
+            baseContext.order?.sampleReceivedAt || "",
+          collectionCenter: baseContext.order?.collectionCenter ||
+            baseContext.order?.locationName || "",
           sampleCollectedBy: baseContext.order?.sampleCollectedBy || "",
           referringDoctorName: baseContext.order?.referringDoctorName || "",
           approvedAt: baseContext.order?.approvedAtFormatted ||
@@ -7107,6 +7158,13 @@ serve(async (req) => {
           // QR verification URL
           verifyUrl: verifyUrl,
           qr_code: `<img src="https://api.qrserver.com/v1/create-qr-code/?size=100x100&data=${encodeURIComponent(verifyUrl)}" alt="Verify Report" style="width:80px;height:80px;" />`,
+
+          // Barcode image for report header (Code 128 barcode of sample/order ID)
+          barcode_image: (() => {
+            const barcodeVal = baseContext.order?.sampleId || baseContext.sampleId || orderId || "";
+            if (!barcodeVal) return "";
+            return `<img src="https://barcodeapi.org/api/code128/${encodeURIComponent(barcodeVal)}" alt="${barcodeVal}" style="height:36px;display:block;" onerror="this.style.display='none';" />`;
+          })(),
 
           // Custom patient fields (from patients.custom_fields JSONB)
           ...Object.entries(baseContext.patient?.custom_fields || {}).reduce(
@@ -7180,6 +7238,9 @@ serve(async (req) => {
         </html>
       `;
       };
+
+      // Histograms injected inline per-group in multi-group path; populated below
+      let histogramsByGroupId = new Map<string, any[]>();
 
       if (effectiveGroupCount <= 1) {
         // Single Group Logic
@@ -7318,6 +7379,39 @@ serve(async (req) => {
           ? contextTestGroupIds
           : [...analytesByGroup.keys()];
         console.log(`🔀 Groups to render: ${JSON.stringify(groupsToRender)}`);
+
+        // Build histogramsByGroupId: assign each analyzer histogram to its test group section.
+        // Matching priority: (1) associated_test === test_groups.code, (2) group name contains
+        // hematology keywords (CBC/haematology), (3) last group as fallback.
+        {
+          const svgRowsAll = (analyzerGraphRows || []).filter((r: any) => r.svg_data);
+          if (svgRowsAll.length > 0) {
+            const codeToGroupId = new Map<string, string>();
+            for (const [gid, code] of testGroupCodes.entries()) {
+              if (code) codeToGroupId.set(code.toUpperCase(), gid);
+            }
+            const hemaKeywords = ['cbc', 'haematol', 'hematol', 'blood count', 'complete blood', 'fbc', 'full blood'];
+            let hemaGroupId: string | null = null;
+            for (const gid of groupsToRender) {
+              const name = (testGroupNames.get(gid) || '').toLowerCase();
+              const code = (testGroupCodes.get(gid) || '').toLowerCase();
+              if (hemaKeywords.some(k => name.includes(k) || code.includes(k))) {
+                hemaGroupId = gid;
+                break;
+              }
+            }
+            const fallbackGroupId = groupsToRender[groupsToRender.length - 1] ?? null;
+            for (const row of svgRowsAll) {
+              const assoc = (row.associated_test || '').toUpperCase();
+              let targetId = codeToGroupId.get(assoc) ?? hemaGroupId ?? fallbackGroupId;
+              if (targetId) {
+                if (!histogramsByGroupId.has(targetId)) histogramsByGroupId.set(targetId, []);
+                histogramsByGroupId.get(targetId)!.push(row);
+              }
+            }
+            console.log(`📊 histogramsByGroupId built: ${[...histogramsByGroupId.entries()].map(([k,v])=>`${k}:${v.length}`).join(', ')}`);
+          }
+        }
 
         // Track previous group's printOrder to suppress page breaks between equal-priority groups
         let prevRenderedPrintOrder: number | null = null;
@@ -7515,6 +7609,20 @@ serve(async (req) => {
             currentPrintOrder !== 0 &&
             currentPrintOrder === prevRenderedPrintOrder;
           prevRenderedPrintOrder = currentPrintOrder;
+          // Inject analyzer histograms matched to this group inline, right after its results table
+          const groupHistograms = histogramsByGroupId.get(testGroupId) || [];
+          if (groupHistograms.length > 0) {
+            let histHtml = '<div style="margin-top:16px;page-break-inside:avoid;">';
+            histHtml += '<p style="margin:0 0 6px 0;font-size:11px;font-weight:700;color:#1e40af;border-bottom:1px solid #93c5fd;padding-bottom:3px;letter-spacing:0.05em;">ANALYZER HISTOGRAMS</p>';
+            histHtml += '<div style="display:flex;flex-wrap:wrap;gap:10px;align-items:flex-start;">';
+            for (const row of groupHistograms) {
+              const svg = row.svg_data.replace(/<svg\b/i, '<svg style="max-width:160px;height:auto;display:block;"');
+              histHtml += `<div style="flex:0 0 auto;text-align:center;">${svg}</div>`;
+            }
+            histHtml += '</div></div>';
+            bodyContent += histHtml;
+          }
+
           const sectionHtml = `
           <div class="test-group-section" data-test-group-id="${testGroupId}" ${
             renderedSections.length > 0 && !samePageGroup
@@ -8003,10 +8111,22 @@ serve(async (req) => {
         }
 
         // Inject report extras - INSIDE </main> not </body> for proper layout
+        // Exclude histograms already injected inline into their test group section (multi-group path)
+        const inlineInjectedHistoCodes = new Set(
+          [...histogramsByGroupId.values()].flat().map((r: any) => r.test_code)
+        );
+        const reportExtrasForPrint = inlineInjectedHistoCodes.size > 0
+          ? {
+              ...reportExtras,
+              analyzer_histogram_svgs: (reportExtras.analyzer_histogram_svgs || [])
+                .filter((r: any) => !inlineInjectedHistoCodes.has(r.test_code)),
+            }
+          : reportExtras;
+
         let printExtrasHtml = "";
         if (useCompactPrint) {
           // Compact print: include analyzer graphs only, scaled down to fit on page
-          const svgRows = (reportExtras.analyzer_histogram_svgs || []).filter((r: any) => r.svg_data);
+          const svgRows = (reportExtrasForPrint.analyzer_histogram_svgs || []).filter((r: any) => r.svg_data);
           if (svgRows.length > 0) {
             printExtrasHtml = '<div style="margin-top:10px;page-break-inside:avoid;">';
             printExtrasHtml += '<p style="margin:0 0 5px 0;font-size:10px;font-weight:700;color:#1e40af;border-bottom:1px solid #93c5fd;padding-bottom:2px;letter-spacing:0.05em;">ANALYZER HISTOGRAMS</p>';
@@ -8019,7 +8139,7 @@ serve(async (req) => {
             printExtrasHtml += '</div></div>';
           }
         } else {
-          printExtrasHtml = generateReportExtrasHtml(reportExtras);
+          printExtrasHtml = generateReportExtrasHtml(reportExtrasForPrint);
         }
         if (printExtrasHtml) {
           printHtml = printHtml.replace("</main>", `${printExtrasHtml}</main>`);

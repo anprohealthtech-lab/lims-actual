@@ -17,9 +17,29 @@ export default defineConfig({
         manualChunks: {
           'vendor-react': ['react', 'react-dom', 'react-router-dom'],
           'vendor-supabase': ['@supabase/supabase-js'],
-          'vendor-ui': ['lucide-react'],
+          'vendor-ui': ['lucide-react', '@headlessui/react'],
           'vendor-pdf': ['jspdf'],
           'vendor-charts': ['recharts'],
+          'vendor-ckeditor': [
+            '@ckeditor/ckeditor5-build-classic',
+            '@ckeditor/ckeditor5-react',
+            '@ckeditor/ckeditor5-find-and-replace',
+            '@ckeditor/ckeditor5-horizontal-line',
+            '@ckeditor/ckeditor5-page-break',
+            '@ckeditor/ckeditor5-remove-format',
+            '@ckeditor/ckeditor5-select-all',
+            '@ckeditor/ckeditor5-special-characters',
+            '@ckeditor/ckeditor5-word-count',
+          ],
+          'vendor-survey': [
+            'survey-core',
+            'survey-react-ui',
+            'survey-creator-core',
+            'survey-creator-react',
+          ],
+          'vendor-grapesjs': ['@grapesjs/studio-sdk'],
+          'vendor-math': ['mathjs'],
+          'vendor-misc': ['date-fns', 'qrcode', 'qrcode.react', 'jsbarcode', 'browser-image-compression'],
         }
       }
     }

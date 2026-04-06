@@ -900,6 +900,8 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
             test_name,
             test_group_id,
             sample_id,
+            is_canceled,
+            outsourced_lab_id,
             test_groups(
               id,
               name,
@@ -1040,7 +1042,7 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
 
       const tgFromOT =
         data.order_tests
-          ?.filter((ot: any) => ot.test_groups && ot.test_group_id)
+          ?.filter((ot: any) => ot.test_groups && ot.test_group_id && !ot.is_canceled && !ot.outsourced_lab_id)
           .map((ot: any) => ({
             test_group_id: ot.test_groups.id,
             test_group_name: ot.test_groups.name,

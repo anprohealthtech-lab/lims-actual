@@ -31,6 +31,7 @@ import {
   Ban,
   RotateCcw,
   Lock,
+  Tag,
 } from "lucide-react";
 import QRCodeLib from "qrcode";
 import { database, supabase, formatAge } from "../../utils/supabase";
@@ -182,6 +183,10 @@ const DashboardOrderModal: React.FC<DashboardOrderModalProps> = ({
   const [editDoctorId, setEditDoctorId] = useState<string>('');
   const [tests, setTests] = useState(order.tests);
   const [viewInvoiceLoading, setViewInvoiceLoading] = useState(false);
+  const [showDiscountEdit, setShowDiscountEdit] = useState(false);
+  const [discountInput, setDiscountInput] = useState('');
+  const [discountReason, setDiscountReason] = useState('');
+  const [savingDiscount, setSavingDiscount] = useState(false);
 
   // Transit/Dispatch
   const [showDispatchModal, setShowDispatchModal] = useState(false);
@@ -222,6 +227,12 @@ const DashboardOrderModal: React.FC<DashboardOrderModalProps> = ({
   const [customChargeName, setCustomChargeName] = useState('');
   const [customChargeAmount, setCustomChargeAmount] = useState('');
   const [selectedChargeTypeId, setSelectedChargeTypeId] = useState<string>('');
+
+  // Collection Charge
+  const [collectionCharge, setCollectionCharge] = useState<number>(0);
+  const [editingCollectionCharge, setEditingCollectionCharge] = useState(false);
+  const [collectionChargeInput, setCollectionChargeInput] = useState('');
+  const [savingCollectionCharge, setSavingCollectionCharge] = useState(false);
 
   // Discount State
   const [invoiceDiscount, setInvoiceDiscount] = useState<{
@@ -292,7 +303,7 @@ const DashboardOrderModal: React.FC<DashboardOrderModalProps> = ({
   useEffect(() => {
     if (!labId) return;
     const load = async () => {
-      const [{ data: items }, { data: types }] = await Promise.all([
+      const [{ data: items }, { data: types }, { data: orderData }] = await Promise.all([
         supabase
           .from('order_billing_items')
           .select('id, name, amount, notes, is_shareable_with_doctor, is_shareable_with_phlebotomist, is_invoiced, lab_billing_item_type_id')
@@ -304,12 +315,19 @@ const DashboardOrderModal: React.FC<DashboardOrderModalProps> = ({
           .eq('lab_id', labId)
           .eq('is_active', true)
           .order('name'),
+        supabase
+          .from('orders')
+          .select('collection_charge')
+          .eq('id', order.id)
+          .single(),
       ]);
       const chargesList = items || [];
+      const cc = (orderData as any)?.collection_charge || 0;
       setOrderBillingItems(chargesList);
       setBillingItemTypes(types || []);
+      setCollectionCharge(cc);
 
-      // Recalculate totals: order.total_amount is tests-only; charges are always additive
+      // Recalculate totals: order.total_amount includes collection_charge; extra billing items are additive
       const chargesTotal = chargesList.reduce((s: number, i: any) => s + (i.amount || 0), 0);
       setCurrentTotal((order.total_amount || 0) + chargesTotal);
       setCurrentDue(Math.max(0, (order.total_amount || 0) + chargesTotal - (order.paid_amount || 0)));
@@ -369,6 +387,25 @@ const DashboardOrderModal: React.FC<DashboardOrderModalProps> = ({
     const remaining = orderBillingItems.filter(i => i.id !== chargeId);
     setOrderBillingItems(remaining);
     recomputeTotalsFromItems(remaining);
+  };
+
+  const handleSaveCollectionCharge = async () => {
+    const newCC = Math.max(0, Number(collectionChargeInput) || 0);
+    setSavingCollectionCharge(true);
+    // total_amount = tests_only + collection_charge; update both fields
+    const testsOnly = (order.total_amount || 0) - collectionCharge;
+    const newTotalAmount = testsOnly + newCC;
+    await supabase.from('orders').update({
+      collection_charge: newCC > 0 ? newCC : null,
+      total_amount: newTotalAmount,
+    }).eq('id', order.id);
+    setCollectionCharge(newCC);
+    setEditingCollectionCharge(false);
+    setCollectionChargeInput('');
+    const chargesTotal = orderBillingItems.reduce((s, i) => s + i.amount, 0);
+    setCurrentTotal(newTotalAmount + chargesTotal);
+    setCurrentDue(Math.max(0, newTotalAmount + chargesTotal - (order.paid_amount || 0)));
+    setSavingCollectionCharge(false);
   };
 
   // Fetch available tests when modal opens
@@ -887,6 +924,50 @@ const DashboardOrderModal: React.FC<DashboardOrderModalProps> = ({
       alert(`Failed to view invoice: ${err instanceof Error ? err.message : 'Unknown error'}`);
     } finally {
       setViewInvoiceLoading(false);
+    }
+  };
+
+  const handleSaveDiscount = async () => {
+    if (!order.invoice_id) return;
+    const discountAmt = parseFloat(discountInput) || 0;
+    setSavingDiscount(true);
+    try {
+      // Fetch all invoices for this order to get combined totals
+      const { data: allInvoices } = await supabase
+        .from('invoices')
+        .select('id, subtotal, discount, total, amount_paid')
+        .eq('order_id', order.id);
+
+      const combinedSubtotal  = (allInvoices || []).reduce((s: number, inv: any) => s + (parseFloat(inv.subtotal) || 0), 0);
+      const combinedPaid      = (allInvoices || []).reduce((s: number, inv: any) => s + (parseFloat(inv.amount_paid) || 0), 0);
+      const newTotal          = combinedSubtotal - discountAmt;
+
+      if (newTotal < combinedPaid) {
+        alert(`Discount of ₹${discountAmt} would make total ₹${newTotal} less than already paid ₹${combinedPaid}.\nMaximum discount allowed: ₹${combinedSubtotal - combinedPaid}`);
+        return;
+      }
+
+      // Apply entire discount to the primary invoice
+      const { error } = await supabase
+        .from('invoices')
+        .update({
+          discount: discountAmt,
+          total: parseFloat((allInvoices || []).find((inv: any) => inv.id === order.invoice_id)?.subtotal || '0') - discountAmt,
+          notes: discountReason || undefined,
+        })
+        .eq('id', order.invoice_id);
+
+      if (error) throw error;
+
+      setShowDiscountEdit(false);
+      setDiscountInput('');
+      setDiscountReason('');
+      setInvoiceRefreshTrigger(t => t + 1);
+      alert('Discount saved. Please regenerate the PDF to reflect the change.');
+    } catch (err: any) {
+      alert(`Failed to save discount: ${err.message}`);
+    } finally {
+      setSavingDiscount(false);
     }
   };
 
@@ -1640,14 +1721,63 @@ const DashboardOrderModal: React.FC<DashboardOrderModalProps> = ({
                   </h3>
 
                   <div className="space-y-3 mb-5">
-                    {/* Subtotal row — always show tests-only amount; charges are always shown separately */}
+                    {/* Subtotal row — show tests-only amount (total_amount minus collection charge) */}
                     <div className="flex justify-between items-center p-2 rounded hover:bg-gray-50 transition-colors">
                       <span className="text-sm text-gray-600 font-medium">
                         Tests Subtotal
                       </span>
                       <span className="font-bold text-gray-900 text-base">
-                        ₹{(order.total_amount || 0).toLocaleString()}
+                        ₹{Math.max(0, (order.total_amount || 0) - collectionCharge).toLocaleString()}
                       </span>
+                    </div>
+
+                    {/* Collection Charge Row */}
+                    <div className="flex justify-between items-center p-2 rounded hover:bg-gray-50 transition-colors">
+                      <span className="text-sm text-gray-600 font-medium flex items-center gap-1">
+                        Collection Charge
+                        {!editingCollectionCharge && (
+                          <button
+                            onClick={() => { setEditingCollectionCharge(true); setCollectionChargeInput(collectionCharge > 0 ? String(collectionCharge) : ''); }}
+                            className="ml-1 text-gray-400 hover:text-blue-500 transition-colors"
+                            title="Edit collection charge"
+                          >
+                            <Edit2 className="h-3 w-3" />
+                          </button>
+                        )}
+                      </span>
+                      {editingCollectionCharge ? (
+                        <div className="flex items-center gap-1">
+                          <span className="text-xs text-gray-500">₹</span>
+                          <input
+                            type="number"
+                            min="0"
+                            value={collectionChargeInput}
+                            onChange={e => setCollectionChargeInput(e.target.value)}
+                            onKeyDown={e => { if (e.key === 'Enter') handleSaveCollectionCharge(); if (e.key === 'Escape') setEditingCollectionCharge(false); }}
+                            className="w-20 px-1.5 py-0.5 text-xs border border-blue-300 rounded focus:outline-none focus:ring-1 focus:ring-blue-400"
+                            autoFocus
+                          />
+                          <button
+                            onClick={handleSaveCollectionCharge}
+                            disabled={savingCollectionCharge}
+                            className="text-green-600 hover:text-green-700 transition-colors"
+                            title="Save"
+                          >
+                            {savingCollectionCharge ? <Loader className="h-3.5 w-3.5 animate-spin" /> : <Save className="h-3.5 w-3.5" />}
+                          </button>
+                          <button
+                            onClick={() => setEditingCollectionCharge(false)}
+                            className="text-gray-400 hover:text-gray-600 transition-colors"
+                            title="Cancel"
+                          >
+                            <X className="h-3.5 w-3.5" />
+                          </button>
+                        </div>
+                      ) : (
+                        <span className={`font-semibold text-sm ${collectionCharge > 0 ? 'text-orange-600' : 'text-gray-400'}`}>
+                          {collectionCharge > 0 ? `+₹${collectionCharge.toLocaleString()}` : '—'}
+                        </span>
+                      )}
                     </div>
 
                     {/* Extra Charges Section */}
@@ -1688,9 +1818,8 @@ const DashboardOrderModal: React.FC<DashboardOrderModalProps> = ({
                       </div>
                     )}
 
-                    {/* Add Charge button (only when not fully billed) */}
-                    {order.billing_status !== 'billed' && (
-                      <div className="relative">
+                    {/* Add Charge button — always available */}
+                    <div className="relative">
                         {!showAddChargeDropdown ? (
                           <button
                             onClick={() => setShowAddChargeDropdown(true)}
@@ -1749,7 +1878,6 @@ const DashboardOrderModal: React.FC<DashboardOrderModalProps> = ({
                           </div>
                         )}
                       </div>
-                    )}
 
                     {/* Discount Section - Show if invoice has discount */}
                     {invoiceDiscount && invoiceDiscount.total_discount > 0 && (
@@ -1894,6 +2022,58 @@ const DashboardOrderModal: React.FC<DashboardOrderModalProps> = ({
 
                     {order.billing_status === 'billed' && (
                       <>
+                        {/* Post-creation discount edit */}
+                        {order.invoice_id && (
+                          <div className="w-full">
+                            {!showDiscountEdit ? (
+                              <button
+                                onClick={() => setShowDiscountEdit(true)}
+                                className="w-full flex items-center justify-center gap-2 bg-amber-50 border border-amber-200 text-amber-700 py-2 rounded-lg hover:bg-amber-100 transition-all text-sm font-medium"
+                              >
+                                <Tag className="h-3.5 w-3.5" />
+                                Edit Discount
+                              </button>
+                            ) : (
+                              <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 space-y-2">
+                                <p className="text-xs font-semibold text-amber-800">Edit Invoice Discount</p>
+                                <input
+                                  type="number"
+                                  min={0}
+                                  placeholder="Discount amount (₹)"
+                                  value={discountInput}
+                                  onChange={e => setDiscountInput(e.target.value)}
+                                  className="w-full border border-amber-300 rounded px-2 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-amber-500"
+                                />
+                                <input
+                                  type="text"
+                                  placeholder="Reason (optional)"
+                                  value={discountReason}
+                                  onChange={e => setDiscountReason(e.target.value)}
+                                  className="w-full border border-amber-300 rounded px-2 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-amber-500"
+                                />
+                                <p className="text-xs text-amber-600">
+                                  ⚠ If payment already recorded, discount cannot exceed balance due.
+                                </p>
+                                <div className="flex gap-2">
+                                  <button
+                                    onClick={handleSaveDiscount}
+                                    disabled={savingDiscount || !discountInput}
+                                    className="flex-1 bg-amber-600 text-white text-xs py-1.5 rounded hover:bg-amber-700 disabled:opacity-50"
+                                  >
+                                    {savingDiscount ? 'Saving…' : 'Save & Regenerate'}
+                                  </button>
+                                  <button
+                                    onClick={() => { setShowDiscountEdit(false); setDiscountInput(''); setDiscountReason(''); }}
+                                    className="px-3 text-xs border border-amber-300 rounded hover:bg-amber-100"
+                                  >
+                                    Cancel
+                                  </button>
+                                </div>
+                              </div>
+                            )}
+                          </div>
+                        )}
+
                         {/* View PDF (if exists) */}
                         {order.invoice_id && (
                           <button

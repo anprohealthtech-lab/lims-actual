@@ -938,6 +938,17 @@ CREATE TABLE public.global_test_catalog_analytes (
   created_at timestamp with time zone DEFAULT now(),
   analyte_name text,
   test_group_name text,
+  custom_name text,
+  custom_unit text,
+  custom_interpretation_low text,
+  custom_interpretation_normal text,
+  custom_interpretation_high text,
+  custom_method text,
+  custom_expected_normal_values jsonb DEFAULT '[]'::jsonb,
+  custom_expected_value_codes jsonb DEFAULT '{}'::jsonb,
+  default_value text,
+  display_name text,
+  custom_value_type text,
   CONSTRAINT global_test_catalog_analytes_pkey PRIMARY KEY (id),
   CONSTRAINT global_test_catalog_analytes_catalog_id_fkey FOREIGN KEY (catalog_id) REFERENCES public.global_test_catalog(id),
   CONSTRAINT global_test_catalog_analytes_analyte_id_fkey FOREIGN KEY (analyte_id) REFERENCES public.analytes(id)
@@ -1153,6 +1164,8 @@ CREATE TABLE public.invoice_templates (
   thermal_settings jsonb DEFAULT jsonb_build_object('width_mm', 80, 'paper_size', '80mm', 'font_size', '12px', 'line_spacing', '1.2', 'margins', '5mm', 'barcode_height', '40px', 'barcode_width', '200px', 'barcode_format', 'CODE128', 'include_logo', true, 'logo_height', '40px', 'show_barcode', true, 'auto_cut', false),
   page_size text NOT NULL DEFAULT 'A4'::text CHECK (page_size = ANY (ARRAY['A4'::text, 'A5'::text, 'Letter'::text])),
   letterhead_space_mm integer NOT NULL DEFAULT 0,
+  letterhead_image_url text,
+  letterhead_bottom_mm integer NOT NULL DEFAULT 20,
   CONSTRAINT invoice_templates_pkey PRIMARY KEY (id),
   CONSTRAINT invoice_templates_lab_id_fkey FOREIGN KEY (lab_id) REFERENCES public.labs(id),
   CONSTRAINT invoice_templates_created_by_fkey FOREIGN KEY (created_by) REFERENCES public.users(id),
@@ -1209,6 +1222,7 @@ CREATE TABLE public.invoices (
   reminder_sent_by uuid,
   discount_source text CHECK (discount_source = ANY (ARRAY['doctor'::text, 'lab'::text, 'location'::text, 'account'::text])),
   collection_charge numeric DEFAULT NULL::numeric,
+  custom_fields jsonb DEFAULT '{}'::jsonb,
   CONSTRAINT invoices_pkey PRIMARY KEY (id),
   CONSTRAINT invoices_patient_id_fkey FOREIGN KEY (patient_id) REFERENCES public.patients(id),
   CONSTRAINT invoices_order_id_fkey FOREIGN KEY (order_id) REFERENCES public.orders(id),
@@ -1221,6 +1235,22 @@ CREATE TABLE public.invoices (
   CONSTRAINT invoices_whatsapp_sent_by_fkey FOREIGN KEY (whatsapp_sent_by) REFERENCES public.users(id),
   CONSTRAINT invoices_email_sent_by_fkey FOREIGN KEY (email_sent_by) REFERENCES public.users(id),
   CONSTRAINT invoices_reminder_sent_by_fkey FOREIGN KEY (reminder_sent_by) REFERENCES public.users(id)
+);
+CREATE TABLE public.lab_analyte_interface_config (
+  id uuid NOT NULL DEFAULT gen_random_uuid(),
+  lab_id uuid NOT NULL,
+  lab_analyte_id uuid NOT NULL,
+  instrument_unit text,
+  lims_unit text,
+  multiply_by numeric NOT NULL DEFAULT 1.0,
+  add_offset numeric NOT NULL DEFAULT 0,
+  auto_verify boolean NOT NULL DEFAULT false,
+  notes text,
+  created_at timestamp with time zone NOT NULL DEFAULT now(),
+  updated_at timestamp with time zone NOT NULL DEFAULT now(),
+  CONSTRAINT lab_analyte_interface_config_pkey PRIMARY KEY (id),
+  CONSTRAINT lab_analyte_interface_config_lab_id_fkey FOREIGN KEY (lab_id) REFERENCES public.labs(id),
+  CONSTRAINT lab_analyte_interface_config_lab_analyte_id_fkey FOREIGN KEY (lab_analyte_id) REFERENCES public.lab_analytes(id)
 );
 CREATE TABLE public.lab_analytes (
   id uuid NOT NULL DEFAULT gen_random_uuid(),
@@ -1576,6 +1606,8 @@ CREATE TABLE public.labs (
   block_send_on_due boolean NOT NULL DEFAULT false,
   report_patient_info_config jsonb,
   lab_interface_enabled boolean NOT NULL DEFAULT false,
+  invoice_prefix text NOT NULL DEFAULT 'INV-'::text,
+  invoice_sequence_current integer NOT NULL DEFAULT 0,
   CONSTRAINT labs_pkey PRIMARY KEY (id),
   CONSTRAINT labs_default_processing_location_id_fkey FOREIGN KEY (default_processing_location_id) REFERENCES public.locations(id)
 );
@@ -2688,6 +2720,7 @@ CREATE TABLE public.result_values (
   reference_range_female text,
   method text,
   value_type text,
+  lab_analyte_id uuid,
   CONSTRAINT result_values_pkey PRIMARY KEY (id),
   CONSTRAINT result_values_result_id_fkey FOREIGN KEY (result_id) REFERENCES public.results(id),
   CONSTRAINT result_values_order_id_fkey FOREIGN KEY (order_id) REFERENCES public.orders(id),
@@ -2698,7 +2731,8 @@ CREATE TABLE public.result_values (
   CONSTRAINT rv_verified_by_fkey FOREIGN KEY (verified_by) REFERENCES public.users(id),
   CONSTRAINT result_values_analyte_id_fkey FOREIGN KEY (analyte_id) REFERENCES public.analytes(id),
   CONSTRAINT result_values_flag_override_by_fkey FOREIGN KEY (flag_override_by) REFERENCES public.users(id),
-  CONSTRAINT result_values_interpretation_override_by_fkey FOREIGN KEY (interpretation_override_by) REFERENCES public.users(id)
+  CONSTRAINT result_values_interpretation_override_by_fkey FOREIGN KEY (interpretation_override_by) REFERENCES public.users(id),
+  CONSTRAINT result_values_lab_analyte_id_fkey FOREIGN KEY (lab_analyte_id) REFERENCES public.lab_analytes(id)
 );
 CREATE TABLE public.result_verification_audit (
   id uuid NOT NULL DEFAULT gen_random_uuid(),
@@ -2983,10 +3017,12 @@ CREATE TABLE public.test_group_analytes (
   analyte_name text,
   test_group_name text,
   lab_id uuid,
+  lab_analyte_id uuid,
   CONSTRAINT test_group_analytes_pkey PRIMARY KEY (id),
   CONSTRAINT test_group_analytes_test_group_id_fkey FOREIGN KEY (test_group_id) REFERENCES public.test_groups(id),
   CONSTRAINT test_group_analytes_analyte_id_fkey FOREIGN KEY (analyte_id) REFERENCES public.analytes(id),
-  CONSTRAINT test_group_analytes_lab_id_fkey FOREIGN KEY (lab_id) REFERENCES public.labs(id)
+  CONSTRAINT test_group_analytes_lab_id_fkey FOREIGN KEY (lab_id) REFERENCES public.labs(id),
+  CONSTRAINT test_group_analytes_lab_analyte_id_fkey FOREIGN KEY (lab_analyte_id) REFERENCES public.lab_analytes(id)
 );
 CREATE TABLE public.test_groups (
   id uuid NOT NULL DEFAULT gen_random_uuid(),

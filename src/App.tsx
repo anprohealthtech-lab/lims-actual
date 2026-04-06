@@ -5,17 +5,17 @@ import { AuthProvider, useAuth } from './contexts/AuthContext';
 import ProtectedRoute from './components/Auth/ProtectedRoute';
 import Login from './components/Auth/Login';
 import Signup from './components/Auth/Signup';
+import ForgotPassword from './components/Auth/ForgotPassword';
+import ResetPassword from './components/Auth/ResetPassword';
 import Layout from './components/Layout/Layout';
 import Dashboard from './pages/Dashboard';
 import Patients from './pages/Patients';
 import Tests from './pages/Tests';
 import Orders from './pages/Orders';
-import Results from './pages/Results';
 import Reports from './pages/Reports';
 import PeripheralSmearDemo from './components/Workflows/PeripheralSmearDemo';
 import Billing from './pages/Billing';
 import CashReconciliation from './pages/CashReconciliation';
-import AITools from './pages/AITools';
 import UserManagement from './pages/UserManagement';
 import Settings from './pages/Settings';
 import ResultVerificationConsole from './pages/ResultVerificationConsole';
@@ -42,14 +42,12 @@ import Result2 from './pages/result2';
 import DoctorMaster from './components/Masters/DoctorMaster';
 import LocationMaster from './components/Masters/LocationMaster';
 import AccountMaster from './components/Masters/AccountMaster';
-import TemplateStudio from './pages/TemplateStudio';
 import TemplateStudioCKE from './pages/TemplateStudioCKE';
 import { BrandingSettings } from './pages/BrandingSettings';
 import WorkflowConfiguratorPage from './pages/WorkflowConfiguratorPage';
 import WorkflowEvaluatorPage from './pages/WorkflowEvaluatorPage';
 // DEPRECATED: Consolidated into WorkflowConfiguratorPage
 // import WorkflowExplainerDemo from './pages/WorkflowExplainerDemo';
-import AIPromptManager from './pages/AIPromptManager';
 // DEPRECATED: Test page with hardcoded data - no longer needed
 // import WorkflowExplainerTestPage from './pages/WorkflowExplainerTestPage';
 import OptimizationDemo from './pages/OptimizationDemo';
@@ -136,6 +134,14 @@ const AppRoutes: React.FC = () => {
       <Route
         path="/signup"
         element={user ? <Navigate to="/" replace /> : <Signup />}
+      />
+      <Route
+        path="/forgot-password"
+        element={user ? <Navigate to="/" replace /> : <ForgotPassword />}
+      />
+      <Route
+        path="/reset-password"
+        element={<ResetPassword />}
       />
       <Route
         path="/onboard"

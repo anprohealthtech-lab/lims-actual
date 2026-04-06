@@ -7,6 +7,8 @@ import { NotificationTriggerSettings } from '../components/Settings/Notification
 import InvoiceTemplateManager from '../components/Billing/InvoiceTemplateManager';
 import BasicTemplateFormatBuilder from '../components/Reports/BasicTemplateFormatBuilder';
 import AnalyzerAPIKeys from '../components/Settings/AnalyzerAPIKeys';
+import AnalyzerConnectionsManager from '../components/Settings/AnalyzerConnectionsManager';
+import AnalyteInterfaceConfig from '../components/Settings/AnalyteInterfaceConfig';
 import PatientPortalSettings from '../components/Settings/PatientPortalSettings';
 import LabBillingItemSettings from '../components/Settings/LabBillingItemSettings';
 import PriceMasterSettings from '../components/Settings/PriceMasterSettings';
@@ -518,6 +520,7 @@ const Settings: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [labId, setLabId] = useState<string | null>(null);
+  const [labInterfaceEnabled, setLabInterfaceEnabled] = useState(false);
   const [savingLab, setSavingLab] = useState(false);
   const [saveSuccess, setSaveSuccess] = useState(false);
 
@@ -575,6 +578,7 @@ const Settings: React.FC = () => {
         // Load lab settings
         const { data: labData, error: labError } = await database.labs.getById(currentLabId);
         if (!labError && labData) {
+          setLabInterfaceEnabled(!!(labData as any).lab_interface_enabled);
           setLabSettings({
             id: labData.id,
             name: labData.name || '',
@@ -790,7 +794,7 @@ const Settings: React.FC = () => {
     { id: 'lab', name: 'Lab Settings', icon: Building },
     { id: 'notifications', name: 'Notifications', icon: Bell },
     { id: 'invoices', name: 'Invoice Templates', icon: FileText },
-    { id: 'analyzer', name: 'Analyzer Interface', icon: Activity },
+    ...(labInterfaceEnabled ? [{ id: 'analyzer', name: 'Analyzer Interface', icon: Activity }] : []),
     { id: 'patient_portal', name: 'Patient Portal', icon: Smartphone },
     { id: 'billing_items', name: 'Billing Items', icon: FileText },
     { id: 'price_masters', name: 'Price Masters', icon: Tag },
@@ -2069,6 +2073,8 @@ const Settings: React.FC = () => {
                           { key: 'approvedAt', label: 'Approved On' },
                           { key: 'phone', label: 'Phone' },
                           { key: 'sampleCollectedBy', label: 'Collected By' },
+                          { key: 'receivedAt', label: 'Received Date/Time' },
+                          { key: 'collectionCenter', label: 'Collection Center' },
                           ...customPatientFields.map(f => ({ key: `custom_${f.field_key}`, label: f.label })),
                         ].map(field => {
                           const currentFields = labSettings.report_patient_info_config?.fields || ['patientName','patientId','age','gender','collectionDate','sampleId','referringDoctorName','approvedAt'];
@@ -2706,15 +2712,35 @@ const Settings: React.FC = () => {
         )}
 
         {/* Analyzer Interface Tab */}
-        {activeTab === 'analyzer' && (
-          <div className="p-6">
-            <div className="mb-5">
+        {activeTab === 'analyzer' && labInterfaceEnabled && labId && (
+          <div className="p-6 space-y-8">
+            <div>
               <h2 className="text-lg font-semibold text-gray-800">Analyzer Interface</h2>
               <p className="text-sm text-gray-500 mt-1">
-                Manage API keys for LIS bridge apps connecting physical analyzers to LIMS.
+                Configure physical analyzers and the Bridge API keys that connect them to LIMS.
               </p>
             </div>
-            <AnalyzerAPIKeys />
+
+            {/* Analyzer Connections */}
+            <div className="bg-white rounded-xl border border-gray-200 p-5">
+              <AnalyzerConnectionsManager labId={labId} />
+            </div>
+
+            {/* Analyte Interface Config */}
+            <div className="bg-white rounded-xl border border-gray-200 p-5">
+              <AnalyteInterfaceConfig labId={labId} />
+            </div>
+
+            {/* Bridge API Keys */}
+            <div className="bg-white rounded-xl border border-gray-200 p-5">
+              <div className="mb-4">
+                <h3 className="text-base font-semibold text-gray-800">Bridge API Keys</h3>
+                <p className="text-sm text-gray-500 mt-0.5">
+                  Generate keys for the on-premises Bridge process that relays messages between LIMS and analyzers.
+                </p>
+              </div>
+              <AnalyzerAPIKeys />
+            </div>
           </div>
         )}
 

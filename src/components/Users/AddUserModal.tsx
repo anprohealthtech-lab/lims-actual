@@ -233,39 +233,35 @@ const AddUserModal: React.FC<AddUserModalProps> = ({ onClose, onSuccess, editUse
           );
         }
       } else {
-        // Create Supabase auth user
-        const { data: authData, error: authError } = await supabase.auth.signUp({
-          email: formData.email,
-          password: formData.password,
-          options: {
-            data: {
-              full_name: formData.name,
-              role: selectedRole?.role_name,
-              lab_id: labId
-            }
+        // Use admin edge function to create auth user with email pre-confirmed
+        // (avoids signUp() which requires email verification and can disrupt admin session)
+        const { data: edgeData, error: edgeError } = await supabase.functions.invoke('create-auth-user', {
+          body: {
+            email: formData.email,
+            password: formData.password,
+            lab_id: labId,
+            name: formData.name,
+            role_id: formData.role_id,
           }
         });
 
-        if (authError) throw authError;
-        if (!authData.user) throw new Error('Failed to create auth user');
+        if (edgeError) throw edgeError;
+        if (!edgeData?.user_id) throw new Error(edgeData?.error || 'Failed to create auth user');
 
-        // Create public.users record
+        const newUserId = edgeData.user_id;
+
+        // Update the public.users record created by the edge function with additional fields
         const { data: newUser, error: userError } = await supabase
           .from('users')
-          .insert([{
-            name: formData.name,
-            email: formData.email,
-            contact_number: formData.contact_number,
-            gender: formData.gender,
+          .update({
+            contact_number: formData.contact_number || null,
+            gender: formData.gender || null,
             username: formData.username || null,
-            role_id: formData.role_id,
-            lab_id: labId,
-            auth_user_id: authData.user.id,
             is_phlebotomist: formData.is_phlebotomist,
-            permissions: formData.extra_permissions, // Save extra permissions
-            status: 'Active',
-            join_date: new Date().toISOString().split('T')[0],
-          }])
+            permissions: formData.extra_permissions.length > 0 ? formData.extra_permissions : [],
+            updated_at: new Date().toISOString(),
+          })
+          .eq('id', newUserId)
           .select()
           .single();
 
@@ -275,7 +271,7 @@ const AddUserModal: React.FC<AddUserModalProps> = ({ onClose, onSuccess, editUse
         if (formData.extra_permissions.includes('connect_whatsapp')) {
           try {
             await supabase.functions.invoke('sync-user-to-whatsapp', {
-              body: { userId: newUser.id }
+              body: { userId: newUserId }
             });
             console.log('New user synced to WhatsApp backend');
           } catch (syncError) {
@@ -287,7 +283,7 @@ const AddUserModal: React.FC<AddUserModalProps> = ({ onClose, onSuccess, editUse
         if (formData.location_ids.length > 0) {
           await supabase.from('user_centers').insert(
             formData.location_ids.map((locId, idx) => ({
-              user_id: newUser.id,
+              user_id: newUserId,
               location_id: locId,
               is_primary: idx === 0
             }))

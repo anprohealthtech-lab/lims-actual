@@ -2145,6 +2145,33 @@ const Reports: React.FC = () => {
                             {!(group.results[0] as ApprovedResult)?.has_final_report ? (
                               /* Not generated yet */
                               <>
+                                {(group.results[0] as ApprovedResult)?.has_draft_report && (
+                                  <div className="flex items-center gap-0.5">
+                                    <button
+                                      className="flex items-center space-x-1 px-2 py-1 text-xs bg-amber-600 text-white rounded-l hover:bg-amber-700 transition-colors"
+                                      onClick={() => {
+                                        const url = (group.results[0] as ApprovedResult)?.draft_report?.pdf_url;
+                                        if (url && !isTempPdfUrl(url)) window.open(url, '_blank');
+                                        else void handleDownload(group.order_id, true, 'ecopy');
+                                      }}
+                                      title="Download eCopy draft"
+                                    >
+                                      <Download className="w-3.5 h-3.5" />
+                                      <span>eCopy</span>
+                                    </button>
+                                    <button
+                                      className={`flex items-center px-1.5 py-1 text-xs rounded-r transition-colors border-l border-amber-700 ${(group.results[0] as ApprovedResult)?.draft_report?.print_pdf_url ? 'bg-amber-500 text-white hover:bg-amber-600' : 'bg-gray-200 text-gray-500 cursor-not-allowed'}`}
+                                      onClick={() => {
+                                        const url = (group.results[0] as ApprovedResult)?.draft_report?.print_pdf_url;
+                                        if (url) window.open(url, '_blank');
+                                      }}
+                                      disabled={!(group.results[0] as ApprovedResult)?.draft_report?.print_pdf_url}
+                                      title="Download print draft"
+                                    >
+                                      <Printer className="w-3.5 h-3.5" />
+                                    </button>
+                                  </div>
+                                )}
                                 <button
                                   className={`flex items-center space-x-1 px-2 py-1 text-xs bg-green-600 text-white rounded hover:bg-green-700 transition-colors ${(generatingOrderId === group.order_id || pdfQueueStatus.get(group.order_id)?.status === 'processing') ? 'opacity-50 cursor-not-allowed' : ''}`}
                                   onClick={() => handleDownload(group.order_id, false)}
@@ -2420,6 +2447,33 @@ const Reports: React.FC = () => {
                             <>
                               {!(group.results[0] as ApprovedResult)?.has_final_report ? (
                                 <>
+                                  {(group.results[0] as ApprovedResult)?.has_draft_report && (
+                                    <div className="flex items-center gap-0.5">
+                                      <button
+                                        className="flex-1 flex items-center justify-center space-x-1 px-3 py-2 text-sm bg-amber-600 text-white rounded-l-md hover:bg-amber-700 transition-colors"
+                                        onClick={() => {
+                                          const url = (group.results[0] as ApprovedResult)?.draft_report?.pdf_url;
+                                          if (url && !isTempPdfUrl(url)) window.open(url, '_blank');
+                                          else void handleDownload(group.order_id, true, 'ecopy');
+                                        }}
+                                        title="Download eCopy draft"
+                                      >
+                                        <Download className="w-4 h-4" />
+                                        <span>eCopy</span>
+                                      </button>
+                                      <button
+                                        className={`flex items-center justify-center px-3 py-2 text-sm rounded-r-md transition-colors border-l border-amber-700 ${(group.results[0] as ApprovedResult)?.draft_report?.print_pdf_url ? 'bg-amber-500 text-white hover:bg-amber-600' : 'bg-gray-200 text-gray-500 cursor-not-allowed'}`}
+                                        onClick={() => {
+                                          const url = (group.results[0] as ApprovedResult)?.draft_report?.print_pdf_url;
+                                          if (url) window.open(url, '_blank');
+                                        }}
+                                        disabled={!(group.results[0] as ApprovedResult)?.draft_report?.print_pdf_url}
+                                        title="Download print draft"
+                                      >
+                                        <Printer className="w-4 h-4" />
+                                      </button>
+                                    </div>
+                                  )}
                                   <button
                                     className={`flex-1 flex items-center justify-center space-x-1 px-3 py-2 text-sm bg-purple-600 text-white rounded-md hover:bg-purple-700 transition-colors ${previewingOrderId === group.order_id ? 'opacity-80 cursor-not-allowed' : ''
                                       }`}

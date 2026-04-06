@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
-import { FileText, Plus, Edit, Star, AlertCircle, CheckCircle2, Loader2 } from 'lucide-react';
-import { database } from '../../utils/supabase';
+import { FileText, Plus, Edit, Star, AlertCircle, CheckCircle2, Loader2, Hash } from 'lucide-react';
+import { database, supabase } from '../../utils/supabase';
 import InvoiceTemplateEditor from './InvoiceTemplateEditor';
 
 interface InvoiceTemplate {
@@ -21,9 +21,47 @@ const InvoiceTemplateManager: React.FC = () => {
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
   const [editingTemplate, setEditingTemplate] = useState<string | null>(null);
 
+  // Invoice numbering settings
+  const [labId, setLabId] = useState<string | null>(null);
+  const [invoicePrefix, setInvoicePrefix] = useState('INV-');
+  const [invoiceSequence, setInvoiceSequence] = useState(0);
+  const [sequenceSaving, setSequenceSaving] = useState(false);
+
   useEffect(() => {
     fetchTemplates();
+    fetchNumberingSettings();
   }, []);
+
+  const fetchNumberingSettings = async () => {
+    const id = await database.getCurrentUserLabId();
+    if (!id) return;
+    setLabId(id);
+    const { data } = await supabase
+      .from('labs')
+      .select('invoice_prefix, invoice_sequence_current')
+      .eq('id', id)
+      .single();
+    if (data) {
+      setInvoicePrefix(data.invoice_prefix ?? 'INV-');
+      setInvoiceSequence(data.invoice_sequence_current ?? 0);
+    }
+  };
+
+  const handleSaveNumbering = async () => {
+    if (!labId) return;
+    setSequenceSaving(true);
+    const { error: err } = await supabase
+      .from('labs')
+      .update({ invoice_prefix: invoicePrefix, invoice_sequence_current: invoiceSequence })
+      .eq('id', labId);
+    setSequenceSaving(false);
+    if (err) {
+      setError('Failed to save invoice numbering settings');
+    } else {
+      setSuccessMessage(`Saved. Next invoice will be: ${invoicePrefix}${invoiceSequence + 1}`);
+      setTimeout(() => setSuccessMessage(null), 4000);
+    }
+  };
 
   const fetchTemplates = async () => {
     try {
@@ -113,6 +151,53 @@ const InvoiceTemplateManager: React.FC = () => {
 
   return (
     <div className="space-y-6">
+
+      {/* Invoice Numbering Settings */}
+      <div className="bg-white border border-gray-200 rounded-xl p-5 shadow-sm">
+        <div className="flex items-center gap-2 mb-4">
+          <Hash className="w-5 h-5 text-blue-600" />
+          <h3 className="text-base font-semibold text-gray-900">Invoice Numbering</h3>
+        </div>
+        <div className="flex flex-wrap items-end gap-4">
+          <div>
+            <label className="block text-xs font-medium text-gray-600 mb-1">Prefix</label>
+            <input
+              type="text"
+              value={invoicePrefix}
+              onChange={e => setInvoicePrefix(e.target.value)}
+              placeholder="INV-"
+              className="w-32 border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+            />
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-gray-600 mb-1">Current sequence (last used)</label>
+            <input
+              type="number"
+              min={0}
+              value={invoiceSequence}
+              onChange={e => setInvoiceSequence(Number(e.target.value))}
+              className="w-36 border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+            />
+          </div>
+          <div className="pb-0.5">
+            <p className="text-xs text-gray-500 mb-1">Next invoice will be</p>
+            <p className="text-sm font-semibold text-blue-700 bg-blue-50 px-3 py-2 rounded-lg border border-blue-200">
+              {invoicePrefix || 'INV-'}{invoiceSequence + 1}
+            </p>
+          </div>
+          <button
+            onClick={handleSaveNumbering}
+            disabled={sequenceSaving}
+            className="pb-0.5 px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-lg hover:bg-blue-700 disabled:opacity-50 transition-colors"
+          >
+            {sequenceSaving ? 'Saving…' : 'Save'}
+          </button>
+        </div>
+        <p className="text-xs text-gray-400 mt-3">
+          Set prefix (e.g. "INV-", "Bill No-") and the last used sequence number. To start from 8082, set current sequence to 8081.
+        </p>
+      </div>
+
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>

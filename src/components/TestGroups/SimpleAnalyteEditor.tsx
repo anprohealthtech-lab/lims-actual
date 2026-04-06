@@ -931,43 +931,6 @@ export const SimpleAnalyteEditor: React.FC<SimpleAnalyteEditorProps> = ({
                 <p className="text-xs text-gray-500 mt-1">Provide specific context, conditions, or rules that the AI should follow when determining reference ranges</p>
               </div>
 
-              <div className="grid grid-cols-2 gap-4">
-                <div className="flex items-start space-x-3">
-                  <input
-                    type="checkbox"
-                    id="is_global"
-                    checked={formData.is_global || false}
-                    onChange={(e) => setFormData(prev => ({ ...prev, is_global: e.target.checked }))}
-                    className="mt-1 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500"
-                  />
-                  <div>
-                    <label htmlFor="is_global" className="text-sm font-medium text-gray-700">
-                      Global Analyte
-                    </label>
-                    <p className="text-xs text-gray-500 mt-1">
-                      Available across all lab branches/locations
-                    </p>
-                  </div>
-                </div>
-
-                <div className="flex items-start space-x-3">
-                  <input
-                    type="checkbox"
-                    id="to_be_copied"
-                    checked={formData.to_be_copied || false}
-                    onChange={(e) => setFormData(prev => ({ ...prev, to_be_copied: e.target.checked }))}
-                    className="mt-1 rounded border-gray-300 text-purple-600 focus:ring-purple-500"
-                  />
-                  <div>
-                    <label htmlFor="to_be_copied" className="text-sm font-medium text-gray-700">
-                      To Be Copied
-                    </label>
-                    <p className="text-xs text-gray-500 mt-1">
-                      Mark for replication to other systems
-                    </p>
-                  </div>
-                </div>
-              </div>
             </div>
           </div>
 

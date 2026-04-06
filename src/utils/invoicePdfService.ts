@@ -40,6 +40,7 @@ export interface Invoice {
   account_id?: string;
   payment_type: string;
   notes?: string;
+  custom_fields?: Record<string, string>;
   invoice_items?: InvoiceItem[];
   lab?: {
     name: string;
@@ -92,7 +93,9 @@ export interface InvoiceTemplate {
   };
   tax_disclaimer?: string;
   page_size?: 'A4' | 'A5' | 'Letter';
-  letterhead_space_mm?: number; // top margin reserved for pre-printed letterhead paper
+  letterhead_space_mm?: number; // top spacer height (mm) for letterhead header area
+  letterhead_image_url?: string; // full-page background image URL — activates table-spacer PDF mode
+  letterhead_bottom_mm?: number; // bottom spacer height (mm) for letterhead footer area
   // Thermal printer support
   format_type?: 'a4' | 'thermal_80mm' | 'thermal_58mm';
   print_mode?: 'pdf' | 'thermal' | 'both';
@@ -198,7 +201,8 @@ export async function generateInvoicePDF(
       invoiceId,
       invoice.lab_id,
       template.page_size || 'A4',
-      template.letterhead_space_mm || 0
+      template.letterhead_space_mm || 0,
+      !!template.letterhead_image_url
     );
 
     // 7. Update invoice record
@@ -407,10 +411,11 @@ async function fetchInvoiceData(invoiceId: string): Promise<Invoice | null> {
     .select(`
       *,
       lab:labs(name, address, phone, email, license_number, registration_number, upi_id, bank_details, gst_number),
-      patient:patients(phone, email, address),
+      patient:patients(name, phone, email, address, date_of_birth, age, age_unit, gender, custom_fields),
       account:accounts(name, billing_mode),
       invoice_items(*),
-      location:locations(id, name, address, phone, email, contact_person, upi_id, bank_details)
+      location:locations(id, name, address, phone, email, contact_person, upi_id, bank_details),
+      referring_doctor:doctors(name)
     `)
     .eq('id', invoiceId)
     .single();
@@ -420,7 +425,83 @@ async function fetchInvoiceData(invoiceId: string): Promise<Invoice | null> {
     throw new Error(`Failed to fetch invoice: ${error.message}`);
   }
 
-  return data as Invoice;
+  const invoice = data as Invoice;
+
+  // Always use live patient name from the patients table, not the stored snapshot
+  if ((data as any).patient?.name) {
+    invoice.patient_name = (data as any).patient.name;
+  }
+
+  // Populate doctor name — try invoice join first, then fall back to the order
+  (invoice as any).doctor = (data as any).referring_doctor?.name || '';
+  if (!(invoice as any).doctor && invoice.order_id) {
+    const { data: orderData } = await supabase
+      .from('orders')
+      .select('referring_doctor:doctors(name)')
+      .eq('id', invoice.order_id)
+      .single();
+    (invoice as any).doctor = (orderData as any)?.referring_doctor?.name || '';
+  }
+
+  // Consolidate all invoice_items across every invoice for the same order so
+  // charges billed on a separate invoice still appear in one PDF.
+  // Source 1: invoice_items sharing the same order_id (tests on a later invoice)
+  // Source 2: invoice_items linked via order_billing_item_id (charges whose
+  //           invoice_item ended up with a different order_id)
+  // The DB trigger trg_link_invoice_item_to_billing_item ensures invoice_item_id
+  // is always written back to order_billing_items on insert, so no synthesis needed.
+  if (invoice.order_id) {
+    const { data: billingItems } = await supabase
+      .from('order_billing_items')
+      .select('id')
+      .eq('order_id', invoice.order_id)
+      .eq('is_invoiced', true);
+
+    const billingItemIds = (billingItems || []).map((b: any) => b.id);
+
+    const queries: Promise<any>[] = [
+      supabase.from('invoice_items').select('*').eq('order_id', invoice.order_id),
+    ];
+    if (billingItemIds.length > 0) {
+      queries.push(
+        supabase.from('invoice_items').select('*').in('order_billing_item_id', billingItemIds)
+      );
+    }
+
+    const results = await Promise.all(queries);
+    const seen = new Set<string>();
+    const allItems: any[] = [];
+    for (const { data } of results) {
+      for (const item of (data || [])) {
+        if (!seen.has(item.id)) {
+          seen.add(item.id);
+          allItems.push(item);
+        }
+      }
+    }
+
+    if (allItems.length > 0) {
+      invoice.invoice_items = allItems;
+    }
+
+    // Recalculate ALL financials by summing across every invoice for this order.
+    // This ensures discount, paid, subtotal and total are always consistent with
+    // the consolidated item list regardless of which invoice triggered the PDF.
+    const { data: allOrderInvoices } = await supabase
+      .from('invoices')
+      .select('id, subtotal, discount, tax, total, amount_paid')
+      .eq('order_id', invoice.order_id);
+
+    if (allOrderInvoices && allOrderInvoices.length > 0) {
+      invoice.subtotal    = allOrderInvoices.reduce((s: number, inv: any) => s + (parseFloat(inv.subtotal)    || 0), 0);
+      invoice.discount    = allOrderInvoices.reduce((s: number, inv: any) => s + (parseFloat(inv.discount)    || 0), 0);
+      invoice.tax         = allOrderInvoices.reduce((s: number, inv: any) => s + (parseFloat(inv.tax)         || 0), 0);
+      invoice.total       = allOrderInvoices.reduce((s: number, inv: any) => s + (parseFloat(inv.total)       || 0), 0);
+      invoice.amount_paid = allOrderInvoices.reduce((s: number, inv: any) => s + (parseFloat(inv.amount_paid) || 0), 0);
+    }
+  }
+
+  return invoice;
 }
 
 /**
@@ -531,6 +612,21 @@ async function buildInvoiceHtmlBundle(invoice: Invoice, template: InvoiceTemplat
     '{{patient_phone}}': invoice.patient?.phone || '',
     '{{patient_email}}': invoice.patient?.email || '',
     '{{patient_address}}': invoice.patient?.address || '',
+    '{{patient_gender}}': (invoice.patient as any)?.gender || '',
+    '{{patient_age}}': (() => {
+      const dob = (invoice.patient as any)?.date_of_birth;
+      if (dob) {
+        const birthDate = new Date(dob);
+        const today = new Date();
+        let age = today.getFullYear() - birthDate.getFullYear();
+        const m = today.getMonth() - birthDate.getMonth();
+        if (m < 0 || (m === 0 && today.getDate() < birthDate.getDate())) age--;
+        if (age >= 0) return `${age} yrs`;
+      }
+      const age = (invoice.patient as any)?.age;
+      const ageUnit = (invoice.patient as any)?.age_unit || 'years';
+      return age != null ? `${age} ${ageUnit}` : '';
+    })(),
     '{{doctor}}': invoice.doctor || '',
     '{{subtotal}}': formatCurrency(invoice.subtotal),
     '{{discount}}': formatCurrency(invoice.discount),
@@ -622,6 +718,17 @@ async function buildInvoiceHtmlBundle(invoice: Invoice, template: InvoiceTemplat
     : '<div class="payment-status-badge pending">PAYMENT PENDING</div>';
   html = html.replace(/{{payment_status_badge}}/g, statusBadge);
 
+  // Replace custom field tokens: {{custom.field_key}}
+  // Patient custom_fields are merged in (invoice-level values take priority)
+  const patientCustomFields = (invoice.patient as any)?.custom_fields || {};
+  const customFields = { ...patientCustomFields, ...(invoice.custom_fields || {}) };
+  Object.entries(customFields).forEach(([key, value]) => {
+    const safeKey = key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    html = html.replace(new RegExp(`{{custom\\.${safeKey}}}`, 'g'), String(value ?? ''));
+  });
+  // Clear any remaining unmatched {{custom.*}} tokens so they don't render literally
+  html = html.replace(/\{\{custom\.[^}]+\}\}/g, '');
+
   // Add status badge CSS
   const statusBadgeCss = `
     .payment-status-badge {
@@ -646,14 +753,74 @@ async function buildInvoiceHtmlBundle(invoice: Invoice, template: InvoiceTemplat
     }
   `;
 
-  // Inject @page size CSS so PDF.co respects the correct paper size
   const pageSize = template.page_size || 'A4';
-  // Letterhead override comes LAST so it wins over any @page block in the template CSS
+  const letterheadUrl = template.letterhead_image_url;
+
+  // ── LETTERHEAD BACKGROUND MODE ──────────────────────────────────────────
+  // When an image URL is set, use the position:fixed background + HTML table
+  // spacer technique so the image shows through on every page (same as reports).
+  if (letterheadUrl) {
+    const PAGE_DIM: Record<string, { w: string; h: string }> = {
+      A4: { w: '210mm', h: '297mm' },
+      A5: { w: '148mm', h: '210mm' },
+      Letter: { w: '216mm', h: '279mm' },
+    };
+    const dim = PAGE_DIM[pageSize] || PAGE_DIM['A4'];
+    const topMm = template.letterhead_space_mm || 40;
+    const botMm = template.letterhead_bottom_mm || 20;
+
+    return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Invoice ${invoice.invoice_number}</title>
+  <style>
+    @page { size: ${pageSize}; margin: 0; }
+    html, body { margin: 0; padding: 0; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+    /* Full-page letterhead background — position:fixed repeats on every PDF page */
+    #inv-lh-bg {
+      position: fixed;
+      top: 0; left: 0;
+      width: ${dim.w}; height: ${dim.h};
+      z-index: 0; pointer-events: none;
+      background-image: url('${letterheadUrl}');
+      background-repeat: no-repeat;
+      background-position: top center;
+      background-size: cover;
+      -webkit-print-color-adjust: exact; print-color-adjust: exact;
+    }
+    #inv-content-wrap { position: relative; z-index: 1; }
+    ${statusBadgeCss}
+    ${css}
+  </style>
+</head>
+<body>
+  <div id="inv-lh-bg"></div>
+  <!-- Table spacer technique: thead/tfoot repeat on every page, creating
+       consistent header/footer space that aligns with the letterhead image -->
+  <table style="width:100%;border:none;border-collapse:collapse;position:relative;z-index:1;">
+    <thead style="display:table-header-group;">
+      <tr><td style="border:none;padding:0;"><div style="height:${topMm}mm;"></div></td></tr>
+    </thead>
+    <tfoot style="display:table-footer-group;">
+      <tr><td style="border:none;padding:0;"><div style="height:${botMm}mm;"></div></td></tr>
+    </tfoot>
+    <tbody>
+      <tr><td style="border:none;padding:0 6mm;">
+        <div id="inv-content-wrap">${html}</div>
+      </td></tr>
+    </tbody>
+  </table>
+</body>
+</html>`;
+  }
+
+  // ── STANDARD MODE (no letterhead image) ─────────────────────────────────
   const topMargin = template.letterhead_space_mm ? `${template.letterhead_space_mm}mm` : '5mm';
   const pageSizeCss = `@page { size: ${pageSize}; margin: 5mm; }\n`;
   const letterheadCss = `@page { margin-top: ${topMargin}; }\n`;
 
-  // Wrap in complete HTML document
   return `
     <!DOCTYPE html>
     <html lang="en">
@@ -661,7 +828,7 @@ async function buildInvoiceHtmlBundle(invoice: Invoice, template: InvoiceTemplat
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
         <title>Invoice ${invoice.invoice_number}</title>
-        <style>${pageSizeCss}${css}${statusBadgeCss}${letterheadCss}</style>
+        <style>${pageSizeCss}${statusBadgeCss}${css}${letterheadCss}</style>
       </head>
       <body>
         ${html}
@@ -731,7 +898,8 @@ async function callEdgeFunctionPdfGeneration(
   invoiceId: string,
   labId: string,
   pageSize: string = 'A4',
-  letterheadSpaceMm: number = 0
+  letterheadSpaceMm: number = 0,
+  hasLetterhead: boolean = false
 ): Promise<string> {
   // Get auth token for edge function call
   const { data: { session } } = await supabase.auth.getSession();
@@ -753,6 +921,7 @@ async function callEdgeFunctionPdfGeneration(
       labId,
       pageSize,
       letterheadSpaceMm,
+      hasLetterhead,
     }),
   });
 

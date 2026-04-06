@@ -63,8 +63,15 @@ export async function fetchLetterheadBackgroundForOrder(
       }
     }
 
-    // 4. Priority 3: Fall back to lab-level (using lab_branding_assets)
-    console.log('[LETTERHEAD] Falling back to lab-level header');
+    // 4. Priority 3: Try lab-level header from attachments table (set via HeaderFooterUpload)
+    const labAttachmentHeader = await getAttachmentImageUrl(supabase, 'lab', labId);
+    if (labAttachmentHeader) {
+      console.log('[LETTERHEAD] Using lab attachment header');
+      return labAttachmentHeader;
+    }
+
+    // 5. Priority 4: Fall back to lab_branding_assets table
+    console.log('[LETTERHEAD] Falling back to lab-level branding assets');
     return fetchLetterheadBackground(supabase, labId);
 
   } catch (error) {

@@ -1,22 +1,25 @@
 import React, { useState, useEffect } from 'react';
 import { useAuth } from '../contexts/AuthContext';
-import { 
-  Users, 
-  Plus, 
-  Edit, 
-  Trash2, 
-  Search, 
-  Filter,
+import {
+  Users,
+  Plus,
+  Edit,
+  Trash2,
+  Search,
   UserCheck,
   UserX,
   Clock,
   Mail,
-  Phone,
   Shield,
   MapPin,
   Calendar,
   Lock,
-  Loader
+  Loader,
+  KeyRound,
+  Eye,
+  EyeOff,
+  AlertCircle,
+  CheckCircle,
 } from 'lucide-react';
 import { supabase, database } from '../utils/supabase';
 import { isAdminOrManager } from '../utils/permissions';
@@ -56,6 +59,15 @@ const UserManagement: React.FC = () => {
   const [error, setError] = useState('');
   const [hasAccess, setHasAccess] = useState<boolean | null>(null);
   const [checkingAccess, setCheckingAccess] = useState(true);
+
+  // Reset password state
+  const [resetTarget, setResetTarget] = useState<User | null>(null);
+  const [resetPassword, setResetPassword] = useState('');
+  const [resetConfirm, setResetConfirm] = useState('');
+  const [resetShowPw, setResetShowPw] = useState(false);
+  const [resetLoading, setResetLoading] = useState(false);
+  const [resetError, setResetError] = useState('');
+  const [resetDone, setResetDone] = useState(false);
 
   // Check if user has admin/manager access
   useEffect(() => {
@@ -173,6 +185,52 @@ const UserManagement: React.FC = () => {
     } catch (error) {
       console.error('Error deactivating user:', error);
       alert('Failed to deactivate user');
+    }
+  };
+
+  const openResetModal = (user: User) => {
+    setResetTarget(user);
+    setResetPassword('');
+    setResetConfirm('');
+    setResetError('');
+    setResetDone(false);
+  };
+
+  const closeResetModal = () => {
+    setResetTarget(null);
+    setResetPassword('');
+    setResetConfirm('');
+    setResetError('');
+    setResetDone(false);
+  };
+
+  const handleResetPassword = async () => {
+    if (!resetTarget) return;
+    setResetError('');
+
+    if (resetPassword.length < 6) {
+      setResetError('Password must be at least 6 characters');
+      return;
+    }
+    if (resetPassword !== resetConfirm) {
+      setResetError('Passwords do not match');
+      return;
+    }
+
+    setResetLoading(true);
+    try {
+      const { data, error } = await supabase.functions.invoke('admin-reset-password', {
+        body: { target_user_id: resetTarget.id, new_password: resetPassword },
+      });
+
+      if (error) throw error;
+      if (data?.error) throw new Error(data.error);
+
+      setResetDone(true);
+    } catch (err: any) {
+      setResetError(err.message || 'Failed to reset password');
+    } finally {
+      setResetLoading(false);
     }
   };
 
@@ -480,6 +538,13 @@ const UserManagement: React.FC = () => {
                           <Edit className="h-4 w-4" />
                         </button>
                         <button
+                          onClick={() => openResetModal(user)}
+                          className="text-amber-600 hover:text-amber-900 p-1 rounded hover:bg-amber-50"
+                          title="Reset password"
+                        >
+                          <KeyRound className="h-4 w-4" />
+                        </button>
+                        <button
                           onClick={() => handleDeleteUser(user.id)}
                           className="text-red-600 hover:text-red-900 p-1 rounded hover:bg-red-50"
                           title="Deactivate user"
@@ -526,6 +591,115 @@ const UserManagement: React.FC = () => {
             loadUsers();
           }}
         />
+      )}
+
+      {/* Admin Reset Password Modal */}
+      {resetTarget && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-lg shadow-2xl w-full max-w-md">
+            <div className="flex items-center justify-between px-6 py-4 border-b border-gray-200">
+              <div>
+                <h2 className="text-lg font-semibold text-gray-900">Reset Password</h2>
+                <p className="text-sm text-gray-500 mt-0.5">
+                  Setting new password for <span className="font-medium text-gray-700">{resetTarget.name}</span>
+                </p>
+              </div>
+              <button onClick={closeResetModal} className="text-gray-400 hover:text-gray-600">
+                <span className="sr-only">Close</span>
+                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+
+            <div className="px-6 py-5 space-y-4">
+              {resetDone ? (
+                <div className="flex items-start gap-3 bg-green-50 border border-green-200 rounded-lg p-4">
+                  <CheckCircle className="h-5 w-5 text-green-600 mt-0.5 flex-shrink-0" />
+                  <div className="text-sm text-green-800">
+                    <p className="font-medium">Password updated!</p>
+                    <p className="mt-0.5">
+                      {resetTarget.name} can now log in with the new password.
+                    </p>
+                  </div>
+                </div>
+              ) : (
+                <>
+                  {resetError && (
+                    <div className="flex items-center gap-2 bg-red-50 border border-red-200 rounded-lg p-3">
+                      <AlertCircle className="h-4 w-4 text-red-500 flex-shrink-0" />
+                      <span className="text-sm text-red-700">{resetError}</span>
+                    </div>
+                  )}
+
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">
+                      New Password
+                    </label>
+                    <div className="relative">
+                      <Lock className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-400" />
+                      <input
+                        type={resetShowPw ? 'text' : 'password'}
+                        value={resetPassword}
+                        onChange={(e) => { setResetPassword(e.target.value); setResetError(''); }}
+                        className="pl-9 pr-10 w-full py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-amber-500"
+                        placeholder="Min. 6 characters"
+                        autoComplete="new-password"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setResetShowPw(!resetShowPw)}
+                        className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
+                      >
+                        {resetShowPw ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                      </button>
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">
+                      Confirm New Password
+                    </label>
+                    <div className="relative">
+                      <Lock className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-400" />
+                      <input
+                        type={resetShowPw ? 'text' : 'password'}
+                        value={resetConfirm}
+                        onChange={(e) => { setResetConfirm(e.target.value); setResetError(''); }}
+                        className="pl-9 w-full py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-amber-500"
+                        placeholder="Re-enter new password"
+                        autoComplete="new-password"
+                      />
+                    </div>
+                  </div>
+                </>
+              )}
+            </div>
+
+            <div className="flex justify-end gap-3 px-6 py-4 border-t border-gray-200 bg-gray-50 rounded-b-lg">
+              <button
+                onClick={closeResetModal}
+                className="px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50"
+              >
+                {resetDone ? 'Close' : 'Cancel'}
+              </button>
+              {!resetDone && (
+                <button
+                  onClick={handleResetPassword}
+                  disabled={resetLoading || !resetPassword || !resetConfirm}
+                  className="px-4 py-2 text-sm font-medium text-white bg-amber-600 rounded-lg hover:bg-amber-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
+                >
+                  {resetLoading ? (
+                    <div className="animate-spin rounded-full h-4 w-4 border-2 border-white border-t-transparent" />
+                  ) : (
+                    <KeyRound className="h-4 w-4" />
+                  )}
+                  {resetLoading ? 'Resetting...' : 'Reset Password'}
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );

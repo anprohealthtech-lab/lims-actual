@@ -168,6 +168,32 @@ const CreateInvoiceModal: React.FC<CreateInvoiceModalProps> = ({ orderId, onClos
         .eq('is_invoiced', false)
         .order('created_at');
       const chargeList = charges || [];
+
+      // Inject collection_charge from the order as a synthetic billing item if present and not yet invoiced
+      const collectionCharge = parseFloat(orderData?.collection_charge || 0);
+      const collectionAlreadyInvoiced = (charges || []).some((c: any) => c.name === 'Sample Collection Charge');
+      if (collectionCharge > 0 && !collectionAlreadyInvoiced) {
+        // Check invoice_items to see if collection charge was already invoiced
+        const { data: existingCollectionItem } = await supabase
+          .from('invoice_items')
+          .select('id')
+          .eq('order_id', orderId)
+          .eq('test_name', 'Sample Collection Charge')
+          .limit(1);
+        if (!existingCollectionItem || existingCollectionItem.length === 0) {
+          chargeList.unshift({
+            id: `collection-charge-${orderId}`,
+            name: 'Sample Collection Charge',
+            amount: collectionCharge,
+            is_shareable_with_doctor: false,
+            is_shareable_with_phlebotomist: false,
+            is_invoiced: false,
+            lab_billing_item_type_id: null,
+            _is_collection_charge: true,
+          } as any);
+        }
+      }
+
       setOrderBillingItems(chargeList);
       setSelectedChargeIds(chargeList.map((c: OrderBillingItem) => c.id));
     } catch (error) {
@@ -295,8 +321,8 @@ const CreateInvoiceModal: React.FC<CreateInvoiceModalProps> = ({ orderId, onClos
   };
 
   const handleCreate = async () => {
-    if (selectedTests.length === 0) {
-      alert('Please select at least one test');
+    if (selectedTests.length === 0 && selectedChargeIds.length === 0) {
+      alert('Please select at least one test or billing item');
       return;
     }
 
@@ -431,12 +457,13 @@ const CreateInvoiceModal: React.FC<CreateInvoiceModalProps> = ({ orderId, onClos
       // Extra charges → insert as lab_charge invoice_items and mark invoiced
       const selectedCharges = orderBillingItems.filter(c => selectedChargeIds.includes(c.id));
       for (const charge of selectedCharges) {
+        const isCollectionCharge = (charge as any)._is_collection_charge === true;
         const d = chargeDiscounts[charge.id];
         const lineTotal = calcChargeLineTotal(charge);
         const { data: chargeItem } = await supabase.from('invoice_items').insert({
           lab_id,
           invoice_id: invoice.id,
-          order_billing_item_id: charge.id,
+          order_billing_item_id: isCollectionCharge ? null : charge.id,
           test_name: charge.name,
           price: toNum(charge.amount),
           quantity: 1,
@@ -451,7 +478,8 @@ const CreateInvoiceModal: React.FC<CreateInvoiceModalProps> = ({ orderId, onClos
           order_id: orderId,
         }).select('id').single();
 
-        if (chargeItem?.id) {
+        // Only update order_billing_items for real (non-synthetic) charges
+        if (chargeItem?.id && !isCollectionCharge) {
           await supabase.from('order_billing_items')
             .update({ is_invoiced: true, invoice_item_id: chargeItem.id, updated_at: new Date().toISOString() })
             .eq('id', charge.id);
@@ -910,7 +938,7 @@ const CreateInvoiceModal: React.FC<CreateInvoiceModalProps> = ({ orderId, onClos
           <button
             onClick={handleCreate}
             className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:opacity-50"
-            disabled={creating || selectedTests.length === 0}
+            disabled={creating || (selectedTests.length === 0 && selectedChargeIds.length === 0)}
           >
             {creating ? 'Creating...' : `Create ${invoiceType === 'account' ? 'B2B Credit' : 'Patient'} Invoice`}
           </button>

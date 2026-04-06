@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { X, Save, Eye, Code, Palette, AlertCircle } from 'lucide-react';
+import { X, Save, Eye, Code, Palette, AlertCircle, Image } from 'lucide-react';
 import { database } from '../../utils/supabase';
 
 // CKEditor CDN URLs (matching TemplateStudioCKE.tsx)
@@ -30,6 +30,8 @@ const InvoiceTemplateEditor: React.FC<InvoiceTemplateEditorProps> = ({ templateI
     gjs_css: '',
     page_size: 'A4' as 'A4' | 'A5' | 'Letter',
     letterhead_space_mm: 0,
+    letterhead_image_url: '',
+    letterhead_bottom_mm: 20,
   });
 
   // Load CKEditor from CDN
@@ -191,6 +193,8 @@ const InvoiceTemplateEditor: React.FC<InvoiceTemplateEditorProps> = ({ templateI
         gjs_css: data.gjs_css || '',
         page_size: (data.page_size as 'A4' | 'A5' | 'Letter') || 'A4',
         letterhead_space_mm: data.letterhead_space_mm || 0,
+        letterhead_image_url: data.letterhead_image_url || '',
+        letterhead_bottom_mm: data.letterhead_bottom_mm ?? 20,
       });
     } catch (err: any) {
       console.error('Error loading template:', err);
@@ -210,6 +214,8 @@ const InvoiceTemplateEditor: React.FC<InvoiceTemplateEditorProps> = ({ templateI
         gjs_css: templateData.gjs_css,
         page_size: templateData.page_size,
         letterhead_space_mm: templateData.letterhead_space_mm || 0,
+        letterhead_image_url: templateData.letterhead_image_url || null,
+        letterhead_bottom_mm: templateData.letterhead_bottom_mm || 20,
         updated_at: new Date().toISOString(),
       });
 
@@ -312,16 +318,56 @@ const InvoiceTemplateEditor: React.FC<InvoiceTemplateEditorProps> = ({ templateI
 
   const renderPreview = () => {
     const htmlWithData = replacePlaceholders(templateData.gjs_html);
+    const pageDims: Record<string, { w: string; h: string }> = {
+      A4: { w: '210mm', h: '297mm' },
+      A5: { w: '148mm', h: '210mm' },
+      Letter: { w: '216mm', h: '279mm' },
+    };
+    const dim = pageDims[templateData.page_size] || pageDims['A4'];
+    const lhUrl = templateData.letterhead_image_url;
+    const topMm = templateData.letterhead_space_mm || 0;
+    const botMm = templateData.letterhead_bottom_mm || 20;
+
+    const letterheadCss = lhUrl ? `
+      html, body { margin: 0; padding: 0; }
+      #inv-lh-bg {
+        position: fixed; top: 0; left: 0;
+        width: ${dim.w}; height: ${dim.h};
+        z-index: 0; pointer-events: none;
+        background-image: url('${lhUrl}');
+        background-repeat: no-repeat;
+        background-position: top center;
+        background-size: cover;
+        -webkit-print-color-adjust: exact; print-color-adjust: exact;
+      }
+      #inv-content-wrap { position: relative; z-index: 1; }
+    ` : '';
+
+    const body = lhUrl ? `
+      <div id="inv-lh-bg"></div>
+      <table style="width:100%;border:none;border-collapse:collapse;position:relative;z-index:1;">
+        <thead style="display:table-header-group;">
+          <tr><td style="border:none;padding:0;"><div style="height:${topMm}mm;"></div></td></tr>
+        </thead>
+        <tfoot style="display:table-footer-group;">
+          <tr><td style="border:none;padding:0;"><div style="height:${botMm}mm;"></div></td></tr>
+        </tfoot>
+        <tbody>
+          <tr><td style="border:none;padding:0 5mm;">
+            <div id="inv-content-wrap">${htmlWithData}</div>
+          </td></tr>
+        </tbody>
+      </table>
+    ` : htmlWithData;
+
     const fullHtml = `
       <!DOCTYPE html>
       <html>
         <head>
           <meta charset="UTF-8">
-          <style>${templateData.gjs_css}</style>
+          <style>${templateData.gjs_css}${letterheadCss}</style>
         </head>
-        <body>
-          ${htmlWithData}
-        </body>
+        <body>${body}</body>
       </html>
     `;
     return (
@@ -417,33 +463,76 @@ const InvoiceTemplateEditor: React.FC<InvoiceTemplateEditorProps> = ({ templateI
             <span>Preview with Data</span>
           </button>
 
-          {/* Page Size + Letterhead Space — lives in the tab bar, right side */}
-          <div className="ml-auto flex items-center gap-4 pb-1">
-            <div className="flex items-center gap-2">
-              <label className="text-xs font-medium text-gray-500 whitespace-nowrap">Letterhead Space:</label>
+          {/* Page Size + Letterhead Settings — right side of tab bar */}
+          <div className="ml-auto flex flex-col items-end gap-1 pb-1">
+            {/* Row 1: Page size + spacing */}
+            <div className="flex items-center gap-3">
+              <div className="flex items-center gap-1.5">
+                <label className="text-xs font-medium text-gray-500 whitespace-nowrap">Page:</label>
+                <select
+                  value={templateData.page_size}
+                  onChange={(e) => setTemplateData(prev => ({ ...prev, page_size: e.target.value as 'A4' | 'A5' | 'Letter' }))}
+                  className="text-sm border border-gray-300 rounded px-2 py-1 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                >
+                  <option value="A4">A4</option>
+                  <option value="A5">A5</option>
+                  <option value="Letter">Letter</option>
+                </select>
+              </div>
+              <div className="flex items-center gap-1.5">
+                <label className="text-xs font-medium text-gray-500 whitespace-nowrap">Top:</label>
+                <input
+                  type="number"
+                  min={0}
+                  max={150}
+                  value={templateData.letterhead_space_mm}
+                  onChange={(e) => setTemplateData(prev => ({ ...prev, letterhead_space_mm: Number(e.target.value) }))}
+                  className="text-sm border border-gray-300 rounded px-2 py-1 w-14 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                  title="Top space reserved for letterhead header (mm)"
+                />
+                <span className="text-xs text-gray-400">mm</span>
+              </div>
+              <div className="flex items-center gap-1.5">
+                <label className="text-xs font-medium text-gray-500 whitespace-nowrap">Bottom:</label>
+                <input
+                  type="number"
+                  min={0}
+                  max={100}
+                  value={templateData.letterhead_bottom_mm}
+                  onChange={(e) => setTemplateData(prev => ({ ...prev, letterhead_bottom_mm: Number(e.target.value) }))}
+                  className="text-sm border border-gray-300 rounded px-2 py-1 w-14 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                  title="Bottom space reserved for letterhead footer (mm)"
+                />
+                <span className="text-xs text-gray-400">mm</span>
+              </div>
+            </div>
+            {/* Row 2: Letterhead image URL */}
+            <div className="flex items-center gap-1.5">
+              <Image className="w-3.5 h-3.5 text-gray-400 flex-shrink-0" />
+              <label className="text-xs font-medium text-gray-500 whitespace-nowrap">Letterhead BG:</label>
               <input
-                type="number"
-                min={0}
-                max={100}
-                value={templateData.letterhead_space_mm}
-                onChange={(e) => setTemplateData(prev => ({ ...prev, letterhead_space_mm: Number(e.target.value) }))}
-                className="text-sm border border-gray-300 rounded px-2 py-1 w-16 focus:outline-none focus:ring-1 focus:ring-blue-500"
-                title="Top margin reserved for pre-printed letterhead (mm)"
+                type="url"
+                value={templateData.letterhead_image_url}
+                onChange={(e) => setTemplateData(prev => ({ ...prev, letterhead_image_url: e.target.value }))}
+                placeholder="https://... (ImageKit or storage URL)"
+                className="text-xs border border-gray-300 rounded px-2 py-1 w-72 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                title="Full-page letterhead background image URL. When set, the PDF uses this as a background on every page."
               />
-              <span className="text-xs text-gray-400">mm</span>
+              {templateData.letterhead_image_url && (
+                <button
+                  onClick={() => setTemplateData(prev => ({ ...prev, letterhead_image_url: '' }))}
+                  className="text-xs text-red-500 hover:text-red-700"
+                  title="Clear letterhead image"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              )}
             </div>
-            <div className="flex items-center gap-2">
-              <label className="text-xs font-medium text-gray-500 whitespace-nowrap">Page Size:</label>
-              <select
-                value={templateData.page_size}
-                onChange={(e) => setTemplateData(prev => ({ ...prev, page_size: e.target.value as 'A4' | 'A5' | 'Letter' }))}
-                className="text-sm border border-gray-300 rounded px-2 py-1 focus:outline-none focus:ring-1 focus:ring-blue-500"
-              >
-                <option value="A4">A4 — Full Page</option>
-                <option value="A5">A5 — Half Page</option>
-                <option value="Letter">Letter (US)</option>
-              </select>
-            </div>
+            {templateData.letterhead_image_url && (
+              <p className="text-xs text-green-600">
+                Letterhead active — preview shows background. Top {templateData.letterhead_space_mm}mm / Bottom {templateData.letterhead_bottom_mm}mm spacers.
+              </p>
+            )}
           </div>
         </div>
 

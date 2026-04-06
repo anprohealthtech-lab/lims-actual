@@ -179,15 +179,15 @@ Deno.serve(async (req: Request) => {
         const createPayload = {
           email,
           password: finalPassword,
+          email_confirm: true, // Admin-created users don't need email verification
           user_metadata: {
             name: name, // Minimal metadata - just name for display
           },
           app_metadata: { providers: ["email"], provider: "email" },
         };
 
-        console.log('[CREATE-AUTH-USER] Attempting createUser without email_confirm...');
-        
-        // Try without email_confirm first - this might be causing the 500 error
+        console.log('[CREATE-AUTH-USER] Attempting createUser with email_confirm: true...');
+
         const { data, error } = await supabaseAdmin.auth.admin.createUser(createPayload);
 
         if (!error) {

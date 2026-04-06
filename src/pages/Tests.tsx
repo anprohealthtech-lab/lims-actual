@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Plus, Edit2, Trash2, Search, Filter, X, Save, AlertCircle, Beaker, Layers, Package, DollarSign, Eye, EyeOff, Edit, Link2, Calculator, RefreshCw, Brain, ChevronDown, ShieldAlert } from 'lucide-react';
+import { Plus, Edit2, Trash2, Search, Filter, X, Save, AlertCircle, Beaker, Layers, Package, DollarSign, Eye, EyeOff, Edit, Link2, Calculator, RefreshCw, Brain, ChevronDown, ShieldAlert, FlaskConical } from 'lucide-react';
 import { database, supabase } from '../utils/supabase';
 import { useAuth } from '../contexts/AuthContext';
 import TestGroupForm from '../components/Tests/TestGroupForm';
@@ -200,6 +200,13 @@ const Tests: React.FC = () => {
 
   // Lab-level flag options for analyte flag mapping
   const [labFlagOptions, setLabFlagOptions] = useState<Array<{value: string; label: string}>>([]);
+
+  // Analyte linked test groups popup
+  const [analyteGroupsPopup, setAnalyteGroupsPopup] = useState<{
+    analyte: Analyte;
+    groups: { id: string; name: string; code?: string; category: string }[];
+    loading: boolean;
+  } | null>(null);
 
   console.log('✅ Tests component state initialized');
 
@@ -1227,6 +1234,25 @@ const Tests: React.FC = () => {
     }
   };
 
+  // Fetch test groups linked to an analyte and show popup
+  const handleShowAnalyteGroups = async (analyte: Analyte) => {
+    setAnalyteGroupsPopup({ analyte, groups: [], loading: true });
+    const labId = await database.getCurrentUserLabId();
+    const { data, error } = await supabase
+      .from('test_group_analytes')
+      .select('test_groups!inner(id, name, code, category, lab_id)')
+      .eq('analyte_id', analyte.id)
+      .eq('test_groups.lab_id', labId);
+    if (!error && data) {
+      const groups = data
+        .map((r: any) => Array.isArray(r.test_groups) ? r.test_groups[0] : r.test_groups)
+        .filter(Boolean);
+      setAnalyteGroupsPopup({ analyte, groups, loading: false });
+    } else {
+      setAnalyteGroupsPopup({ analyte, groups: [], loading: false });
+    }
+  };
+
   // Handler for SimpleAnalyteEditor which already saves to lab_analytes directly.
   // Do NOT save to DB again — a second partial save strips fields like
   // value_type, expected_value_codes, default_value, formula that were just written.
@@ -2039,6 +2065,14 @@ const Tests: React.FC = () => {
                                   Calc
                                 </span>
                               )}
+                              <button
+                                onClick={() => handleShowAnalyteGroups(analyte)}
+                                className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded bg-blue-50 text-blue-600 text-xs font-medium hover:bg-blue-100 border border-blue-200"
+                                title="View linked test groups"
+                              >
+                                <FlaskConical className="h-3 w-3" />
+                                Groups
+                              </button>
                             </div>
                             <div className="text-xs text-gray-500">Unit: {analyte.unit}</div>
                             {analyte.isCalculated && analyte.formula && (
@@ -2419,6 +2453,53 @@ const Tests: React.FC = () => {
             />
           )
         }
+
+        {/* Analyte Linked Test Groups Popup */}
+        {analyteGroupsPopup && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50" onClick={() => setAnalyteGroupsPopup(null)}>
+            <div className="bg-white rounded-lg shadow-xl w-full max-w-md" onClick={e => e.stopPropagation()}>
+              <div className="px-4 py-3 border-b border-gray-200 flex items-center justify-between">
+                <div>
+                  <h3 className="text-sm font-semibold text-gray-900">Linked Test Groups</h3>
+                  <p className="text-xs text-gray-500 mt-0.5">{analyteGroupsPopup.analyte.name}</p>
+                </div>
+                <button onClick={() => setAnalyteGroupsPopup(null)} className="text-gray-400 hover:text-gray-600 p-1 rounded">
+                  <X className="h-4 w-4" />
+                </button>
+              </div>
+              <div className="p-4">
+                {analyteGroupsPopup.loading ? (
+                  <p className="text-xs text-gray-500 text-center py-4">Loading...</p>
+                ) : analyteGroupsPopup.groups.length === 0 ? (
+                  <div className="text-center py-4">
+                    <p className="text-xs text-red-600 font-medium">No test groups linked</p>
+                    <p className="text-xs text-gray-400 mt-1">This analyte can be safely deleted.</p>
+                  </div>
+                ) : (
+                  <ul className="divide-y divide-gray-100">
+                    {analyteGroupsPopup.groups.map(g => (
+                      <li key={g.id} className="py-2 flex items-center justify-between">
+                        <div>
+                          <span className="text-sm font-medium text-gray-900">{g.name}</span>
+                          {g.code && <span className="ml-1.5 text-xs text-gray-400">({g.code})</span>}
+                        </div>
+                        <span className={`text-xs px-2 py-0.5 rounded-full ${getCategoryColor(g.category)}`}>{g.category}</span>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+              <div className="px-4 py-3 border-t border-gray-100 flex justify-between items-center bg-gray-50 rounded-b-lg">
+                <span className="text-xs text-gray-500">
+                  {analyteGroupsPopup.loading ? '...' : `${analyteGroupsPopup.groups.length} group${analyteGroupsPopup.groups.length !== 1 ? 's' : ''} linked`}
+                </span>
+                <button onClick={() => setAnalyteGroupsPopup(null)} className="text-xs px-3 py-1.5 bg-gray-200 text-gray-700 rounded hover:bg-gray-300">
+                  Close
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* AI Configurator Modal */}
         {showAIConfigurator && (

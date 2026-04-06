@@ -215,7 +215,7 @@ const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, on
             )
           ),
           order_tests(
-            id, test_name, test_group_id,
+            id, test_name, test_group_id, is_canceled, outsourced_lab_id,
             test_groups(
               id, name, ref_range_ai_config,
               test_group_analytes(
@@ -293,7 +293,7 @@ const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, on
         }));
 
       const tgFromOT: TestGroup[] = (data.order_tests || [])
-        .filter((ot: any) => ot.test_groups && ot.test_group_id)
+        .filter((ot: any) => ot.test_groups && ot.test_group_id && !ot.is_canceled && !ot.outsourced_lab_id)
         .map((ot: any) => ({
           test_group_id: ot.test_groups.id,
           test_group_name: ot.test_groups.name,

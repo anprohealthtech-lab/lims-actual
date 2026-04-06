@@ -468,18 +468,19 @@ OUTPUT ONLY valid JSON in this exact format (no markdown, no explanation):
                 
                 console.log(`DEBUG: AI mapped ${analyteMap.size} analytes:`, Array.from(analyteMap.keys()).join(', '))
 
-                // Enrich analyteMap with real order_test_group_id and test_group_id
-                // by querying order_test_groups → test_group_analytes directly,
-                // since v_order_missing_analytes returns null for these fields.
+                // Enrich analyteMap with real order_test_group_id and test_group_id.
+                // Orders may use either order_test_groups OR order_tests — try both.
                 const mappedAnalyteIds = Array.from(analyteMap.values()).map((m: any) => m.analyte_id)
                 if (mappedAnalyteIds.length > 0) {
+                    const analyteToOTG = new Map<string, { order_test_group_id: string | null; test_group_id: string; order_test_id?: string | null }>()
+
+                    // Try order_test_groups first
                     const { data: otgRows } = await supabase
                         .from('order_test_groups')
                         .select('id, test_group_id, test_group_analytes!inner(analyte_id)')
                         .eq('order_id', sample.order_id)
 
-                    if (otgRows) {
-                        const analyteToOTG = new Map<string, { order_test_group_id: string; test_group_id: string }>()
+                    if (otgRows && otgRows.length > 0) {
                         for (const otg of otgRows) {
                             for (const tga of (otg as any).test_group_analytes || []) {
                                 if (mappedAnalyteIds.includes(tga.analyte_id)) {
@@ -490,13 +491,106 @@ OUTPUT ONLY valid JSON in this exact format (no markdown, no explanation):
                                 }
                             }
                         }
-                        for (const [code, mapping] of analyteMap) {
-                            const otgInfo = analyteToOTG.get((mapping as any).analyte_id)
-                            if (otgInfo) {
-                                analyteMap.set(code, { ...(mapping as any), ...otgInfo })
+                    }
+
+                    // Fallback: try order_tests if order_test_groups yielded nothing.
+                    // Two-step lookup: order_tests → test_group_analytes via test_group_id
+                    // (there is no direct FK between order_tests and test_group_analytes).
+                    if (analyteToOTG.size === 0) {
+                        const { data: otRows } = await supabase
+                            .from('order_tests')
+                            .select('id, test_group_id')
+                            .eq('order_id', sample.order_id)
+
+                        if (otRows && otRows.length > 0) {
+                            const tgIds = otRows.map((ot: any) => ot.test_group_id).filter(Boolean) as string[]
+                            const { data: tgaRows } = await supabase
+                                .from('test_group_analytes')
+                                .select('analyte_id, test_group_id')
+                                .in('test_group_id', tgIds)
+
+                            if (tgaRows) {
+                                // Map test_group_id → order_test so we can look up order_test_id per analyte
+                                const tgToOT = new Map<string, { id: string; test_group_id: string }>()
+                                for (const ot of otRows) {
+                                    if (ot.test_group_id) tgToOT.set(ot.test_group_id, ot as any)
+                                }
+                                for (const tga of tgaRows) {
+                                    if (mappedAnalyteIds.includes(tga.analyte_id)) {
+                                        const ot = tgToOT.get(tga.test_group_id)
+                                        if (ot) {
+                                            analyteToOTG.set(tga.analyte_id, {
+                                                order_test_group_id: null, // FK references order_test_groups, not order_tests
+                                                test_group_id: tga.test_group_id,
+                                                order_test_id: ot.id,
+                                            })
+                                        }
+                                    }
+                                }
                             }
+                            console.log(`DEBUG: Fell back to order_tests, enriched ${analyteToOTG.size} analytes`)
                         }
-                        console.log(`DEBUG: Enriched ${analyteToOTG.size} analytes with order_test_group_id`)
+                    }
+
+                    // If still nothing, use the first test_group_id from either table as blanket fallback
+                    if (analyteToOTG.size === 0) {
+                        const { data: fallbackRows } = await supabase
+                            .from('order_test_groups')
+                            .select('id, test_group_id')
+                            .eq('order_id', sample.order_id)
+                            .limit(1)
+                        const fallback = fallbackRows?.[0] ?? null
+                        if (!fallback) {
+                            const { data: fallbackOT } = await supabase
+                                .from('order_tests')
+                                .select('id, test_group_id')
+                                .eq('order_id', sample.order_id)
+                                .limit(1)
+                            if (fallbackOT?.[0]) {
+                                for (const id of mappedAnalyteIds) {
+                                    analyteToOTG.set(id, {
+                                        order_test_group_id: null, // FK references order_test_groups, not order_tests
+                                        test_group_id: fallbackOT[0].test_group_id,
+                                        order_test_id: fallbackOT[0].id,
+                                    })
+                                }
+                                console.log(`DEBUG: Used order_tests blanket fallback test_group_id=${fallbackOT[0].test_group_id} order_test_id=${fallbackOT[0].id}`)
+                            }
+                        } else {
+                            for (const id of mappedAnalyteIds) {
+                                analyteToOTG.set(id, {
+                                    order_test_group_id: fallback.id,
+                                    test_group_id: fallback.test_group_id,
+                                })
+                            }
+                            console.log(`DEBUG: Used order_test_groups blanket fallback test_group_id=${fallback.test_group_id}`)
+                        }
+                    }
+
+                    for (const [code, mapping] of analyteMap) {
+                        const otgInfo = analyteToOTG.get((mapping as any).analyte_id)
+                        if (otgInfo) {
+                            analyteMap.set(code, { ...(mapping as any), ...otgInfo })
+                        }
+                    }
+                    console.log(`DEBUG: Enriched ${analyteToOTG.size} analytes with order_test_group_id/order_test_id`)
+                }
+
+                // Backfill test_group_id on the results row so v_result_panel_status can see it.
+                // Pick the most-common test_group_id among mapped analytes.
+                if (!resultHeader.test_group_id) {
+                    const tgIds = Array.from(analyteMap.values())
+                        .map((m: any) => m.test_group_id)
+                        .filter(Boolean) as string[]
+                    if (tgIds.length > 0) {
+                        const freq = new Map<string, number>()
+                        for (const id of tgIds) freq.set(id, (freq.get(id) ?? 0) + 1)
+                        const dominantTgId = [...freq.entries()].sort((a, b) => b[1] - a[1])[0][0]
+                        await supabase.from('results')
+                            .update({ test_group_id: dominantTgId })
+                            .eq('id', resultHeader.id)
+                        resultHeader.test_group_id = dominantTgId
+                        console.log(`DEBUG: Set results.test_group_id = ${dominantTgId}`)
                     }
                 }
 
@@ -506,7 +600,7 @@ OUTPUT ONLY valid JSON in this exact format (no markdown, no explanation):
 
             // Batch-resolve lab_analyte_id for all mapped analytes
             const allMappedAnalyteIds = Array.from(analyteMap.values()).map((m: any) => m.analyte_id).filter(Boolean) as string[]
-            const labAnalyteIdMap = new Map<string, string>()
+            const labAnalyteIdMap = new Map<string, string>() // analyte_id → lab_analyte_id
             if (allMappedAnalyteIds.length > 0) {
               const { data: laRows } = await supabase
                 .from('lab_analytes')
@@ -521,12 +615,37 @@ OUTPUT ONLY valid JSON in this exact format (no markdown, no explanation):
               }
             }
 
+            // Batch-fetch lab_analyte_interface_config (unit conversion + auto-verify)
+            const interfaceConfigMap = new Map<string, {
+              multiply_by: number; add_offset: number;
+              lims_unit: string | null; auto_verify: boolean
+            }>() // lab_analyte_id → config
+            const allLabAnalyteIds = [...labAnalyteIdMap.values()]
+            if (allLabAnalyteIds.length > 0) {
+              const { data: configRows } = await supabase
+                .from('lab_analyte_interface_config')
+                .select('lab_analyte_id, multiply_by, add_offset, lims_unit, auto_verify')
+                .eq('lab_id', sample.lab_id)
+                .in('lab_analyte_id', allLabAnalyteIds)
+              if (configRows) {
+                for (const cfg of configRows) {
+                  interfaceConfigMap.set(cfg.lab_analyte_id, {
+                    multiply_by: Number(cfg.multiply_by ?? 1),
+                    add_offset:  Number(cfg.add_offset  ?? 0),
+                    lims_unit:   cfg.lims_unit ?? null,
+                    auto_verify: cfg.auto_verify ?? false,
+                  })
+                }
+                console.log(`DEBUG: Loaded interface config for ${interfaceConfigMap.size} analytes`)
+              }
+            }
+
             for (const item of parsedData.results) {
                 const machineCode = item.test_code?.toUpperCase()
-                
+
                 // Only use context-aware lookup from order
                 const mapping = analyteMap.get(machineCode)
-                
+
                 if (!mapping) {
                     // Log unmapped analyte
                     console.log(`Unmapped analyte: ${item.test_code} - not found in order context`)
@@ -534,22 +653,44 @@ OUTPUT ONLY valid JSON in this exact format (no markdown, no explanation):
                     unmappedCount++
                     continue
                 }
-                
+
                 // Use mapped name
                 const finalParamName = mapping.analyte_name
-                
+
+                // Apply unit conversion + auto-verify from lab_analyte_interface_config
+                const labAnalyteId = labAnalyteIdMap.get(mapping.analyte_id) || null
+                const ifCfg = labAnalyteId ? interfaceConfigMap.get(labAnalyteId) : null
+
+                let finalValue = item.value
+                let finalUnit  = item.unit
+                let verifyStatus = 'pending'
+
+                if (ifCfg) {
+                  const raw = parseFloat(item.value)
+                  if (!isNaN(raw)) {
+                    const converted = raw * ifCfg.multiply_by + ifCfg.add_offset
+                    // Preserve original decimal precision style
+                    const decimals = (item.value.split('.')[1] ?? '').length
+                    finalValue = converted.toFixed(Math.max(decimals, 0))
+                  }
+                  if (ifCfg.lims_unit) finalUnit = ifCfg.lims_unit
+                  if (ifCfg.auto_verify)  verifyStatus = 'approved'
+                  console.log(`DEBUG: Conversion applied to ${item.test_code}: ${item.value}${item.unit} → ${finalValue}${finalUnit}`)
+                }
+
                 const { error: valError } = await supabase.from('result_values').insert({
                     result_id: resultHeader.id,
                     analyte_id: mapping.analyte_id,
-                    lab_analyte_id: labAnalyteIdMap.get(mapping.analyte_id) || null,
+                    lab_analyte_id: labAnalyteId,
                     parameter: finalParamName,
                     analyte_name: finalParamName,
-                    value: item.value, 
-                    unit: item.unit,
+                    value: finalValue,
+                    unit: finalUnit,
                     flag: item.flag,
                     reference_range: '-',
                     extracted_by_ai: true,
                     flag_source: 'ai',
+                    verify_status: verifyStatus,
                     order_id: sample.order_id,
                     test_group_id: mapping.test_group_id,
                     order_test_group_id: mapping.order_test_group_id,

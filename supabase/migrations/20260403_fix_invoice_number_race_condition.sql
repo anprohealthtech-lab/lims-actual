@@ -1,0 +1,3 @@
+-- Superseded by 20260403_invoice_number_sequence.sql
+-- which rewrites generate_invoice_number to use an atomic UPDATE on labs,
+-- eliminating the race condition without advisory locks.

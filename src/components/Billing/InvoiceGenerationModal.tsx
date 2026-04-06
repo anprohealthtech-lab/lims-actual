@@ -1,9 +1,15 @@
 import React, { useState, useEffect } from 'react';
-import { X, FileText, Download, AlertCircle, CheckCircle2, Loader2, MessageCircle } from 'lucide-react';
-import { database } from '../../utils/supabase';
+import { X, FileText, Download, AlertCircle, CheckCircle2, Loader2, MessageCircle, Plus, Trash2 } from 'lucide-react';
+import { database, supabase } from '../../utils/supabase';
 import { generateInvoicePDF } from '../../utils/invoicePdfService';
 import { WhatsAppAPI } from '../../utils/whatsappAPI';
 import { openWhatsAppManually } from '../../utils/whatsappUtils';
+
+interface CustomField {
+  label: string;  // human label, e.g. "PO Number"
+  key: string;    // slug used in template token, e.g. "po_number"
+  value: string;
+}
 
 interface InvoiceTemplate {
   id: string;
@@ -33,10 +39,47 @@ const InvoiceGenerationModal: React.FC<InvoiceGenerationModalProps> = ({
   const [success, setSuccess] = useState(false);
   const [generatedPdfUrl, setGeneratedPdfUrl] = useState<string | null>(null);
   const [sendingWhatsApp, setSendingWhatsApp] = useState(false);
+  const [customFields, setCustomFields] = useState<CustomField[]>([]);
 
   useEffect(() => {
     fetchTemplates();
+    fetchExistingCustomFields();
   }, []);
+
+  const fetchExistingCustomFields = async () => {
+    const { data } = await supabase
+      .from('invoices')
+      .select('custom_fields')
+      .eq('id', invoiceId)
+      .single();
+    if (data?.custom_fields && typeof data.custom_fields === 'object') {
+      const fields = Object.entries(data.custom_fields as Record<string, string>).map(([key, value]) => ({
+        key,
+        label: key.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase()),
+        value,
+      }));
+      if (fields.length > 0) setCustomFields(fields);
+    }
+  };
+
+  const slugify = (text: string) =>
+    text.toLowerCase().trim().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '');
+
+  const addCustomField = () =>
+    setCustomFields(prev => [...prev, { label: '', key: '', value: '' }]);
+
+  const removeCustomField = (index: number) =>
+    setCustomFields(prev => prev.filter((_, i) => i !== index));
+
+  const updateCustomFieldLabel = (index: number, label: string) =>
+    setCustomFields(prev => prev.map((f, i) =>
+      i === index ? { ...f, label, key: slugify(label) } : f
+    ));
+
+  const updateCustomFieldValue = (index: number, value: string) =>
+    setCustomFields(prev => prev.map((f, i) =>
+      i === index ? { ...f, value } : f
+    ));
 
   const fetchTemplates = async () => {
     try {
@@ -76,6 +119,13 @@ const InvoiceGenerationModal: React.FC<InvoiceGenerationModalProps> = ({
     try {
       setGenerating(true);
       setError(null);
+
+      // Save custom fields to invoice before generating PDF
+      const validFields = customFields.filter(f => f.key && f.label);
+      if (validFields.length > 0) {
+        const fieldsMap = Object.fromEntries(validFields.map(f => [f.key, f.value]));
+        await supabase.from('invoices').update({ custom_fields: fieldsMap }).eq('id', invoiceId);
+      }
 
       const pdfUrl = await generateInvoicePDF(invoiceId, selectedTemplateId);
 
@@ -278,6 +328,68 @@ const InvoiceGenerationModal: React.FC<InvoiceGenerationModalProps> = ({
                     </label>
                   ))}
                 </div>
+              </div>
+
+              {/* Custom Fields */}
+              <div className="mb-6">
+                <div className="flex items-center justify-between mb-3">
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700">Custom Fields</label>
+                    <p className="text-xs text-gray-500 mt-0.5">
+                      Add fields to include in the PDF. Use <code className="bg-gray-100 px-1 rounded">{'{{custom.field_key}}'}</code> in your template.
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={addCustomField}
+                    disabled={generating}
+                    className="flex items-center space-x-1 text-sm text-blue-600 hover:text-blue-800 disabled:opacity-50"
+                  >
+                    <Plus className="w-4 h-4" />
+                    <span>Add Field</span>
+                  </button>
+                </div>
+                {customFields.length > 0 && (
+                  <div className="space-y-2">
+                    {customFields.map((field, index) => (
+                      <div key={index} className="flex items-center space-x-2">
+                        <div className="flex-1">
+                          <input
+                            type="text"
+                            placeholder="Field name (e.g. PO Number)"
+                            value={field.label}
+                            onChange={e => updateCustomFieldLabel(index, e.target.value)}
+                            disabled={generating}
+                            className="w-full px-3 py-1.5 text-sm border border-gray-300 rounded-lg focus:ring-1 focus:ring-blue-500 focus:border-blue-500 disabled:opacity-50"
+                          />
+                          {field.key && (
+                            <p className="text-xs text-gray-400 mt-0.5 pl-1">
+                              token: <code className="bg-gray-100 px-1 rounded">{`{{custom.${field.key}}}`}</code>
+                            </p>
+                          )}
+                        </div>
+                        <div className="flex-1">
+                          <input
+                            type="text"
+                            placeholder="Value"
+                            value={field.value}
+                            onChange={e => updateCustomFieldValue(index, e.target.value)}
+                            disabled={generating}
+                            className="w-full px-3 py-1.5 text-sm border border-gray-300 rounded-lg focus:ring-1 focus:ring-blue-500 focus:border-blue-500 disabled:opacity-50"
+                          />
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => removeCustomField(index)}
+                          disabled={generating}
+                          className="text-gray-400 hover:text-red-500 disabled:opacity-50 flex-shrink-0"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
 
               {/* Info Box */}

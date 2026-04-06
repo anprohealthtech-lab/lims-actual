@@ -14,6 +14,7 @@ interface RequestBody {
   labId?: string;
   pageSize?: string;
   letterheadSpaceMm?: number;
+  hasLetterhead?: boolean; // When true: full-page bg image active — use zero top/bottom margins
 }
 
 serve(async (req) => {
@@ -35,7 +36,7 @@ serve(async (req) => {
     }
 
     // Parse request
-    const { html, filename, invoiceId, labId, pageSize = 'A4', letterheadSpaceMm = 0 }: RequestBody = await req.json();
+    const { html, filename, invoiceId, labId, pageSize = 'A4', letterheadSpaceMm = 0, hasLetterhead = false }: RequestBody = await req.json();
 
     if (!html) {
       throw new Error('HTML content is required');
@@ -53,7 +54,11 @@ serve(async (req) => {
       body: JSON.stringify({
         html: html,
         name: filename || 'invoice.pdf',
-        margins: `${letterheadSpaceMm > 0 ? letterheadSpaceMm + 'mm' : '5mm'} 5mm 5mm 5mm`,
+        // Letterhead mode: HTML has @page{margin:0} + table spacers — pass zero margins.
+        // Standard mode: honour letterheadSpaceMm as top margin for pre-printed paper.
+        margins: hasLetterhead
+          ? '0 0 0 0'
+          : `${letterheadSpaceMm > 0 ? letterheadSpaceMm + 'mm' : '5mm'} 5mm 5mm 5mm`,
         paperSize: pageSize,
         printBackground: true,
         header: '',
