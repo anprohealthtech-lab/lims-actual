@@ -264,32 +264,6 @@ serve(async (req) => {
       orphanLabTemplatesDeleted: 0
     };
 
-    // --- A. Hydrate Analytes (Safe Upsert) ---
-    console.log('...Hydrating Analytes');
-    const { data: globalAnalytes } = await supabaseClient.from('analytes').select('id').eq('is_global', true);
-
-    if (globalAnalytes && globalAnalytes.length > 0) {
-      stats.analytesHydrated = globalAnalytes.length;
-      console.log(`   Found ${globalAnalytes.length} global analytes to sync.`);
-      
-      const labAnalytesPayload = globalAnalytes.map(ga => ({
-        lab_id: lab_id,
-        analyte_id: ga.id,
-        is_active: true,
-        visible: true
-      }));
-
-      // Chunk into 500 rows to stay well under Supabase's 1000-row limit
-      const ANALYTE_CHUNK = 500;
-      for (let i = 0; i < labAnalytesPayload.length; i += ANALYTE_CHUNK) {
-        const { error: laError } = await supabaseClient
-          .from('lab_analytes')
-          .upsert(labAnalytesPayload.slice(i, i + ANALYTE_CHUNK), { onConflict: 'lab_id,analyte_id', ignoreDuplicates: true });
-        if (laError) console.error(`Error hydrating analytes (chunk ${i}):`, laError);
-      }
-      console.log(`   ✅ Upserted ${labAnalytesPayload.length} is_global analytes into lab_analytes`);
-    }
-
     // --- B. Handle RESET Mode - Delete ALL test groups first ---
     if (isReset) {
       console.log('🗑️ RESET MODE: Deleting all existing test groups for lab...');
@@ -345,21 +319,42 @@ serve(async (req) => {
 
     // --- C. Hydrate Test Groups (BULK approach to avoid timeouts) ---
     console.log('...Hydrating Test Groups');
-    const { data: globalTestGroups } = await supabaseClient.from('global_test_catalog').select('*');
+    // Paginate global_test_catalog in case the catalog grows beyond 1000 entries
+    const allGlobalTestGroups: any[] = [];
+    { let offset = 0; const PAGE = 1000;
+      while (true) {
+        const { data: page } = await supabaseClient.from('global_test_catalog').select('*').range(offset, offset + PAGE - 1);
+        if (page && page.length > 0) allGlobalTestGroups.push(...page);
+        if (!page || page.length < PAGE) break;
+        offset += PAGE;
+      }
+    }
+    const globalTestGroups = allGlobalTestGroups.length > 0 ? allGlobalTestGroups : null;
 
     // Bulk-fetch analyte metadata (section_heading, sort_order) from junction table
     const allCatalogIds = (globalTestGroups || []).map((g: any) => g.id);
     const catalogAnalyteMeta = new Map<string, { analyte_id: string; section_heading: string | null; sort_order: number; display_order: number | null; is_visible: boolean; is_header: boolean; header_name: string | null; custom_reference_range: string | null; custom_name: string | null; custom_unit: string | null; custom_interpretation_low: string | null; custom_interpretation_normal: string | null; custom_interpretation_high: string | null; custom_method: string | null; custom_expected_normal_values: any; custom_expected_value_codes: any; default_value: string | null; display_name: string | null; custom_value_type: string | null }[]>();
     if (allCatalogIds.length > 0) {
+      // Paginate junction table in batches of catalog IDs, then page through rows within each batch
+      // to avoid Supabase's default 1000-row response limit silently dropping analytes.
+      const GTCA_PAGE = 1000;
       for (let i = 0; i < allCatalogIds.length; i += 500) {
-        const { data: metaRows } = await supabaseClient
-          .from('global_test_catalog_analytes')
-          .select('catalog_id, analyte_id, section_heading, sort_order, display_order, is_visible, is_header, header_name, custom_reference_range, custom_name, custom_unit, custom_interpretation_low, custom_interpretation_normal, custom_interpretation_high, custom_method, custom_expected_normal_values, custom_expected_value_codes, default_value, display_name, custom_value_type')
-          .in('catalog_id', allCatalogIds.slice(i, i + 500))
-          .order('sort_order', { ascending: true });
-        for (const row of (metaRows || [])) {
-          if (!catalogAnalyteMeta.has(row.catalog_id)) catalogAnalyteMeta.set(row.catalog_id, []);
-          catalogAnalyteMeta.get(row.catalog_id)!.push(row);
+        const batchIds = allCatalogIds.slice(i, i + 500);
+        let offset = 0;
+        while (true) {
+          const { data: metaRows } = await supabaseClient
+            .from('global_test_catalog_analytes')
+            .select('catalog_id, analyte_id, section_heading, sort_order, display_order, is_visible, is_header, header_name, custom_reference_range, custom_name, custom_unit, custom_interpretation_low, custom_interpretation_normal, custom_interpretation_high, custom_method, custom_expected_normal_values, custom_expected_value_codes, default_value, display_name, custom_value_type')
+            .in('catalog_id', batchIds)
+            .order('catalog_id', { ascending: true })
+            .order('sort_order', { ascending: true })
+            .range(offset, offset + GTCA_PAGE - 1);
+          for (const row of (metaRows || [])) {
+            if (!catalogAnalyteMeta.has(row.catalog_id)) catalogAnalyteMeta.set(row.catalog_id, []);
+            catalogAnalyteMeta.get(row.catalog_id)!.push(row);
+          }
+          if (!metaRows || metaRows.length < GTCA_PAGE) break;
+          offset += GTCA_PAGE;
         }
       }
       console.log(`   📋 Loaded analyte metadata for ${catalogAnalyteMeta.size} catalog entries`);
