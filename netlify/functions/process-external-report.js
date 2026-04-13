@@ -56,4 +56,4 @@ async function handler(req, context) {
     }
 }
 
-exports.handler = handler;
+export { handler };

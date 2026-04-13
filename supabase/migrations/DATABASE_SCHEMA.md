@@ -1608,6 +1608,9 @@ CREATE TABLE public.labs (
   lab_interface_enabled boolean NOT NULL DEFAULT false,
   invoice_prefix text NOT NULL DEFAULT 'INV-'::text,
   invoice_sequence_current integer NOT NULL DEFAULT 0,
+  barcode_printer_name text,
+  report_printer_name text,
+  auto_collect_on_registration boolean NOT NULL DEFAULT false,
   CONSTRAINT labs_pkey PRIMARY KEY (id),
   CONSTRAINT labs_default_processing_location_id_fkey FOREIGN KEY (default_processing_location_id) REFERENCES public.locations(id)
 );

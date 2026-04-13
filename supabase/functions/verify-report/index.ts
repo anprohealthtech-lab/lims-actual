@@ -21,6 +21,10 @@ interface VerificationResponse {
     patient_age?: string
     doctor?: string
     pdf_url?: string
+    lab_name?: string
+    lab_city?: string
+    lab_code?: string
+    patient_number?: string
   }
   message?: string
 }
@@ -35,13 +39,13 @@ serve(async (req) => {
     // Get sample_id from query params OR request body
     const url = new URL(req.url)
     let sampleId = url.searchParams.get('id') || url.searchParams.get('sample_id')
-    
+
     // If not in query params, check request body
     if (!sampleId && req.method === 'POST') {
       try {
         const body = await req.json()
         sampleId = body.id || body.sample_id
-      } catch (e) {
+      } catch (_e) {
         // Body parsing failed, continue with null sampleId
       }
     }
@@ -72,16 +76,12 @@ serve(async (req) => {
       }
     )
 
-    // Query orders table by sample_id first (for QR codes like "31-Jan-2026-001")
-    // Then fallback to UUID id if it looks like a UUID
-    // Use service role to bypass RLS
-    
-    // Check if sampleId looks like a UUID (contains hyphens and hex chars)
+    // Check if sampleId looks like a UUID (contains hyphens and hex chars in UUID format)
     const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(sampleId)
-    
+
     let order = null
     let orderError = null
-    
+
     if (isUUID) {
       // If it's a UUID, search by id OR sample_id
       const result = await supabaseClient
@@ -90,10 +90,12 @@ serve(async (req) => {
           id,
           sample_id,
           created_at,
+          lab_id,
           patient:patients (
             name,
             gender,
-            age
+            age,
+            patient_number
           ),
           doctor
         `)
@@ -102,17 +104,20 @@ serve(async (req) => {
       order = result.data
       orderError = result.error
     } else {
-      // Not a UUID, search by sample_id only (avoid UUID parsing error)
+      // Not a UUID — search by sample_id.
+      // sample_id is unique per (lab_id, sample_id) so maybeSingle is safe.
       const result = await supabaseClient
         .from('orders')
         .select(`
           id,
           sample_id,
           created_at,
+          lab_id,
           patient:patients (
             name,
             gender,
-            age
+            age,
+            patient_number
           ),
           doctor
         `)
@@ -136,6 +141,13 @@ serve(async (req) => {
       )
     }
 
+    // Fetch the issuing lab's public info
+    const { data: lab } = await supabaseClient
+      .from('labs')
+      .select('name, city, code')
+      .eq('id', order.lab_id)
+      .maybeSingle()
+
     // Get the report PDF URL
     const { data: report } = await supabaseClient
       .from('reports')
@@ -153,7 +165,11 @@ serve(async (req) => {
         patient_gender: order.patient?.gender,
         patient_age: order.patient?.age,
         doctor: order.doctor || 'Self',
-        pdf_url: report?.pdf_url || undefined
+        pdf_url: report?.pdf_url || undefined,
+        lab_name: lab?.name || undefined,
+        lab_city: lab?.city || undefined,
+        lab_code: lab?.code || undefined,
+        patient_number: order.patient?.patient_number || undefined,
       }
     }
 

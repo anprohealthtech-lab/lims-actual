@@ -217,6 +217,29 @@ figure.table {
   margin: 1em 0;
 }
 
+/* Style CKEditor figure.table tables inside interpretation blocks */
+figure.table table,
+.group-interpretation figure.table table,
+.limsv2-interpretation-block figure.table table {
+  border-collapse: collapse;
+  width: 100%;
+  font-size: inherit;
+}
+figure.table table th,
+figure.table table td,
+.group-interpretation figure.table table th,
+.group-interpretation figure.table table td {
+  border: 1px solid #ccc;
+  padding: 5px 8px;
+  text-align: left;
+  vertical-align: top;
+}
+figure.table table thead th,
+.group-interpretation figure.table table thead th {
+  background-color: #f0f0f0;
+  font-weight: bold;
+}
+
 /* =========================================
    TABLE PAGE BREAK HANDLING (PDF.co)
    Allow tables to break across pages naturally,
@@ -1991,6 +2014,7 @@ function generateClassicDefaultTemplateHtml(
     testResultsHtml += `
       <div class="test-group-section" style="margin-bottom: 16px;">
         <h4 style="font-size: 16px; font-weight: 600; color: #1e40af; padding: 6px 0; margin: 0;">${groupName}</h4>
+        ${(printOptions as any)?._sampleType ? `<div style="font-size:11px;color:#6b7280;font-style:italic;margin:-4px 0 4px 0;">Specimen: ${(printOptions as any)._sampleType}</div>` : ''}
         <table class="report-table" style="width: 100%; border-collapse: collapse; font-size: 12px;">
           <thead>
             <tr style="background: #f1f5f9;">
@@ -2609,9 +2633,11 @@ ${flagSymbol === "before" ? `
     );
     let hasNumericInGroup = false;
 
-    const specimenText = analytes[0]?.specimen
-      ? `<div class="center-subtitle">Specimen: ${analytes[0].specimen}</div>`
-      : "";
+    const specimenText = (printOptions as any)?._sampleType
+      ? `<div class="center-subtitle">Specimen: ${(printOptions as any)._sampleType}</div>`
+      : (analytes[0]?.specimen
+        ? `<div class="center-subtitle">Specimen: ${analytes[0].specimen}</div>`
+        : "");
 
     testResultsHtml += `
       <figure class="table" style="margin: 0 0 14px;">
@@ -3127,6 +3153,7 @@ function generateDefaultTemplateHtml(
       <div class="test-group-section" style="margin-bottom: 20px; page-break-inside: auto;">
         <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 10px; padding-bottom: 6px; border-bottom: 2px solid ${THEME.accent};">
           <h3 style="font-size: 18px; font-weight: 600; color: ${THEME.accent}; margin: 0;">${groupName}</h3>
+          ${(printOptions as any)?._sampleType ? `<span style="font-size:11px;color:#6b7280;font-style:italic;">· Specimen: ${(printOptions as any)._sampleType}</span>` : ''}
         </div>
     `;
 
@@ -6791,6 +6818,7 @@ serve(async (req) => {
       const testGroupPrintOptions = new Map<string, Record<string, unknown>>(); // groupId → print_options JSONB
       const testGroupInterpretations = new Map<string, string>(); // groupId → group_interpretation HTML
       const testGroupCodes = new Map<string, string>(); // groupId → test_groups.code
+      const testGroupSampleTypes = new Map<string, string>(); // groupId → sample_type
       const testGroupIdsToFetch = [
         ...new Set(
           [...contextTestGroupIds, ...analytesByGroup.keys()].filter((id) =>
@@ -6819,7 +6847,7 @@ serve(async (req) => {
         // Also fetch default_template_style and print_options for all groups
         const { data: testGroupsData } = await supabaseClient
           .from("test_groups")
-          .select("id, name, code, default_template_style, print_options, group_interpretation")
+          .select("id, name, code, default_template_style, print_options, group_interpretation, sample_type")
           .in("id", testGroupIdsToFetch);
 
         if (testGroupsData) {
@@ -6839,6 +6867,9 @@ serve(async (req) => {
               }
               if (tg.code) {
                 testGroupCodes.set(tg.id, tg.code);
+              }
+              if (tg.sample_type) {
+                testGroupSampleTypes.set(tg.id, tg.sample_type);
               }
             }
           }
@@ -7248,6 +7279,10 @@ serve(async (req) => {
         fullContext = prepareFullContext(context);
         const singleGroupId = context.testGroupIds?.[0];
         const singlePrintOptions = mergePrintOptions(pdfSettings, singleGroupId ? testGroupPrintOptions.get(singleGroupId) : undefined);
+        if (singlePrintOptions && (singlePrintOptions as any).showSampleType && singleGroupId) {
+          const _st = testGroupSampleTypes.get(singleGroupId);
+          if (_st) (singlePrintOptions as any)._sampleType = _st;
+        }
         mergedPrintOptions = singlePrintOptions; // lift to outer scope for print version
         const dynamicCss = generateDynamicCss(pdfSettings, singlePrintOptions ?? undefined);
         const singleInterpretationTemplates = getInterpretationTemplatesForGroup(
@@ -7543,9 +7578,14 @@ serve(async (req) => {
               _nextGPrintOrder !== 999 &&
               _nextGPrintOrder === _groupPrintOrder;
             const _suppressMinHeight = _isSamePageAsPrev || _isSamePageAsNext;
+            const _mergedGroupOpts = mergePrintOptions(pdfSettings, testGroupPrintOptions.get(testGroupId)) ?? {};
+            if ((_mergedGroupOpts as any).showSampleType) {
+              const _gst = testGroupSampleTypes.get(testGroupId);
+              if (_gst) (_mergedGroupOpts as any)._sampleType = _gst;
+            }
             const _groupPrintOptions = _suppressMinHeight
-              ? { ...(mergePrintOptions(pdfSettings, testGroupPrintOptions.get(testGroupId)) ?? {}), _isCompact: true }
-              : mergePrintOptions(pdfSettings, testGroupPrintOptions.get(testGroupId)) ?? undefined;
+              ? { ..._mergedGroupOpts, _isCompact: true }
+              : (Object.keys(_mergedGroupOpts).length > 0 ? _mergedGroupOpts : undefined);
 
             renderedHtml = generateDefaultTemplateHtml(
               groupContext,

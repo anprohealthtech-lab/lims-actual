@@ -1,12 +1,12 @@
 // Use proper fetch for Node.js compatibility
-const fetch = globalThis.fetch || require('node-fetch');
+const fetch = globalThis.fetch;
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 };
 
-exports.handler = async (event) => {
+export const handler = async (event) => {
   if (event.httpMethod === 'OPTIONS') {
     return { statusCode: 200, headers: corsHeaders, body: 'ok' };
   }

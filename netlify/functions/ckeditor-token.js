@@ -1,5 +1,5 @@
-const jwt = require('jsonwebtoken');
-const { createClient } = require('@supabase/supabase-js');
+import jwt from 'jsonwebtoken';
+import { createClient } from '@supabase/supabase-js';
 
 const CORS_HEADERS = {
   'Access-Control-Allow-Origin': '*',
@@ -60,7 +60,7 @@ const resolveUserContext = async (accessToken) => {
   };
 };
 
-exports.handler = async (event) => {
+export const handler = async (event) => {
   if (event.httpMethod === 'OPTIONS') {
     return {
       statusCode: 200,

@@ -1,6 +1,24 @@
 import React, { useState, useEffect } from 'react';
 import { supabase } from '../../utils/supabase';
-import { Plus, Edit2, Trash2, Wifi, Server, HardDrive, ChevronDown, ChevronUp, Copy, CheckCircle } from 'lucide-react';
+import { Plus, Edit2, Trash2, Wifi, Server, HardDrive, ChevronDown, ChevronUp, Copy, CheckCircle, Layers, Link2, Unlink } from 'lucide-react';
+
+const CATEGORIES = [
+  'Hematology',
+  'Biochemistry',
+  'Serology',
+  'Microbiology',
+  'Immunology',
+  'Immunohematology',
+  'Blood Banking',
+  'Molecular Diagnostics',
+  'Clinical Pathology',
+  'Histopathology',
+  'Cytology',
+  'Toxicology',
+  'Endocrinology',
+  'Cardiology',
+  'General',
+];
 
 interface AnalyzerProfile {
   id: string;
@@ -44,6 +62,13 @@ export default function AnalyzerConnectionsManager({ labId }: { labId: string })
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [copiedId, setCopiedId] = useState<string | null>(null);
+
+  // Bulk assign state
+  const [bulkCategory, setBulkCategory] = useState('');
+  const [bulkAnalyzerId, setBulkAnalyzerId] = useState('');
+  const [bulkPreviewCount, setBulkPreviewCount] = useState<number | null>(null);
+  const [bulkAssigning, setBulkAssigning] = useState(false);
+  const [bulkResult, setBulkResult] = useState<string | null>(null);
 
   useEffect(() => {
     fetchAll();
@@ -146,6 +171,40 @@ export default function AnalyzerConnectionsManager({ labId }: { labId: string })
     navigator.clipboard.writeText(id);
     setCopiedId(id);
     setTimeout(() => setCopiedId(null), 2000);
+  }
+
+  // Preview count when category changes
+  async function previewBulkCount(category: string) {
+    setBulkPreviewCount(null);
+    setBulkResult(null);
+    if (!category) return;
+    const { count } = await supabase
+      .from('test_groups')
+      .select('id', { count: 'exact', head: true })
+      .eq('lab_id', labId)
+      .eq('category', category)
+      .eq('is_active', true);
+    setBulkPreviewCount(count ?? 0);
+  }
+
+  async function handleBulkAssign(unlink = false) {
+    if (!bulkCategory) return;
+    setBulkAssigning(true);
+    setBulkResult(null);
+    const { data, error } = await supabase.rpc('bulk_assign_analyzer_to_category', {
+      p_lab_id: labId,
+      p_category: bulkCategory,
+      p_analyzer_connection_id: unlink ? null : (bulkAnalyzerId || null),
+    });
+    setBulkAssigning(false);
+    if (error) {
+      setBulkResult(`Error: ${error.message}`);
+    } else {
+      const analyzerName = unlink
+        ? 'unlinked'
+        : connections.find(c => c.id === bulkAnalyzerId)?.name ?? 'assigned';
+      setBulkResult(`${data} test group${data === 1 ? '' : 's'} ${unlink ? 'unlinked' : `linked to ${analyzerName}`}.`);
+    }
   }
 
   const connectionTypeIcon = (type: string) => {
@@ -388,8 +447,91 @@ export default function AnalyzerConnectionsManager({ labId }: { labId: string })
         </div>
       )}
 
+      {/* Bulk Assign by Category */}
+      {connections.length > 0 && (
+        <div className="mt-6 border-t border-gray-200 pt-6">
+          <div className="flex items-center gap-2 mb-1">
+            <Layers className="h-4 w-4 text-teal-600" />
+            <h3 className="text-base font-semibold text-gray-800">Bulk Assign by Category</h3>
+          </div>
+          <p className="text-sm text-gray-500 mb-4">
+            Link all test groups in a category to one analyzer in a single action.
+          </p>
+
+          <div className="bg-teal-50 border border-teal-200 rounded-xl p-4 space-y-4">
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <label className="block text-xs font-medium text-gray-600 mb-1">Category</label>
+                <select
+                  value={bulkCategory}
+                  onChange={e => {
+                    setBulkCategory(e.target.value);
+                    setBulkResult(null);
+                    previewBulkCount(e.target.value);
+                  }}
+                  className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-teal-500"
+                >
+                  <option value="">— Select category —</option>
+                  {CATEGORIES.map(c => (
+                    <option key={c} value={c}>{c}</option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-xs font-medium text-gray-600 mb-1">Analyzer</label>
+                <select
+                  value={bulkAnalyzerId}
+                  onChange={e => { setBulkAnalyzerId(e.target.value); setBulkResult(null); }}
+                  className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-teal-500"
+                >
+                  <option value="">— Select analyzer —</option>
+                  {connections.filter(c => c.status === 'active').map(c => (
+                    <option key={c.id} value={c.id}>{c.name}</option>
+                  ))}
+                </select>
+              </div>
+            </div>
+
+            {/* Preview */}
+            {bulkCategory && bulkPreviewCount !== null && (
+              <p className="text-sm text-teal-700">
+                <strong>{bulkPreviewCount}</strong> active test group{bulkPreviewCount === 1 ? '' : 's'} in <strong>{bulkCategory}</strong> will be affected.
+              </p>
+            )}
+
+            {/* Result */}
+            {bulkResult && (
+              <p className={`text-sm font-medium ${bulkResult.startsWith('Error') ? 'text-red-600' : 'text-green-700'}`}>
+                {bulkResult}
+              </p>
+            )}
+
+            <div className="flex gap-2">
+              <button
+                onClick={() => handleBulkAssign(false)}
+                disabled={!bulkCategory || !bulkAnalyzerId || bulkAssigning}
+                className="flex items-center gap-1.5 px-4 py-2 bg-teal-600 text-white text-sm font-medium rounded-lg hover:bg-teal-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+              >
+                <Link2 className="h-3.5 w-3.5" />
+                {bulkAssigning ? 'Assigning…' : 'Assign All'}
+              </button>
+              <button
+                onClick={() => handleBulkAssign(true)}
+                disabled={!bulkCategory || bulkAssigning}
+                className="flex items-center gap-1.5 px-4 py-2 border border-gray-300 text-gray-600 text-sm font-medium rounded-lg hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                title="Remove analyzer link from all test groups in this category"
+              >
+                <Unlink className="h-3.5 w-3.5" />
+                Clear Category
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       <p className="text-xs text-gray-400 pt-1">
-        After creating a connection, copy its ID and assign it to test groups under <strong>Tests → Edit Test Group → Analyzer</strong>.
+        After creating a connection, use Bulk Assign above or edit individual test groups under <strong>Tests → Edit Test Group → Analyzer Interface</strong>.
       </p>
     </div>
   );

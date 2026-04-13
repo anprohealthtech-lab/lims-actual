@@ -331,24 +331,6 @@ serve(async (req) => {
         errors: [],
       };
 
-      // Update consumption rules on the item
-      const { error: updateError } = await supabase
-        .from('inventory_items')
-        .update({
-          consumption_scope: result.consumption_rule.scope,
-          consumption_per_use: result.consumption_rule.per_use,
-          pack_contains: result.consumption_rule.pack_contains,
-          updated_at: new Date().toISOString(),
-        })
-        .eq('id', result.item_id);
-
-      if (updateError) {
-        processedItem.errors.push(`Failed to update consumption: ${updateError.message}`);
-      } else {
-        processedItem.consumption_updated = true;
-        processedItem.consumption_rule = result.consumption_rule;
-      }
-
       // Create test mappings
       for (const mapping of result.mappings) {
         if (!mapping.test_group_id) continue;
@@ -390,6 +372,35 @@ serve(async (req) => {
           processedItem.qc_lot = result.qc_lot_link;
           qcLinksCreated++;
         }
+      }
+
+      const sourceItem = items.find((item) => item.id === result.item_id) as any;
+      const shouldAutoConsumeViaTest = sourceItem?.ai_category === 'test_specific' && processedItem.mappings_created > 0;
+      const forcedScope = sourceItem?.ai_category === 'qc_control'
+        ? 'qc_only'
+        : (shouldAutoConsumeViaTest ? 'per_test' : 'manual');
+
+      // Only enable production auto-consumption when the item was actually mapped.
+      const { error: updateError } = await supabase
+        .from('inventory_items')
+        .update({
+          consumption_scope: forcedScope,
+          consumption_per_use: shouldAutoConsumeViaTest
+            ? result.consumption_rule.per_use
+            : null,
+          pack_contains: result.consumption_rule.pack_contains,
+          updated_at: new Date().toISOString(),
+        })
+        .eq('id', result.item_id);
+
+      if (updateError) {
+        processedItem.errors.push(`Failed to update consumption: ${updateError.message}`);
+      } else {
+        processedItem.consumption_updated = true;
+        processedItem.consumption_rule = {
+          ...result.consumption_rule,
+          scope: forcedScope,
+        };
       }
 
       processedResults.push(processedItem);

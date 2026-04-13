@@ -658,6 +658,21 @@ async function buildInvoiceHtmlBundle(invoice: Invoice, template: InvoiceTemplat
     '{{location_contact}}': location?.contact_person || '',
     '{{notes}}': invoice.notes || '',
     '{{current_date}}': formatDate(new Date().toISOString()),
+    '{{invoice_time}}': (() => {
+      const ts = (invoice as any).created_at || invoice.invoice_date;
+      if (!ts) return '';
+      return new Date(ts).toLocaleTimeString('en-IN', {
+        hour: '2-digit',
+        minute: '2-digit',
+        hour12: true,
+      });
+    })(),
+    '{{invoice_datetime}}': (() => {
+      const ts = (invoice as any).created_at || invoice.invoice_date;
+      if (!ts) return '';
+      const d = new Date(ts);
+      return `${d.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })} ${d.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: true })}`;
+    })(),
   };
 
   // Replace all placeholders

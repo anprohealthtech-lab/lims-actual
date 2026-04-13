@@ -25,6 +25,7 @@ import {
 } from 'lucide-react';
 import { database, supabase, formatAge, LabPatientFieldConfig } from '../../utils/supabase';
 import { notificationTriggerService, formatName } from '../../utils/notificationTriggerService';
+import { useQZTray } from '../../contexts/QZTrayContext';
 import { SampleTypeIndicator } from '../Common/SampleTypeIndicator';
 import { getLabCurrency } from '../../utils/currency';
 import {
@@ -121,6 +122,7 @@ interface OrderFormProps {
 }
 
 const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPatientId, initialBookingData }) => {
+  const { autoPrintBarcode } = useQZTray();
   // Masters
   const [doctors, setDoctors] = useState<Doctor[]>([]);
   const searchInputRef = useRef<HTMLInputElement>(null);
@@ -514,6 +516,7 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
   const [showNewPatientModal, setShowNewPatientModal] = useState<boolean>(false);
   const [creatingPatient, setCreatingPatient] = useState<boolean>(false);
   const [nameCaseFormat, setNameCaseFormat] = useState<'proper' | 'upper'>('proper');
+  const [autoCollectOnRegistration, setAutoCollectOnRegistration] = useState(false);
   const [newPatient, setNewPatient] = useState<{
     name: string;
     age: string;
@@ -576,13 +579,15 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
     return { age: String(Math.floor(diffDays / 365.25)), age_unit: 'years' };
   };
 
-  // Load name case format from lab notification settings
+  // Load name case format and workflow settings from lab
   useEffect(() => {
-    database.getCurrentUserLabId().then(labId => {
+    database.getCurrentUserLabId().then(async labId => {
       if (!labId) return;
       notificationTriggerService.getSettings(labId).then(s => {
         if (s?.name_case_format) setNameCaseFormat(s.name_case_format);
       });
+      const { data: labData } = await supabase.from('labs').select('auto_collect_on_registration').eq('id', labId).single();
+      if (labData?.auto_collect_on_registration) setAutoCollectOnRegistration(true);
     }).catch(() => {});
   }, []);
 
@@ -1376,6 +1381,14 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
         }
       };
 
+      // Auto-collect: mark sample as collected at registration time
+      if (autoCollectOnRegistration) {
+        const { data: { user: currentUser } } = await supabase.auth.getUser();
+        const collectorName = currentUser?.user_metadata?.name || currentUser?.email || 'Reception';
+        orderData.sample_collected_at = new Date().toISOString();
+        orderData.sample_collected_by = collectorName;
+      }
+
       if (testsPayload) orderData.tests = testsPayload;
       if (testRequestFile) orderData.testRequestFile = testRequestFile;
       // Pass TRF attachment ID so Orders.tsx links only this specific attachment
@@ -1391,6 +1404,27 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
       const result = await onSubmit(orderData);
       // Mark TRF attachment as linked so handleClose won't delete it
       trfAttachmentLinked.current = true;
+
+      // Auto-print barcode via QZ Tray if enabled
+      const newOrderId = result?.id || result;
+      if (newOrderId) {
+        supabase
+          .from('orders')
+          .select('sample_id, sample_type')
+          .eq('id', newOrderId)
+          .single()
+          .then(({ data: orderRow }) => {
+            if (orderRow?.sample_id) {
+              autoPrintBarcode({
+                sampleId: orderRow.sample_id,
+                patientName: selectedPatient?.name || '',
+                sampleType: orderRow.sample_type || undefined,
+              });
+            }
+          })
+          .catch(() => {});
+      }
+
       // Auto-create invoice and payment if discount or payment is provided
       if (discountValue > 0 || amountPaid > 0) {
         try {

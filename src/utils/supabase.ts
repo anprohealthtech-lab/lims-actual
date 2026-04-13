@@ -494,6 +494,35 @@ let _cachedUser: any = null;
 let _cachedUserTimestamp: number = 0;
 const USER_CACHE_TTL_MS = 60000; // Cache user for 60 seconds
 
+const resolveCurrentAppUserId = async (): Promise<string | null> => {
+  const { data: { user }, error } = await supabase.auth.getUser();
+  if (error || !user) return null;
+
+  try {
+    const { data: byAuth } = await supabase
+      .from("users")
+      .select("id")
+      .eq("auth_user_id", user.id)
+      .maybeSingle();
+
+    if (byAuth?.id) return byAuth.id;
+
+    if (user.email) {
+      const { data: byEmail } = await supabase
+        .from("users")
+        .select("id")
+        .eq("email", user.email)
+        .maybeSingle();
+
+      if (byEmail?.id) return byEmail.id;
+    }
+  } catch (err) {
+    console.warn("Could not resolve current app user id:", err);
+  }
+
+  return null;
+};
+
 // Clear cache on auth state change
 supabase.auth.onAuthStateChange((event) => {
   if (event === "SIGNED_OUT" || event === "USER_UPDATED") {
@@ -619,6 +648,10 @@ export const database = {
       }
     })();
     return _labIdInflightPromise;
+  },
+
+  getCurrentAppUserId: async (): Promise<string | null> => {
+    return resolveCurrentAppUserId();
   },
 
   // Helper to get current user's assigned location IDs
@@ -3111,6 +3144,15 @@ export const database = {
       const orderDate = orderData.order_date ||
         new Date().toISOString().split("T")[0];
 
+      // Fetch lab code so the sample_id is namespaced per lab
+      // (e.g. "ML001-12-Apr-2026-001" instead of global "12-Apr-2026-001")
+      const { data: labRow } = await supabase
+        .from("labs")
+        .select("code")
+        .eq("id", lab_id)
+        .maybeSingle();
+      const labCode: string | undefined = labRow?.code ?? undefined;
+
       // Count existing orders for this date to get sequence number (filtered by lab_id)
       const { count: dailyOrderCount, error: countError } = await supabase
         .from("orders")
@@ -3131,9 +3173,11 @@ export const database = {
       const dailySequence = (dailyOrderCount || 0) + 1;
 
       // Generate sample tracking data for this order
+      // Include lab code prefix so each lab has its own independent sequence
       const sampleId = generateOrderSampleId(
         new Date(orderDate),
         dailySequence,
+        labCode,
       );
       const { color_code, color_name } = getOrderAssignedColor(dailySequence);
 
@@ -3422,6 +3466,28 @@ export const database = {
           )
         );
 
+      database.inventory.consumeScopedItems({
+        scope: "per_order",
+        orderId: updatedOrder.id,
+        sourceRef: updatedOrder.id,
+        source: "auto_order",
+        reason: "Auto-consumed on order creation",
+      }).catch((err) => {
+        console.warn("Per-order inventory consumption failed:", err);
+      });
+
+      if (updatedOrder.sample_collected_at) {
+        database.inventory.consumeScopedItems({
+          scope: "per_sample",
+          orderId: updatedOrder.id,
+          sourceRef: `order:${updatedOrder.id}:registration-collection`,
+          source: "auto_sample",
+          reason: "Auto-consumed on registration sample collection",
+        }).catch((err) => {
+          console.warn("Per-sample inventory consumption failed during registration:", err);
+        });
+      }
+
       return { data: finalData, error: null };
     },
 
@@ -3467,6 +3533,23 @@ export const database = {
         if (error) {
           console.error("Error marking sample as collected:", error);
           return { data: null, error };
+        }
+
+        const { count: sampleCount, error: sampleCountError } = await supabase
+          .from("samples")
+          .select("id", { count: "exact", head: true })
+          .eq("order_id", orderId);
+
+        if (!sampleCountError && (!sampleCount || sampleCount === 0)) {
+          database.inventory.consumeScopedItems({
+            scope: "per_sample",
+            orderId,
+            sourceRef: `order:${orderId}:sample-collection`,
+            source: "auto_sample",
+            reason: "Auto-consumed on order sample collection",
+          }).catch((err) => {
+            console.warn("Per-sample inventory consumption failed after markSampleCollected:", err);
+          });
         }
 
         console.log("Sample marked as collected successfully:", data);
@@ -6575,6 +6658,7 @@ export const database = {
             ref_range_ai_config,
             collection_charge,
             group_interpretation,
+            analyzer_connection_id,
             test_group_analytes(
               analyte_id,
               lab_analyte_id,
@@ -6612,7 +6696,19 @@ export const database = {
                 ai_processing_type,
                 ai_prompt_override,
                 group_ai_mode,
-                ref_range_knowledge
+                ref_range_knowledge,
+                lab_analyte_interface_config(
+                  id,
+                  analyzer_connection_id,
+                  instrument_unit,
+                  lims_unit,
+                  multiply_by,
+                  add_offset,
+                  dilution_factor,
+                  dilution_mode,
+                  auto_verify,
+                  notes
+                )
               )
             )
         `)
@@ -6668,6 +6764,7 @@ export const database = {
             ref_range_ai_config,
             collection_charge,
             group_interpretation,
+            analyzer_connection_id,
             test_group_analytes(
               analyte_id,
               lab_analyte_id,
@@ -6705,7 +6802,19 @@ export const database = {
                 ai_processing_type,
                 ai_prompt_override,
                 group_ai_mode,
-                ref_range_knowledge
+                ref_range_knowledge,
+                lab_analyte_interface_config(
+                  id,
+                  analyzer_connection_id,
+                  instrument_unit,
+                  lims_unit,
+                  multiply_by,
+                  add_offset,
+                  dilution_factor,
+                  dilution_mode,
+                  auto_verify,
+                  notes
+                )
               )
             )
         `)
@@ -6861,6 +6970,7 @@ export const database = {
 	            : null,
 	          collection_charge: testGroupData.collection_charge ?? null,
           group_interpretation: testGroupData.group_interpretation || null,
+          analyzer_connection_id: testGroupData.analyzer_connection_id || null,
         };
 
         console.log("Creating test group with data:", sanitizedData);
@@ -6979,6 +7089,7 @@ export const database = {
 	              : null,
 	            collection_charge: updates.collection_charge ?? null,
             group_interpretation: updates.group_interpretation ?? null,
+            analyzer_connection_id: updates.analyzer_connection_id || null,
             updated_at: new Date().toISOString(),
           })
           .eq("id", id)
@@ -14802,11 +14913,12 @@ export interface InventoryItem {
   storage_temp?: string;
   storage_location?: string;
   consumption_scope:
-    | "per_test"
-    | "per_sample"
-    | "per_order"
-    | "general"
-    | "manual";
+      | "per_test"
+      | "per_sample"
+      | "per_order"
+      | "qc_only"
+      | "general"
+      | "manual";
   consumption_per_use?: number;
   pack_contains?: number;
   unit_price?: number;
@@ -15057,7 +15169,7 @@ const inventory = {
     const labId = await database.getCurrentUserLabId();
     if (!labId) return { data: null, error: new Error("No lab_id found") };
 
-    const { data: { user } } = await supabase.auth.getUser();
+    const appUserId = await database.getCurrentAppUserId();
 
     let locationId = item.location_id;
     if (!locationId) {
@@ -15075,7 +15187,7 @@ const inventory = {
         ...item,
         lab_id: labId,
         location_id: locationId,
-        created_by: user?.id,
+        created_by: appUserId,
       })
       .select()
       .single();
@@ -15181,14 +15293,14 @@ const inventory = {
     const labId = await database.getCurrentUserLabId();
     if (!labId) return { data: null, error: new Error("No lab_id found") };
 
-    const { data: { user } } = await supabase.auth.getUser();
+    const appUserId = await database.getCurrentAppUserId();
 
     const { data, error } = await supabase
       .from("inventory_transactions")
       .insert({
         ...transaction,
         lab_id: labId,
-        performed_by: user?.id,
+        performed_by: appUserId,
       })
       .select()
       .single();
@@ -15426,6 +15538,8 @@ const inventory = {
     resultId?: string;
     testGroupId: string;
   }): Promise<{ data: any | null; error: any }> {
+    const appUserId = await database.getCurrentAppUserId();
+
     // Primary path: edge function (supports analyte-level logic and dedupe)
     try {
       const { data, error } = await supabase.functions.invoke(
@@ -15436,6 +15550,7 @@ const inventory = {
             orderId: params.orderId,
             resultId: params.resultId || null,
             testGroupId: params.testGroupId,
+            userId: appUserId || undefined,
           },
         },
       );
@@ -15456,13 +15571,200 @@ const inventory = {
           p_order_id: params.orderId,
           p_result_id: params.resultId || null,
           p_test_group_id: params.testGroupId,
-          p_user_id: null,
+          p_user_id: appUserId,
         },
       );
 
       return { data: rpcData, error: rpcError };
     } catch (rpcErr) {
       return { data: null, error: rpcErr };
+    }
+  },
+
+  async consumeScopedItems(params: {
+    scope: "per_sample" | "per_order";
+    orderId: string;
+    sourceRef: string;
+    source?: "auto_sample" | "auto_order";
+    reason?: string;
+  }): Promise<{ data: { consumed: number; skipped: number } | null; error: any }> {
+    const labId = await database.getCurrentUserLabId();
+    if (!labId) return { data: null, error: new Error("No lab_id found") };
+
+    const source = params.source || (params.scope === "per_sample" ? "auto_sample" : "auto_order");
+
+    try {
+      const { data: items, error: itemsError } = await supabase
+        .from("inventory_items")
+        .select("id, name, current_stock, consumption_per_use, pack_contains, location_id")
+        .eq("lab_id", labId)
+        .eq("consumption_scope", params.scope)
+        .eq("is_active", true)
+        .gt("consumption_per_use", 0);
+
+      if (itemsError) return { data: null, error: itemsError };
+
+      let consumed = 0;
+      let skipped = 0;
+
+      for (const item of items || []) {
+        const { data: existingTx, error: existingError } = await supabase
+          .from("inventory_transactions")
+          .select("id")
+          .eq("lab_id", labId)
+          .eq("order_id", params.orderId)
+          .eq("item_id", item.id)
+          .eq("type", "out")
+          .contains("ai_input", {
+            source,
+            source_ref: params.sourceRef,
+          })
+          .limit(1);
+
+        if (existingError) {
+          return { data: null, error: existingError };
+        }
+
+        if (existingTx && existingTx.length > 0) {
+          skipped += 1;
+          continue;
+        }
+
+        const rawPerUse = Number(item.consumption_per_use || 0);
+        const deduction = item.pack_contains && item.pack_contains > 0
+          ? rawPerUse / item.pack_contains
+          : rawPerUse;
+
+        if (!(deduction > 0)) {
+          skipped += 1;
+          continue;
+        }
+
+        const { error: txError } = await this.createTransaction({
+          item_id: item.id,
+          type: "out",
+          quantity: deduction,
+          reason: params.reason || `Auto-consumed: ${params.scope}`,
+          order_id: params.orderId,
+          location_id: item.location_id || undefined,
+          ai_input: {
+            source,
+            scope: params.scope,
+            source_ref: params.sourceRef,
+          },
+        });
+
+        if (txError) {
+          return { data: null, error: txError };
+        }
+
+        consumed += 1;
+      }
+
+      return { data: { consumed, skipped }, error: null };
+    } catch (err) {
+      return { data: null, error: err };
+    }
+  },
+
+  async consumeQCRunItems(params: {
+    runId: string;
+  }): Promise<{ data: { consumed: number; skipped: number } | null; error: any }> {
+    const labId = await database.getCurrentUserLabId();
+    if (!labId) return { data: null, error: new Error("No lab_id found") };
+
+    try {
+      const { data: run, error: runError } = await supabase
+        .from("qc_runs")
+        .select("id, qc_results(qc_lot_id)")
+        .eq("id", params.runId)
+        .single();
+
+      if (runError) return { data: null, error: runError };
+
+      const qcLotIds = Array.from(
+        new Set(
+          (((run as any)?.qc_results || []) as Array<{ qc_lot_id?: string | null }>)
+            .map((row) => row.qc_lot_id)
+            .filter(Boolean),
+        ),
+      ) as string[];
+
+      if (qcLotIds.length === 0) {
+        return { data: { consumed: 0, skipped: 0 }, error: null };
+      }
+
+      const { data: items, error: itemsError } = await supabase
+        .from("inventory_items")
+        .select("id, name, current_stock, consumption_per_use, pack_contains, location_id, qc_lot_id")
+        .eq("lab_id", labId)
+        .eq("is_active", true)
+        .eq("consumption_scope", "qc_only")
+        .in("qc_lot_id", qcLotIds);
+
+      if (itemsError) return { data: null, error: itemsError };
+
+      let consumed = 0;
+      let skipped = 0;
+
+      for (const item of items || []) {
+        const sourceRef = `qc_run:${params.runId}:${item.qc_lot_id || item.id}`;
+        const { data: existingTx, error: existingError } = await supabase
+          .from("inventory_transactions")
+          .select("id")
+          .eq("lab_id", labId)
+          .eq("item_id", item.id)
+          .eq("type", "out")
+          .contains("ai_input", {
+            source: "qc",
+            source_ref: sourceRef,
+          })
+          .limit(1);
+
+        if (existingError) {
+          return { data: null, error: existingError };
+        }
+
+        if (existingTx && existingTx.length > 0) {
+          skipped += 1;
+          continue;
+        }
+
+        const rawPerUse = Number(item.consumption_per_use || 0);
+        const deduction = item.pack_contains && item.pack_contains > 0
+          ? rawPerUse / item.pack_contains
+          : rawPerUse;
+
+        if (!(deduction > 0)) {
+          skipped += 1;
+          continue;
+        }
+
+        const { error: txError } = await this.createTransaction({
+          item_id: item.id,
+          type: "out",
+          quantity: deduction,
+          reason: "Auto-consumed on QC run completion",
+          location_id: item.location_id || undefined,
+          ai_input: {
+            source: "qc",
+            scope: "qc_only",
+            source_ref: sourceRef,
+            qc_run_id: params.runId,
+            qc_lot_id: item.qc_lot_id,
+          },
+        });
+
+        if (txError) {
+          return { data: null, error: txError };
+        }
+
+        consumed += 1;
+      }
+
+      return { data: { consumed, skipped }, error: null };
+    } catch (err) {
+      return { data: null, error: err };
     }
   },
 
@@ -15580,7 +15882,7 @@ const inventory = {
     const labId = await database.getCurrentUserLabId();
     if (!labId) return { data: null, error: new Error("No lab_id found") };
 
-    const { data: { user } } = await supabase.auth.getUser();
+    const appUserId = await database.getCurrentAppUserId();
     let userId: string | null = null;
     if (user?.id) {
       const { data: appUserByAuth } = await supabase
@@ -16027,15 +16329,15 @@ const inventory = {
               batch_number: item.batch_number,
               expiry_date: item.expiry_date,
               unit_price: item.unit_price,
-              performed_by: user?.id,
+              performed_by: appUserId,
             });
 
           results.updated++;
         } else {
           // Create new item
-          const { data: newItem, error: createError } = await supabase
-            .from("inventory_items")
-            .insert({
+            const { data: newItem, error: createError } = await supabase
+              .from("inventory_items")
+              .insert({
               lab_id: labId,
               location_id: resolvedLocationId,
               name: item.name,
@@ -16047,7 +16349,7 @@ const inventory = {
               expiry_date: item.expiry_date,
               unit_price: item.unit_price,
               supplier_name: item.supplier_name,
-              created_by: user?.id,
+              created_by: appUserId,
             })
             .select()
             .single();
@@ -16070,7 +16372,7 @@ const inventory = {
                 batch_number: item.batch_number,
                 expiry_date: item.expiry_date,
                 unit_price: item.unit_price,
-                performed_by: user?.id,
+                performed_by: appUserId,
               });
 
             results.created++;

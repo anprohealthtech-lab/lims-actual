@@ -16,24 +16,24 @@ const OrderRowCompact: React.FC<Props> = ({ row, onView, actions }) => {
 
   return (
     <div className="w-full p-3 border rounded-lg bg-white hover:shadow-sm transition">
-      <div className="flex items-start justify-between gap-3">
-        <div className="flex items-center gap-3">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+        <div className="min-w-0 flex items-start gap-3">
           <div className="flex items-center justify-center w-8 h-8 bg-blue-100 text-blue-700 rounded-full font-bold text-sm border-2 border-blue-200">
             {seq}
           </div>
-          <div className="flex items-center gap-3">
+          <div className="min-w-0 flex items-start gap-3">
             <User className="h-5 w-5 text-blue-600 shrink-0" />
-            <div>
-              <div className="text-base font-bold text-gray-900">{row.patient_name}</div>
+            <div className="min-w-0">
+              <div className="truncate text-base font-bold text-gray-900">{row.patient_name}</div>
               <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 mt-0.5">
                 <span className="text-xs text-gray-500">#{row.order_number ?? row.order_id.slice(-6)}</span>
                 {row.doctor && (
-                  <span className="flex items-center gap-0.5 text-xs text-indigo-600">
+                  <span className="inline-flex max-w-full items-center gap-0.5 text-xs text-indigo-600">
                     <Stethoscope className="h-3 w-3" />{row.doctor}
                   </span>
                 )}
                 {row.account_name && (
-                  <span className="flex items-center gap-0.5 text-xs text-amber-700 bg-amber-50 px-1.5 py-0.5 rounded-full border border-amber-200">
+                  <span className="inline-flex max-w-full items-center gap-0.5 text-xs text-amber-700 bg-amber-50 px-1.5 py-0.5 rounded-full border border-amber-200">
                     <Building2 className="h-3 w-3" />{row.account_name}
                   </span>
                 )}
@@ -42,7 +42,9 @@ const OrderRowCompact: React.FC<Props> = ({ row, onView, actions }) => {
           </div>
         </div>
 
-        <IconStrip row={row} {...actions} />
+        <div className="w-full sm:w-auto">
+          <IconStrip row={row} {...actions} />
+        </div>
       </div>
 
       {/* tests chips */}
@@ -67,10 +69,10 @@ const OrderRowCompact: React.FC<Props> = ({ row, onView, actions }) => {
         <div className="w-full bg-blue-200/50 rounded h-2">
           <div className="bg-blue-600 h-2 rounded" style={{ width: `${pct}%` }} />
         </div>
-        <div className="flex items-center gap-4 mt-1 text-xs text-gray-600">
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-1 mt-1 text-xs text-gray-600">
           <span>Entered: {row.entered_total}</span>
           <span>Approved: {row.verified_total}</span>
-          <span className="ml-auto">Total expected: {row.expected_total}</span>
+          <span className="sm:ml-auto">Total expected: {row.expected_total}</span>
           {overdue && <span className="inline-flex items-center text-red-600 font-medium"><AlertTriangle className="h-3 w-3 mr-1" /> Overdue</span>}
         </div>
       </div>

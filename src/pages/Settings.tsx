@@ -1,11 +1,13 @@
 import React, { useState, useEffect } from 'react';
 import { useAuth } from '../contexts/AuthContext';
+import { useQZTray } from '../contexts/QZTrayContext';
 import { database, supabase, type LabPatientFieldConfig } from '../utils/supabase';
 import EditUserModal from '../components/Users/EditUserModal';
 import { NotificationSettings } from '../components/Settings/NotificationSettings';
 import { NotificationTriggerSettings } from '../components/Settings/NotificationTriggerSettings';
 import InvoiceTemplateManager from '../components/Billing/InvoiceTemplateManager';
 import BasicTemplateFormatBuilder from '../components/Reports/BasicTemplateFormatBuilder';
+import BuiltinTemplatePreview from '../components/Reports/BuiltinTemplatePreview';
 import AnalyzerAPIKeys from '../components/Settings/AnalyzerAPIKeys';
 import AnalyzerConnectionsManager from '../components/Settings/AnalyzerConnectionsManager';
 import AnalyteInterfaceConfig from '../components/Settings/AnalyteInterfaceConfig';
@@ -42,7 +44,8 @@ import {
   Gift,
   Star,
   Smartphone,
-  Tag
+  Tag,
+  Printer
 } from 'lucide-react';
 import { LANGUAGE_DISPLAY_NAMES, type SupportedLanguage } from '../hooks/useAIResultIntelligence';
 import { COUNTRY_CODE_OPTIONS } from '../utils/phoneFormatter';
@@ -143,8 +146,14 @@ interface LabSettings {
     headerBackground?: string;
     alternateRows?: boolean;
     baseFontSize?: number;
+    showSampleType?: boolean;
   } | null;
   _pdf_layout_settings_raw?: Record<string, unknown> | null;
+  barcode_printer_name?: string | null;
+  report_printer_name?: string | null;
+  auto_collect_on_registration?: boolean;
+  auto_print_barcode_on_order?: boolean;
+  auto_print_report_on_approval?: boolean;
 }
 
 // Define UserForm component outside of Settings
@@ -511,6 +520,7 @@ const UserFormComponent: React.FC<{
 
 const Settings: React.FC = () => {
   const { user: authUser } = useAuth();
+  const { status: qzStatus, connect: qzConnect, disconnect: qzDisconnect } = useQZTray();
   const [activeTab, setActiveTab] = useState<'team' | 'permissions' | 'usage' | 'lab' | 'notifications' | 'invoices' | 'analyzer' | 'patient_portal' | 'billing_items' | 'price_masters'>('team');
   const [showUserForm, setShowUserForm] = useState(false);
   const [showEditUserModal, setShowEditUserModal] = useState(false);
@@ -622,6 +632,11 @@ const Settings: React.FC = () => {
             print_options: (labData as any).pdf_layout_settings?.printOptions ?? null,
             result_colors: (labData as any).pdf_layout_settings?.resultColors ?? null,
             _pdf_layout_settings_raw: (labData as any).pdf_layout_settings ?? null,
+            barcode_printer_name: (labData as any).barcode_printer_name ?? null,
+            report_printer_name: (labData as any).report_printer_name ?? null,
+            auto_collect_on_registration: (labData as any).auto_collect_on_registration ?? false,
+            auto_print_barcode_on_order: (labData as any).auto_print_barcode_on_order ?? false,
+            auto_print_report_on_approval: (labData as any).auto_print_report_on_approval ?? false,
           });
         }
 
@@ -937,6 +952,11 @@ const Settings: React.FC = () => {
         loyalty_point_value: labSettings.loyalty_point_value ?? 1.0,
         block_send_on_due: labSettings.block_send_on_due ?? false,
         report_patient_info_config: labSettings.report_patient_info_config ?? null,
+        barcode_printer_name: labSettings.barcode_printer_name || null,
+        report_printer_name: labSettings.report_printer_name || null,
+        auto_collect_on_registration: labSettings.auto_collect_on_registration ?? false,
+        auto_print_barcode_on_order: labSettings.auto_print_barcode_on_order ?? false,
+        auto_print_report_on_approval: labSettings.auto_print_report_on_approval ?? false,
         pdf_layout_settings: {
           ...(labSettings._pdf_layout_settings_raw || {}),
           printOptions: labSettings.print_options ?? undefined,
@@ -1025,17 +1045,33 @@ const Settings: React.FC = () => {
   return (
     <div className="flex flex-col h-screen w-full bg-gray-50">
       {/* Header and Tabs - Fixed at top */}
-      <div className="flex-none p-6 pb-0 space-y-6">
+      <div className="flex-none p-4 sm:p-6 pb-0 space-y-4 sm:space-y-6">
         <div className="flex items-center justify-between">
           <div>
-            <h1 className="text-3xl font-bold text-gray-900">Settings</h1>
+            <h1 className="text-2xl sm:text-3xl font-bold text-gray-900">Settings</h1>
             <p className="text-gray-600 mt-1">Manage your LIMS system configuration and team</p>
           </div>
         </div>
 
         {/* Tab Navigation */}
-        <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-1">
-          <div className="flex space-x-1 overflow-x-auto scrollbar-hide">
+        <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-2 sm:p-1">
+          <div className="sm:hidden">
+            <label className="block px-1 pb-2 text-xs font-semibold uppercase tracking-wide text-gray-500">
+              Section
+            </label>
+            <select
+              value={activeTab}
+              onChange={(e) => setActiveTab(e.target.value as any)}
+              className="w-full rounded-lg border border-gray-200 bg-white px-3 py-2.5 text-sm font-medium text-gray-800 focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500/20"
+            >
+              {tabs.map((tab) => (
+                <option key={tab.id} value={tab.id}>
+                  {tab.name}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div className="hidden sm:flex sm:flex-wrap sm:gap-1">
             {tabs.map((tab) => (
               <button
                 key={tab.id}
@@ -1050,11 +1086,26 @@ const Settings: React.FC = () => {
               </button>
             ))}
           </div>
+          <div className="mt-3 flex gap-2 overflow-x-auto scrollbar-hide sm:hidden">
+            {tabs.map((tab) => (
+              <button
+                key={`${tab.id}-mobile-chip`}
+                onClick={() => setActiveTab(tab.id as any)}
+                className={`shrink-0 rounded-full px-3 py-1.5 text-xs font-medium transition-colors ${
+                  activeTab === tab.id
+                    ? 'bg-blue-100 text-blue-700'
+                    : 'bg-gray-100 text-gray-600'
+                }`}
+              >
+                {tab.name}
+              </button>
+            ))}
+          </div>
         </div>
       </div>
 
       {/* Content Area - Scrollable */}
-      <div className="flex-1 overflow-y-auto p-6 pt-4">
+      <div className="flex-1 overflow-y-auto p-4 sm:p-6 pt-4">
 
         {/* Team Management Tab */}
         {activeTab === 'team' && (
@@ -1845,6 +1896,30 @@ const Settings: React.FC = () => {
                       </div>
                     )}
 
+                    {/* Beautiful preview — shown when beautiful is selected (or default) */}
+                    {(labSettings.default_template_style || 'beautiful') === 'beautiful' && (
+                      <div className="mt-5">
+                        <BuiltinTemplatePreview
+                          style="beautiful"
+                          showMethodology={labSettings.show_methodology ?? true}
+                          showInterpretation={labSettings.show_interpretation ?? false}
+                          printOptions={labSettings.print_options ?? {}}
+                        />
+                      </div>
+                    )}
+
+                    {/* Classic preview — shown when classic is selected */}
+                    {labSettings.default_template_style === 'classic' && (
+                      <div className="mt-5">
+                        <BuiltinTemplatePreview
+                          style="classic"
+                          showMethodology={labSettings.show_methodology ?? true}
+                          showInterpretation={labSettings.show_interpretation ?? false}
+                          printOptions={labSettings.print_options ?? {}}
+                        />
+                      </div>
+                    )}
+
                     {/* Additional Template Display Options */}
                     <div className="mt-6 pt-4 border-t border-gray-200">
                       <h4 className="text-sm font-semibold text-gray-700 mb-3">Additional Display Options</h4>
@@ -1985,6 +2060,19 @@ const Settings: React.FC = () => {
                           <div>
                             <span className="text-sm font-medium text-gray-700">Alternate Row Shading</span>
                             <p className="text-xs text-gray-400">Alternating row background color.</p>
+                          </div>
+                        </label>
+                        {/* Show Sample Type */}
+                        <label className="flex items-center gap-2 cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={!!labSettings.print_options?.showSampleType}
+                            onChange={(e) => setLabSettings(prev => prev ? { ...prev, print_options: { ...(prev.print_options || {}), showSampleType: e.target.checked } } : prev)}
+                            className="h-4 w-4 text-indigo-600 border-gray-300 rounded"
+                          />
+                          <div>
+                            <span className="text-sm font-medium text-gray-700">Show Sample Type on Report</span>
+                            <p className="text-xs text-gray-400">Display the specimen/sample type (e.g. Blood, Urine) next to each test group title on all template styles.</p>
                           </div>
                         </label>
                         {/* Header Background */}
@@ -2659,6 +2747,142 @@ const Settings: React.FC = () => {
                             <li><strong>Print version</strong>: Uses bold text instead of colors for grayscale printing</li>
                           </ul>
                         </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Workflow Settings */}
+                  <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6 lg:col-span-2">
+                    <h3 className="text-lg font-semibold text-gray-900 mb-4 flex items-center">
+                      <Printer className="h-5 w-5 mr-2 text-blue-600" />
+                      Workflow Settings
+                    </h3>
+
+                    {/* Printer Settings */}
+                    <div className="mb-6">
+                      <h4 className="text-sm font-semibold text-gray-700 mb-1">Preferred Printers</h4>
+                      <p className="text-xs text-gray-500 mb-3">
+                        Enter the exact printer name as it appears in your OS print dialog. Staff will be reminded which printer to select when printing.
+                      </p>
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        <div>
+                          <label className="block text-sm font-medium text-gray-700 mb-1">Barcode / Label Printer</label>
+                          <input
+                            type="text"
+                            placeholder="e.g. Zebra ZD421, TSC DA210"
+                            value={labSettings.barcode_printer_name || ''}
+                            onChange={(e) => setLabSettings(prev => prev ? { ...prev, barcode_printer_name: e.target.value || null } : prev)}
+                            className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm focus:ring-blue-500 focus:border-blue-500"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-sm font-medium text-gray-700 mb-1">Report Printer</label>
+                          <input
+                            type="text"
+                            placeholder="e.g. HP LaserJet M404dn"
+                            value={labSettings.report_printer_name || ''}
+                            onChange={(e) => setLabSettings(prev => prev ? { ...prev, report_printer_name: e.target.value || null } : prev)}
+                            className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm focus:ring-blue-500 focus:border-blue-500"
+                          />
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Auto-collect on registration */}
+                    <div className="border-t border-gray-100 pt-5">
+                      <h4 className="text-sm font-semibold text-gray-700 mb-1">Sample Collection</h4>
+                      <p className="text-xs text-gray-500 mb-3">
+                        For labs that collect samples at the front desk (walk-in). When enabled, every new order is automatically marked as <strong>Sample Collected</strong> at the time of registration — bypassing the separate collection step. Barcode can be printed immediately.
+                      </p>
+                      <label className="flex items-center cursor-pointer gap-3">
+                        <input
+                          type="checkbox"
+                          checked={labSettings.auto_collect_on_registration ?? false}
+                          onChange={(e) => setLabSettings(prev => prev ? { ...prev, auto_collect_on_registration: e.target.checked } : prev)}
+                          className="h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded"
+                        />
+                        <div>
+                          <span className="text-sm font-medium text-gray-800">Auto-collect at registration</span>
+                          <p className="text-xs text-gray-400 mt-0.5">Marks sample as collected when the order is created. No separate "Sample Collection" step required.</p>
+                        </div>
+                      </label>
+                    </div>
+
+                    {/* QZ Tray Auto-Print */}
+                    <div className="border-t border-gray-100 pt-5">
+                      <h4 className="text-sm font-semibold text-gray-700 mb-1">Auto-Print via QZ Tray</h4>
+                      <p className="text-xs text-gray-500 mb-3">
+                        Requires <strong>QZ Tray</strong> to be installed on this workstation.{' '}
+                        <a href="https://qz.io/download/" target="_blank" rel="noopener noreferrer" className="text-blue-600 underline">Download QZ Tray</a>.
+                        On first connect, QZ Tray will ask you to allow unsigned printing — check "Remember" and click Allow.
+                        Printer names above must match exactly.
+                      </p>
+
+                      {/* Connection status + connect button */}
+                      <div className="flex items-center gap-3 mb-4 p-3 rounded-lg bg-gray-50 border border-gray-200">
+                        <span className={`inline-block w-2.5 h-2.5 rounded-full flex-shrink-0 ${
+                          qzStatus === 'connected' ? 'bg-green-500' :
+                          qzStatus === 'connecting' ? 'bg-yellow-400 animate-pulse' :
+                          qzStatus === 'error' ? 'bg-red-500' : 'bg-gray-400'
+                        }`} />
+                        <span className="text-sm text-gray-700 flex-1">
+                          QZ Tray:{' '}
+                          <span className={`font-medium ${
+                            qzStatus === 'connected' ? 'text-green-600' :
+                            qzStatus === 'connecting' ? 'text-yellow-600' :
+                            qzStatus === 'error' ? 'text-red-600' : 'text-gray-500'
+                          }`}>
+                            {qzStatus === 'connected' ? 'Connected' :
+                             qzStatus === 'connecting' ? 'Connecting…' :
+                             qzStatus === 'error' ? 'Error (QZ Tray not running?)' : 'Not connected'}
+                          </span>
+                        </span>
+                        {qzStatus === 'connected' ? (
+                          <button
+                            type="button"
+                            onClick={() => qzDisconnect()}
+                            className="text-xs px-3 py-1 rounded border border-gray-300 text-gray-600 hover:bg-gray-100"
+                          >
+                            Disconnect
+                          </button>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => qzConnect().catch(() => {})}
+                            disabled={qzStatus === 'connecting'}
+                            className="text-xs px-3 py-1 rounded bg-blue-600 text-white hover:bg-blue-700 disabled:bg-gray-300"
+                          >
+                            {qzStatus === 'connecting' ? 'Connecting…' : 'Connect'}
+                          </button>
+                        )}
+                      </div>
+
+                      <div className="space-y-3">
+                        <label className="flex items-start cursor-pointer gap-3">
+                          <input
+                            type="checkbox"
+                            checked={labSettings.auto_print_barcode_on_order ?? false}
+                            onChange={(e) => setLabSettings(prev => prev ? { ...prev, auto_print_barcode_on_order: e.target.checked } : prev)}
+                            className="mt-0.5 h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded"
+                          />
+                          <div>
+                            <span className="text-sm font-medium text-gray-800">Auto-print barcode label on order creation</span>
+                            <p className="text-xs text-gray-400 mt-0.5">Sends a ZPL label to the Barcode / Label Printer immediately after an order is saved. No dialog shown.</p>
+                          </div>
+                        </label>
+
+                        <label className="flex items-start cursor-pointer gap-3">
+                          <input
+                            type="checkbox"
+                            checked={labSettings.auto_print_report_on_approval ?? false}
+                            onChange={(e) => setLabSettings(prev => prev ? { ...prev, auto_print_report_on_approval: e.target.checked } : prev)}
+                            className="mt-0.5 h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded"
+                          />
+                          <div>
+                            <span className="text-sm font-medium text-gray-800">Auto-print report when results are approved</span>
+                            <p className="text-xs text-gray-400 mt-0.5">Sends the final PDF report to the Report Printer when results are approved. No dialog shown.</p>
+                          </div>
+                        </label>
                       </div>
                     </div>
                   </div>

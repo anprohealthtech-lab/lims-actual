@@ -126,6 +126,7 @@ function evalFormula(
 ): string {
   let resolved = formula.trim();
   const analyteSliceDeps = deps.filter(d => d.calculated_analyte_id === analyteId);
+
   for (const variable of vars) {
     const key = variable.toLowerCase();
     const dep = analyteSliceDeps.find(d => d.variable_name.toLowerCase() === key);
@@ -134,6 +135,14 @@ function evalFormula(
     if (val === undefined) return "";
     resolved = resolved.replace(new RegExp(`\\b${variable}\\b`, "g"), String(val));
   }
+
+  // Normalize formula for plain-JS eval:
+  // 1. pow(x,y) → Math.pow(x,y)  (mathjs syntax not valid in JS)
+  // 2. x^y     → x**y            (^ is XOR in JS, not exponentiation)
+  resolved = resolved
+    .replace(/\bpow\s*\(/g, 'Math.pow(')
+    .replace(/\^/g, '**');
+
   try {
     // eslint-disable-next-line no-new-func
     const result = new Function(`return (${resolved})`)();

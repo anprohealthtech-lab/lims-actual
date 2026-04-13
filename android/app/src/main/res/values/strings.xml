@@ -1,7 +1,7 @@
 <?xml version='1.0' encoding='utf-8'?>
 <resources>
-    <string name="app_name">LIMS Builder</string>
-    <string name="title_activity_main">LIMS Builder</string>
+    <string name="app_name">Anpro LIMS</string>
+    <string name="title_activity_main">Anpro LIMS</string>
     <string name="package_name">com.lims.builder</string>
     <string name="custom_url_scheme">com.lims.builder</string>
 </resources>

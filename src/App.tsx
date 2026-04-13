@@ -2,6 +2,7 @@
 import React, { useEffect } from 'react';
 import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
 import { AuthProvider, useAuth } from './contexts/AuthContext';
+import { QZTrayProvider } from './contexts/QZTrayContext';
 import ProtectedRoute from './components/Auth/ProtectedRoute';
 import Login from './components/Auth/Login';
 import Signup from './components/Auth/Signup';
@@ -64,6 +65,7 @@ import FinancialReports from './pages/FinancialReports';
 import Analytics from './pages/Analytics';
 import QualityControl from './pages/QualityControl';
 import Inventory from './pages/Inventory';
+import CorporateBulkRegistration from './pages/CorporateBulkRegistration';
 
 // ⬇️ B2B Portal
 import B2BLogin from './pages/B2BLogin';
@@ -265,6 +267,7 @@ const AppRoutes: React.FC = () => {
                 <Route path="/masters/doctors" element={<DoctorMaster />} />
                 <Route path="/masters/accounts" element={<AccountMaster />} />
                 <Route path="/masters/locations" element={<LocationMaster />} />
+                <Route path="/corporate-bulk" element={<CorporateBulkRegistration />} />
               </Routes>
             </Layout>
           </ProtectedRoute>
@@ -277,11 +280,13 @@ const AppRoutes: React.FC = () => {
 function App() {
   return (
     <AuthProvider>
-      <Router>
-        <AppRoutes />
-        {/* Global WhatsApp Failed Notification Toast - shows realtime alerts */}
-        <FailedNotificationToast />
-      </Router>
+      <QZTrayProvider>
+        <Router>
+          <AppRoutes />
+          {/* Global WhatsApp Failed Notification Toast - shows realtime alerts */}
+          <FailedNotificationToast />
+        </Router>
+      </QZTrayProvider>
     </AuthProvider>
   );
 }

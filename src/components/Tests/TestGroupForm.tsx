@@ -8,6 +8,8 @@ import { database, supabase } from '../../utils/supabase';
 import AnalyteForm from './AnalyteForm';
 import { SimpleAnalyteEditor } from '../TestGroups/SimpleAnalyteEditor';
 import ReportImportWizard from './ReportImportWizard';
+import BuiltinTemplatePreview from '../Reports/BuiltinTemplatePreview';
+import BasicTemplateFormatBuilder from '../Reports/BasicTemplateFormatBuilder';
 
 interface TestGroupFormProps {
   onClose: () => void;
@@ -66,6 +68,7 @@ interface TestGroup {
     baseFontSize?: number;
   } | null;
   group_interpretation?: string | null;
+  analyzer_connection_id?: string | null;
 }
 
 const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGroup }) => {
@@ -109,10 +112,12 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
     ref_range_ai_config: testGroup?.ref_range_ai_config || { enabled: false, consider_age: true },
     required_patient_inputs: testGroup?.required_patient_inputs || [],
     group_interpretation: testGroup?.group_interpretation || '',
+    analyzer_connection_id: testGroup?.analyzer_connection_id || '',
   });
 
   const [analytes, setAnalytes] = useState<any[]>([]);
   const [outsourcedLabs, setOutsourcedLabs] = useState<any[]>([]);
+  const [analyzerConnections, setAnalyzerConnections] = useState<any[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
   const [showSelectedOnly, setShowSelectedOnly] = useState(false);
   const [showAnalyteForm, setShowAnalyteForm] = useState(false);
@@ -128,6 +133,7 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
   const [showImportWizard, setShowImportWizard] = useState(false);
   const [syncingGlobal, setSyncingGlobal] = useState(false);
   const [syncGlobalResult, setSyncGlobalResult] = useState<string | null>(null);
+  const [showReportPreview, setShowReportPreview] = useState(false);
 
   // Group interpretation CKEditor state
   const [interpEditorInstance, setInterpEditorInstance] = useState<any>(null);
@@ -200,9 +206,14 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
   const loadData = async () => {
     try {
       setLoading(true);
+      const labId = await database.getCurrentUserLabId();
+
       const requests: Promise<any>[] = [
         database.analytes.getAll(),
         supabase.from('outsourced_labs').select('*').eq('is_active', true).order('name') as unknown as Promise<any>,
+        labId
+          ? supabase.from('analyzer_connections').select('id, name, status').eq('lab_id', labId).order('name') as unknown as Promise<any>
+          : Promise.resolve({ data: [], error: null }),
       ];
       if (testGroup?.id) {
         requests.push(
@@ -213,14 +224,13 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
         );
       }
 
-      const [analytesRes, labsRes, tgaRes] = await Promise.all(requests);
+      const [analytesRes, labsRes, analyzerRes, tgaRes] = await Promise.all(requests);
 
       // Fetch all linked analytes with lab_analytes as source of truth.
       // lab_analytes is always the authoritative source for test-group-linked analytes.
       // Global analytes table is only used as fallback for fields not present in lab_analytes.
       let allLinkedData: any[] = [];
       if (testGroup?.id) {
-        const labId = await database.getCurrentUserLabId();
         if (labId) {
           // Use TGA rows already fetched above (includes lab_analyte_id)
           const tgaRows = tgaRes?.data || [];
@@ -301,6 +311,7 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
                 return {
                   // Identity — always from global analytes
                   id: la.analyte_id,
+                  lab_analyte_id: la.id,  // preserve lab_analyte PK for interface config lookup
                   category: global?.category || 'General',
                   is_global: global?.is_global ?? false,
                   // All display/entry fields — lab_analytes is source of truth, global is fallback
@@ -351,6 +362,10 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
         console.error('Error loading outsourced labs:', labsRes.error);
       } else {
         setOutsourcedLabs(labsRes.data || []);
+      }
+
+      if (!analyzerRes?.error) {
+        setAnalyzerConnections(analyzerRes?.data || []);
       }
 
       if (tgaRes && !tgaRes.error && tgaRes.data) {
@@ -602,6 +617,7 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
         report_priority: formData.report_priority ? parseInt(formData.report_priority, 10) : null,
         print_options: formData.print_options || null,
         group_interpretation: formData.group_interpretation || null,
+        analyzer_connection_id: formData.analyzer_connection_id || null,
         // Auto-sync legacy boolean fields from required_patient_inputs
         lmpRequired: rpi.includes('lmp'),
         idRequired: rpi.includes('id_document'),
@@ -1149,6 +1165,65 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
                 <p className="text-xs text-gray-500 mt-1">
                   Forces this layout for this test group, overriding both the lab default and any linked custom template.
                 </p>
+
+                {/* Preview toggle */}
+                <button
+                  type="button"
+                  onClick={() => setShowReportPreview(v => !v)}
+                  className="mt-2 flex items-center gap-1.5 text-xs font-medium text-indigo-600 hover:text-indigo-800 transition-colors"
+                >
+                  {showReportPreview ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
+                  {showReportPreview ? 'Hide report preview' : 'Preview report with dummy data'}
+                </button>
+
+                {/* Live report preview */}
+                {showReportPreview && (() => {
+                  const effectiveStyle = formData.default_template_style || 'beautiful';
+                  // Build preview analytes from selected analytes with dummy values
+                  const previewAnalytes = selectedAnalyteDetails.length > 0
+                    ? selectedAnalyteDetails.map((a: any, i: number) => ({
+                        parameter: a.name || a.parameter || 'Parameter',
+                        value: a.reference_range
+                          ? (() => {
+                              const m = (a.reference_range || '').match(/[\d.]+/);
+                              return m ? String(parseFloat(m[0]) * (i % 3 === 0 ? 0.7 : i % 3 === 1 ? 1.1 : 1.0)) : '10.5';
+                            })()
+                          : '10.5',
+                        unit: a.unit || '',
+                        reference_range: a.reference_range || a.lab_specific_reference_range || '',
+                        flag: i % 4 === 0 ? 'low' : i % 4 === 1 ? 'high' : '',
+                        method: a.method || '',
+                        interpretation_high: a.interpretation_high || a.lab_specific_interpretation_high || '',
+                        interpretation_low: a.interpretation_low || a.lab_specific_interpretation_low || '',
+                        section_heading: analyteMetadata[a.id]?.section_heading || a.section_heading || '',
+                        sort_order: analyteMetadata[a.id]?.sort_order ?? (i + 1),
+                      }))
+                    : undefined;
+
+                  const printOpts = formData.print_options ?? {};
+
+                  return (
+                    <div className="mt-3">
+                      {effectiveStyle === 'basic' ? (
+                        <BasicTemplateFormatBuilder
+                          printOptions={printOpts}
+                          showMethodology={true}
+                          showInterpretation={false}
+                          onChange={() => {}}
+                        />
+                      ) : (
+                        <BuiltinTemplatePreview
+                          style={effectiveStyle as 'beautiful' | 'classic'}
+                          showMethodology={true}
+                          showInterpretation={false}
+                          printOptions={printOpts}
+                          customAnalytes={previewAnalytes}
+                          testGroupName={formData.name || 'Test Group'}
+                        />
+                      )}
+                    </div>
+                  );
+                })()}
               </div>
 
               {/* Print Style Overrides */}
@@ -1176,6 +1251,7 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
                     { key: 'boldAllValues', label: 'Bold All Values' },
                     { key: 'boldAbnormalValues', label: 'Bold Abnormal Values' },
                     { key: 'alternateRows', label: 'Alternate Row Shading' },
+                    { key: 'showSampleType', label: 'Show Sample Type on Report' },
                   ] as { key: string; label: string; disabledWhen?: boolean }[]).map(({ key, label, disabledWhen }) => {
                     const opts = (formData.print_options || {}) as Record<string, unknown>;
                     const isSet = key in opts && opts[key] !== undefined;
@@ -1729,16 +1805,35 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
             </h3>
 
             <div className="space-y-4">
-              <label className="flex items-center">
-                <input
-                  type="checkbox"
-                  name="is_outsourced"
-                  checked={formData.is_outsourced}
-                  onChange={handleChange}
-                  className="h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded"
-                />
-                <span className="ml-2 text-sm text-gray-700">This test is outsourced to an external lab</span>
-              </label>
+              <div className="flex items-center gap-6">
+                <label className="flex items-center">
+                  <input
+                    type="checkbox"
+                    name="is_outsourced"
+                    checked={formData.is_outsourced}
+                    onChange={handleChange}
+                    className="h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded"
+                  />
+                  <span className="ml-2 text-sm text-gray-700">Outsourced</span>
+                </label>
+                <label className="flex items-center">
+                  <input
+                    type="checkbox"
+                    checked={!formData.is_outsourced}
+                    onChange={(e) => {
+                      if (e.target.checked) {
+                        setFormData(prev => ({
+                          ...prev,
+                          is_outsourced: false,
+                          default_outsourced_lab_id: '',
+                        }));
+                      }
+                    }}
+                    className="h-4 w-4 text-green-600 focus:ring-green-500 border-gray-300 rounded"
+                  />
+                  <span className="ml-2 text-sm text-gray-700">In House</span>
+                </label>
+              </div>
 
               {formData.is_outsourced && (
                 <div>
@@ -1763,6 +1858,37 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
               )}
             </div>
           </div>
+
+          {/* Analyzer Interface */}
+          {analyzerConnections.length > 0 && (
+            <div className="space-y-4 border-t border-gray-200 pt-6">
+              <h3 className="text-lg font-medium text-gray-900 flex items-center">
+                <Settings className="h-5 w-5 mr-2 text-teal-600" />
+                Analyzer Interface
+              </h3>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">
+                  Default Analyzer
+                </label>
+                <select
+                  value={formData.analyzer_connection_id}
+                  onChange={(e) => setFormData(prev => ({ ...prev, analyzer_connection_id: e.target.value }))}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-teal-500 focus:border-transparent"
+                >
+                  <option value="">None (manual entry / no auto-dispatch)</option>
+                  {analyzerConnections.map((ac: any) => (
+                    <option key={ac.id} value={ac.id}>
+                      {ac.name}{ac.status ? ` — ${ac.status}` : ''}
+                    </option>
+                  ))}
+                </select>
+                <p className="text-xs text-gray-500 mt-1">
+                  All tests in this group will be auto-dispatched to the selected analyzer after order registration.
+                  Individual analytes can override dilution factor and unit conversion in the analyte editor.
+                </p>
+              </div>
+            </div>
+          )}
 
           {showProviderOnlyFields && (
             <div className="space-y-4">
@@ -1875,7 +2001,10 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
         {/* Edit Attached Analyte Modal */}
         {editingAttachedAnalyte && (
             <SimpleAnalyteEditor
-                analyte={editingAttachedAnalyte}
+                analyte={{
+                  ...editingAttachedAnalyte,
+                  lab_analyte_id: editingAttachedAnalyte.lab_analyte_id ?? null,
+                }}
                 availableAnalytes={analytes
                   .filter(a => !a.is_calculated && a.id !== editingAttachedAnalyte.id)
                   .map(a => ({ id: a.id, name: a.name, unit: a.unit || '', category: a.category }))}

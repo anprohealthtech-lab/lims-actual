@@ -11,6 +11,7 @@ import {
   AlertCircle
 } from 'lucide-react';
 import { WhatsAppAPI, MessageResult } from '../../utils/whatsappAPI';
+import { uploadFile, generateFilePath, database } from '../../utils/supabase';
 
 interface WhatsAppMessagingProps {
   isConnected: boolean;
@@ -26,42 +27,42 @@ interface MessageData {
   messageType: 'text' | 'report';
 }
 
-const WhatsAppMessaging: React.FC<WhatsAppMessagingProps> = ({ 
-  isConnected, 
-  onMessageSent 
+const messageTemplates = [
+  {
+    name: 'Report Ready',
+    template: 'Hello [PatientName], your [TestName] report is ready. Please find it attached.',
+    requiresReport: true
+  },
+  {
+    name: 'Appointment Reminder',
+    template: 'Hello [PatientName], this is a reminder for your upcoming appointment.',
+    requiresReport: false
+  },
+  {
+    name: 'Test Results Available',
+    template: 'Hello [PatientName], your [TestName] results are now available.',
+    requiresReport: false
+  },
+  {
+    name: 'Custom Message',
+    template: '',
+    requiresReport: false
+  }
+];
+
+const WhatsAppMessaging: React.FC<WhatsAppMessagingProps> = ({
+  isConnected,
+  onMessageSent
 }) => {
   const [messageData, setMessageData] = useState<MessageData>({
     phoneNumber: '',
-    message: '',
-    messageType: 'text'
+    message: messageTemplates[0].template,
+    messageType: messageTemplates[0].requiresReport ? 'report' : 'text'
   });
   const [isSending, setIsSending] = useState(false);
+  const [sendingStatus, setSendingStatus] = useState<string>('');
   const [sendResult, setSendResult] = useState<MessageResult | null>(null);
   const [reportFile, setReportFile] = useState<File | null>(null);
-
-  // Predefined message templates
-  const messageTemplates = [
-    {
-      name: 'Report Ready',
-      template: 'Hello [PatientName], your [TestName] report is ready. Please find it attached.',
-      requiresReport: true
-    },
-    {
-      name: 'Appointment Reminder',
-      template: 'Hello [PatientName], this is a reminder for your upcoming appointment.',
-      requiresReport: false
-    },
-    {
-      name: 'Test Results Available',
-      template: 'Hello [PatientName], your [TestName] results are now available.',
-      requiresReport: false
-    },
-    {
-      name: 'Custom Message',
-      template: '',
-      requiresReport: false
-    }
-  ];
 
   const [selectedTemplate, setSelectedTemplate] = useState(messageTemplates[0]);
 
@@ -126,6 +127,7 @@ const WhatsAppMessaging: React.FC<WhatsAppMessagingProps> = ({
 
     setIsSending(true);
     setSendResult(null);
+    setSendingStatus('');
 
     try {
       const formattedPhone = WhatsAppAPI.formatPhoneNumber(messageData.phoneNumber);
@@ -135,10 +137,16 @@ const WhatsAppMessaging: React.FC<WhatsAppMessagingProps> = ({
 
       if (messageData.messageType === 'report') {
         if (reportFile) {
-          // Send file directly
-          result = await WhatsAppAPI.sendReport(
+          // Upload to Supabase Storage first, then send via URL
+          // (avoids SESSION_NOT_READY on the binary multipart endpoint)
+          setSendingStatus('Uploading PDF...');
+          const labId = await database.getCurrentUserLabId();
+          const filePath = generateFilePath(reportFile.name, undefined, labId || undefined, 'whatsapp-sends');
+          const { publicUrl } = await uploadFile(reportFile, filePath, { upsert: false });
+          setSendingStatus('Sending via WhatsApp...');
+          result = await WhatsAppAPI.sendReportFromUrl(
             formattedPhone,
-            reportFile,
+            publicUrl,
             processedMessage,
             messageData.patientName,
             messageData.testName
@@ -168,6 +176,7 @@ const WhatsAppMessaging: React.FC<WhatsAppMessagingProps> = ({
       }
 
       setSendResult(result);
+      setSendingStatus('');
       
       if (result.success) {
         // Reset form on success
@@ -190,6 +199,7 @@ const WhatsAppMessaging: React.FC<WhatsAppMessagingProps> = ({
       });
     } finally {
       setIsSending(false);
+      setSendingStatus('');
     }
   };
 
@@ -436,7 +446,7 @@ const WhatsAppMessaging: React.FC<WhatsAppMessagingProps> = ({
           ) : (
             <Send className="h-4 w-4 mr-2" />
           )}
-          {isSending ? 'Sending...' : 'Send Message'}
+          {isSending ? (sendingStatus || 'Sending...') : 'Send Message'}
         </button>
       </div>
     </div>

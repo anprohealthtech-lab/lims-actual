@@ -1,4 +1,4 @@
-const { createClient } = require('@supabase/supabase-js');
+import { createClient } from '@supabase/supabase-js';
 
 const SUPABASE_BUCKET = process.env.SUPABASE_BRANDING_BUCKET || 'attachments';
 const IMAGEKIT_ENDPOINT = process.env.IMAGEKIT_URL_ENDPOINT;
@@ -148,7 +148,7 @@ const buildErrorUpdateFields = (config, message) => {
   return { [config.errorColumn]: message };
 };
 
-exports.handler = async (event) => {
+export const handler = async (event) => {
   if (event.httpMethod !== 'POST') {
     return buildErrorResponse(405, 'Method not allowed');
   }

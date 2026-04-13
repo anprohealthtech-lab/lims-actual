@@ -197,6 +197,7 @@ const Tests: React.FC = () => {
   // State for AI Configurator
   const [showAIConfigurator, setShowAIConfigurator] = useState(false);
   const [analyteSort, setAnalyteSort] = useState<'asc' | 'desc' | null>(null);
+  const [outsourcedFilter, setOutsourcedFilter] = useState<'all' | 'inhouse' | 'outsourced'>('all');
 
   // Lab-level flag options for analyte flag mapping
   const [labFlagOptions, setLabFlagOptions] = useState<Array<{value: string; label: string}>>([]);
@@ -555,6 +556,7 @@ const Tests: React.FC = () => {
             ref_range_ai_config: group.ref_range_ai_config,
             required_patient_inputs: group.required_patient_inputs || [],
             group_interpretation: group.group_interpretation || null,
+            analyzer_connection_id: group.analyzer_connection_id || null,
             analytes: group.test_group_analytes ? group.test_group_analytes.map((tga: any) => tga.analyte_id) : []
           }));
           setTestGroups(transformedTestGroups);
@@ -650,7 +652,10 @@ const Tests: React.FC = () => {
       const matchesSearch = group.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
         (group.code?.toLowerCase().includes(searchTerm.toLowerCase()) ?? false);
       const matchesCategory = selectedCategory === 'All' || group.category === selectedCategory;
-      return isVisible && matchesSearch && matchesCategory;
+      const matchesOutsourced = outsourcedFilter === 'all' ||
+        (outsourcedFilter === 'outsourced' && group.is_outsourced) ||
+        (outsourcedFilter === 'inhouse' && !group.is_outsourced);
+      return isVisible && matchesSearch && matchesCategory && matchesOutsourced;
     });
     if (analyteSort === null) return filtered;
     return [...filtered].sort((a, b) => {
@@ -939,7 +944,7 @@ const Tests: React.FC = () => {
             ...analyte,
             name: labAnalyte.name || analyte.name,
             unit: labAnalyte.unit ?? analyte.unit,
-            category: labAnalyte.category || analyte.category,
+            category: labAnalyte.category || analyte.category || 'General',
             referenceRange: (labAnalyte.lab_specific_reference_range ?? labAnalyte.reference_range ?? analyte.referenceRange) ?? '',
             lowCritical: normalizeNumber(labAnalyte.low_critical) ?? analyte.lowCritical,
             highCritical: normalizeNumber(labAnalyte.high_critical) ?? analyte.highCritical,
@@ -1098,6 +1103,7 @@ const Tests: React.FC = () => {
           default_template_style: updatedTestGroup.default_template_style || null,
           print_options: updatedTestGroup.print_options ?? null,
           group_interpretation: updatedTestGroup.group_interpretation || null,
+          analyzer_connection_id: updatedTestGroup.analyzer_connection_id || null,
         };
         setTestGroups(prev => prev.map(tg => tg.id === editingTestGroup.id ? transformedGroup : tg));
         setShowTestGroupForm(false);
@@ -1271,7 +1277,7 @@ const Tests: React.FC = () => {
         normal: formData.interpretation_normal ?? editingAnalyte.interpretationNormal,
         high: formData.interpretation_high ?? editingAnalyte.interpretationHigh,
       },
-      category: formData.category ?? editingAnalyte.category,
+      category: formData.category || editingAnalyte.category || 'General',
       isActive: formData.is_active ?? editingAnalyte.isActive,
       interpretationLow: formData.interpretation_low ?? editingAnalyte.interpretationLow,
       interpretationNormal: formData.interpretation_normal ?? editingAnalyte.interpretationNormal,
@@ -1420,6 +1426,7 @@ const Tests: React.FC = () => {
 	          default_template_style: group.default_template_style || null,
           print_options: group.print_options ?? null,
           group_interpretation: group.group_interpretation || null,
+          analyzer_connection_id: group.analyzer_connection_id || null,
           analytes: group.test_group_analytes ? group.test_group_analytes.map((tga: any) => tga.analyte_id) : []
         }));
         setTestGroups(transformedTestGroups);
@@ -1554,6 +1561,7 @@ const Tests: React.FC = () => {
 	          report_priority: group.report_priority ?? null,
 	          default_template_style: group.default_template_style || null,
           print_options: group.print_options ?? null,
+          analyzer_connection_id: group.analyzer_connection_id || null,
           analytes: group.test_group_analytes ? group.test_group_analytes.map((tga: any) => tga.analyte_id) : []
         }));
         setTestGroups(transformedTestGroups);
@@ -1929,6 +1937,17 @@ const Tests: React.FC = () => {
                 <option key={category} value={category}>{category}</option>
               ))}
             </select>
+            {activeTab === 'groups' && (
+              <select
+                value={outsourcedFilter}
+                onChange={(e) => setOutsourcedFilter(e.target.value as 'all' | 'inhouse' | 'outsourced')}
+                className="px-3 py-1.5 text-sm border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+              >
+                <option value="all">All (In-house &amp; Outsourced)</option>
+                <option value="inhouse">In-house Only</option>
+                <option value="outsourced">Outsourced Only</option>
+              </select>
+            )}
             <button className="flex items-center px-3 py-1.5 text-sm border border-gray-300 rounded-md hover:bg-gray-50 transition-colors">
               <Filter className="h-4 w-4 mr-1" />
               More Filters

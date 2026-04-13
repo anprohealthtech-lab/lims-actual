@@ -29,30 +29,6 @@
         }
       }
     },
-    {
-      "client_info": {
-        "mobilesdk_app_id": "1:967577828067:android:0ec029c7d77319d576e3d6",
-        "android_client_info": {
-          "package_name": "com.yourname.pathologylab"
-        }
-      },
-      "oauth_client": [],
-      "api_key": [
-        {
-          "current_key": "AIzaSyAQ-pBeuuI3ARUSPUxP-cNjuoqOzcyoxxo"
-        }
-      ],
-      "services": {
-        "appinvite_service": {
-          "other_platform_oauth_client": [
-            {
-              "client_id": "967577828067-gicig4rncpv1kr78a57rt0m17rlp5rs9.apps.googleusercontent.com",
-              "client_type": 3
-            }
-          ]
-        }
-      }
-    }
   ],
   "configuration_version": "1"
 }

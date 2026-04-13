@@ -24,7 +24,7 @@ const InventoryItemForm: React.FC<InventoryItemFormProps> = ({ item, locationId,
     expiry_date: '',
     storage_temp: '',
     storage_location: '',
-    consumption_scope: 'manual' as 'per_test' | 'per_sample' | 'per_order' | 'general' | 'manual',
+    consumption_scope: 'manual' as 'per_test' | 'per_sample' | 'per_order' | 'qc_only' | 'general' | 'manual',
     consumption_per_use: 1,
     pack_contains: '' as string | number,
     unit_price: '' as string | number,
@@ -99,6 +99,9 @@ const InventoryItemForm: React.FC<InventoryItemFormProps> = ({ item, locationId,
       setLoading(false);
     }
   };
+
+  const requiresPerUse = formData.consumption_scope !== 'manual' && formData.consumption_scope !== 'general';
+  const showPackContainsHint = formData.consumption_scope === 'per_test' || formData.consumption_scope === 'qc_only';
 
   return (
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
@@ -274,11 +277,15 @@ const InventoryItemForm: React.FC<InventoryItemFormProps> = ({ item, locationId,
                   className="w-full px-3 py-2 border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
                 >
                   <option value="manual">Manual (No auto-consumption)</option>
-                  <option value="per_test">Per Test (via test mapping)</option>
+                  <option value="per_test">Per Test (mapped or universal test use)</option>
                   <option value="per_sample">Per Sample (e.g., vacutainer)</option>
                   <option value="per_order">Per Order (e.g., report folder)</option>
-                  <option value="general">General Lab Use</option>
+                  <option value="qc_only">QC Only (control/calibrator run)</option>
+                  <option value="general">General Lab Use (tracking only)</option>
                 </select>
+                <p className="text-xs text-gray-500 mt-1">
+                  Choose the workflow stage where this item should auto-consume.
+                </p>
               </div>
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">
@@ -291,11 +298,21 @@ const InventoryItemForm: React.FC<InventoryItemFormProps> = ({ item, locationId,
                   onChange={handleChange}
                   min="0"
                   step="0.01"
+                  disabled={!requiresPerUse}
                   className="w-full px-3 py-2 border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
                 />
-                <p className="text-xs text-gray-500 mt-1">Amount consumed per use (e.g., 0.5 ml)</p>
+                <p className="text-xs text-gray-500 mt-1">
+                  {requiresPerUse
+                    ? 'Amount consumed per event before pack conversion.'
+                    : 'Not used for manual or tracking-only items.'}
+                </p>
               </div>
             </div>
+            {showPackContainsHint && (
+              <div className="rounded-lg border border-blue-100 bg-blue-50 px-3 py-2 text-xs text-blue-700">
+                For kits, boxes, or bottles, keep stock in the pack unit and use `Pack Contains` to convert each test or QC run into the correct stock deduction.
+              </div>
+            )}
           </div>
 
           {/* Batch & Expiry */}

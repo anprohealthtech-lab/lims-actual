@@ -39,7 +39,7 @@ Deno.serve(async (req) => {
       .select(`
         id, lab_id, patient_id, priority, order_number,
         sample_id,
-        patients(name, dob, gender),
+        patients(name, date_of_birth, gender),
         samples(barcode),
         labs!inner(lab_interface_enabled)
       `)
@@ -61,15 +61,23 @@ Deno.serve(async (req) => {
       })
     }
 
-    const sampleBarcode: string =
-      (orderData as any).samples?.barcode ??
+    // samples is a 1-to-many reverse FK array — pick first non-null barcode
+    const samplesArr: { barcode: string }[] = Array.isArray((orderData as any).samples)
+      ? (orderData as any).samples
+      : (orderData as any).samples ? [(orderData as any).samples] : []
+    const sampleBarcodeFromTable = samplesArr.find((s) => s.barcode)?.barcode
+
+    // Priority: actual samples.barcode → orders.sample_id (human ID) → order_number → UUID tail
+    let sampleBarcode: string =
+      sampleBarcodeFromTable ??
+      (orderData as any).sample_id ??
       (orderData as any).order_number?.toString() ??
       orderId.split('-').pop()
 
     const patient = (orderData as any).patients
     const priority = orderData.priority === 'STAT' ? 1 : 5
 
-    // 2. Fetch all test groups for this order that have an analyzer linked
+    // 2a. Fetch via order_test_groups (legacy / panel pathway)
     const { data: otgRows, error: otgError } = await supabase
       .from('order_test_groups')
       .select(`
@@ -84,21 +92,110 @@ Deno.serve(async (req) => {
 
     if (otgError) throw new Error(`order_test_groups query failed: ${otgError.message}`)
 
-    if (!otgRows || otgRows.length === 0) {
-      return new Response(JSON.stringify({
-        success: true,
-        message: 'No test groups with analyzer_connection_id configured — nothing to dispatch.',
-        order_id: orderId,
-      }), {
-        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+    // 2b. Fetch via order_tests (primary pathway — test_group_id FK → test_groups)
+    const { data: otRows, error: otError } = await supabase
+      .from('order_tests')
+      .select(`
+        id,
+        test_group_id,
+        test_groups!inner(
+          id, code, name, analyzer_connection_id
+        )
+      `)
+      .eq('order_id', orderId)
+      .eq('is_canceled', false)
+      .not('test_groups.analyzer_connection_id', 'is', null)
+
+    if (otError) throw new Error(`order_tests query failed: ${otError.message}`)
+
+    // Normalise both sources into a common shape
+    type TGLink = { rowId: string; tgId: string; tg: { id: string; code: string; name: string; analyzer_connection_id: string } }
+
+    const allLinks: TGLink[] = [
+      ...(otgRows ?? []).map((r: any) => ({ rowId: r.id, tgId: r.test_group_id, tg: r.test_groups })),
+      ...(otRows ?? []).map((r: any) => ({ rowId: r.id, tgId: r.test_group_id, tg: r.test_groups })),
+    ]
+
+    // De-duplicate by test_group_id (same panel can appear in both tables)
+    const seenTGIds = new Set<string>()
+    const uniqueLinks: TGLink[] = allLinks.filter((l) => {
+      if (seenTGIds.has(l.tgId)) return false
+      seenTGIds.add(l.tgId)
+      return true
+    })
+
+    if (uniqueLinks.length === 0) {
+      // Race condition: order_tests may not be inserted yet (webhook fires on orders INSERT).
+      // Wait 4 seconds and retry once before giving up.
+      await new Promise((r) => setTimeout(r, 4000))
+
+      // Also re-fetch the sample barcode — samples table may not be written yet at webhook time
+      if (!sampleBarcodeFromTable) {
+        const { data: freshSamples } = await supabase
+          .from('samples')
+          .select('barcode')
+          .eq('order_id', orderId)
+          .not('barcode', 'is', null)
+          .limit(1)
+        if (freshSamples?.[0]?.barcode) {
+          sampleBarcode = freshSamples[0].barcode
+        }
+      }
+
+      const { data: otRowsRetry } = await supabase
+        .from('order_tests')
+        .select(`id, test_group_id, test_groups!inner(id, code, name, analyzer_connection_id)`)
+        .eq('order_id', orderId)
+        .eq('is_canceled', false)
+        .not('test_groups.analyzer_connection_id', 'is', null)
+
+      const { data: otgRowsRetry } = await supabase
+        .from('order_test_groups')
+        .select(`id, test_group_id, test_groups!inner(id, code, name, analyzer_connection_id)`)
+        .eq('order_id', orderId)
+        .not('test_groups.analyzer_connection_id', 'is', null)
+
+      const retryLinks: TGLink[] = [
+        ...(otgRowsRetry ?? []).map((r: any) => ({ rowId: r.id, tgId: r.test_group_id, tg: r.test_groups })),
+        ...(otRowsRetry ?? []).map((r: any) => ({ rowId: r.id, tgId: r.test_group_id, tg: r.test_groups })),
+      ].filter((l) => {
+        if (seenTGIds.has(l.tgId)) return false
+        seenTGIds.add(l.tgId)
+        return true
       })
+
+      if (retryLinks.length === 0) {
+        return new Response(JSON.stringify({
+          success: true,
+          message: 'No test groups with analyzer_connection_id configured — nothing to dispatch.',
+          order_id: orderId,
+        }), {
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        })
+      }
+
+      uniqueLinks.push(...retryLinks)
+    }
+
+    // If barcode is still a fallback value (no real sample barcode found at webhook time),
+    // do one final re-fetch regardless of whether retry was needed.
+    if (!sampleBarcodeFromTable) {
+      const { data: freshSamples } = await supabase
+        .from('samples')
+        .select('barcode')
+        .eq('order_id', orderId)
+        .not('barcode', 'is', null)
+        .limit(1)
+      if (freshSamples?.[0]?.barcode) {
+        sampleBarcode = freshSamples[0].barcode
+      }
     }
 
     // 3. Group test group codes by analyzer_connection_id
     const byAnalyzer = new Map<string, { tests: string[]; testGroupIds: string[] }>()
 
-    for (const otg of otgRows) {
-      const tg = (otg as any).test_groups
+    for (const link of uniqueLinks) {
+      const tg = link.tg
       const connId: string = tg.analyzer_connection_id
       const code: string = tg.code || tg.name
 
@@ -138,6 +235,9 @@ Deno.serve(async (req) => {
         const { data: dispatchResult, error: dispatchError } = await supabase.functions.invoke(
           'dispatch-order-to-analyzer',
           {
+            headers: {
+              Authorization: `Bearer ${Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''}`,
+            },
             body: {
               order_id: orderId,
               sample_barcode: sampleBarcode,
@@ -146,7 +246,7 @@ Deno.serve(async (req) => {
               patient: patient
                 ? {
                     name: patient.name ?? '',
-                    dob: patient.dob ?? '',
+                    dob: patient.date_of_birth || null,
                     gender: patient.gender ?? '',
                   }
                 : undefined,
@@ -155,7 +255,12 @@ Deno.serve(async (req) => {
           }
         )
 
-        if (dispatchError) throw dispatchError
+        if (dispatchError) {
+          // Try to extract the actual error message from the response body
+          const errBody = (dispatchResult as any)
+          console.error(`dispatch-order-to-analyzer FAILED:`, JSON.stringify(dispatchError), `body:`, JSON.stringify(errBody))
+          throw new Error(`dispatch failed: ${JSON.stringify(dispatchError)} body: ${JSON.stringify(errBody)}`)
+        }
 
         results.push({
           analyzer_connection_id: analyzerConnectionId,

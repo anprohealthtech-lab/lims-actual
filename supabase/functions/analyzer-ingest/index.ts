@@ -193,7 +193,7 @@ Deno.serve(async (req) => {
         .update({
           status: newStatus,
           sent_at: ack ? now : null,
-          ...(error_reason && { error_message: error_reason }),
+          ...(error_reason && { last_error: error_reason }),
         })
         .eq('id', queue_id)
 

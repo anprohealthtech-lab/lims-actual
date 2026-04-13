@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Plus, Search, Edit, Trash2, Save, X, MapPin, Building, Phone, Mail, CreditCard, DollarSign, TrendingUp, User, IndianRupee, ArrowLeft, ChevronRight } from 'lucide-react';
+import { Plus, Search, Edit, Trash2, Save, X, MapPin, Building, Phone, Mail, CreditCard, DollarSign, TrendingUp, User, IndianRupee, ArrowLeft, ChevronRight, Printer } from 'lucide-react';
 import { database } from '../../utils/supabase';
 import { Location, CreditTransaction } from '../../types';
 import HeaderFooterUpload from '../Settings/HeaderFooterUpload';
@@ -18,6 +18,10 @@ interface LocationFormData {
   is_cash_collection_center: boolean;
   notes: string;
   upi_id: string;
+  barcode_printer_name: string;
+  report_printer_name: string;
+  auto_print_barcode_on_order: boolean | null;
+  auto_print_report_on_approval: boolean | null;
 }
 
 const initialFormData: LocationFormData = {
@@ -32,7 +36,11 @@ const initialFormData: LocationFormData = {
   collection_percentage: 0,
   is_cash_collection_center: false,
   notes: '',
-  upi_id: ''
+  upi_id: '',
+  barcode_printer_name: '',
+  report_printer_name: '',
+  auto_print_barcode_on_order: null,
+  auto_print_report_on_approval: null,
 };
 
 interface LocationWithBalance extends Location {
@@ -117,7 +125,11 @@ const LocationMaster: React.FC = () => {
       collection_percentage: location.collection_percentage || 0,
       is_cash_collection_center: location.is_cash_collection_center || false,
       notes: location.notes || '',
-      upi_id: (location as any).upi_id || ''
+      upi_id: (location as any).upi_id || '',
+      barcode_printer_name: (location as any).barcode_printer_name || '',
+      report_printer_name: (location as any).report_printer_name || '',
+      auto_print_barcode_on_order: (location as any).auto_print_barcode_on_order ?? null,
+      auto_print_report_on_approval: (location as any).auto_print_report_on_approval ?? null,
     });
     setShowForm(true);
     setError(null);
@@ -544,6 +556,72 @@ const LocationMaster: React.FC = () => {
                     className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                     placeholder="Additional notes about this location..."
                   />
+                </div>
+              </div>
+
+              {/* Printer Settings */}
+              <div className="border-t pt-5 mt-2">
+                <h3 className="text-sm font-semibold text-gray-700 mb-1 flex items-center gap-2">
+                  <Printer className="w-4 h-4 text-blue-600" />
+                  Printer Settings (overrides lab defaults)
+                </h3>
+                <p className="text-xs text-gray-500 mb-3">
+                  Leave blank to inherit the lab-wide printer. Set here to give this center its own printer.
+                </p>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">Barcode / Label Printer</label>
+                    <input
+                      type="text"
+                      placeholder="e.g. Zebra ZD421 (leave blank = lab default)"
+                      value={formData.barcode_printer_name}
+                      onChange={(e) => setFormData({ ...formData, barcode_printer_name: e.target.value })}
+                      className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent text-sm"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">Report Printer</label>
+                    <input
+                      type="text"
+                      placeholder="e.g. HP LaserJet M404dn (leave blank = lab default)"
+                      value={formData.report_printer_name}
+                      onChange={(e) => setFormData({ ...formData, report_printer_name: e.target.value })}
+                      className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent text-sm"
+                    />
+                  </div>
+                </div>
+                <div className="space-y-2">
+                  {/* Auto-print barcode: tri-state — null = inherit lab, true/false = override */}
+                  <div>
+                    <label className="block text-xs font-medium text-gray-600 mb-1">Auto-print barcode on order</label>
+                    <select
+                      value={formData.auto_print_barcode_on_order === null ? 'inherit' : formData.auto_print_barcode_on_order ? 'yes' : 'no'}
+                      onChange={(e) => setFormData({
+                        ...formData,
+                        auto_print_barcode_on_order: e.target.value === 'inherit' ? null : e.target.value === 'yes'
+                      })}
+                      className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent text-sm"
+                    >
+                      <option value="inherit">Inherit from lab</option>
+                      <option value="yes">Enabled for this center</option>
+                      <option value="no">Disabled for this center</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-xs font-medium text-gray-600 mb-1">Auto-print report on approval</label>
+                    <select
+                      value={formData.auto_print_report_on_approval === null ? 'inherit' : formData.auto_print_report_on_approval ? 'yes' : 'no'}
+                      onChange={(e) => setFormData({
+                        ...formData,
+                        auto_print_report_on_approval: e.target.value === 'inherit' ? null : e.target.value === 'yes'
+                      })}
+                      className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent text-sm"
+                    >
+                      <option value="inherit">Inherit from lab</option>
+                      <option value="yes">Enabled for this center</option>
+                      <option value="no">Disabled for this center</option>
+                    </select>
+                  </div>
                 </div>
               </div>
 

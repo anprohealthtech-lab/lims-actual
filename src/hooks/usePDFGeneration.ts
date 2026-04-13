@@ -1,4 +1,5 @@
-import { useState, useCallback, useRef } from 'react';
+import { useState, useCallback, useRef, useContext } from 'react';
+import { QZTrayContext } from '../contexts/QZTrayContext';
 import type { LabTemplateRecord, PreparedPDFBundle, PdfCoRequestOptions } from '../utils/pdfService';
 import {
   generateAndSavePDFReportWithProgress,
@@ -29,6 +30,7 @@ interface PDFGenerationState {
 }
 
 export const usePDFGeneration = () => {
+  const { autoPrintReport } = useContext(QZTrayContext);
   const [state, setState] = useState<PDFGenerationState>({
     isGenerating: false,
     stage: '',
@@ -112,7 +114,12 @@ export const usePDFGeneration = () => {
           stage: 'PDF downloaded successfully!',
           progress: 100
         }));
-        
+
+        // Auto-print report via QZ Tray if enabled (only for final/approved reports, not drafts)
+        if (!isDraft) {
+          autoPrintReport(pdfUrl).catch(() => {});
+        }
+
         // Auto-hide after 2 seconds on success
         setTimeout(() => {
           setState(prev => ({ ...prev, isGenerating: false }));

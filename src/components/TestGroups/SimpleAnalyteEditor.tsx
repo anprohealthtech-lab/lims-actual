@@ -1,5 +1,5 @@
 import React, { useState, useMemo, useRef, useEffect } from 'react';
-import { X, Save, AlertCircle, Flag, Calculator, Link2, Search, Plus, Trash2, ChevronDown } from 'lucide-react';
+import { X, Save, AlertCircle, Flag, Calculator, Link2, Search, Plus, Trash2, ChevronDown, Activity } from 'lucide-react';
 import { database, supabase } from '../../utils/supabase';
 
 interface SourceAnalyte {
@@ -51,6 +51,8 @@ interface SimpleAnalyteEditorProps {
     formula_description?: string;
     // Lab-level display name override (highest priority in PDF reports)
     display_name?: string | null;
+    // lab_analytes PK — used to load/save lab_analyte_interface_config
+    lab_analyte_id?: string | null;
   };
   availableAnalytes?: SourceAnalyte[];
   onSave: (analyte: any) => void;
@@ -107,6 +109,19 @@ export const SimpleAnalyteEditor: React.FC<SimpleAnalyteEditorProps> = ({
     { value: 'C', label: 'Critical' },
   ]);
 
+  // Analyzer interface config state (lab_analyte_interface_config row)
+  const [interfaceConfigId, setInterfaceConfigId] = useState<string | null>(null);
+  const [interfaceConfig, setInterfaceConfig] = useState({
+    instrument_unit: '',
+    lims_unit: '',
+    multiply_by: '1',
+    add_offset: '0',
+    dilution_factor: '1',
+    dilution_mode: 'auto',
+    auto_verify: false,
+    notes: '',
+  });
+
   React.useEffect(() => {
     const loadLabOptions = async () => {
       try {
@@ -124,7 +139,35 @@ export const SimpleAnalyteEditor: React.FC<SimpleAnalyteEditorProps> = ({
       }
     };
 
+    const loadInterfaceConfig = async () => {
+      const labAnalyteId = analyte.lab_analyte_id;
+      if (!labAnalyteId) return;
+      try {
+        const { data } = await supabase
+          .from('lab_analyte_interface_config')
+          .select('id, instrument_unit, lims_unit, multiply_by, add_offset, dilution_factor, dilution_mode, auto_verify, notes')
+          .eq('lab_analyte_id', labAnalyteId)
+          .maybeSingle();
+        if (data) {
+          setInterfaceConfigId(data.id);
+          setInterfaceConfig({
+            instrument_unit: data.instrument_unit || '',
+            lims_unit: data.lims_unit || '',
+            multiply_by: String(data.multiply_by ?? 1),
+            add_offset: String(data.add_offset ?? 0),
+            dilution_factor: String(data.dilution_factor ?? 1),
+            dilution_mode: data.dilution_mode || 'auto',
+            auto_verify: data.auto_verify ?? false,
+            notes: data.notes || '',
+          });
+        }
+      } catch (e) {
+        console.error('Failed to load interface config:', e);
+      }
+    };
+
     loadLabOptions();
+    loadInterfaceConfig();
   }, []);
 
   // Generate a short variable slug from analyte name
@@ -252,6 +295,11 @@ export const SimpleAnalyteEditor: React.FC<SimpleAnalyteEditorProps> = ({
     setError(null);
 
     try {
+      // Validate required fields (e.preventDefault bypasses browser native validation)
+      if (!formData.category) {
+        throw new Error('Category is required. Please select a category.');
+      }
+
       // Get current lab ID
       const labId = await database.getCurrentUserLabId();
       if (!labId) {
@@ -324,6 +372,37 @@ export const SimpleAnalyteEditor: React.FC<SimpleAnalyteEditorProps> = ({
       );
 
       if (updateError) throw updateError;
+
+      // Save lab_analyte_interface_config (dilution, unit conversion, auto-verify)
+      const labAnalyteId = analyte.lab_analyte_id;
+      if (labAnalyteId) {
+        const configPayload = {
+          lab_id: labId,
+          lab_analyte_id: labAnalyteId,
+          instrument_unit: interfaceConfig.instrument_unit || null,
+          lims_unit: interfaceConfig.lims_unit || null,
+          multiply_by: parseFloat(interfaceConfig.multiply_by) || 1,
+          add_offset: parseFloat(interfaceConfig.add_offset) || 0,
+          dilution_factor: Math.max(1, parseFloat(interfaceConfig.dilution_factor) || 1),
+          dilution_mode: interfaceConfig.dilution_mode || 'auto',
+          auto_verify: interfaceConfig.auto_verify,
+          notes: interfaceConfig.notes || null,
+          updated_at: new Date().toISOString(),
+        };
+        if (interfaceConfigId) {
+          await supabase
+            .from('lab_analyte_interface_config')
+            .update(configPayload)
+            .eq('id', interfaceConfigId);
+        } else {
+          const { data: newConfig } = await supabase
+            .from('lab_analyte_interface_config')
+            .insert(configPayload)
+            .select('id')
+            .single();
+          if (newConfig?.id) setInterfaceConfigId(newConfig.id);
+        }
+      }
 
       // Save lab-specific analyte_dependencies if source analytes were selected via picker
       if ((formulaData.is_calculated || analyte.is_calculated) && selectedSources.length > 0) {
@@ -1205,6 +1284,138 @@ export const SimpleAnalyteEditor: React.FC<SimpleAnalyteEditorProps> = ({
               </p>
             </div>
           </div>
+
+          {/* Analyzer Interface Config — only shown when this analyte has a lab_analyte_id */}
+          {analyte.lab_analyte_id && (
+            <div className="bg-teal-50 p-4 rounded-lg border border-teal-200">
+              <h4 className="text-lg font-medium text-gray-900 mb-1 flex items-center">
+                <Activity className="w-5 h-5 mr-2 text-teal-600" />
+                Analyzer Interface Config
+              </h4>
+              <p className="text-xs text-teal-700 mb-4">
+                Lab-specific settings for how this analyte is processed on the analyzer. These override global defaults per lab.
+              </p>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                    Dilution Factor
+                    <span className="ml-1 text-xs text-gray-400 font-normal">(1 = neat, 2 = 1:2, 5 = 1:5)</span>
+                  </label>
+                  <input
+                    type="number"
+                    min="1"
+                    step="0.5"
+                    value={interfaceConfig.dilution_factor}
+                    onChange={(e) => setInterfaceConfig(prev => ({ ...prev, dilution_factor: e.target.value }))}
+                    className="w-full px-3 py-2 border border-teal-300 rounded-md focus:ring-2 focus:ring-teal-500 focus:border-transparent"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Dilution Mode</label>
+                  <select
+                    value={interfaceConfig.dilution_mode}
+                    onChange={(e) => setInterfaceConfig(prev => ({ ...prev, dilution_mode: e.target.value }))}
+                    className="w-full px-3 py-2 border border-teal-300 rounded-md focus:ring-2 focus:ring-teal-500 focus:border-transparent"
+                  >
+                    <option value="auto">Auto — analyzer dilutes automatically</option>
+                    <option value="manual">Manual — technician dilutes before loading</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                    Instrument Unit
+                    <span className="ml-1 text-xs text-gray-400 font-normal">(unit the analyzer reports in)</span>
+                  </label>
+                  <input
+                    type="text"
+                    value={interfaceConfig.instrument_unit}
+                    onChange={(e) => setInterfaceConfig(prev => ({ ...prev, instrument_unit: e.target.value }))}
+                    placeholder="e.g., mmol/L"
+                    className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-teal-500 focus:border-transparent"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                    LIMS Unit
+                    <span className="ml-1 text-xs text-gray-400 font-normal">(unit shown in reports)</span>
+                  </label>
+                  <input
+                    type="text"
+                    value={interfaceConfig.lims_unit}
+                    onChange={(e) => setInterfaceConfig(prev => ({ ...prev, lims_unit: e.target.value }))}
+                    placeholder="e.g., mg/dL"
+                    className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-teal-500 focus:border-transparent"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                    Multiply By
+                    <span className="ml-1 text-xs text-gray-400 font-normal">(unit conversion factor)</span>
+                  </label>
+                  <input
+                    type="number"
+                    step="0.001"
+                    value={interfaceConfig.multiply_by}
+                    onChange={(e) => setInterfaceConfig(prev => ({ ...prev, multiply_by: e.target.value }))}
+                    placeholder="1"
+                    className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-teal-500 focus:border-transparent"
+                  />
+                  <p className="text-xs text-gray-500 mt-1">
+                    result = (instrument_value × multiply_by) + add_offset
+                  </p>
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                    Add Offset
+                    <span className="ml-1 text-xs text-gray-400 font-normal">(applied after multiply)</span>
+                  </label>
+                  <input
+                    type="number"
+                    step="0.001"
+                    value={interfaceConfig.add_offset}
+                    onChange={(e) => setInterfaceConfig(prev => ({ ...prev, add_offset: e.target.value }))}
+                    placeholder="0"
+                    className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-teal-500 focus:border-transparent"
+                  />
+                </div>
+              </div>
+
+              <div className="mt-4 flex items-start space-x-3">
+                <input
+                  type="checkbox"
+                  id="auto_verify"
+                  checked={interfaceConfig.auto_verify}
+                  onChange={(e) => setInterfaceConfig(prev => ({ ...prev, auto_verify: e.target.checked }))}
+                  className="mt-1 rounded border-gray-300 text-teal-600 focus:ring-teal-500"
+                />
+                <div>
+                  <label htmlFor="auto_verify" className="text-sm font-medium text-gray-700">
+                    Auto-Verify Results
+                  </label>
+                  <p className="text-xs text-gray-500 mt-0.5">
+                    Skip manual verification for this analyte when received from analyzer (use only for low-risk parameters).
+                  </p>
+                </div>
+              </div>
+
+              <div className="mt-4">
+                <label className="block text-sm font-medium text-gray-700 mb-1">Interface Notes</label>
+                <textarea
+                  value={interfaceConfig.notes}
+                  onChange={(e) => setInterfaceConfig(prev => ({ ...prev, notes: e.target.value }))}
+                  rows={2}
+                  placeholder="Any special handling notes for this analyte on the analyzer..."
+                  className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-teal-500 focus:border-transparent"
+                />
+              </div>
+            </div>
+          )}
 
           <div className="flex justify-end space-x-3 pt-4 border-t">
             <button

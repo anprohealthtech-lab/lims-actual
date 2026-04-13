@@ -67,6 +67,10 @@ DROP POLICY IF EXISTS "Enable read access for authenticated users" ON public.acc
 DROP POLICY IF EXISTS "Enable write access for authenticated users" ON public.account_prices;
 DROP POLICY IF EXISTS "Enable update for authenticated users" ON public.account_prices;
 DROP POLICY IF EXISTS "Enable delete for authenticated users" ON public.account_prices;
+DROP POLICY IF EXISTS "Account prices are viewable by users in same lab" ON public.account_prices;
+DROP POLICY IF EXISTS "Account prices are insertable by users in same lab" ON public.account_prices;
+DROP POLICY IF EXISTS "Account prices are updatable by users in same lab" ON public.account_prices;
+DROP POLICY IF EXISTS "Account prices are deletable by users in same lab" ON public.account_prices;
 
 CREATE POLICY "Account prices are viewable by users in same lab"
 ON public.account_prices FOR SELECT

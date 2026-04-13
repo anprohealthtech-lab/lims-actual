@@ -39,15 +39,17 @@ export const getOrderAssignedColor = (dailySequenceNumber: number): { color_code
  * Generate sample ID for an order
  * @param date Date for the order
  * @param dailySequence Sequential number for the day
- * @returns Sample ID in format DD-Mon-YYYY-SEQ
+ * @param labCode Optional lab code prefix (e.g. "ML001"). When provided the
+ *   format is LABCODE-DD-Mon-YYYY-SEQ so each lab has its own namespace.
+ * @returns Sample ID in format [LABCODE-]DD-Mon-YYYY-SEQ
  */
-export const generateOrderSampleId = (date: Date, dailySequence: number): string => {
+export const generateOrderSampleId = (date: Date, dailySequence: number, labCode?: string): string => {
   const day = date.getDate().toString().padStart(2, '0');
   const month = date.toLocaleString('en-US', { month: 'short' });
   const year = date.getFullYear();
   const sequence = dailySequence.toString().padStart(3, '0');
-  
-  return `${day}-${month}-${year}-${sequence}`;
+  const datePart = `${day}-${month}-${year}-${sequence}`;
+  return labCode ? `${labCode}-${datePart}` : datePart;
 };
 
 /**

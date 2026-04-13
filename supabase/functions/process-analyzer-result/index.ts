@@ -275,6 +275,11 @@ REQUIRED JSON STRUCTURE:
   ]
 }
 
+CRITICAL FLAG RULES for HL7 OBX segments:
+- OBX field 8 = Abnormal Flag (THIS is what goes in "flag"): H=High, L=Low, HH=Critical High, LL=Critical Low, A=Abnormal. Empty or missing = "N" (Normal)
+- OBX field 11 = Result Status (F=Final, P=Preliminary) — DO NOT put this in "flag"
+- If OBX-8 is empty/missing, set flag to "N" (Normal)
+
 For graphs/histograms, use the OBX test code (e.g. "15000" for WBC histogram).
 Do NOT include or describe binary histogram data — it is already extracted separately.`
 
@@ -328,6 +333,7 @@ Do NOT include or describe binary histogram data — it is already extracted sep
             .from('orders')
             .select(`
                 patient_id,
+                patient_gender,
                 patients (
                     name
                 )
@@ -336,6 +342,7 @@ Do NOT include or describe binary histogram data — it is already extracted sep
             .single()
             
         const patientId = orderData?.patient_id
+        const patientGender: string = (orderData as any)?.patient_gender || ''
         // @ts-ignore
         const patientName = orderData?.patients?.name || "Unknown Patient"
         
@@ -385,7 +392,9 @@ Do NOT include or describe binary histogram data — it is already extracted sep
                 const NON_CLINICAL_PREFIXES = ['080', '010', '120', '150']
                 const clinicalResults = (parsedData.results || []).filter((r: any) => {
                     const code = String(r.test_code ?? '')
-                    return !NON_CLINICAL_PREFIXES.some(p => code.startsWith(p)) && r.value !== '' && r.flag !== 'F'
+                    // r.flag = HL7 OBX-8 (abnormal flag: H/L/HH/LL) NOT OBX-11 result status (F=Final).
+                    // Never filter out based on flag value — F here means Final result, not a clinical flag.
+                    return !NON_CLINICAL_PREFIXES.some(p => code.startsWith(p)) && r.value !== ''
                 })
 
                 const mappingPrompt = `
@@ -567,6 +576,23 @@ OUTPUT ONLY valid JSON in this exact format (no markdown, no explanation):
                         }
                     }
 
+                    // Always back-fill order_test_id from order_tests using test_group_id.
+                    // The order_test_groups path sets order_test_group_id but leaves order_test_id null.
+                    const { data: otRowsForId } = await supabase
+                        .from('order_tests')
+                        .select('id, test_group_id')
+                        .eq('order_id', sample.order_id)
+                    const tgToOrderTestId = new Map<string, string>()
+                    for (const ot of otRowsForId || []) {
+                        if (ot.test_group_id) tgToOrderTestId.set(ot.test_group_id, ot.id)
+                    }
+                    for (const [analyteId, entry] of analyteToOTG) {
+                        if (!entry.order_test_id && entry.test_group_id) {
+                            const otId = tgToOrderTestId.get(entry.test_group_id)
+                            if (otId) entry.order_test_id = otId
+                        }
+                    }
+
                     for (const [code, mapping] of analyteMap) {
                         const otgInfo = analyteToOTG.get((mapping as any).analyte_id)
                         if (otgInfo) {
@@ -640,6 +666,30 @@ OUTPUT ONLY valid JSON in this exact format (no markdown, no explanation):
               }
             }
 
+            // Batch-fetch reference ranges from lab_analytes
+            const refRangeMap = new Map<string, {
+              lab_specific: string | null; ref_generic: string | null;
+              ref_male: string | null; ref_female: string | null
+            }>()
+            if (allLabAnalyteIds.length > 0) {
+              const { data: refRows } = await supabase
+                .from('lab_analytes')
+                .select('id, reference_range, reference_range_male, reference_range_female, lab_specific_reference_range')
+                .eq('lab_id', sample.lab_id)
+                .in('id', allLabAnalyteIds)
+              if (refRows) {
+                for (const la of refRows) {
+                  refRangeMap.set(la.id, {
+                    lab_specific: la.lab_specific_reference_range || null,
+                    ref_generic:  la.reference_range || null,
+                    ref_male:     la.reference_range_male || null,
+                    ref_female:   la.reference_range_female || null,
+                  })
+                }
+                console.log(`DEBUG: Loaded reference ranges for ${refRangeMap.size} lab_analytes`)
+              }
+            }
+
             for (const item of parsedData.results) {
                 const machineCode = item.test_code?.toUpperCase()
 
@@ -687,7 +737,23 @@ OUTPUT ONLY valid JSON in this exact format (no markdown, no explanation):
                     value: finalValue,
                     unit: finalUnit,
                     flag: item.flag,
-                    reference_range: '-',
+                    reference_range: (() => {
+                      const rr = labAnalyteId ? refRangeMap.get(labAnalyteId) : null
+                      // 1. Lab-specific override (highest priority)
+                      if (rr?.lab_specific) return rr.lab_specific
+                      // 2. Gender-specific from lab_analytes
+                      const isMale = patientGender?.toLowerCase().startsWith('m')
+                      const isFemale = patientGender?.toLowerCase().startsWith('f')
+                      if (isMale && rr?.ref_male) return rr.ref_male
+                      if (isFemale && rr?.ref_female) return rr.ref_female
+                      // 3. Analyzer-sent value from HL7 OBX-7
+                      if (item.reference_range) return item.reference_range
+                      // 4. Generic lab_analytes.reference_range
+                      if (rr?.ref_generic) return rr.ref_generic
+                      return '-'
+                    })(),
+                    reference_range_male: labAnalyteId ? (refRangeMap.get(labAnalyteId)?.ref_male ?? null) : null,
+                    reference_range_female: labAnalyteId ? (refRangeMap.get(labAnalyteId)?.ref_female ?? null) : null,
                     extracted_by_ai: true,
                     flag_source: 'ai',
                     verify_status: verifyStatus,
@@ -706,7 +772,16 @@ OUTPUT ONLY valid JSON in this exact format (no markdown, no explanation):
                 }
             }
             statusLog += `Mapped ${mappedCount} analytes. `
-            
+
+            // Mark order queue entry as completed now that results are stored
+            if (mappedCount > 0) {
+                await supabase
+                    .from('analyzer_order_queue')
+                    .update({ status: 'completed', completed_at: new Date().toISOString() })
+                    .eq('order_id', sample.order_id)
+                    .in('status', ['acknowledged', 'sent'])
+            }
+
             // E. Save decoded histograms to analyzer_graphs table
             if (octerHistograms.length > 0) {
                 statusLog += `Saving ${octerHistograms.length} histograms. `

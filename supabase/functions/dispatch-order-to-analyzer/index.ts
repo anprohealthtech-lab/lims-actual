@@ -157,7 +157,7 @@ async function mapTestCodesWithAI(
       .gt('usage_count', 0)
       .limit(50)
     
-    const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash-exp' })
+    const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash' })
     
     const prompt = `You are a laboratory interface expert. Map LIMS test codes to analyzer codes.
 
@@ -280,9 +280,9 @@ Deno.serve(async (req) => {
         analyzer_connection_id: payload.analyzer_connection_id,
         order_id: payload.order_id,
         sample_barcode: payload.sample_barcode,
-        patient_name: payload.patient?.name,
-        patient_dob: payload.patient?.dob,
-        patient_gender: payload.patient?.gender,
+        patient_name: payload.patient?.name || null,
+        patient_dob: payload.patient?.dob || null,
+        patient_gender: payload.patient?.gender || null,
         requested_tests: payload.tests,
         status: 'pending',
         ai_status: 'processing',
@@ -360,7 +360,7 @@ Deno.serve(async (req) => {
     })
 
   } catch (error) {
-    console.error('Dispatch error:', error)
+    console.error('Dispatch error full:', error?.message, JSON.stringify(error))
     return new Response(JSON.stringify({ 
       error: error.message 
     }), {

@@ -51,7 +51,7 @@ import {
   X,
   Save
 } from 'lucide-react';
-import { supabase } from '../utils/supabase';
+import { database, supabase } from '../utils/supabase';
 import { useQCDashboard } from '../hooks/useQCDashboard';
 import { useQualityControl } from '../hooks/useQualityControl';
 import { QCRunCapture } from '../components/QC/QCRunCapture';
@@ -67,6 +67,16 @@ import type {
 } from '../types/qc';
 
 type TabId = 'dashboard' | 'runs' | 'investigations' | 'lots' | 'eqc' | 'calibration';
+
+interface InventoryLotLinkOption {
+  id: string;
+  name: string;
+  code?: string | null;
+  type?: string | null;
+  qc_lot_id?: string | null;
+  consumption_scope?: string | null;
+  ai_category?: string | null;
+}
 
 interface Tab {
   id: TabId;
@@ -126,6 +136,13 @@ const QualityControl: React.FC = () => {
   // QC operations hook
   const qc = useQualityControl();
 
+  const handleQCConsumption = async (runId: string) => {
+    const { error } = await database.inventory.consumeQCRunItems({ runId });
+    if (error) {
+      console.warn('QC inventory consumption failed:', error);
+    }
+  };
+
   const renderTabContent = () => {
     switch (activeTab) {
       case 'dashboard':
@@ -141,7 +158,7 @@ const QualityControl: React.FC = () => {
         return <QCRunsTab labId={labId} qc={qc} onNavigateToInvestigation={(invId) => {
           setHighlightedInvestigationId(invId);
           setActiveTab('investigations');
-        }} />;
+        }} onQCConsumed={handleQCConsumption} />;
       case 'investigations':
         return <InvestigationsTab labId={labId} qc={qc} highlightedId={highlightedInvestigationId} />;
       case 'lots':
@@ -529,7 +546,8 @@ const QCRunsTab: React.FC<{
   labId: string;
   qc: ReturnType<typeof useQualityControl>;
   onNavigateToInvestigation?: (investigationId: string) => void;
-}> = ({ labId, qc, onNavigateToInvestigation }) => {
+  onQCConsumed?: (runId: string) => Promise<void>;
+}> = ({ labId, qc, onNavigateToInvestigation, onQCConsumed }) => {
   const [runs, setRuns] = useState<QCRun[]>([]);
   const [loading, setLoading] = useState(true);
   const [showScanModal, setShowScanModal] = useState(false);
@@ -554,7 +572,11 @@ const QCRunsTab: React.FC<{
 
   const handleScanComplete = (runId: string) => {
     setShowScanModal(false);
+    onQCConsumed?.(runId).catch((err) => {
+      console.warn('QC consumption failed after scan completion:', err);
+    });
     loadRuns();
+    setSelectedRunId(runId);
   };
 
   const handleViewRun = (runId: string) => {
@@ -725,7 +747,11 @@ const QCRunsTab: React.FC<{
           labId={labId}
           onComplete={(runId) => {
             setShowManualEntry(false);
+            onQCConsumed?.(runId).catch((err) => {
+              console.warn('QC consumption failed after manual entry:', err);
+            });
             loadRuns();
+            setSelectedRunId(runId);
           }}
           onCancel={() => setShowManualEntry(false)}
         />
@@ -927,6 +953,7 @@ const LotManagementTab: React.FC<{
   qc: ReturnType<typeof useQualityControl>;
 }> = ({ labId, qc }) => {
   const [lots, setLots] = useState<QCLot[]>([]);
+  const [inventoryItems, setInventoryItems] = useState<InventoryLotLinkOption[]>([]);
   const [loading, setLoading] = useState(true);
   const [showAddModal, setShowAddModal] = useState(false);
   const [editingLot, setEditingLot] = useState<QCLot | null>(null);
@@ -954,6 +981,7 @@ const LotManagementTab: React.FC<{
   const [lotType, setLotType] = useState('iqc');
   const [analyzerName, setAnalyzerName] = useState('');
   const [selectedTestGroups, setSelectedTestGroups] = useState<string[]>([]);
+  const [selectedInventoryItemId, setSelectedInventoryItemId] = useState('');
 
   // Test groups for selection
   const [testGroups, setTestGroups] = useState<Array<{ id: string; name: string; code?: string }>>([]);
@@ -961,6 +989,7 @@ const LotManagementTab: React.FC<{
   useEffect(() => {
     loadLots();
     loadTestGroups();
+    loadInventoryItems();
   }, [labId]);
 
   const loadTestGroups = async () => {
@@ -980,6 +1009,22 @@ const LotManagementTab: React.FC<{
     setLoading(false);
   };
 
+  const loadInventoryItems = async () => {
+    const { data, error } = await supabase
+      .from('inventory_items')
+      .select('id, name, code, type, qc_lot_id, consumption_scope, ai_category')
+      .eq('lab_id', labId)
+      .eq('is_active', true)
+      .order('name');
+
+    if (error) {
+      console.error('Failed to load inventory items for QC linking:', error);
+      return;
+    }
+
+    setInventoryItems((data || []) as InventoryLotLinkOption[]);
+  };
+
   const resetForm = () => {
     setLotNumber('');
     setMaterialName('');
@@ -989,6 +1034,7 @@ const LotManagementTab: React.FC<{
     setLotType('iqc');
     setAnalyzerName('');
     setSelectedTestGroups([]);
+    setSelectedInventoryItemId('');
     setEditingLot(null);
   };
 
@@ -998,6 +1044,7 @@ const LotManagementTab: React.FC<{
   };
 
   const openEditModal = (lot: QCLot) => {
+    const linkedInventoryItem = inventoryItems.find((item) => item.qc_lot_id === lot.id);
     setEditingLot(lot);
     setLotNumber(lot.lot_number);
     setMaterialName(lot.material_name);
@@ -1007,6 +1054,7 @@ const LotManagementTab: React.FC<{
     setLotType(lot.lot_type || 'iqc');
     setAnalyzerName(lot.analyzer_name || '');
     setSelectedTestGroups(lot.test_group_ids || []);
+    setSelectedInventoryItemId(linkedInventoryItem?.id || '');
     setShowAddModal(true);
   };
 
@@ -1023,8 +1071,10 @@ const LotManagementTab: React.FC<{
 
     setSaving(true);
     try {
+      let savedLot: QCLot | null = null;
+
       if (editingLot) {
-        await qc.updateLot(editingLot.id, {
+        savedLot = await qc.updateLot(editingLot.id, {
           lot_number: lotNumber,
           material_name: materialName,
           manufacturer,
@@ -1035,7 +1085,7 @@ const LotManagementTab: React.FC<{
           test_group_ids: selectedTestGroups
         });
       } else {
-        await qc.createLot({
+        savedLot = await qc.createLot({
           lab_id: labId,
           lot_number: lotNumber,
           material_name: materialName,
@@ -1048,10 +1098,37 @@ const LotManagementTab: React.FC<{
           is_active: true
         });
       }
+
+      if (!savedLot) {
+        throw new Error('QC lot save did not return a lot record');
+      }
+
+      const { error: clearLinkError } = await supabase
+        .from('inventory_items')
+        .update({
+          qc_lot_id: null,
+          updated_at: new Date().toISOString(),
+        })
+        .eq('lab_id', labId)
+        .eq('qc_lot_id', savedLot.id);
+
+      if (clearLinkError) {
+        throw clearLinkError;
+      }
+
+      if (selectedInventoryItemId) {
+        const { error: linkError } = await database.inventory.linkQCLot(selectedInventoryItemId, savedLot.id);
+        if (linkError) {
+          throw linkError;
+        }
+      }
+
       setShowAddModal(false);
       resetForm();
       loadLots();
+      loadInventoryItems();
     } catch (e) {
+      console.error(e);
       alert('Failed to save lot');
     } finally {
       setSaving(false);
@@ -1218,11 +1295,12 @@ const LotManagementTab: React.FC<{
         ) : (
           <table className="min-w-full divide-y divide-gray-200">
             <thead className="bg-gray-50">
-              <tr>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Lot Number</th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Material</th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Analyzer</th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Test Groups</th>
+	              <tr>
+	                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Lot Number</th>
+	                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Material</th>
+	                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Inventory Link</th>
+	                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Analyzer</th>
+	                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Test Groups</th>
                 <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Level</th>
                 <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Expiry</th>
                 <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Status</th>
@@ -1230,17 +1308,30 @@ const LotManagementTab: React.FC<{
               </tr>
             </thead>
             <tbody className="bg-white divide-y divide-gray-200">
-              {lots.map((lot) => {
-                // Get test group names for display
-                const lotTestGroupNames = testGroups
-                  .filter(tg => lot.test_group_ids?.includes(tg.id))
-                  .map(tg => tg.name);
+	              {lots.map((lot) => {
+	                // Get test group names for display
+	                const lotTestGroupNames = testGroups
+	                  .filter(tg => lot.test_group_ids?.includes(tg.id))
+	                  .map(tg => tg.name);
+	                const linkedInventoryItem = inventoryItems.find((item) => item.qc_lot_id === lot.id);
 
-                return (
-                <tr key={lot.id} className="hover:bg-gray-50">
-                  <td className="px-6 py-4 text-sm font-medium text-gray-900">{lot.lot_number}</td>
-                  <td className="px-6 py-4 text-sm text-gray-900">{lot.material_name}</td>
-                  <td className="px-6 py-4 text-sm text-gray-900">{lot.analyzer_name || '-'}</td>
+	                return (
+	                <tr key={lot.id} className="hover:bg-gray-50">
+	                  <td className="px-6 py-4 text-sm font-medium text-gray-900">{lot.lot_number}</td>
+	                  <td className="px-6 py-4 text-sm text-gray-900">{lot.material_name}</td>
+	                  <td className="px-6 py-4 text-sm">
+	                    {linkedInventoryItem ? (
+	                      <div>
+	                        <div className="font-medium text-gray-900">{linkedInventoryItem.name}</div>
+	                        <div className="text-xs text-gray-500">
+	                          {linkedInventoryItem.code || linkedInventoryItem.type || 'Linked inventory item'}
+	                        </div>
+	                      </div>
+	                    ) : (
+	                      <span className="text-xs text-amber-600">Not linked</span>
+	                    )}
+	                  </td>
+	                  <td className="px-6 py-4 text-sm text-gray-900">{lot.analyzer_name || '-'}</td>
                   <td className="px-6 py-4">
                     {lotTestGroupNames.length > 0 ? (
                       <div className="flex flex-wrap gap-1">
@@ -1394,9 +1485,9 @@ const LotManagementTab: React.FC<{
                 />
               </div>
 
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">
-                  Analyzer Name
+	              <div>
+	                <label className="block text-sm font-medium text-gray-700 mb-1">
+	                  Analyzer Name
                 </label>
                 <input
                   type="text"
@@ -1405,8 +1496,31 @@ const LotManagementTab: React.FC<{
                   className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm"
                   placeholder="e.g., Roche Cobas c311, Sysmex XN-1000"
                 />
-                <p className="mt-1 text-xs text-gray-500">Which analyzer is this QC lot used on?</p>
-              </div>
+	                <p className="mt-1 text-xs text-gray-500">Which analyzer is this QC lot used on?</p>
+	              </div>
+
+	              <div>
+	                <label className="block text-sm font-medium text-gray-700 mb-1">
+	                  Linked Inventory Item
+	                </label>
+	                <select
+	                  value={selectedInventoryItemId}
+	                  onChange={(e) => setSelectedInventoryItemId(e.target.value)}
+	                  className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm"
+	                >
+	                  <option value="">No linked inventory item</option>
+	                  {inventoryItems.map((item) => (
+	                    <option key={item.id} value={item.id}>
+	                      {item.name}
+	                      {item.code ? ` (${item.code})` : ''}
+	                      {item.qc_lot_id && item.qc_lot_id !== editingLot?.id ? ' - already linked' : ''}
+	                    </option>
+	                  ))}
+	                </select>
+	                <p className="mt-1 text-xs text-gray-500">
+	                  Link the physical stock item used by this QC lot so QC runs can deduct inventory automatically.
+	                </p>
+	              </div>
 
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">

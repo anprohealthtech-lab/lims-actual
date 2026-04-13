@@ -118,7 +118,7 @@ async function callGeminiVision(
     generationConfig: {
       temperature: 0.1,
       topP: 0.9,
-      maxOutputTokens: 8192,
+      maxOutputTokens: 16384,
       responseMimeType: 'application/json',
     },
   }
@@ -138,8 +138,19 @@ async function callGeminiVision(
 
   if (!text) throw new Error('Gemini returned empty response')
 
-  const cleaned = text.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '')
-  return JSON.parse(cleaned) as GeminiExtractedData
+  // Extract the JSON object robustly — handles leading/trailing text or code fences
+  const objMatch = text.match(/\{[\s\S]*\}/)
+  if (!objMatch) {
+    console.error('[ai-report-import] Gemini raw response (no JSON found):', text.slice(0, 500))
+    throw new Error('Could not extract JSON from Gemini response')
+  }
+
+  try {
+    return JSON.parse(objMatch[0]) as GeminiExtractedData
+  } catch (e) {
+    console.error('[ai-report-import] Gemini JSON parse error. Raw (first 1000 chars):', objMatch[0].slice(0, 1000))
+    throw new Error(`Gemini response JSON parse failed: ${e instanceof Error ? e.message : String(e)}`)
+  }
 }
 
 // ─── Stage 2: Claude Haiku 4.5 matching & CRUD payload generation ─────────────
@@ -236,7 +247,7 @@ async function callClaudeHaiku(
     },
     body: JSON.stringify({
       model: CLAUDE_HAIKU_MODEL,
-      max_tokens: 4096,
+      max_tokens: 8192,
       messages: [{ role: 'user', content: prompt }],
     }),
   })
@@ -253,9 +264,17 @@ async function callClaudeHaiku(
 
   const cleaned = text.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '')
   const objMatch = cleaned.match(/\{[\s\S]*\}/)
-  if (!objMatch) throw new Error('Could not extract JSON from Claude Haiku response')
+  if (!objMatch) {
+    console.error('[ai-report-import] Claude Haiku raw response (no JSON found):', text.slice(0, 500))
+    throw new Error('Could not extract JSON from Claude Haiku response')
+  }
 
-  return JSON.parse(objMatch[0])
+  try {
+    return JSON.parse(objMatch[0])
+  } catch (e) {
+    console.error('[ai-report-import] Claude Haiku JSON parse error. Raw (first 1000 chars):', objMatch[0].slice(0, 1000))
+    throw new Error(`Claude Haiku response JSON parse failed: ${e instanceof Error ? e.message : String(e)}`)
+  }
 }
 
 // ─── Handler ──────────────────────────────────────────────────────────────────

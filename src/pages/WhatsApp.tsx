@@ -6,7 +6,7 @@ import WhatsAppMessaging from '../components/WhatsApp/WhatsAppMessaging';
 import MessageHistory from '../components/WhatsApp/MessageHistory';
 import WhatsAppUserSyncManager from '../components/WhatsApp/WhatsAppUserSyncManager';
 import QueueManagement from '../components/WhatsApp/QueueManagement';
-import { MessageResult } from '../utils/whatsappAPI';
+import { MessageResult, WhatsAppAPI } from '../utils/whatsappAPI';
 import { useAuth } from '../contexts/AuthContext';
 import { canConnectWhatsApp, isUserSyncedToWhatsApp, syncUserToWhatsAppIfNeeded } from '../utils/permissions';
 import { AlertCircle, Loader, Lock } from 'lucide-react';
@@ -14,6 +14,14 @@ import { AlertCircle, Loader, Lock } from 'lucide-react';
 const WhatsApp: React.FC = () => {
   const { user } = useAuth();
   const [isConnected, setIsConnected] = useState(false);
+
+  // Check real connection status on mount so Send Message tab works even
+  // if the user never visits the Connection tab first
+  useEffect(() => {
+    WhatsAppAPI.getConnectionStatus().then(status => {
+      if (status.isConnected) setIsConnected(true);
+    }).catch(() => {});
+  }, []);
   const [activeTab, setActiveTab] = useState('dashboard');
   const [hasConnectPermission, setHasConnectPermission] = useState<boolean | null>(null);
   const [isSynced, setIsSynced] = useState<boolean | null>(null);

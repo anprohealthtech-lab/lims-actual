@@ -1,7 +1,7 @@
 // services/sampleService.ts
 // Core sample management service for LIMS
 
-import { supabase } from '../utils/supabase';
+import { database, supabase } from '../utils/supabase';
 import { 
   generateSampleIdAndBarcode,
   getLabCode, 
@@ -175,6 +175,16 @@ export async function collectSample(
   collectedBy: string,
   locationId?: string
 ): Promise<void> {
+  const { data: sampleRow, error: sampleFetchError } = await supabase
+    .from('samples')
+    .select('order_id')
+    .eq('id', sampleId)
+    .single();
+
+  if (sampleFetchError || !sampleRow?.order_id) {
+    throw new Error(`Failed to load sample before collection: ${sampleFetchError?.message || 'Sample not found'}`);
+  }
+
   const { error } = await supabase
     .from('samples')
     .update({
@@ -195,6 +205,16 @@ export async function collectSample(
     event_type: 'collected',
     performed_by: collectedBy,
     location_id: locationId
+  });
+
+  database.inventory.consumeScopedItems({
+    scope: 'per_sample',
+    orderId: sampleRow.order_id,
+    sourceRef: sampleId,
+    source: 'auto_sample',
+    reason: 'Auto-consumed on sample collection',
+  }).catch((err) => {
+    console.warn('Per-sample inventory consumption failed after sample collection:', err);
   });
 }
 

@@ -142,7 +142,7 @@ async function parseResultsWithAI(
   graphs?: any[]
 }> {
   
-  const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash-exp' })
+  const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash' })
   
   // Get lab's existing mappings for context
   // usage_count may be null for older records, so handle that
@@ -267,7 +267,7 @@ async function storeResultsForOrder(
     .eq('order_id', order.id)
   
   // AI mapping of results to expected analytes
-  const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash-exp' })
+  const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash' })
   
   const mappingPrompt = `Match analyzer results to expected lab analytes.
 
@@ -311,8 +311,9 @@ OUTPUT JSON:
         }
       }
     }
-  } catch (e) {
-    log += 'AI mapping failed, using direct code match. '
+  } catch (e: any) {
+    console.error('AI mapping error:', e?.message, JSON.stringify(e))
+    log += `AI mapping failed: ${e?.message}. `
   }
   
   // Ensure result record exists
@@ -439,9 +440,17 @@ Deno.serve(async (req) => {
   try {
     const payload = await req.json()
     const { record } = payload
-    
+
     if (!record?.raw_content) {
       return new Response(JSON.stringify({ message: 'No content to process' }), {
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+      })
+    }
+
+    // Deduplication guard: process-analyzer-result is the primary handler.
+    // If the row is already being processed or completed, skip to avoid duplicate result_values.
+    if (record.ai_status && record.ai_status !== 'pending') {
+      return new Response(JSON.stringify({ message: 'Already handled by primary processor' }), {
         headers: { ...corsHeaders, 'Content-Type': 'application/json' }
       })
     }

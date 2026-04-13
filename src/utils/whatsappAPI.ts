@@ -264,15 +264,8 @@ export class WhatsAppAPI {
   // Get WhatsApp session ID for current user
   static async getWhatsAppSessionId(): Promise<string | null> {
     try {
-      const { userId } = await this.getCurrentUserSession();
-      if (!userId) return null;
-
-      // Use the active WhatsApp session ID
-      const activeSessionId = 'f1e86dc8-fd5a-4719-a94a-e49729d6ac14';
-      
-      // Optional: Check if this session exists in backend
-      // This could be enhanced to create a new session if needed
-      return activeSessionId;
+      const status = await this.getConnectionStatus();
+      return status.sessionId || null;
     } catch (error) {
       console.error('Error getting WhatsApp session ID:', error);
       return null;
@@ -897,12 +890,14 @@ export class WhatsAppAPI {
     } = {}
   ): Promise<MessageResult> {
     try {
-      const { userId } = await this.getCurrentUserSession();
+      // Use the effective WhatsApp sender account (labs.whatsapp_user_id)
+      // so the session lookup on the backend matches the connected account
+      const whatsappUserId = await this.getEffectiveWhatsAppUserId();
       const labId = await database.getCurrentUserLabId();
-      if (!userId || !labId) {
+      if (!whatsappUserId || !labId) {
         return {
           success: false,
-          message: 'User or lab not available'
+          message: 'WhatsApp not configured. Please sync a user in WhatsApp → User Sync or set Lab WhatsApp Sender in Settings.'
         };
       }
 
@@ -915,21 +910,23 @@ export class WhatsAppAPI {
         };
       }
 
-      let whatsappSessionId: string | null = null;
-      if (WHATSAPP_API_MODE === 'rest') {
-        whatsappSessionId = await this.getWhatsAppSessionId();
-        if (!whatsappSessionId) throw new Error('WhatsApp session not available');
+      // Session ID is required by all backends
+      const whatsappSessionId = await this.getWhatsAppSessionId();
+      if (WHATSAPP_API_MODE === 'rest' && !whatsappSessionId) {
+        throw new Error('WhatsApp session not available');
       }
+
+      const captionText = options.caption || `Report for ${options.patientName || 'Patient'}`;
 
       // Create FormData
       const formData = new FormData();
       if (whatsappSessionId) formData.append('sessionId', whatsappSessionId);
-      formData.append('userId', userId);
+      formData.append('userId', whatsappUserId);
       formData.append('labId', labId);
       formData.append('phoneNumber', `+${formattedPhone}`);
       formData.append('file', file);
-      
-      if (options.caption) formData.append('caption', options.caption);
+      formData.append('caption', captionText);
+      formData.append('content', captionText); // backend uses 'content'
       if (options.patientName) formData.append('patientName', options.patientName);
       if (options.testName) formData.append('testName', options.testName);
 
@@ -947,11 +944,20 @@ export class WhatsAppAPI {
             'Authorization': await this.getAuthHeader()
           }
         });
-        const result = await response.json();
+        const raw = await response.text();
+        let result: any;
+        try {
+          result = raw ? JSON.parse(raw) : null;
+        } catch {
+          return {
+            success: false,
+            message: `Server error (${response.status}): ${raw.slice(0, 120)}`
+          };
+        }
         return result;
       } else {
         const response = await fetch(
-          apiUrl(`/users/${userId}/whatsapp/send-document`),
+          apiUrl(`/users/${userId}/send-document`),
           {
             method: 'POST',
             body: formData,
@@ -960,7 +966,16 @@ export class WhatsAppAPI {
             }
           }
         );
-        const result = await response.json();
+        const raw = await response.text();
+        let result: any;
+        try {
+          result = raw ? JSON.parse(raw) : null;
+        } catch {
+          return {
+            success: false,
+            message: `Server error (${response.status}): ${raw.slice(0, 120)}`
+          };
+        }
         return result;
       }
     } catch (error) {

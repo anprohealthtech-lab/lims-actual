@@ -29,8 +29,8 @@ export const MobileBottomNav: React.FC = () => {
   if (!isNative()) return null;
 
   return (
-    <nav className="fixed bottom-0 left-0 right-0 bg-white border-t border-gray-200 safe-area-bottom z-50">
-      <div className="flex justify-around items-center h-14">
+    <nav className="fixed bottom-0 left-0 right-0 border-t border-gray-200 bg-white/95 backdrop-blur safe-area-bottom z-50">
+      <div className="grid grid-cols-5 items-stretch min-h-[64px] px-1 pb-[max(env(safe-area-inset-bottom),4px)] pt-1">
         {navigationItems.map((item) => {
           const Icon = item.icon;
           const isActive = location.pathname === item.path || 
@@ -40,25 +40,25 @@ export const MobileBottomNav: React.FC = () => {
             <NavLink
               key={item.path}
               to={item.path}
-              className={`flex flex-col items-center justify-center flex-1 h-full relative transition-colors ${
+              className={`relative flex min-h-[56px] flex-col items-center justify-center gap-1 rounded-xl px-1 py-1 text-center transition-colors ${
                 isActive 
                   ? 'text-blue-600' 
                   : 'text-gray-500 hover:text-gray-700'
               }`}
             >
               <div className="relative">
-                <Icon className="h-5 w-5" />
+                <Icon className="h-5 w-5 shrink-0" />
                 {item.badge && item.badge > 0 && (
                   <span className="absolute -top-1 -right-1 bg-red-500 text-white text-xs rounded-full h-4 w-4 flex items-center justify-center">
                     {item.badge > 9 ? '9+' : item.badge}
                   </span>
                 )}
               </div>
-              <span className={`text-xs mt-0.5 ${isActive ? 'font-semibold' : 'font-normal'}`}>
+              <span className={`max-w-full truncate px-0.5 text-[11px] leading-tight ${isActive ? 'font-semibold' : 'font-normal'}`}>
                 {item.label}
               </span>
               {isActive && (
-                <div className="absolute top-0 left-0 right-0 h-0.5 bg-blue-600" />
+                <div className="absolute left-3 right-3 top-0 h-0.5 rounded-full bg-blue-600" />
               )}
             </NavLink>
           );

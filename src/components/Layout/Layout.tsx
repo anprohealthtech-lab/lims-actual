@@ -82,7 +82,7 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
         )}
 
         {/* Main content - Add bottom padding for Android nav */}
-        <main className={`flex-1 min-w-0 p-4 md:p-6 safe-area-x ${isMobile ? 'pb-20' : 'safe-area-bottom mb-16 lg:mb-0'}`}>
+        <main className={`flex-1 min-w-0 p-4 md:p-6 safe-area-x ${isMobile ? 'pb-24' : 'safe-area-bottom mb-16 lg:mb-0'}`}>
           {children}
         </main>
 

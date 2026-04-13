@@ -37,6 +37,36 @@ import InventoryPORequestModal from '../components/Inventory/InventoryPORequestM
 import InventoryPOProcessModal from '../components/Inventory/InventoryPOProcessModal';
 import InventoryConsumeForTest from '../components/Inventory/InventoryConsumeForTest';
 
+const getConsumptionModeMeta = (scope: InventoryItem['consumption_scope']) => {
+  switch (scope) {
+    case 'per_test':
+      return { label: 'Per Test', color: 'bg-indigo-100 text-indigo-700' };
+    case 'per_sample':
+      return { label: 'Per Sample', color: 'bg-sky-100 text-sky-700' };
+    case 'per_order':
+      return { label: 'Per Order', color: 'bg-emerald-100 text-emerald-700' };
+    case 'qc_only':
+      return { label: 'QC Only', color: 'bg-violet-100 text-violet-700' };
+    case 'general':
+      return { label: 'Tracking Only', color: 'bg-slate-100 text-slate-700' };
+    default:
+      return { label: 'Manual', color: 'bg-gray-100 text-gray-700' };
+  }
+};
+
+const consumptionFilterOptions: Array<{
+  value: 'all' | InventoryItem['consumption_scope'];
+  label: string;
+}> = [
+  { value: 'all', label: 'All Consumption Modes' },
+  { value: 'manual', label: 'Manual' },
+  { value: 'per_order', label: 'Per Order' },
+  { value: 'per_sample', label: 'Per Sample' },
+  { value: 'per_test', label: 'Per Test' },
+  { value: 'qc_only', label: 'QC Only' },
+  { value: 'general', label: 'Tracking Only' },
+];
+
 const Inventory: React.FC = () => {
   // State
   const [items, setItems] = useState<InventoryItem[]>([]);
@@ -48,6 +78,7 @@ const Inventory: React.FC = () => {
   const [searchTerm, setSearchTerm] = useState('');
   const [filterType, setFilterType] = useState<string>('all');
   const [filterStatus, setFilterStatus] = useState<string>('all');
+  const [filterConsumption, setFilterConsumption] = useState<'all' | InventoryItem['consumption_scope']>('all');
   const [locations, setLocations] = useState<Array<{ id: string; name: string }>>([]);
   const [locationFilter, setLocationFilter] = useState<string>('all');
 
@@ -119,6 +150,10 @@ const Inventory: React.FC = () => {
       return false;
     }
 
+    if (filterConsumption !== 'all' && item.consumption_scope !== filterConsumption) {
+      return false;
+    }
+
     // Status filter
     if (filterStatus === 'low' && item.current_stock > item.min_stock) {
       return false;
@@ -134,6 +169,11 @@ const Inventory: React.FC = () => {
 
     return true;
   });
+
+  const consumptionCounts = items.reduce<Record<string, number>>((acc, item) => {
+    acc[item.consumption_scope] = (acc[item.consumption_scope] || 0) + 1;
+    return acc;
+  }, {});
 
   // Handle actions
   const handleAddItem = () => {
@@ -373,9 +413,9 @@ const Inventory: React.FC = () => {
         </div>
       )}
 
-      {/* Filters */}
-      <div className="bg-white rounded-xl p-4 shadow-sm border border-gray-100">
-        <div className="flex flex-col sm:flex-row gap-4">
+	      {/* Filters */}
+	      <div className="bg-white rounded-xl p-4 shadow-sm border border-gray-100">
+	        <div className="flex flex-col sm:flex-row gap-4">
           {/* Search */}
           <div className="relative flex-1">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-400" />
@@ -415,10 +455,20 @@ const Inventory: React.FC = () => {
           </select>
 
           {/* Status Filter */}
-          <select
-            value={filterStatus}
-            onChange={(e) => setFilterStatus(e.target.value)}
-            className="px-4 py-2 border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+	          <select
+	            value={filterConsumption}
+	            onChange={(e) => setFilterConsumption(e.target.value as 'all' | InventoryItem['consumption_scope'])}
+	            className="px-4 py-2 border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+	          >
+	            {consumptionFilterOptions.map((option) => (
+	              <option key={option.value} value={option.value}>{option.label}</option>
+	            ))}
+	          </select>
+
+	          <select
+	            value={filterStatus}
+	            onChange={(e) => setFilterStatus(e.target.value)}
+	            className="px-4 py-2 border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
           >
             <option value="all">All Status</option>
             <option value="low">Low Stock</option>
@@ -434,8 +484,42 @@ const Inventory: React.FC = () => {
           >
             <RefreshCw className="h-5 w-5 text-gray-600" />
           </button>
-        </div>
-      </div>
+	        </div>
+	      </div>
+
+	      <div className="bg-white rounded-xl p-4 shadow-sm border border-gray-100">
+	        <div className="flex items-center justify-between gap-3 mb-3">
+	          <div>
+	            <h3 className="font-semibold text-gray-900">Consumption Setup</h3>
+	            <p className="text-sm text-gray-500">Quickly review how items are configured to reduce stock.</p>
+	          </div>
+	          <span className="text-xs text-gray-500">{filteredItems.length} visible items</span>
+	        </div>
+	        <div className="flex flex-wrap gap-2">
+	          {consumptionFilterOptions.filter((option) => option.value !== 'all').map((option) => {
+	            const meta = getConsumptionModeMeta(option.value as InventoryItem['consumption_scope']);
+	            const count = consumptionCounts[option.value] || 0;
+	            const active = filterConsumption === option.value;
+
+	            return (
+	              <button
+	                key={option.value}
+	                onClick={() => setFilterConsumption(active ? 'all' : option.value as InventoryItem['consumption_scope'])}
+	                className={`inline-flex items-center gap-2 rounded-full border px-3 py-1.5 text-sm transition-colors ${
+	                  active
+	                    ? 'border-blue-300 bg-blue-50 text-blue-700'
+	                    : 'border-gray-200 bg-white text-gray-700 hover:bg-gray-50'
+	                }`}
+	              >
+	                <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium ${meta.color}`}>
+	                  {meta.label}
+	                </span>
+	                <span className="font-medium">{count}</span>
+	              </button>
+	            );
+	          })}
+	        </div>
+	      </div>
 
       {/* Items Table */}
       <div className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
@@ -447,6 +531,7 @@ const Inventory: React.FC = () => {
                 <th className="text-left px-4 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wider">Type</th>
                 <th className="text-right px-4 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wider">Stock</th>
                 <th className="text-right px-4 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wider">Tests Remaining</th>
+                <th className="text-left px-4 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wider">Consumption</th>
                 <th className="text-left px-4 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wider">Status</th>
                 <th className="text-left px-4 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wider">Batch / Expiry</th>
                 <th className="text-center px-4 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wider">Actions</th>
@@ -455,7 +540,7 @@ const Inventory: React.FC = () => {
             <tbody className="divide-y divide-gray-100">
               {filteredItems.length === 0 ? (
                 <tr>
-                  <td colSpan={7} className="px-4 py-12 text-center text-gray-500">
+                  <td colSpan={8} className="px-4 py-12 text-center text-gray-500">
                     <Package className="h-12 w-12 mx-auto mb-3 text-gray-300" />
                     <p>No inventory items found</p>
                     <button
@@ -496,6 +581,18 @@ const Inventory: React.FC = () => {
                         ) : (
                           <span className="text-gray-400">-</span>
                         )}
+                      </td>
+                      <td className="px-4 py-3">
+                        <div className="flex flex-col gap-1">
+                          <span className={`inline-flex w-fit items-center px-2 py-1 rounded-full text-xs font-medium ${getConsumptionModeMeta(item.consumption_scope).color}`}>
+                            {getConsumptionModeMeta(item.consumption_scope).label}
+                          </span>
+                          {item.consumption_scope !== 'manual' && item.consumption_scope !== 'general' && (
+                            <span className="text-xs text-gray-500">
+                              {Number(item.consumption_per_use || 0)} / use
+                            </span>
+                          )}
+                        </div>
                       </td>
                       <td className="px-4 py-3">
                         <div className="flex flex-col gap-1">

@@ -1,5 +1,5 @@
 // Use proper fetch for Node.js compatibility
-const fetch = globalThis.fetch || require('node-fetch');
+const fetch = globalThis.fetch;
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -11,7 +11,7 @@ const WHATSAPP_API_BASE_URL = 'https://app.limsapp.in/whatsapp';
 // Prefer env var; fallback to constant for local testing
 const API_KEY = process.env.WA_BACKEND_KEY || process.env.WHATSAPP_API_KEY || 'whatsapp-lims-secure-api-key-2024';
 
-exports.handler = async (event, context) => {
+export const handler = async (event, context) => {
   if (event.httpMethod === 'OPTIONS') {
     return {
       statusCode: 200,

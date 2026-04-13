@@ -210,7 +210,7 @@ export const calculationEngine = {
 
       // Also check formula_variables for patient data
       for (const varName of (analyte.formula_variables || [])) {
-        if (!scope[varName]) {
+        if (scope[varName] === undefined) {
           const upperVar = varName.toUpperCase();
           if (valueMap[upperVar] !== undefined) {
             scope[varName] = valueMap[upperVar];
@@ -238,7 +238,17 @@ export const calculationEngine = {
 
       // 4. Evaluate formula using mathjs
       try {
-        const result = evaluate(analyte.formula, scope);
+        // Normalize formula: replace x^y with pow(x,y) to avoid
+        // mathjs operator precedence issues with negative/fractional exponents.
+        // e.g. (x/0.9)^(-1.2) can mis-parse as (x/0.9)^1.2 * -1
+        const normalizedFormula = analyte.formula.replace(
+          /\(([^()]+)\)\s*\^\s*\(([^()]+)\)/g,
+          'pow($1, $2)'
+        ).replace(
+          /([A-Za-z_][A-Za-z0-9_]*|\d+(?:\.\d+)?)\s*\^\s*([A-Za-z_][A-Za-z0-9_]*|\d+(?:\.\d+)?)/g,
+          'pow($1, $2)'
+        );
+        const result = evaluate(normalizedFormula, scope);
         const roundedResult = round(result, 2);
 
         results.push({

@@ -52,6 +52,9 @@ const navigation = [
   { name: 'Patients', href: '/patients', icon: Users, category: 'management' },
   { name: 'Tests & Samples', href: '/tests', icon: TestTube, category: 'management' },
 
+  // Corporate Bulk Registration
+  { name: 'Corporate Bulk', href: '/corporate-bulk', icon: Building2, category: 'corporate' },
+
   // Business & Administrative
   { name: 'Billing', href: '/billing', icon: Receipt, category: 'business' },
   { name: 'Cash Reconciliation', href: '/cash-reconciliation', icon: DollarSign, category: 'business' },
@@ -92,7 +95,7 @@ const navigation = [
   { name: 'Settings', href: '/settings', icon: Settings, category: 'tools' },
 ];
 
-type CategoryKey = 'core' | 'management' | 'business' | 'communication' | 'qc' | 'inventory' | 'workflows' | 'masters' | 'outsourced' | 'transit' | 'tools';
+type CategoryKey = 'core' | 'management' | 'business' | 'communication' | 'qc' | 'inventory' | 'workflows' | 'masters' | 'outsourced' | 'transit' | 'tools' | 'corporate';
 
 const categoryConfig: Record<CategoryKey, {
   activeBg: string; activeText: string; activeBorder: string;
@@ -109,11 +112,13 @@ const categoryConfig: Record<CategoryKey, {
   outsourced:    { activeBg: 'bg-teal-50',    activeText: 'text-teal-700',    activeBorder: 'border-l-teal-700',    hoverBg: 'hover:bg-teal-50',    hoverText: 'hover:text-teal-700',    hoverBorder: 'hover:border-l-teal-300',    activeIcon: 'text-teal-700'    },
   transit:       { activeBg: 'bg-amber-50',   activeText: 'text-amber-700',   activeBorder: 'border-l-amber-700',   hoverBg: 'hover:bg-amber-50',   hoverText: 'hover:text-amber-700',   hoverBorder: 'hover:border-l-amber-300',   activeIcon: 'text-amber-700'   },
   tools:         { activeBg: 'bg-gray-50',    activeText: 'text-gray-700',    activeBorder: 'border-l-gray-700',    hoverBg: 'hover:bg-gray-50',    hoverText: 'hover:text-gray-700',    hoverBorder: 'hover:border-l-gray-300',    activeIcon: 'text-gray-700'    },
+  corporate:     { activeBg: 'bg-violet-50',  activeText: 'text-violet-700',  activeBorder: 'border-l-violet-700',  hoverBg: 'hover:bg-violet-50',  hoverText: 'hover:text-violet-700',  hoverBorder: 'hover:border-l-violet-300',  activeIcon: 'text-violet-700'  },
 };
 
 const sections: { label: string; emoji: string; category: CategoryKey }[] = [
   { label: 'Daily Operations',   emoji: '🔬', category: 'core' },
   { label: 'Patient Management', emoji: '👥', category: 'management' },
+  { label: 'Corporate Bulk',     emoji: '🏢', category: 'corporate' },
   { label: 'Business & Reports', emoji: '💼', category: 'business' },
   { label: 'Communication',      emoji: '💬', category: 'communication' },
   { label: 'Quality Control',    emoji: '🛡️', category: 'qc' },

@@ -37,8 +37,7 @@ export default defineConfig({
             'survey-creator-core',
             'survey-creator-react',
           ],
-          'vendor-grapesjs': ['@grapesjs/studio-sdk'],
-          'vendor-math': ['mathjs'],
+'vendor-math': ['mathjs'],
           'vendor-misc': ['date-fns', 'qrcode', 'qrcode.react', 'jsbarcode', 'browser-image-compression'],
         }
       }

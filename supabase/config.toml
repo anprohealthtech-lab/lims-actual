@@ -376,3 +376,9 @@ entrypoint = "./functions/onboarding-lab/index.ts"
 enabled = true
 verify_jwt = false
 entrypoint = "./functions/analyzer-ingest/index.ts"
+
+[functions.dispatch-order-to-analyzer]
+verify_jwt = false
+
+[functions.auto-dispatch-analyzer]
+verify_jwt = false
