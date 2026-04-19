@@ -68,7 +68,9 @@ interface TestGroup {
     baseFontSize?: number;
   } | null;
   group_interpretation?: string | null;
+  global_test_catalog_id?: string | null;
   analyzer_connection_id?: string | null;
+  is_section_only?: boolean;
 }
 
 const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGroup }) => {
@@ -112,7 +114,9 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
     ref_range_ai_config: testGroup?.ref_range_ai_config || { enabled: false, consider_age: true },
     required_patient_inputs: testGroup?.required_patient_inputs || [],
     group_interpretation: testGroup?.group_interpretation || '',
+    global_test_catalog_id: testGroup?.global_test_catalog_id || '',
     analyzer_connection_id: testGroup?.analyzer_connection_id || '',
+    is_section_only: testGroup?.is_section_only ?? false,
   });
 
   const [analytes, setAnalytes] = useState<any[]>([]);
@@ -241,12 +245,12 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
           const labAnalyteIds = withLabAnalyte.map((r: any) => r.lab_analyte_id);
           const fallbackAnalyteIds = withoutLabAnalyte.map((r: any) => r.analyte_id).filter(Boolean);
 
-          const LA_SELECT = `
-            id, analyte_id,
-            name, unit, reference_range, method,
-            low_critical, high_critical,
-            interpretation_low, interpretation_normal, interpretation_high,
-            lab_specific_reference_range,
+            const LA_SELECT = `
+              id, analyte_id,
+              name, unit, category, reference_range, method,
+              low_critical, high_critical,
+              interpretation_low, interpretation_normal, interpretation_high,
+              lab_specific_reference_range,
             lab_specific_interpretation_low,
             lab_specific_interpretation_normal,
             lab_specific_interpretation_high,
@@ -312,7 +316,7 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
                   // Identity — always from global analytes
                   id: la.analyte_id,
                   lab_analyte_id: la.id,  // preserve lab_analyte PK for interface config lookup
-                  category: global?.category || 'General',
+                  category: la.category ?? global?.category ?? '',
                   is_global: global?.is_global ?? false,
                   // All display/entry fields — lab_analytes is source of truth, global is fallback
                   name: la.name || global?.name,
@@ -597,8 +601,8 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
       onSubmit({
         ...formData,
         category: formData.category || null,
-        analytes: formData.selectedAnalytes,
-        analyteMetadata,
+        analytes: formData.is_section_only ? [] : formData.selectedAnalytes,
+        analyteMetadata: formData.is_section_only ? {} : analyteMetadata,
         price: parseFloat(formData.price),
         collection_charge: formData.collection_charge ? parseFloat(formData.collection_charge) : null,
         tat_hours: parseFloat(formData.tat_hours) || 3,
@@ -617,7 +621,9 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
         report_priority: formData.report_priority ? parseInt(formData.report_priority, 10) : null,
         print_options: formData.print_options || null,
         group_interpretation: formData.group_interpretation || null,
+        global_test_catalog_id: formData.global_test_catalog_id || null,
         analyzer_connection_id: formData.analyzer_connection_id || null,
+        is_section_only: formData.is_section_only,
         // Auto-sync legacy boolean fields from required_patient_inputs
         lmpRequired: rpi.includes('lmp'),
         idRequired: rpi.includes('id_document'),
@@ -1040,6 +1046,36 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
                 />
                 <p className="text-xs text-gray-500 mt-1">Turnaround time for this test (used for TAT breach alerts)</p>
               </div>
+            </div>
+
+            <div className="rounded-xl border border-purple-200 bg-purple-50/60 p-4">
+              <label className="flex items-start gap-3 cursor-pointer">
+                <input
+                  type="checkbox"
+                  name="is_section_only"
+                  checked={formData.is_section_only}
+                  onChange={(e) => {
+                    const checked = e.target.checked;
+                    setFormData(prev => ({
+                      ...prev,
+                      is_section_only: checked,
+                      selectedAnalytes: checked ? [] : prev.selectedAnalytes,
+                    }));
+                    if (checked) {
+                      setAnalyteMetadata({});
+                      setShowSelectedOnly(false);
+                    }
+                  }}
+                  className="mt-1 h-4 w-4 text-purple-600 focus:ring-purple-500 border-gray-300 rounded"
+                />
+                <div>
+                  <div className="text-sm font-semibold text-purple-900">Section-only report</div>
+                  <p className="text-xs text-purple-700 mt-1">
+                    Use this for radiology, pathology impressions, narrative findings, or other report types that do not need analyte rows.
+                    When enabled, analyte selection is disabled and verification will happen at the section/report level.
+                  </p>
+                </div>
+              </label>
             </div>
 
             {showProviderOnlyFields && (
@@ -1534,15 +1570,35 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
           {/* Analyte Selection */}
           <div className="space-y-4">
             <div className="flex items-center justify-between">
-              <h3 className="text-lg font-medium text-gray-900">Select Analytes</h3>
-              <button
-                type="button"
-                onClick={() => setShowAnalyteForm(true)}
-                className="flex items-center px-3 py-1.5 text-sm bg-blue-600 text-white rounded-md hover:bg-blue-700 transition-colors"
-              >
-                <Plus className="h-4 w-4 mr-1" />
-                Add New Analyte
-              </button>
+              <div>
+                <h3 className="text-lg font-medium text-gray-900">Select Analytes</h3>
+                {formData.is_section_only && (
+                  <p className="text-sm text-purple-700 mt-1">
+                    Analyte selection is disabled because this test group is marked as section-only.
+                  </p>
+                )}
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={loadData}
+                  disabled={loading || formData.is_section_only}
+                  className="flex items-center px-3 py-1.5 text-sm border border-gray-300 text-gray-700 rounded-md hover:bg-gray-50 transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
+                  title="Refresh analyte list"
+                >
+                  <RefreshCw className={`h-4 w-4 mr-1 ${loading ? 'animate-spin' : ''}`} />
+                  Refresh
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setShowAnalyteForm(true)}
+                  disabled={formData.is_section_only}
+                  className="flex items-center px-3 py-1.5 text-sm bg-blue-600 text-white rounded-md hover:bg-blue-700 transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
+                >
+                  <Plus className="h-4 w-4 mr-1" />
+                  Add New Analyte
+                </button>
+              </div>
             </div>
 
             {/* Search Box + Show Selected Toggle */}
@@ -1554,6 +1610,7 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
                   placeholder="Search analytes by name, category, or unit..."
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
+                  disabled={formData.is_section_only}
                   className="w-full pl-9 pr-4 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                 />
               </div>
@@ -1562,14 +1619,25 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
                   type="checkbox"
                   checked={showSelectedOnly}
                   onChange={(e) => setShowSelectedOnly(e.target.checked)}
+                  disabled={formData.is_section_only}
                   className="h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded"
                 />
                 Show Selected ({formData.selectedAnalytes.length})
               </label>
             </div>
 
+            {formData.is_section_only && (
+              <div className="text-center py-8 bg-purple-50 rounded-lg border border-purple-200">
+                <AlertCircle className="h-10 w-10 text-purple-400 mx-auto mb-3" />
+                <h4 className="text-base font-medium text-purple-900 mb-1">Section-only mode is enabled</h4>
+                <p className="text-sm text-purple-700">
+                  This report will use section content instead of analyte rows.
+                </p>
+              </div>
+            )}
+
             {/* No Analytes Available Message */}
-            {!loading && analytes.length === 0 && (
+            {!formData.is_section_only && !loading && analytes.length === 0 && (
               <div className="text-center py-8 bg-gray-50 rounded-lg border-2 border-dashed border-gray-300">
                 <AlertCircle className="h-12 w-12 text-gray-400 mx-auto mb-4" />
                 <h4 className="text-lg font-medium text-gray-900 mb-2">No Analytes Available</h4>
@@ -1590,7 +1658,7 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
             )}
 
             {/* Loading State */}
-            {loading && (
+            {!formData.is_section_only && loading && (
               <div className="text-center py-8">
                 <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600 mx-auto"></div>
                 <p className="text-gray-600 mt-2">Loading analytes...</p>
@@ -1598,7 +1666,7 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
             )}
 
             {/* No Search Results */}
-            {!loading && analytes.length > 0 && filteredAnalytes.length === 0 && (searchQuery || showSelectedOnly) && (
+            {!formData.is_section_only && !loading && analytes.length > 0 && filteredAnalytes.length === 0 && (searchQuery || showSelectedOnly) && (
               <div className="text-center py-8 bg-gray-50 rounded-lg border border-gray-200">
                 <Search className="h-8 w-8 text-gray-400 mx-auto mb-2" />
                 <p className="text-gray-600 mb-4">
@@ -1622,7 +1690,7 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
             )}
 
             {/* Analyte Selection Grid */}
-            {filteredAnalytes.length > 0 && (
+            {!formData.is_section_only && filteredAnalytes.length > 0 && (
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4 max-h-60 overflow-y-auto border border-gray-200 rounded-lg p-4">
                 {filteredAnalytes.map((analyte) => (
                   <label key={analyte.id} className="flex items-start p-3 border border-gray-200 rounded-lg hover:bg-gray-50 cursor-pointer">
@@ -1655,7 +1723,7 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
             )}
 
             {/* Selected Analytes Summary */}
-            {formData.selectedAnalytes.length > 0 && (
+            {!formData.is_section_only && formData.selectedAnalytes.length > 0 && (
               <div className="bg-green-50 border border-green-200 rounded-lg p-4">
                 <div className="flex items-center justify-between mb-2">
                   <h4 className="font-medium text-green-900">
@@ -1978,7 +2046,7 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
               </button>
               <button
                 type="submit"
-                disabled={formData.selectedAnalytes.length === 0}
+                disabled={false}
                 className="px-6 py-2 bg-green-600 text-white rounded-md hover:bg-green-700 disabled:bg-gray-400 disabled:cursor-not-allowed transition-colors"
               >
                 {testGroup ? 'Update Test Group' : 'Create Test Group'}
@@ -2006,8 +2074,8 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
                   lab_analyte_id: editingAttachedAnalyte.lab_analyte_id ?? null,
                 }}
                 availableAnalytes={analytes
-                  .filter(a => !a.is_calculated && a.id !== editingAttachedAnalyte.id)
-                  .map(a => ({ id: a.id, name: a.name, unit: a.unit || '', category: a.category }))}
+                    .filter(a => !a.is_calculated && a.id !== editingAttachedAnalyte.id)
+                    .map(a => ({ id: a.id, lab_analyte_id: a.lab_analyte_id || null, name: a.name, unit: a.unit || '', category: a.category }))}
                 testGroupAnalyteIds={formData.selectedAnalytes.filter((id: string) => id !== editingAttachedAnalyte.id)}
                 onSave={handleUpdateAttachedAnalyte}
                 onCancel={() => setEditingAttachedAnalyte(null)}

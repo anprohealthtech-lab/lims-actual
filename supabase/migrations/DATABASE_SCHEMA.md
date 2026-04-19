@@ -431,6 +431,7 @@ CREATE TABLE public.analyzer_order_queue (
   last_error text,
   next_retry_at timestamp with time zone,
   sending_started_at timestamp with time zone,
+  updated_at timestamp with time zone DEFAULT now(),
   CONSTRAINT analyzer_order_queue_pkey PRIMARY KEY (id),
   CONSTRAINT analyzer_order_queue_lab_id_fkey FOREIGN KEY (lab_id) REFERENCES public.labs(id),
   CONSTRAINT analyzer_order_queue_analyzer_connection_id_fkey FOREIGN KEY (analyzer_connection_id) REFERENCES public.analyzer_connections(id),
@@ -590,6 +591,52 @@ CREATE TABLE public.bookings (
   CONSTRAINT bookings_created_by_fkey FOREIGN KEY (created_by) REFERENCES auth.users(id),
   CONSTRAINT bookings_account_id_fkey FOREIGN KEY (account_id) REFERENCES public.accounts(id),
   CONSTRAINT bookings_assigned_phlebo_id_fkey FOREIGN KEY (assigned_phlebo_id) REFERENCES public.users(id)
+);
+CREATE TABLE public.bulk_pdf_download_requests (
+  id uuid NOT NULL DEFAULT gen_random_uuid(),
+  lab_id uuid NOT NULL,
+  account_id uuid,
+  bulk_batch_id uuid,
+  order_ids ARRAY NOT NULL DEFAULT '{}'::uuid[],
+  date_from date,
+  date_to date,
+  status text NOT NULL DEFAULT 'pending'::text CHECK (status = ANY (ARRAY['pending'::text, 'processing'::text, 'completed'::text, 'failed'::text])),
+  zip_url text,
+  total_orders integer NOT NULL DEFAULT 0,
+  processed_orders integer NOT NULL DEFAULT 0,
+  failed_orders integer NOT NULL DEFAULT 0,
+  error_message text,
+  created_by uuid,
+  created_at timestamp with time zone NOT NULL DEFAULT now(),
+  completed_at timestamp with time zone,
+  expires_at timestamp with time zone,
+  CONSTRAINT bulk_pdf_download_requests_pkey PRIMARY KEY (id),
+  CONSTRAINT bulk_pdf_download_requests_lab_id_fkey FOREIGN KEY (lab_id) REFERENCES public.labs(id),
+  CONSTRAINT bulk_pdf_download_requests_account_id_fkey FOREIGN KEY (account_id) REFERENCES public.accounts(id),
+  CONSTRAINT bulk_pdf_download_requests_bulk_batch_id_fkey FOREIGN KEY (bulk_batch_id) REFERENCES public.bulk_registration_batches(id),
+  CONSTRAINT bulk_pdf_download_requests_created_by_fkey FOREIGN KEY (created_by) REFERENCES auth.users(id)
+);
+CREATE TABLE public.bulk_registration_batches (
+  id uuid NOT NULL DEFAULT gen_random_uuid(),
+  lab_id uuid NOT NULL,
+  account_id uuid NOT NULL,
+  package_id uuid,
+  test_group_ids ARRAY DEFAULT '{}'::uuid[],
+  batch_source text NOT NULL DEFAULT 'manual'::text CHECK (batch_source = ANY (ARRAY['manual'::text, 'excel_upload'::text])),
+  total_patients integer NOT NULL DEFAULT 0,
+  created_orders integer NOT NULL DEFAULT 0,
+  failed_orders integer NOT NULL DEFAULT 0,
+  status text NOT NULL DEFAULT 'pending'::text CHECK (status = ANY (ARRAY['pending'::text, 'processing'::text, 'completed'::text, 'partial'::text, 'failed'::text])),
+  excel_filename text,
+  notes text,
+  created_by uuid,
+  created_at timestamp with time zone NOT NULL DEFAULT now(),
+  completed_at timestamp with time zone,
+  CONSTRAINT bulk_registration_batches_pkey PRIMARY KEY (id),
+  CONSTRAINT bulk_registration_batches_lab_id_fkey FOREIGN KEY (lab_id) REFERENCES public.labs(id),
+  CONSTRAINT bulk_registration_batches_account_id_fkey FOREIGN KEY (account_id) REFERENCES public.accounts(id),
+  CONSTRAINT bulk_registration_batches_package_id_fkey FOREIGN KEY (package_id) REFERENCES public.packages(id),
+  CONSTRAINT bulk_registration_batches_created_by_fkey FOREIGN KEY (created_by) REFERENCES auth.users(id)
 );
 CREATE TABLE public.calibration_records (
   id uuid NOT NULL DEFAULT gen_random_uuid(),
@@ -966,7 +1013,7 @@ CREATE TABLE public.inventory_items (
   expiry_date date,
   storage_temp text,
   storage_location text,
-  consumption_scope text DEFAULT 'manual'::text CHECK (consumption_scope = ANY (ARRAY['per_test'::text, 'per_sample'::text, 'per_order'::text, 'general'::text, 'manual'::text])),
+  consumption_scope text DEFAULT 'manual'::text CHECK (consumption_scope = ANY (ARRAY['per_test'::text, 'per_sample'::text, 'per_order'::text, 'general'::text, 'manual'::text, 'qc_only'::text])),
   consumption_per_use numeric DEFAULT 1,
   pack_contains numeric,
   unit_price numeric,
@@ -1248,9 +1295,13 @@ CREATE TABLE public.lab_analyte_interface_config (
   notes text,
   created_at timestamp with time zone NOT NULL DEFAULT now(),
   updated_at timestamp with time zone NOT NULL DEFAULT now(),
+  analyzer_connection_id uuid,
+  dilution_factor numeric NOT NULL DEFAULT 1 CHECK (dilution_factor >= 1::numeric),
+  dilution_mode text NOT NULL DEFAULT 'auto'::text CHECK (dilution_mode = ANY (ARRAY['auto'::text, 'manual'::text])),
   CONSTRAINT lab_analyte_interface_config_pkey PRIMARY KEY (id),
   CONSTRAINT lab_analyte_interface_config_lab_id_fkey FOREIGN KEY (lab_id) REFERENCES public.labs(id),
-  CONSTRAINT lab_analyte_interface_config_lab_analyte_id_fkey FOREIGN KEY (lab_analyte_id) REFERENCES public.lab_analytes(id)
+  CONSTRAINT lab_analyte_interface_config_lab_analyte_id_fkey FOREIGN KEY (lab_analyte_id) REFERENCES public.lab_analytes(id),
+  CONSTRAINT lab_analyte_interface_config_analyzer_connection_id_fkey FOREIGN KEY (analyzer_connection_id) REFERENCES public.analyzer_connections(id)
 );
 CREATE TABLE public.lab_analytes (
   id uuid NOT NULL DEFAULT gen_random_uuid(),
@@ -1611,6 +1662,8 @@ CREATE TABLE public.labs (
   barcode_printer_name text,
   report_printer_name text,
   auto_collect_on_registration boolean NOT NULL DEFAULT false,
+  auto_print_barcode_on_order boolean NOT NULL DEFAULT false,
+  auto_print_report_on_approval boolean NOT NULL DEFAULT false,
   CONSTRAINT labs_pkey PRIMARY KEY (id),
   CONSTRAINT labs_default_processing_location_id_fkey FOREIGN KEY (default_processing_location_id) REFERENCES public.locations(id)
 );
@@ -1682,6 +1735,10 @@ CREATE TABLE public.locations (
   upi_id text CHECK (upi_id IS NULL OR upi_id = ''::text OR upi_id ~ '^[a-zA-Z0-9._-]+@[a-zA-Z0-9._-]+$'::text),
   bank_details jsonb,
   is_main_lab boolean DEFAULT false,
+  barcode_printer_name text,
+  report_printer_name text,
+  auto_print_barcode_on_order boolean,
+  auto_print_report_on_approval boolean,
   CONSTRAINT locations_pkey PRIMARY KEY (id),
   CONSTRAINT locations_lab_id_fkey FOREIGN KEY (lab_id) REFERENCES public.labs(id)
 );
@@ -1897,6 +1954,7 @@ CREATE TABLE public.orders (
   loyalty_discount_amount numeric DEFAULT 0,
   collection_charge numeric DEFAULT NULL::numeric,
   report_settings jsonb DEFAULT '{}'::jsonb,
+  bulk_batch_id uuid,
   CONSTRAINT orders_pkey PRIMARY KEY (id),
   CONSTRAINT orders_sample_collector_id_fkey FOREIGN KEY (sample_collector_id) REFERENCES public.users(id),
   CONSTRAINT orders_patient_id_fkey FOREIGN KEY (patient_id) REFERENCES public.patients(id),
@@ -1910,7 +1968,8 @@ CREATE TABLE public.orders (
   CONSTRAINT orders_outsourced_lab_id_fkey FOREIGN KEY (outsourced_lab_id) REFERENCES public.outsourced_labs(id),
   CONSTRAINT orders_trend_graph_generated_by_fkey FOREIGN KEY (trend_graph_generated_by) REFERENCES public.users(id),
   CONSTRAINT orders_approved_by_fkey FOREIGN KEY (approved_by) REFERENCES public.users(id),
-  CONSTRAINT orders_collected_at_location_id_fkey FOREIGN KEY (collected_at_location_id) REFERENCES public.locations(id)
+  CONSTRAINT orders_collected_at_location_id_fkey FOREIGN KEY (collected_at_location_id) REFERENCES public.locations(id),
+  CONSTRAINT orders_bulk_batch_id_fkey FOREIGN KEY (bulk_batch_id) REFERENCES public.bulk_registration_batches(id)
 );
 CREATE TABLE public.outsourced_lab_prices (
   id uuid NOT NULL DEFAULT gen_random_uuid(),
@@ -2081,6 +2140,8 @@ CREATE TABLE public.patients (
   portal_access_enabled boolean NOT NULL DEFAULT false,
   portal_access_sent_at timestamp with time zone,
   portal_pin_reset_at timestamp with time zone,
+  patient_number text,
+  corporate_employee_id text,
   CONSTRAINT patients_pkey PRIMARY KEY (id),
   CONSTRAINT patients_default_doctor_id_fkey FOREIGN KEY (default_doctor_id) REFERENCES public.doctors(id),
   CONSTRAINT patients_default_location_id_fkey FOREIGN KEY (default_location_id) REFERENCES public.locations(id),

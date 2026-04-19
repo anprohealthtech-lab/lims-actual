@@ -61,18 +61,37 @@ Deno.serve(async (req) => {
       })
     }
 
-    // samples is a 1-to-many reverse FK array — pick first non-null barcode
+    // Only use the physical tube barcode from samples.barcode — no fallbacks.
+    // Using a non-numeric fallback (e.g. LIMS sample_id) causes the analyzer to echo
+    // that string back in the ORU result, which then matches the wrong sample in the DB.
     const samplesArr: { barcode: string }[] = Array.isArray((orderData as any).samples)
       ? (orderData as any).samples
       : (orderData as any).samples ? [(orderData as any).samples] : []
-    const sampleBarcodeFromTable = samplesArr.find((s) => s.barcode)?.barcode
+    let sampleBarcode: string | null = samplesArr.find((s) => s.barcode)?.barcode ?? null
 
-    // Priority: actual samples.barcode → orders.sample_id (human ID) → order_number → UUID tail
-    let sampleBarcode: string =
-      sampleBarcodeFromTable ??
-      (orderData as any).sample_id ??
-      (orderData as any).order_number?.toString() ??
-      orderId.split('-').pop()
+    // If barcode not yet set (sample not yet printed/scanned), retry once after 4 s.
+    // The DB trigger fn_dispatch_on_barcode_set will re-queue when barcode is assigned.
+    if (!sampleBarcode) {
+      await new Promise((r) => setTimeout(r, 4000))
+      const { data: freshSamples } = await supabase
+        .from('samples')
+        .select('barcode')
+        .eq('order_id', orderId)
+        .not('barcode', 'is', null)
+        .limit(1)
+      sampleBarcode = freshSamples?.[0]?.barcode ?? null
+    }
+
+    // Still no barcode — abort. The DB trigger will dispatch when barcode is set.
+    if (!sampleBarcode) {
+      return new Response(JSON.stringify({
+        success: false,
+        message: 'Sample barcode not yet assigned. Dispatch will be triggered automatically when the barcode is set.',
+        order_id: orderId,
+      }), {
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      })
+    }
 
     const patient = (orderData as any).patients
     const priority = orderData.priority === 'STAT' ? 1 : 5
@@ -129,19 +148,6 @@ Deno.serve(async (req) => {
       // Wait 4 seconds and retry once before giving up.
       await new Promise((r) => setTimeout(r, 4000))
 
-      // Also re-fetch the sample barcode — samples table may not be written yet at webhook time
-      if (!sampleBarcodeFromTable) {
-        const { data: freshSamples } = await supabase
-          .from('samples')
-          .select('barcode')
-          .eq('order_id', orderId)
-          .not('barcode', 'is', null)
-          .limit(1)
-        if (freshSamples?.[0]?.barcode) {
-          sampleBarcode = freshSamples[0].barcode
-        }
-      }
-
       const { data: otRowsRetry } = await supabase
         .from('order_tests')
         .select(`id, test_group_id, test_groups!inner(id, code, name, analyzer_connection_id)`)
@@ -175,20 +181,6 @@ Deno.serve(async (req) => {
       }
 
       uniqueLinks.push(...retryLinks)
-    }
-
-    // If barcode is still a fallback value (no real sample barcode found at webhook time),
-    // do one final re-fetch regardless of whether retry was needed.
-    if (!sampleBarcodeFromTable) {
-      const { data: freshSamples } = await supabase
-        .from('samples')
-        .select('barcode')
-        .eq('order_id', orderId)
-        .not('barcode', 'is', null)
-        .limit(1)
-      if (freshSamples?.[0]?.barcode) {
-        sampleBarcode = freshSamples[0].barcode
-      }
     }
 
     // 3. Group test group codes by analyzer_connection_id

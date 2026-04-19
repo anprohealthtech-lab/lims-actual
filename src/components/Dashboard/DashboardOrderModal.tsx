@@ -296,6 +296,19 @@ const DashboardOrderModal: React.FC<DashboardOrderModalProps> = ({
     fetchInvoiceDiscount();
   }, [order.invoice_id, invoiceRefreshTrigger]);
 
+  // When invoice has a discount, recalculate currentDue using total_after_discount
+  // instead of order.total_amount (which doesn't reflect the discount)
+  useEffect(() => {
+    if (invoiceDiscount && invoiceDiscount.total_discount > 0) {
+      const chargesTotal = orderBillingItems.reduce((s: number, i: any) => s + (i.amount || 0), 0);
+      setCurrentDue(Math.max(0, invoiceDiscount.total_after_discount + chargesTotal - (order.paid_amount || 0)));
+    }
+  }, [invoiceDiscount, orderBillingItems]);
+
+  const testsSubtotalDisplay = invoiceDiscount?.subtotal != null
+    ? invoiceDiscount.subtotal
+    : Math.max(0, (order.total_amount || 0) - collectionCharge);
+
   // Load order billing items (extra charges) and item type catalog.
   // order.total_amount = tests + collection ONLY (charges are always separate in order_billing_items).
   // currentTotal = order.total_amount + sum(all billing items).
@@ -947,13 +960,28 @@ const DashboardOrderModal: React.FC<DashboardOrderModalProps> = ({
         return;
       }
 
-      // Apply entire discount to the primary invoice
+      const primaryInvoice = (allInvoices || []).find((inv: any) => inv.id === order.invoice_id);
+      const primarySubtotal = parseFloat(primaryInvoice?.subtotal || '0') || 0;
+      const primaryPaid = parseFloat(primaryInvoice?.amount_paid || '0') || 0;
+      const primaryTotalAfterDiscount = Math.max(0, primarySubtotal - discountAmt);
+
+      if (primaryTotalAfterDiscount < primaryPaid) {
+        alert(`Discount of ₹${discountAmt} would make this invoice total ₹${primaryTotalAfterDiscount} less than invoice paid amount ₹${primaryPaid}.`);
+        return;
+      }
+
+      // Apply entire discount to the primary invoice using the same fields
+      // the dashboard and billing views read back.
       const { error } = await supabase
         .from('invoices')
         .update({
           discount: discountAmt,
-          total: parseFloat((allInvoices || []).find((inv: any) => inv.id === order.invoice_id)?.subtotal || '0') - discountAmt,
-          notes: discountReason || undefined,
+          total_discount: discountAmt,
+          total_before_discount: primarySubtotal,
+          total_after_discount: primaryTotalAfterDiscount,
+          total: primaryTotalAfterDiscount,
+          notes: discountReason.trim() || null,
+          discount_source: 'lab',
         })
         .eq('id', order.invoice_id);
 
@@ -963,6 +991,8 @@ const DashboardOrderModal: React.FC<DashboardOrderModalProps> = ({
       setDiscountInput('');
       setDiscountReason('');
       setInvoiceRefreshTrigger(t => t + 1);
+      setCurrentDue(Math.max(0, newTotal - combinedPaid));
+      await onUpdateStatus(order.id, order.status);
       alert('Discount saved. Please regenerate the PDF to reflect the change.');
     } catch (err: any) {
       alert(`Failed to save discount: ${err.message}`);
@@ -1747,7 +1777,7 @@ const DashboardOrderModal: React.FC<DashboardOrderModalProps> = ({
                         Tests Subtotal
                       </span>
                       <span className="font-bold text-gray-900 text-base">
-                        ₹{Math.max(0, (order.total_amount || 0) - collectionCharge).toLocaleString()}
+                        ₹{testsSubtotalDisplay.toLocaleString()}
                       </span>
                     </div>
 
@@ -1755,7 +1785,7 @@ const DashboardOrderModal: React.FC<DashboardOrderModalProps> = ({
                     <div className="flex justify-between items-center p-2 rounded hover:bg-gray-50 transition-colors">
                       <span className="text-sm text-gray-600 font-medium flex items-center gap-1">
                         Collection Charge
-                        {!editingCollectionCharge && (
+                        {!editingCollectionCharge && !order.invoice_id && (
                           <button
                             onClick={() => { setEditingCollectionCharge(true); setCollectionChargeInput(collectionCharge > 0 ? String(collectionCharge) : ''); }}
                             className="ml-1 text-gray-400 hover:text-blue-500 transition-colors"
@@ -2539,3 +2569,4 @@ const DashboardOrderModal: React.FC<DashboardOrderModalProps> = ({
 };
 
 export default DashboardOrderModal;
+

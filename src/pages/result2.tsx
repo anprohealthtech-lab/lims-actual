@@ -749,12 +749,37 @@ const Result2: React.FC = () => {
                           </div>
 
                           {/* TAT Warning */}
-                          {testGroup.hours_until_tat_breach !== null && testGroup.hours_until_tat_breach < 24 && (
-                            <div className="mt-3 p-2 bg-red-50 border border-red-200 rounded text-xs text-red-700">
-                              <AlertTriangle className="h-3 w-3 inline mr-1" />
-                              TAT breach in {Math.round(testGroup.hours_until_tat_breach)} hours
-                            </div>
-                          )}
+                          {testGroup.hours_until_tat_breach !== null && testGroup.panel_status !== 'completed' && testGroup.tat_hours && (() => {
+                            const pctRemaining = (testGroup.hours_until_tat_breach / testGroup.tat_hours) * 100;
+                            const hoursLeft = testGroup.hours_until_tat_breach;
+                            const minsLeft = Math.round(hoursLeft * 60);
+
+                            // Only show when less than 50% of TAT time remains
+                            if (pctRemaining > 50) return null;
+
+                            // Color tiers: green >50% (never shown), blue 20–50%, red <20%
+                            const isRed = pctRemaining < 20 || hoursLeft < 0;
+                            const isBlue = !isRed && pctRemaining < 50;
+
+                            const colors = isRed
+                              ? 'bg-red-50 border-red-200 text-red-700'
+                              : isBlue
+                                ? 'bg-blue-50 border-blue-200 text-blue-700'
+                                : 'bg-green-50 border-green-200 text-green-700';
+
+                            const label = hoursLeft < 0
+                              ? `TAT breached ${Math.abs(Math.round(hoursLeft))}h ago`
+                              : hoursLeft < (1/6)  // less than 10 mins
+                                ? `TAT breach in ${minsLeft} min`
+                                : `TAT breach in ${Math.round(hoursLeft)} hours`;
+
+                            return (
+                              <div className={`mt-3 p-2 border rounded text-xs ${colors}`}>
+                                <AlertTriangle className="h-3 w-3 inline mr-1" />
+                                {label}
+                              </div>
+                            );
+                          })()}
 
                           {/* Workflow Button */}
                           {testGroup.workflow_eligible && (

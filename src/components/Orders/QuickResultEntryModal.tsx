@@ -31,6 +31,8 @@ interface AnalyteRow {
   is_default?: boolean;
   formula?: string | null;
   formula_variables?: string[] | string | null;
+  verify_note?: string;
+  is_rerun?: boolean;
 }
 
 interface TestGroup {
@@ -38,6 +40,7 @@ interface TestGroup {
   test_group_name: string;
   order_test_group_id: string | null;
   order_test_id: string | null;
+  is_section_only?: boolean;
   ref_range_ai_config?: { enabled?: boolean; consider_age?: boolean } | null;
   analytes: {
     id: string;
@@ -52,7 +55,16 @@ interface TestGroup {
     expected_value_flag_map?: Record<string, string>;
     value_type?: string;
     expected_value_codes?: Record<string, string>;
-    existing_result?: { value: string; unit?: string; reference_range?: string; flag?: string } | null;
+    existing_result?: {
+      value: string;
+      unit?: string;
+      reference_range?: string;
+      flag?: string;
+      verify_note?: string;
+      verify_status?: string;
+      analyte_name?: string;
+      parameter?: string;
+    } | null;
   }[];
 }
 
@@ -117,20 +129,25 @@ const toVariableSlug = (name: string): string => {
   return words.map(w => w.substring(0, 3)).join('').toLowerCase().substring(0, 6);
 };
 
-function evalFormula(
+  function evalFormula(
   formula: string,
   vars: string[],
   valueLookup: Map<string, number>,
-  deps: { calculated_analyte_id: string; source_analyte_id: string; variable_name: string }[],
-  analyteId: string
+  deps: { calculated_analyte_id: string; calculated_lab_analyte_id?: string | null; source_analyte_id: string; source_lab_analyte_id?: string | null; variable_name: string }[],
+  analyteId: string,
+  labAnalyteId?: string | null,
 ): string {
   let resolved = formula.trim();
-  const analyteSliceDeps = deps.filter(d => d.calculated_analyte_id === analyteId);
+  const analyteSliceDeps = deps.filter(d =>
+    (labAnalyteId && d.calculated_lab_analyte_id === labAnalyteId) ||
+    (!d.calculated_lab_analyte_id && d.calculated_analyte_id === analyteId)
+  );
 
   for (const variable of vars) {
     const key = variable.toLowerCase();
     const dep = analyteSliceDeps.find(d => d.variable_name.toLowerCase() === key);
-    let val: number | undefined = dep ? valueLookup.get(dep.source_analyte_id) : undefined;
+    let val: number | undefined = dep?.source_lab_analyte_id ? valueLookup.get(dep.source_lab_analyte_id) : undefined;
+    if (val === undefined) val = dep ? valueLookup.get(dep.source_analyte_id) : undefined;
     if (val === undefined) val = valueLookup.get(key);
     if (val === undefined) return "";
     resolved = resolved.replace(new RegExp(`\\b${variable}\\b`, "g"), String(val));
@@ -166,7 +183,7 @@ const getGroupKey = (tg: Pick<TestGroup, "test_group_id" | "order_test_group_id"
 const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, onClose, onSubmitted }) => {
   const { user } = useAuth();
 
-  type DepRow = { calculated_analyte_id: string; source_analyte_id: string; variable_name: string };
+    type DepRow = { calculated_analyte_id: string; calculated_lab_analyte_id?: string | null; source_analyte_id: string; source_lab_analyte_id?: string | null; variable_name: string };
 
   const [loading, setLoading] = useState(true);
   const [testGroups, setTestGroups] = useState<TestGroup[]>([]);
@@ -215,7 +232,7 @@ const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, on
           order_test_groups(
             id, test_group_id, test_name,
             test_groups(
-              id, name, ref_range_ai_config,
+              id, name, is_section_only, ref_range_ai_config,
               test_group_analytes(
                 analyte_id, lab_analyte_id, sort_order, display_order,
                 analytes(id, name, code, unit, reference_range, is_calculated, formula, formula_variables, expected_normal_values, expected_value_flag_map, value_type, expected_value_codes),
@@ -226,7 +243,7 @@ const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, on
           order_tests(
             id, test_name, test_group_id, is_canceled, outsourced_lab_id,
             test_groups(
-              id, name, ref_range_ai_config,
+              id, name, is_section_only, ref_range_ai_config,
               test_group_analytes(
                 analyte_id, lab_analyte_id, sort_order, display_order,
                 analytes(id, name, code, unit, reference_range, is_calculated, formula, formula_variables, expected_normal_values, expected_value_flag_map, value_type, expected_value_codes),
@@ -236,7 +253,7 @@ const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, on
           ),
           results(
             id, order_test_group_id, order_test_id, test_group_id,
-            result_values(analyte_id, value, unit, reference_range, flag)
+            result_values(analyte_id, analyte_name, parameter, value, unit, reference_range, flag, verify_note, verify_status)
           )
         `)
         .eq("id", order.id)
@@ -297,6 +314,7 @@ const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, on
           test_group_name: otg.test_groups.name,
           order_test_group_id: otg.id,
           order_test_id: null,
+          is_section_only: !!otg.test_groups.is_section_only,
           ref_range_ai_config: otg.test_groups.ref_range_ai_config || null,
           analytes: mapAnalytes(otg.test_groups.test_group_analytes, data.results, otg.id, null),
         }));
@@ -308,6 +326,7 @@ const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, on
           test_group_name: ot.test_groups.name,
           order_test_group_id: null,
           order_test_id: ot.id,
+          is_section_only: !!ot.test_groups.is_section_only,
           ref_range_ai_config: ot.test_groups.ref_range_ai_config || null,
           analytes: mapAnalytes(ot.test_groups.test_group_analytes, data.results, null, ot.id),
         }));
@@ -319,7 +338,13 @@ const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, on
           const m = acc[idx];
           const merged2 = [...m.analytes];
           cur.analytes.forEach(a => { if (!merged2.find(x => x.id === a.id)) merged2.push(a); });
-          acc[idx] = { ...m, analytes: merged2, order_test_group_id: m.order_test_group_id || cur.order_test_group_id, order_test_id: m.order_test_id || cur.order_test_id };
+          acc[idx] = {
+            ...m,
+            analytes: merged2,
+            order_test_group_id: m.order_test_group_id || cur.order_test_group_id,
+            order_test_id: m.order_test_id || cur.order_test_id,
+            is_section_only: m.is_section_only || cur.is_section_only,
+          };
         }
         return acc;
       }, []);
@@ -361,14 +386,20 @@ const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, on
 
         const techGroupIds = new Set((techSections || []).map((s: any) => s.test_group_id));
 
-        if (techGroupIds.size > 0) {
-          // Pre-create stub result rows for groups that have technician sections but no result row yet
+        // Also include section-only groups so they always get a result stub
+        const sectionOnlyIds = new Set(
+          merged.filter(tg => tg.is_section_only).map(tg => tg.test_group_id)
+        );
+        const needsStubIds = new Set([...techGroupIds, ...sectionOnlyIds]);
+
+        if (needsStubIds.size > 0) {
+          // Pre-create stub result rows for groups that have technician sections or are section-only
           const [{ data: { user: currentUser } }, userLabId] = await Promise.all([
             supabase.auth.getUser(),
             database.getCurrentUserLabId(),
           ]);
           for (const tg of merged) {
-            if (!techGroupIds.has(tg.test_group_id)) continue;
+            if (!needsStubIds.has(tg.test_group_id)) continue;
             if (resultIdMap.has(tg.test_group_id)) continue;
             const { data: stub } = await supabase
               .from("results")
@@ -420,11 +451,12 @@ const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, on
             } catch { /* */ }
           }
           const envDefaultValue: string = la?.default_value || "";
-          const hasExisting = !!(a.existing_result?.value);
+          const isRerun = !!(a.existing_result?.verify_note && String(a.existing_result.verify_note).toUpperCase().includes("RE-RUN"));
+          const hasExisting = !!(a.existing_result?.value) && !isRerun;
           // Pre-fill default only for new (unsaved) results
           const prefillValue = hasExisting
             ? a.existing_result!.value
-            : (envDefaultValue || "");
+            : (isRerun ? (a.existing_result?.value || "") : (envDefaultValue || ""));
           return {
             analyte_id: a.id,
             lab_analyte_id: a.lab_analyte_id || null,
@@ -442,9 +474,11 @@ const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, on
             expected_value_codes: envCodes,
             default_value: envDefaultValue,
             // Mark as default-prefilled so the UI can style it differently
-            is_default: !hasExisting && !!envDefaultValue,
+            is_default: !hasExisting && !isRerun && !!envDefaultValue,
             formula: la?.formula ?? a.formula ?? null,
             formula_variables: la?.formula_variables ?? a.formula_variables ?? null,
+            verify_note: isRerun ? a.existing_result?.verify_note || "" : "",
+            is_rerun: isRerun,
           };
         })
       );
@@ -457,7 +491,7 @@ const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, on
       if (calcIds.length > 0) {
         const { data: depsData } = await supabase
           .from("analyte_dependencies")
-          .select("calculated_analyte_id, source_analyte_id, variable_name, lab_id")
+          .select("calculated_analyte_id, calculated_lab_analyte_id, source_analyte_id, source_lab_analyte_id, variable_name, lab_id")
           .in("calculated_analyte_id", calcIds)
           .or(`lab_id.eq.${data.lab_id},lab_id.is.null`);
         // Deduplicate: prefer lab-specific over global for same (calculated_analyte_id, variable_name)
@@ -486,6 +520,7 @@ const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, on
         const num = toNumber(r.value);
         if (num !== null) {
           if (r.analyte_id) lookup.set(r.analyte_id, num);
+          if (r.lab_analyte_id) lookup.set(r.lab_analyte_id, num);
           lookup.set(r.parameter.toLowerCase(), num);
           lookup.set(toVariableSlug(r.parameter), num);
         }
@@ -493,7 +528,7 @@ const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, on
       const flatWithCalc = flat.map(r => {
         if (!r.is_calculated || !r.formula || r.is_existing) return r;
         const vars = parseFormulaVars(r.formula_variables);
-        const calcVal = evalFormula(r.formula, vars, lookup, loadedDeps, r.analyte_id);
+        const calcVal = evalFormula(r.formula, vars, lookup, loadedDeps, r.analyte_id, r.lab_analyte_id);
         if (!calcVal) return r;
         const autoFlag = calculateFlag(calcVal, r.reference, undefined, undefined, undefined, undefined, undefined, undefined, r.value_type);
         return { ...r, value: calcVal, flag: autoFlag || r.flag };
@@ -544,6 +579,7 @@ const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, on
           const num = toNumber(savedVal);
           if (num !== null) {
             if (a.id) lookup.set(a.id, num);
+            if ((a as any).lab_analyte_id) lookup.set((a as any).lab_analyte_id, num);
             lookup.set(a.name.toLowerCase(), num);
             lookup.set(toVariableSlug(a.name), num);
           }
@@ -554,6 +590,7 @@ const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, on
         const num = toNumber(r.value);
         if (num !== null) {
           if (r.analyte_id) lookup.set(r.analyte_id, num);
+          if (r.lab_analyte_id) lookup.set(r.lab_analyte_id, num);
           lookup.set(r.parameter.toLowerCase(), num);
           // Slug-based key (e.g. "Total Cholesterol" → "tc") so formula
           // variables still resolve even when the dependency UUID points to
@@ -566,7 +603,7 @@ const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, on
       return next.map(r => {
         if (!r.is_calculated || !r.formula) return r;
         const vars = parseFormulaVars(r.formula_variables);
-        const calcVal = evalFormula(r.formula, vars, lookup, calcDeps, r.analyte_id);
+        const calcVal = evalFormula(r.formula, vars, lookup, calcDeps, r.analyte_id, r.lab_analyte_id);
         if (!calcVal) return r;
         const autoFlag = calculateFlag(calcVal, r.reference, undefined, undefined, undefined, undefined, undefined, undefined, r.value_type);
         return { ...r, value: calcVal, flag: autoFlag || r.flag };
@@ -594,6 +631,7 @@ const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, on
           const num = toNumber(a.existing_result?.value);
           if (num !== null) {
             if (a.id) lookup.set(a.id, num);
+            if ((a as any).lab_analyte_id) lookup.set((a as any).lab_analyte_id, num);
             lookup.set(a.name.toLowerCase(), num);
             lookup.set(toVariableSlug(a.name), num);
           }
@@ -605,6 +643,7 @@ const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, on
         const num = toNumber(r.value);
         if (num !== null) {
           if (r.analyte_id) lookup.set(r.analyte_id, num);
+          if (r.lab_analyte_id) lookup.set(r.lab_analyte_id, num);
           lookup.set(r.parameter.toLowerCase(), num);
           lookup.set(toVariableSlug(r.parameter), num);
         }
@@ -612,7 +651,7 @@ const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, on
       return prev.map(r => {
         if (!r.is_calculated || !r.formula) return r;
         const vars = parseFormulaVars(r.formula_variables);
-        const calcVal = evalFormula(r.formula, vars, lookup, calcDeps, r.analyte_id);
+        const calcVal = evalFormula(r.formula, vars, lookup, calcDeps, r.analyte_id, r.lab_analyte_id);
         if (!calcVal) return r;
         const autoFlag = calculateFlag(calcVal, r.reference, undefined, undefined, undefined, undefined, undefined, undefined, r.value_type);
         return { ...r, value: calcVal, flag: autoFlag || r.flag };
@@ -981,9 +1020,10 @@ const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, on
 
   // ── Render ──────────────────────────────────────────────────────────────────
 
-  const filledCount = rows.filter(r => !r.is_calculated && !r.is_existing && r.value.trim()).length;
-  const totalInputable = rows.filter(r => !r.is_calculated && !r.is_existing).length;
-  const existingCount = rows.filter(r => !r.is_calculated && r.is_existing).length;
+  const isEditableRow = (r: AnalyteRow) => !r.is_existing || !!r.is_rerun;
+  const filledCount = rows.filter(r => !r.is_calculated && isEditableRow(r) && r.value.trim()).length;
+  const totalInputable = rows.filter(r => !r.is_calculated && isEditableRow(r)).length;
+  const existingCount = rows.filter(r => !r.is_calculated && r.is_existing && !r.is_rerun).length;
 
   // Group rows by test group for display — hide already-saved analytes
   const rowsByGroup: { tg: TestGroup; rows: { row: AnalyteRow; globalIdx: number }[] }[] = testGroups.map(tg => ({
@@ -991,8 +1031,8 @@ const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, on
     rows: tg.analytes.map(a => {
       const globalIdx = rows.findIndex(r => r.analyte_id === a.id);
       return { row: rows[globalIdx] || null, globalIdx };
-    }).filter(x => x.row !== null && !x.row.is_existing),
-  })).filter(g => g.rows.length > 0);
+    }).filter(x => x.row !== null && isEditableRow(x.row)),
+  })).filter(g => g.rows.length > 0 || !!g.tg.is_section_only || resultIds.has(g.tg.test_group_id));
 
   // Re-index valueRefs array size
   valueRefs.current = valueRefs.current.slice(0, rows.length);
@@ -1090,8 +1130,14 @@ const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, on
                             <span className={`font-medium ${isCalc ? "text-blue-700" : "text-gray-800"}`}>{row.parameter}</span>
                             {isCalc && <span className="ml-1.5 text-xs text-blue-400 italic">auto</span>}
                             {isDefault && <span className="ml-1.5 text-xs text-amber-600 bg-amber-100 px-1 py-0.5 rounded">default</span>}
+                            {row.is_rerun && (
+                              <span className="ml-1.5 text-xs text-orange-700 bg-orange-100 px-1.5 py-0.5 rounded font-medium">RE-RUN</span>
+                            )}
                             {row.reference && (
                               <div className="text-xs text-gray-400 mt-0.5">{row.reference}</div>
+                            )}
+                            {row.verify_note && (
+                              <div className="text-xs text-orange-600 mt-1">{row.verify_note}</div>
                             )}
                           </td>
 

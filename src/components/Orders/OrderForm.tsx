@@ -1553,9 +1553,12 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
           }
 
           // Insert extra lab billing items as order_billing_items + invoice_items
+          // Each billing item is inserted individually so we can write invoice_item_id
+          // back to order_billing_items immediately — prevents orphaned billing items
+          // where is_invoiced=true but no invoice_item row exists.
           if (selectedBillingItems.length > 0) {
             for (const item of selectedBillingItems) {
-              const { data: obi } = await supabase.from('order_billing_items').insert({
+              const { data: obi, error: obiError } = await supabase.from('order_billing_items').insert({
                 lab_id: labId,
                 order_id: orderId,
                 lab_billing_item_type_id: item.typeId || null,
@@ -1566,9 +1569,15 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
                 is_invoiced: true,
               }).select('id').single();
 
-              invoiceItemsData.push({
+              if (obiError || !obi?.id) {
+                console.error('Error creating order_billing_item:', obiError);
+                continue;
+              }
+
+              // Insert invoice_item immediately and write back invoice_item_id
+              const { data: invoiceItem, error: iiError } = await supabase.from('invoice_items').insert({
                 invoice_id: invoice.id,
-                order_billing_item_id: obi?.id || null,
+                order_billing_item_id: obi.id,
                 order_test_id: null,
                 test_name: item.name,
                 price: item.amount,
@@ -1581,8 +1590,17 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
                 order_id: orderId,
                 location_receivable: null,
                 outsourced_lab_id: null,
-                outsourced_cost: null
-              } as any);
+                outsourced_cost: null,
+              } as any).select('id').single();
+
+              if (iiError) {
+                console.error('Error creating invoice_item for billing charge:', iiError);
+              } else if (invoiceItem?.id) {
+                // Link invoice_item back to order_billing_items
+                await supabase.from('order_billing_items')
+                  .update({ invoice_item_id: invoiceItem.id, updated_at: new Date().toISOString() })
+                  .eq('id', obi.id);
+              }
             }
           }
 

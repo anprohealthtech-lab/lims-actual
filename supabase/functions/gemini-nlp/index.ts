@@ -55,7 +55,7 @@ Deno.serve(async (req) => {
       orderId: bodyOrderId,
       testGroupId,
     } = payload as GeminiRequest & {
-      analyteCatalog?: Array<{ id?: string; name?: string | null; unit?: string | null; reference_range?: string | null; code?: string | null }>;
+      analyteCatalog?: Array<{ id?: string; lab_analyte_id?: string | null; name?: string | null; unit?: string | null; reference_range?: string | null; code?: string | null }>;
       analytesToExtract?: string[];
       orderId?: string;
       testGroupId?: string;
@@ -359,7 +359,7 @@ Deno.serve(async (req) => {
           ? jsonResponse.extractedParameters
           : jsonResponse;
         // Initial matching for Gemini extraction
-        let enhancedParameters = await matchParametersToAnalytes(parametersInput);
+        let enhancedParameters = await matchParametersToAnalytes(parametersInput, analyteCatalog);
         
         // Optional: Validate and enhance with Claude Haiku 4.5 for OCR reports
         let validationApplied = false;
@@ -382,7 +382,7 @@ Deno.serve(async (req) => {
                 // Re-run fuzzy matching on ALL parameters after Claude validation
                 // This ensures newly added parameters and renamed ones get matched
                 console.log('Re-running fuzzy matching on validated parameters...');
-                enhancedParameters = await matchParametersToAnalytes(enhancedParameters);
+                enhancedParameters = await matchParametersToAnalytes(enhancedParameters, analyteCatalog);
                 console.log(`After re-matching: ${enhancedParameters.filter(p => p.matched).length}/${enhancedParameters.length} matched`);
               }
             } catch (validationError) {
@@ -510,7 +510,7 @@ Deno.serve(async (req) => {
         console.log(`JSON repair succeeded! Recovered ${repaired.length} parameters`);
 
         // Run the same matching + validation pipeline as the happy path
-        let enhancedParameters = await matchParametersToAnalytes(repaired);
+        let enhancedParameters = await matchParametersToAnalytes(repaired, analyteCatalog);
 
         if ((aiProcessingType === 'ocr_report' || aiProcessingType === 'THERMAL_SLIP_OCR' || aiProcessingType === 'INSTRUMENT_SCREEN_OCR' || documentType) && rawText && rawText.length > 10) {
           const anthropicKey = Deno.env.get('ANTHROPIC_API_KEY');
@@ -520,7 +520,7 @@ Deno.serve(async (req) => {
                 enhancedParameters, rawText, focusAnalyteNames, anthropicKey,
               );
               if (validated && validated.length > 0) {
-                enhancedParameters = await matchParametersToAnalytes(validated);
+                enhancedParameters = await matchParametersToAnalytes(validated, analyteCatalog);
               }
             } catch (_e) { /* non-blocking */ }
           }
@@ -569,7 +569,7 @@ Deno.serve(async (req) => {
           );
 
           if (haikuParams && haikuParams.length > 0) {
-            let enhancedParameters = await matchParametersToAnalytes(haikuParams);
+            let enhancedParameters = await matchParametersToAnalytes(haikuParams, analyteCatalog);
 
             if (focusAnalyteNames.length > 0) {
               enhancedParameters = enhancedParameters.filter((param: any) => {
@@ -660,6 +660,7 @@ interface GeminiRequest {
 
 type AnalyteCatalogEntry = {
   id?: string;
+  lab_analyte_id?: string | null;
   name?: string | null;
   unit?: string | null;
   reference_range?: string | null;
@@ -1099,7 +1100,10 @@ function parseValueAndFlag(rawValue: string): { value: string; extractedFlag: st
 // Per-request cache for analytes to avoid duplicate DB fetches
 let _analytesCache: any[] | null = null;
 
-async function matchParametersToAnalytes(extractedParameters: any): Promise<any[]> {
+async function matchParametersToAnalytes(
+  extractedParameters: any,
+  analyteCatalog: AnalyteCatalogEntry[] = [],
+): Promise<any[]> {
   try {
     // Handle non-array inputs (e.g., custom JSON objects from vision_color)
     if (!Array.isArray(extractedParameters)) {
@@ -1147,8 +1151,21 @@ async function matchParametersToAnalytes(extractedParameters: any): Promise<any[
       return [];
     }
 
-    // Use cached analytes if available (avoids duplicate DB fetch within same request)
-    let analytes = _analytesCache;
+    const providedCatalog = Array.isArray(analyteCatalog)
+      ? analyteCatalog
+          .filter((entry) => typeof entry?.name === 'string' && entry.name.trim().length > 0)
+          .map((entry) => ({
+            id: entry.id ?? null,
+            lab_analyte_id: entry.lab_analyte_id ?? null,
+            name: entry.name!.trim(),
+            unit: entry.unit ?? null,
+            reference_range: entry.reference_range ?? null,
+            code: entry.code ?? null,
+          }))
+      : [];
+
+    // Prefer the request-scoped analyte catalog because it preserves lab-specific identity.
+    let analytes = providedCatalog.length > 0 ? providedCatalog : _analytesCache;
     if (!analytes) {
       const supabaseUrl = Deno.env.get('SUPABASE_URL');
       const supabaseServiceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY');
@@ -1178,7 +1195,11 @@ async function matchParametersToAnalytes(extractedParameters: any): Promise<any[
       _analytesCache = analytes;
       console.log(`Fetched ${analytes.length} analytes from DB (cached for this request)`);
     } else {
-      console.log(`Using cached analytes (${analytes.length} entries)`);
+      console.log(
+        providedCatalog.length > 0
+          ? `Using request analyteCatalog (${analytes.length} entries)`
+          : `Using cached analytes (${analytes.length} entries)`,
+      );
     }
 
     // Common medical abbreviations mapping
@@ -1368,6 +1389,7 @@ async function matchParametersToAnalytes(extractedParameters: any): Promise<any[
           flag: extractedFlag,
           color_observation: hoistedColorObservation || param.color_observation,
           analyte_id: matchedAnalyte.id,
+          lab_analyte_id: matchedAnalyte.lab_analyte_id || null,
           matched: true,
           matched_to: matchedAnalyte.name,
           reference_range: param.reference_range || matchedAnalyte.reference_range,

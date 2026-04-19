@@ -8,6 +8,8 @@ interface TestGroup {
   test_group_name: string;
   order_test_group_id: string | null;
   order_test_id: string | null;
+  result_id?: string | null;
+  is_section_only?: boolean;
   analytes: any[];
 }
 
@@ -20,6 +22,7 @@ interface OrderData {
   sample_id?: string;
   status: string;
   order_display?: string | null;
+  isCorporateFlow?: boolean;
 }
 
 interface QuickResultModalProps {
@@ -40,12 +43,12 @@ const QuickResultModal: React.FC<QuickResultModalProps> = ({ orderId, onClose, o
       const { data, error: err } = await supabase
         .from('orders')
         .select(`
-          id, lab_id, patient_id, patient_name, status, order_display,
+          id, lab_id, patient_id, patient_name, status, order_display, account_id, bulk_batch_id, payment_type,
           patients!inner(id, name),
           order_test_groups(
             id, test_group_id, test_name,
             test_groups(
-              id, name, code,
+              id, name, code, is_section_only,
               test_group_analytes(
                 analyte_id, lab_analyte_id,
                 analytes(id, name, unit, reference_range, ai_processing_type, is_calculated, formula, formula_variables),
@@ -56,7 +59,7 @@ const QuickResultModal: React.FC<QuickResultModalProps> = ({ orderId, onClose, o
           order_tests(
             id, test_group_id, sample_id,
             test_groups(
-              id, name, code,
+              id, name, code, is_section_only,
               test_group_analytes(
                 analyte_id, lab_analyte_id,
                 analytes(id, name, unit, reference_range, ai_processing_type, is_calculated, formula, formula_variables),
@@ -66,8 +69,8 @@ const QuickResultModal: React.FC<QuickResultModalProps> = ({ orderId, onClose, o
           ),
           samples(id, barcode),
           results(
-            id, order_test_group_id, order_test_id,
-            result_values(id, analyte_id, value, unit, reference_range, flag)
+            id, status, verification_status, order_test_group_id, order_test_id,
+            result_values(id, analyte_id, value, unit, reference_range, flag, verify_status)
           )
         `)
         .eq('id', orderId)
@@ -82,6 +85,7 @@ const QuickResultModal: React.FC<QuickResultModalProps> = ({ orderId, onClose, o
           (otgId && r.order_test_group_id === otgId) ||
           (otId && r.order_test_id === otId)
         );
+        const existingValue = result?.result_values?.find((rv: any) => rv.analyte_id === a.id) || null;
         return {
           ...a,
           lab_analyte_id: tga.lab_analyte_id || la?.id || null,
@@ -92,7 +96,14 @@ const QuickResultModal: React.FC<QuickResultModalProps> = ({ orderId, onClose, o
           is_calculated: la?.is_calculated ?? a.is_calculated,
           formula: la?.formula ?? a.formula,
           formula_variables: la?.formula_variables ?? a.formula_variables,
-          existing_result: result?.result_values?.find((rv: any) => rv.analyte_id === a.id) || null,
+          existing_result: existingValue
+            ? {
+                ...existingValue,
+                result_id: result.id,
+                result_status: result.status,
+                result_verification_status: result.verification_status,
+              }
+            : null,
         };
       };
 
@@ -103,6 +114,8 @@ const QuickResultModal: React.FC<QuickResultModalProps> = ({ orderId, onClose, o
           test_group_name: otg.test_groups.name,
           order_test_group_id: otg.id,
           order_test_id: null,
+          result_id: data.results?.find((r: any) => r.order_test_group_id === otg.id || r.test_group_id === otg.test_groups.id)?.id || null,
+          is_section_only: !!otg.test_groups.is_section_only,
           analytes: (otg.test_groups.test_group_analytes || []).map((tga: any) =>
             buildAnalytes(tga, data.results || [], otg.id, null)
           ),
@@ -115,6 +128,8 @@ const QuickResultModal: React.FC<QuickResultModalProps> = ({ orderId, onClose, o
           test_group_name: ot.test_groups.name,
           order_test_group_id: null,
           order_test_id: ot.id,
+          result_id: data.results?.find((r: any) => r.order_test_id === ot.id || r.test_group_id === ot.test_groups.id)?.id || null,
+          is_section_only: !!ot.test_groups.is_section_only,
           analytes: (ot.test_groups.test_group_analytes || []).map((tga: any) =>
             buildAnalytes(tga, data.results || [], null, ot.id)
           ),
@@ -128,7 +143,14 @@ const QuickResultModal: React.FC<QuickResultModalProps> = ({ orderId, onClose, o
           const existing = acc[idx];
           const mergedAnalytes = [...existing.analytes];
           cur.analytes.forEach((a) => { if (!mergedAnalytes.find((m) => m.id === a.id)) mergedAnalytes.push(a); });
-          acc[idx] = { ...existing, analytes: mergedAnalytes, order_test_group_id: existing.order_test_group_id || cur.order_test_group_id, order_test_id: existing.order_test_id || cur.order_test_id };
+          acc[idx] = {
+            ...existing,
+            analytes: mergedAnalytes,
+            order_test_group_id: existing.order_test_group_id || cur.order_test_group_id,
+            order_test_id: existing.order_test_id || cur.order_test_id,
+            result_id: existing.result_id || cur.result_id,
+            is_section_only: existing.is_section_only || cur.is_section_only,
+          };
         }
         return acc;
       }, []);
@@ -142,6 +164,7 @@ const QuickResultModal: React.FC<QuickResultModalProps> = ({ orderId, onClose, o
         sample_id: data.samples?.[0]?.barcode || data.samples?.[0]?.id,
         status: data.status,
         order_display: data.order_display,
+        isCorporateFlow: !!(data.bulk_batch_id || data.account_id || data.payment_type === 'corporate'),
       });
     } catch (e) {
       setError('Failed to load order. Please try again.');
@@ -197,6 +220,7 @@ const QuickResultModal: React.FC<QuickResultModalProps> = ({ orderId, onClose, o
             <ResultIntake
               order={order}
               onResultProcessed={handleResultProcessed}
+              showAutoVerifyOption={!!order.isCorporateFlow}
             />
           )}
         </div>

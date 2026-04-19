@@ -27,6 +27,19 @@ export interface SectionGeneratorResponse {
   generatedContent: string;
   suggestedOptions?: string[];
   sectionHeading?: string;
+  section_config?: {
+    mode: 'flat' | 'cascading';
+    cascade_levels: Array<{
+      id: string;
+      label: string;
+      multi_select: boolean;
+      options: Array<{
+        id: string;
+        value: string;
+        sub_levels?: any[];
+      }>;
+    }>;
+  };
 }
 
 export interface SectionGeneratorResult {
@@ -100,6 +113,12 @@ export const QUICK_PROMPTS = {
   'recommendation': [
     'Generate follow-up recommendations',
     'Generate lifestyle modification recommendations',
+  ],
+  'cascading': [
+    'Create a cascading form for biopsy: Specimen Type → Gross Examination → Microscopic Examination → Anatomical Site',
+    'Create a cascading smart form for microbiology: Organism Found → Sensitivity Pattern → Antibiotics Tested',
+    'Create a cascading form for histopathology: Specimen → Gross Description → Microscopy → Diagnosis',
+    'Create a cascading form for cytology: Specimen Type → Adequacy → Findings → Interpretation',
   ],
 };
 

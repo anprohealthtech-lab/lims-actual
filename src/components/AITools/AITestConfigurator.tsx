@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { Loader2, Sparkles, Check, Edit3, Save, X, AlertCircle, TestTube } from 'lucide-react';
-import { generateTestConfiguration, TestConfigurationResponse } from '../../utils/geminiAI';
+import { generateTestConfiguration, TestConfigurationResponse, normalizeAnalyteValueType } from '../../utils/geminiAI';
 import { useAuth } from '../../contexts/AuthContext';
 import { database } from '../../utils/supabase';
 
@@ -159,6 +159,7 @@ export const AITestConfigurator: React.FC<AITestConfiguratorProps> = ({
         .insert({
           name: generatedConfig.test_group.name,
           code: generatedConfig.test_group.code,
+          global_test_catalog_id: null,
           category: generatedConfig.test_group.category,
           clinical_purpose: generatedConfig.test_group.clinical_purpose,
           price: parseFloat(generatedConfig.test_group.price),
@@ -181,17 +182,54 @@ export const AITestConfigurator: React.FC<AITestConfiguratorProps> = ({
 
       for (const analyte of generatedConfig.analytes) {
         const code = analyte.name.replace(/[^a-zA-Z0-9]/g, '_').toUpperCase();
+        const expectedNormalValues = Array.isArray((analyte as any).expected_normal_values)
+          ? (analyte as any).expected_normal_values.map((value: unknown) => String(value).trim()).filter(Boolean)
+          : [];
+        const normalizedValueType = normalizeAnalyteValueType(
+          (analyte as any).value_type,
+          expectedNormalValues,
+          analyte.unit,
+        ) || (toBoolean((analyte as any).is_calculated) ? 'numeric' : null);
 
         // Check if an analyte with the same name (case-insensitive) already exists
         const { data: existing } = await database.supabase
           .from('analytes')
-          .select('id, name')
+          .select('id, name, value_type, expected_normal_values, is_calculated, formula')
           .ilike('name', analyte.name.trim())
           .limit(1);
 
         if (existing && existing.length > 0) {
           // Reuse existing analyte
           resolvedAnalytes.push({ id: existing[0].id, name: existing[0].name });
+          const existingExpectedValues = Array.isArray((existing[0] as any).expected_normal_values)
+            ? (existing[0] as any).expected_normal_values
+            : [];
+          const isCalculated = toBoolean((analyte as any).is_calculated);
+          const formula = ((analyte as any).formula || '').trim();
+          const formulaVariables = parseFormulaVariables((analyte as any).formula_variables);
+          const shouldBackfillValueType = !!(normalizedValueType && !(existing[0] as any).value_type);
+          const shouldBackfillExpectedValues = expectedNormalValues.length > 0 && existingExpectedValues.length === 0;
+          const shouldBackfillCalculated = !!(isCalculated && formula && (!(existing[0] as any).is_calculated || !(existing[0] as any).formula));
+
+          if (shouldBackfillValueType || shouldBackfillExpectedValues || shouldBackfillCalculated) {
+            const { error: enrichError } = await database.supabase
+              .from('analytes')
+              .update({
+                ...(shouldBackfillValueType ? { value_type: normalizedValueType } : {}),
+                ...(shouldBackfillExpectedValues ? { expected_normal_values: expectedNormalValues } : {}),
+                ...(shouldBackfillCalculated ? {
+                  is_calculated: true,
+                  formula,
+                  formula_variables: formulaVariables,
+                  formula_description: (analyte as any).formula_description || null,
+                } : {}),
+              })
+              .eq('id', existing[0].id);
+
+            if (enrichError) {
+              console.warn(`Failed to enrich reused analyte "${existing[0].name}"`, enrichError);
+            }
+          }
           console.log(`♻️ Reusing existing analyte: "${existing[0].name}" (${existing[0].id})`);
         } else {
           // Insert new analyte
@@ -217,8 +255,8 @@ export const AITestConfigurator: React.FC<AITestConfiguratorProps> = ({
               formula: ((analyte as any).formula || '').trim() || null,
               formula_variables: parseFormulaVariables((analyte as any).formula_variables),
               formula_description: (analyte as any).formula_description || null,
-              value_type: (analyte as any).value_type || (toBoolean((analyte as any).is_calculated) ? 'numeric' : null),
-              expected_normal_values: Array.isArray((analyte as any).expected_normal_values) ? (analyte as any).expected_normal_values : []
+              value_type: normalizedValueType,
+              expected_normal_values: expectedNormalValues
             })
             .select('id, name')
             .single();
@@ -616,6 +654,10 @@ export const AITestConfigurator: React.FC<AITestConfiguratorProps> = ({
                     </div>
                     <div className="text-sm text-gray-600 space-y-1">
                       <div><strong>Reference Range:</strong> {analyte.reference_range || 'N/A'}</div>
+                      <div><strong>Value Type:</strong> {normalizeAnalyteValueType((analyte as any).value_type, analyte.expected_normal_values, analyte.unit) || 'auto'}</div>
+                      {Array.isArray(analyte.expected_normal_values) && analyte.expected_normal_values.length > 0 && (
+                        <div><strong>Expected Values:</strong> {analyte.expected_normal_values.join(', ')}</div>
+                      )}
                       {(analyte.low_critical || analyte.high_critical) && (
                         <div className="text-red-600">
                           <strong>Critical Values:</strong>

@@ -58,10 +58,12 @@ interface PanelRow {
   result_id: string;
   test_group_id: string | null;
   test_group_name: string | null;
+  is_section_only?: boolean;
   expected_analytes: number;
   entered_analytes: number;
   approved_analytes: number;
   panel_ready: boolean;
+  result_verification_status?: string | null;
   patient_id: string;
   patient_name: string;
   order_date: string;
@@ -300,31 +302,48 @@ const OrderVerificationView: React.FC<OrderVerificationViewProps> = ({ onBackToP
       setError(error.message);
       setPanels([]);
     } else {
-      const panelRows = (data || []) as PanelRow[];
-      setPanels(panelRows);
+      const basePanels = (data || []) as PanelRow[];
+      const resultIds = Array.from(new Set(basePanels.map((row) => row.result_id).filter(Boolean)));
 
-      // Build deterministic newest-first sort key from orders.created_at (fallback: order_date)
-      try {
-        const orderIds = Array.from(new Set(panelRows.map((row) => row.order_id).filter(Boolean)));
-        if (orderIds.length > 0) {
-          const { data: orderRows, error: orderFetchError } = await supabase
-            .from("orders")
-            .select("id, created_at, order_date")
-            .in("id", orderIds);
+      if (resultIds.length > 0) {
+        const { data: resultStatuses } = await supabase
+          .from("results")
+          .select("id, verification_status")
+          .in("id", resultIds);
 
-          if (orderFetchError) throw orderFetchError;
+        const statusMap = new Map((resultStatuses || []).map((row: any) => [row.id, row.verification_status || null]));
+        const panelRows = basePanels.map((row) => ({
+          ...row,
+          result_verification_status: statusMap.has(row.result_id) ? statusMap.get(row.result_id) ?? null : null,
+        }));
+        setPanels(panelRows);
 
-          const nextSortMap: Record<string, number> = {};
-          (orderRows || []).forEach((o: any) => {
-            const ts = new Date(o.created_at || o.order_date).getTime();
-            if (Number.isFinite(ts)) nextSortMap[o.id] = ts;
-          });
-          setOrderSortTimestampById(nextSortMap);
-        } else {
+        // Build deterministic newest-first sort key from orders.created_at (fallback: order_date)
+        try {
+          const orderIds = Array.from(new Set(panelRows.map((row) => row.order_id).filter(Boolean)));
+          if (orderIds.length > 0) {
+            const { data: orderRows, error: orderFetchError } = await supabase
+              .from("orders")
+              .select("id, created_at, order_date")
+              .in("id", orderIds);
+
+            if (orderFetchError) throw orderFetchError;
+
+            const nextSortMap: Record<string, number> = {};
+            (orderRows || []).forEach((o: any) => {
+              const ts = new Date(o.created_at || o.order_date).getTime();
+              if (Number.isFinite(ts)) nextSortMap[o.id] = ts;
+            });
+            setOrderSortTimestampById(nextSortMap);
+          } else {
+            setOrderSortTimestampById({});
+          }
+        } catch (sortErr) {
+          console.warn("Unable to fetch order created_at for sort fallback:", sortErr);
           setOrderSortTimestampById({});
         }
-      } catch (sortErr) {
-        console.warn("Unable to fetch order created_at for sort fallback:", sortErr);
+      } else {
+        setPanels(basePanels);
         setOrderSortTimestampById({});
       }
     }
@@ -338,9 +357,10 @@ const OrderVerificationView: React.FC<OrderVerificationViewProps> = ({ onBackToP
   }, [from, to, currentLabId]);
 
   const groupByOrder = useMemo(() => {
-    // Only show panels that have at least one result value entered
+    // Show analyte-backed panels once values are entered, and always allow
+    // section-only panels because they are verified via report sections.
     const filtered = (panels || []).filter(row => {
-      if ((row?.entered_analytes || 0) === 0) return false;
+      if ((row?.entered_analytes || 0) === 0 && !row.is_section_only) return false;
 
       const matchesSearch = q
         ? (row.patient_name || "").toLowerCase().includes(q.toLowerCase()) ||
@@ -350,9 +370,21 @@ const OrderVerificationView: React.FC<OrderVerificationViewProps> = ({ onBackToP
 
       if (!matchesSearch) return false;
 
-      if (stateFilter === "ready") return row.panel_ready;
-      if (stateFilter === "pending") return !row.panel_ready && row.approved_analytes === 0;
-      if (stateFilter === "partial") return !row.panel_ready && row.approved_analytes > 0;
+      if (stateFilter === "ready") {
+        return row.is_section_only
+          ? row.result_verification_status === "verified"
+          : row.panel_ready;
+      }
+      if (stateFilter === "pending") {
+        return row.is_section_only
+          ? row.result_verification_status !== "verified"
+          : (!row.panel_ready && row.approved_analytes === 0);
+      }
+      if (stateFilter === "partial") {
+        return row.is_section_only
+          ? false
+          : (!row.panel_ready && row.approved_analytes > 0);
+      }
       return true;
     });
 
@@ -380,7 +412,9 @@ const OrderVerificationView: React.FC<OrderVerificationViewProps> = ({ onBackToP
       bucket[row.order_id].stats.expected += row.expected_analytes;
       bucket[row.order_id].stats.entered += row.entered_analytes;
       bucket[row.order_id].stats.approved += row.approved_analytes;
-      if (row.panel_ready) bucket[row.order_id].stats.readyPanels += 1;
+      if (row.is_section_only ? row.result_verification_status === "verified" : row.panel_ready) {
+        bucket[row.order_id].stats.readyPanels += 1;
+      }
 
       const rowTs = orderSortTimestampById[row.order_id] ?? new Date(row.order_date).getTime();
       if (Number.isFinite(rowTs)) {
@@ -397,7 +431,7 @@ const OrderVerificationView: React.FC<OrderVerificationViewProps> = ({ onBackToP
   const stats = useMemo(() => {
     const totalOrders = groupByOrder.length;
     const readyOrders = groupByOrder.filter(order => order.stats.readyPanels === order.panels.length).length;
-    const pendingOrders = groupByOrder.filter(order => order.stats.approved === 0).length;
+    const pendingOrders = groupByOrder.filter(order => order.stats.readyPanels === 0).length;
     const partialOrders = totalOrders - readyOrders - pendingOrders;
     return { totalOrders, readyOrders, pendingOrders, partialOrders };
   }, [groupByOrder]);
@@ -632,6 +666,28 @@ const OrderVerificationView: React.FC<OrderVerificationViewProps> = ({ onBackToP
   };
 
   const approvePanel = async (panel: PanelRow, analytes: Analyte[]) => {
+    if (panel.is_section_only) {
+      setBusyFor(panel.result_id, true);
+      try {
+        const { error } = await supabase
+          .from("results")
+          .update({
+            verification_status: "verified",
+            verified_at: new Date().toISOString(),
+            manually_verified: true,
+          })
+          .eq("id", panel.result_id);
+
+        if (error) throw error;
+        await loadPanels();
+      } catch (err) {
+        console.error("Failed to approve section-only panel", err);
+      } finally {
+        setBusyFor(panel.result_id, false);
+      }
+      return;
+    }
+
     if (!analytes.length) return;
     const ids = analytes.map(a => a.id);
     setBusyFor(panel.result_id, true);
@@ -811,12 +867,17 @@ const OrderVerificationView: React.FC<OrderVerificationViewProps> = ({ onBackToP
 
   const approveEntireOrder = async (order: OrderGroup) => {
     setBulkProcessing(true);
-    for (const panel of order.panels) {
-      await ensureAnalytesLoaded(panel.result_id);
-      const analytes = rowsByResult[panel.result_id] || [];
-      await approvePanel(panel, analytes);
+    try {
+      for (const panel of order.panels) {
+        // Use the freshly returned analytes instead of reading rowsByResult
+        // immediately after setState, which can still be stale unless the UI
+        // has already preloaded them via "Show All Analytes".
+        const analytes = await ensureAnalytesLoaded(panel.result_id);
+        await approvePanel(panel, analytes);
+      }
+    } finally {
+      setBulkProcessing(false);
     }
-    setBulkProcessing(false);
   };
 
   const handleQuickPreview = async (order: OrderGroup) => {
@@ -2190,8 +2251,7 @@ ${summary.urgent_findings.map(f => `• ${f}`).join('\n')}` : ''}
                                   </button>
                                   <button
                                     onClick={async () => {
-                                      await ensureAnalytesLoaded(panel.result_id);
-                                      const analytesData = rowsByResult[panel.result_id] || [];
+                                      const analytesData = await ensureAnalytesLoaded(panel.result_id);
                                       await handleDeltaCheck(panel, analytesData);
                                     }}
                                     disabled={aiIntelligence.loading}
@@ -2203,8 +2263,7 @@ ${summary.urgent_findings.map(f => `• ${f}`).join('\n')}` : ''}
                                   {/* AI Summary button hidden - analysis now done in backend automatically */}
                                   <button
                                     onClick={async () => {
-                                      await ensureAnalytesLoaded(panel.result_id);
-                                      const analytesData = rowsByResult[panel.result_id] || [];
+                                      const analytesData = await ensureAnalytesLoaded(panel.result_id);
                                       await approvePanel(panel, analytesData);
                                     }}
                                     disabled={busy[panel.result_id]}

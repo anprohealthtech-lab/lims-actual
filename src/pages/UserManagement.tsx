@@ -22,7 +22,7 @@ import {
   CheckCircle,
 } from 'lucide-react';
 import { supabase, database } from '../utils/supabase';
-import { isAdminOrManager } from '../utils/permissions';
+import { isAdmin } from '../utils/permissions';
 import AddUserMinimalModal from '../components/Users/AddUserMinimalModal';
 import EditUserModal from '../components/Users/EditUserModal';
 
@@ -80,7 +80,7 @@ const UserManagement: React.FC = () => {
       
       setCheckingAccess(true);
       try {
-        const canAccess = await isAdminOrManager(authUser.id, authUser.email);
+        const canAccess = await isAdmin(authUser.id, authUser.email);
         setHasAccess(canAccess);
       } catch (err) {
         console.error('Error checking access:', err);
@@ -294,8 +294,8 @@ const UserManagement: React.FC = () => {
           </div>
           <h2 className="text-xl font-semibold text-gray-900 mb-2">Access Denied</h2>
           <p className="text-gray-600">
-            You don't have permission to access User Management. 
-            This page is only available to administrators and managers.
+            You don't have permission to access User Management.
+            This page is only available to administrators.
           </p>
         </div>
       </div>

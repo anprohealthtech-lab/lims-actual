@@ -328,52 +328,55 @@ Do NOT include or describe binary histogram data — it is already extracted sep
         // B. Process Results
         statusLog += "Sample found. Processing results... "
         
-        // Fetch Patient Details from Order
-        const { data: orderData } = await supabase
+        // Fetch Patient Details from Order (patient_name from orders, gender from patients join)
+        const { data: orderData, error: orderError } = await supabase
             .from('orders')
-            .select(`
-                patient_id,
-                patient_gender,
-                patients (
-                    name
-                )
-            `)
+            .select('patient_id, patient_name, patients (gender)')
             .eq('id', sample.order_id)
             .single()
-            
+
+        if (orderError) {
+            console.error("Failed to fetch order data for sample", sample.order_id, orderError)
+        }
+
         const patientId = orderData?.patient_id
-        const patientGender: string = (orderData as any)?.patient_gender || ''
         // @ts-ignore
-        const patientName = orderData?.patients?.name || "Unknown Patient"
-        
+        const patientGender: string = (orderData as any)?.patients?.gender || ''
+        const patientName = orderData?.patient_name || "Unknown Patient"
+
         // Ensure master Result record exists
         let { data: resultHeader } = await supabase
             .from('results')
             .select('id')
-            .eq('sample_id', sample.id) 
+            .eq('sample_id', sample.id)
             .maybeSingle()
 
         if (!resultHeader) {
-            const { data: newResult, error: createError } = await supabase
-                .from('results')
-                .insert({
-                    order_id: sample.order_id,
-                    patient_id: patientId, // Use fetched patient_id
-                    patient_name: patientName,
-                    lab_id: sample.lab_id,
-                    sample_id: sample.id, // Explicitly link sample
-                    test_name: 'Analyzer Result', // Valid Default
-                    entered_by: 'AI Interface',
-                    status: 'Entered', 
-                })
-                .select()
-                .single()
-            
-            if (createError) {
-                console.error("Failed to create result header", createError)
-                statusLog += `Error: Could not create result record. ${createError.message} `
+            if (!patientId) {
+                console.error("Cannot create result header: patient_id is null for order", sample.order_id)
+                statusLog += `Error: Could not create result record. Patient not found for order ${sample.order_id}. `
             } else {
-                resultHeader = newResult
+                const { data: newResult, error: createError } = await supabase
+                    .from('results')
+                    .insert({
+                        order_id: sample.order_id,
+                        patient_id: patientId,
+                        patient_name: patientName,
+                        lab_id: sample.lab_id,
+                        sample_id: sample.id,
+                        test_name: 'Analyzer Result',
+                        entered_by: 'AI Interface',
+                        status: 'Entered',
+                    })
+                    .select()
+                    .single()
+
+                if (createError) {
+                    console.error("Failed to create result header", createError)
+                    statusLog += `Error: Could not create result record. ${createError.message} `
+                } else {
+                    resultHeader = newResult
+                }
             }
         }
 

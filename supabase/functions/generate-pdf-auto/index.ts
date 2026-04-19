@@ -1422,11 +1422,15 @@ async function fetchSectionContent(
     }
     
     // Build map of placeholder_key -> final_content
+    // FIX: When multiple sections share the same placeholder_key, use unique suffixed keys
     const sectionMap: Record<string, string> = {}
+    const keyCounters: Record<string, number> = {}
     for (const item of data) {
-      const key = item.lab_template_sections?.placeholder_key
-      if (key && item.final_content) {
-        sectionMap[key] = item.final_content
+      const baseKey = item.lab_template_sections?.placeholder_key
+      if (baseKey && item.final_content) {
+        keyCounters[baseKey] = (keyCounters[baseKey] || 0) + 1
+        const uniqueKey = keyCounters[baseKey] === 1 ? baseKey : `${baseKey}_${keyCounters[baseKey]}`
+        sectionMap[uniqueKey] = item.final_content
       }
     }
     

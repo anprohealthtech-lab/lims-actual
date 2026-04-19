@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { AlertCircle, Building2, CheckCircle2, ChevronRight, Loader2, Pencil, Plus, Trash2, Upload, Users, X } from 'lucide-react';
+import { AlertCircle, Building2, CheckCircle2, ChevronRight, Loader2, Pencil, Plus, Search, Trash2, Upload, Users, X } from 'lucide-react';
 import { supabase, database } from '../../utils/supabase';
 import ExcelImportPanel, { ImportedPatient } from './ExcelImportPanel';
 
@@ -47,11 +47,19 @@ const BulkRegistrationModal: React.FC<BulkRegistrationModalProps> = ({ onClose, 
   const [submitProgress, setSubmitProgress] = useState<SubmitResult[]>([]);
   const [submitted, setSubmitted] = useState(false);
   const [batchId, setBatchId] = useState('');
+  const [packageSearch, setPackageSearch] = useState('');
+  const [testSearch, setTestSearch] = useState('');
+  const [extrasPackageSearch, setExtrasPackageSearch] = useState('');
+  const [extrasTestSearch, setExtrasTestSearch] = useState('');
   const nameInputRefs = useRef<Map<string, HTMLInputElement>>(new Map());
 
   const selectedAccount = accounts.find((a) => a.id === selectedAccountId);
   const selectedPackages = useMemo(() => packages.filter((p) => selectedPackageIds.includes(p.id)), [packages, selectedPackageIds]);
   const selectedTests = useMemo(() => testGroups.filter((t) => selectedTestIds.includes(t.id)), [testGroups, selectedTestIds]);
+  const filteredPackages = useMemo(() => packageSearch.trim() ? packages.filter((p) => p.name.toLowerCase().includes(packageSearch.toLowerCase())) : packages, [packages, packageSearch]);
+  const filteredTestGroups = useMemo(() => testSearch.trim() ? testGroups.filter((t) => t.name.toLowerCase().includes(testSearch.toLowerCase())) : testGroups, [testGroups, testSearch]);
+  const filteredExtrasPackages = useMemo(() => extrasPackageSearch.trim() ? packages.filter((p) => p.name.toLowerCase().includes(extrasPackageSearch.toLowerCase())) : packages, [packages, extrasPackageSearch]);
+  const filteredExtrasTestGroups = useMemo(() => extrasTestSearch.trim() ? testGroups.filter((t) => t.name.toLowerCase().includes(extrasTestSearch.toLowerCase())) : testGroups, [testGroups, extrasTestSearch]);
   const editingExtras = editingExtrasRowId ? (rowExtras[editingExtrasRowId] || { packageIds: [], testIds: [] }) : null;
   const discountFrac = (selectedAccount?.default_discount_percent || 0) / 100;
   const perPatientBase = selectionMode === 'package' ? selectedPackages.reduce((sum, pkg) => sum + (pkg.price || 0), 0) : selectedTests.reduce((sum, tg) => sum + (tg.price || 0), 0);
@@ -181,18 +189,22 @@ const BulkRegistrationModal: React.FC<BulkRegistrationModalProps> = ({ onClose, 
                 {(['package', 'tests'] as const).map((m) => <button key={m} onClick={() => setSelectionMode(m)} className={`rounded-lg border px-4 py-1.5 text-sm transition-colors ${selectionMode === m ? 'border-blue-600 bg-blue-600 text-white' : 'border-gray-300 text-gray-600 hover:border-blue-300'}`}>{m === 'package' ? 'By Package' : 'Select Tests'}</button>)}
               </div>
               {selectionMode === 'package' ? <div className="space-y-2">
-                <div className="grid max-h-56 grid-cols-1 gap-2 overflow-y-auto rounded-lg border border-gray-200 p-2 md:grid-cols-2">
-                  {packages.map((pkg) => <label key={pkg.id} className="flex items-start gap-2 rounded p-2 text-sm hover:bg-gray-50">
+                <div className="relative"><Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-gray-400" /><input type="text" value={packageSearch} onChange={(e) => setPackageSearch(e.target.value)} placeholder="Search packages..." className="w-full rounded-lg border border-gray-300 py-1.5 pl-8 pr-3 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" /></div>
+                <div className="grid max-h-48 grid-cols-1 gap-2 overflow-y-auto rounded-lg border border-gray-200 p-2 md:grid-cols-2">
+                  {filteredPackages.length === 0 ? <p className="col-span-2 py-3 text-center text-sm text-gray-400">No packages match "{packageSearch}"</p> : filteredPackages.map((pkg) => <label key={pkg.id} className="flex items-start gap-2 rounded p-2 text-sm hover:bg-gray-50">
                     <input type="checkbox" checked={selectedPackageIds.includes(pkg.id)} onChange={() => { setSelectedPackageIds((prev) => toggleInArray(prev, pkg.id)); setStep1Error(''); }} className="mt-0.5 rounded" />
                     <div className="min-w-0 flex-1"><div className="flex items-center justify-between gap-2"><span className="truncate font-medium text-gray-900">{pkg.name}</span><span className="whitespace-nowrap text-xs text-gray-500">Rs {pkg.price}</span></div>{pkg.description ? <p className="mt-0.5 line-clamp-2 text-xs text-gray-500">{pkg.description}</p> : null}</div>
                   </label>)}
                 </div>
                 <p className="text-xs text-gray-500">Loaded from the current lab{currentLabId ? '' : ' context'} only. Duplicate names are collapsed.</p>
-              </div> : <div className="grid max-h-48 grid-cols-2 gap-2 overflow-y-auto rounded-lg border border-gray-200 p-2 md:grid-cols-3">
-                {testGroups.map((tg) => <label key={tg.id} className="flex items-center gap-2 rounded p-1 text-sm hover:bg-gray-50">
-                  <input type="checkbox" checked={selectedTestIds.includes(tg.id)} onChange={() => { setSelectedTestIds((prev) => toggleInArray(prev, tg.id)); setStep1Error(''); }} className="rounded" />
-                  <span className="truncate">{tg.name}</span><span className="ml-auto text-xs text-gray-400">Rs {tg.price}</span>
-                </label>)}
+              </div> : <div className="space-y-2">
+                <div className="relative"><Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-gray-400" /><input type="text" value={testSearch} onChange={(e) => setTestSearch(e.target.value)} placeholder="Search tests..." className="w-full rounded-lg border border-gray-300 py-1.5 pl-8 pr-3 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" /></div>
+                <div className="grid max-h-44 grid-cols-2 gap-2 overflow-y-auto rounded-lg border border-gray-200 p-2 md:grid-cols-3">
+                  {filteredTestGroups.length === 0 ? <p className="col-span-3 py-3 text-center text-sm text-gray-400">No tests match "{testSearch}"</p> : filteredTestGroups.map((tg) => <label key={tg.id} className="flex items-center gap-2 rounded p-1 text-sm hover:bg-gray-50">
+                    <input type="checkbox" checked={selectedTestIds.includes(tg.id)} onChange={() => { setSelectedTestIds((prev) => toggleInArray(prev, tg.id)); setStep1Error(''); }} className="rounded" />
+                    <span className="truncate">{tg.name}</span><span className="ml-auto text-xs text-gray-400">Rs {tg.price}</span>
+                  </label>)}
+                </div>
               </div>}
             </div>
             {selectedAccountId && (selectionMode === 'package' ? selectedPackageIds.length > 0 : selectedTestIds.length > 0) && <div className="rounded-lg bg-blue-50 p-3 text-sm">
@@ -216,7 +228,7 @@ const BulkRegistrationModal: React.FC<BulkRegistrationModalProps> = ({ onClose, 
                 <td className="px-2 py-2"><input value={row.phone} onChange={(e) => updateRow(row.id, 'phone', e.target.value)} placeholder="Phone" className="w-36 rounded border border-gray-300 px-3 py-2 text-sm focus:outline-none" /></td>
                 <td className="px-2 py-2"><input value={row.corporate_employee_id} onChange={(e) => updateRow(row.id, 'corporate_employee_id', e.target.value)} placeholder="Emp ID" className="w-32 rounded border border-gray-300 px-3 py-2 text-sm focus:outline-none" /></td>
                 <td className="px-2 py-2"><input value={row.sample_id} onChange={(e) => updateRow(row.id, 'sample_id', e.target.value)} onKeyDown={(e) => handleTabOnLastField(e, rowIndex)} placeholder="Sample ID" className="w-36 rounded border border-gray-300 px-3 py-2 text-sm focus:outline-none" /></td>
-                <td className="px-2 py-2"><button type="button" onClick={() => setEditingExtrasRowId(row.id)} className="inline-flex items-center gap-1 rounded border border-blue-200 px-3 py-2 text-xs text-blue-700 hover:bg-blue-50"><Pencil className="h-3 w-3" />{extraSummary.total > 0 ? `${extraSummary.total} selected` : 'Add extras'}</button></td>
+                <td className="px-2 py-2"><button type="button" onClick={() => { setExtrasPackageSearch(''); setExtrasTestSearch(''); setEditingExtrasRowId(row.id); }} className="inline-flex items-center gap-1 rounded border border-blue-200 px-3 py-2 text-xs text-blue-700 hover:bg-blue-50"><Pencil className="h-3 w-3" />{extraSummary.total > 0 ? `${extraSummary.total} selected` : 'Add extras'}</button></td>
                 <td className="px-2 py-2"><button onClick={() => removeRow(row.id)} className="text-red-400 hover:text-red-600"><Trash2 className="h-4 w-4" /></button></td>
               </tr>; })}
             </tbody></table></div>
@@ -255,7 +267,7 @@ const BulkRegistrationModal: React.FC<BulkRegistrationModalProps> = ({ onClose, 
         </div>
       </div>
     </div>
-    {editingExtrasRowId && editingExtras && <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"><div className="w-full max-w-3xl rounded-xl bg-white shadow-xl"><div className="flex items-center justify-between border-b px-4 py-3"><div><h3 className="text-base font-semibold text-gray-900">Patient-specific add-ons</h3><p className="text-sm text-gray-500">Add extra packages or tests only for this patient.</p></div><button onClick={() => setEditingExtrasRowId(null)} className="text-gray-400 hover:text-gray-600"><X className="h-5 w-5" /></button></div><div className="grid gap-4 p-4 md:grid-cols-2"><div className="space-y-2"><h4 className="text-sm font-medium text-gray-800">Extra packages</h4><div className="max-h-64 space-y-2 overflow-y-auto rounded-lg border border-gray-200 p-2">{packages.map((pkg) => <label key={pkg.id} className="flex items-start gap-2 rounded p-2 hover:bg-gray-50"><input type="checkbox" checked={editingExtras.packageIds.includes(pkg.id)} onChange={() => updateEditingExtras('packageIds', pkg.id)} className="mt-0.5 rounded" /><div className="min-w-0"><div className="text-sm font-medium text-gray-900">{pkg.name}</div><div className="text-xs text-gray-500">Rs {pkg.price}</div></div></label>)}</div></div><div className="space-y-2"><h4 className="text-sm font-medium text-gray-800">Extra tests</h4><div className="max-h-64 space-y-2 overflow-y-auto rounded-lg border border-gray-200 p-2">{testGroups.map((tg) => <label key={tg.id} className="flex items-start gap-2 rounded p-2 hover:bg-gray-50"><input type="checkbox" checked={editingExtras.testIds.includes(tg.id)} onChange={() => updateEditingExtras('testIds', tg.id)} className="mt-0.5 rounded" /><div className="min-w-0"><div className="text-sm font-medium text-gray-900">{tg.name}</div><div className="text-xs text-gray-500">Rs {tg.price}</div></div></label>)}</div></div></div><div className="flex justify-end border-t px-4 py-3"><button onClick={() => setEditingExtrasRowId(null)} className="rounded-lg bg-blue-600 px-4 py-2 text-sm text-white hover:bg-blue-700">Done</button></div></div></div>}
+    {editingExtrasRowId && editingExtras && <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"><div className="w-full max-w-3xl rounded-xl bg-white shadow-xl"><div className="flex items-center justify-between border-b px-4 py-3"><div><h3 className="text-base font-semibold text-gray-900">Patient-specific add-ons</h3><p className="text-sm text-gray-500">Add extra packages or tests only for this patient.</p></div><button onClick={() => { setEditingExtrasRowId(null); setExtrasPackageSearch(''); setExtrasTestSearch(''); }} className="text-gray-400 hover:text-gray-600"><X className="h-5 w-5" /></button></div><div className="grid gap-4 p-4 md:grid-cols-2"><div className="space-y-2"><h4 className="text-sm font-medium text-gray-800">Extra packages</h4><div className="relative mb-1"><Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-gray-400" /><input type="text" value={extrasPackageSearch} onChange={(e) => setExtrasPackageSearch(e.target.value)} placeholder="Search packages..." className="w-full rounded-lg border border-gray-300 py-1.5 pl-8 pr-3 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" /></div><div className="max-h-56 space-y-1 overflow-y-auto rounded-lg border border-gray-200 p-2">{filteredExtrasPackages.length === 0 ? <p className="py-3 text-center text-sm text-gray-400">No packages match "{extrasPackageSearch}"</p> : filteredExtrasPackages.map((pkg) => <label key={pkg.id} className="flex items-start gap-2 rounded p-2 hover:bg-gray-50"><input type="checkbox" checked={editingExtras.packageIds.includes(pkg.id)} onChange={() => updateEditingExtras('packageIds', pkg.id)} className="mt-0.5 rounded" /><div className="min-w-0"><div className="text-sm font-medium text-gray-900">{pkg.name}</div><div className="text-xs text-gray-500">Rs {pkg.price}</div></div></label>)}</div></div><div className="space-y-2"><h4 className="text-sm font-medium text-gray-800">Extra tests</h4><div className="relative mb-1"><Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-gray-400" /><input type="text" value={extrasTestSearch} onChange={(e) => setExtrasTestSearch(e.target.value)} placeholder="Search tests..." className="w-full rounded-lg border border-gray-300 py-1.5 pl-8 pr-3 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" /></div><div className="max-h-56 space-y-1 overflow-y-auto rounded-lg border border-gray-200 p-2">{filteredExtrasTestGroups.length === 0 ? <p className="py-3 text-center text-sm text-gray-400">No tests match "{extrasTestSearch}"</p> : filteredExtrasTestGroups.map((tg) => <label key={tg.id} className="flex items-start gap-2 rounded p-2 hover:bg-gray-50"><input type="checkbox" checked={editingExtras.testIds.includes(tg.id)} onChange={() => updateEditingExtras('testIds', tg.id)} className="mt-0.5 rounded" /><div className="min-w-0"><div className="text-sm font-medium text-gray-900">{tg.name}</div><div className="text-xs text-gray-500">Rs {tg.price}</div></div></label>)}</div></div></div><div className="flex justify-end border-t px-4 py-3"><button onClick={() => { setEditingExtrasRowId(null); setExtrasPackageSearch(''); setExtrasTestSearch(''); }} className="rounded-lg bg-blue-600 px-4 py-2 text-sm text-white hover:bg-blue-700">Done</button></div></div></div>}
     {showExcelPanel && <ExcelImportPanel onImport={handleExcelImport} onClose={() => setShowExcelPanel(false)} />}
   </>;
 };

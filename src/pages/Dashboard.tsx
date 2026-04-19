@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from "react";
 import ReactDOM from "react-dom";
+import { endOfDay, format, isValid, parseISO, startOfDay, subDays } from "date-fns";
 import {
   Plus,
   Search,
@@ -251,11 +252,9 @@ const Dashboard: React.FC = () => {
 
   // Date range state - default to last 7 days
   const [dateFrom, setDateFrom] = useState<string>(() => {
-    const date = new Date();
-    date.setDate(date.getDate() - 7);
-    return date.toISOString().split("T")[0];
+    return format(subDays(new Date(), 7), "yyyy-MM-dd");
   });
-  const [dateTo, setDateTo] = useState<string>(() => new Date().toISOString().split("T")[0]);
+  const [dateTo, setDateTo] = useState<string>(() => format(new Date(), "yyyy-MM-dd"));
   const [allDates, setAllDates] = useState(false); // ✅ FIX: “All Dates” without breaking query
 
   const [showOrderForm, setShowOrderForm] = useState(false);
@@ -338,7 +337,12 @@ id, patient_id, patient_name, status, priority, order_date, expected_date, total
     }
 
     if (!allDates) {
-      q = q.gte("order_date", dateFrom).lte("order_date", dateTo + "T23:59:59.999Z");
+      const parsedFrom = parseISO(dateFrom);
+      const parsedTo = parseISO(dateTo);
+      const queryStart = isValid(parsedFrom) ? startOfDay(parsedFrom).toISOString() : dateFrom;
+      const queryEnd = isValid(parsedTo) ? endOfDay(parsedTo).toISOString() : `${dateTo}T23:59:59.999Z`;
+
+      q = q.gte("order_date", queryStart).lte("order_date", queryEnd);
     }
 
     const { data: rows, error } = await q;
@@ -374,16 +378,18 @@ id, patient_id, patient_name, status, priority, order_date, expected_date, total
     const invoicePromises = orderIds.map(async (orderId) => {
       const { data: invoices } = await database.invoices.getAllByOrderId(orderId);
       if (!invoices || invoices.length === 0) {
-        return { orderId, invoices: [], primaryInvoice: null, totalInvoiced: 0, paidAmount: 0, deliveryStatus: {} };
+        return { orderId, invoices: [], primaryInvoice: null, totalInvoiced: 0, totalSubtotal: 0, totalRefunded: 0, paidAmount: 0, deliveryStatus: {} };
       }
 
       // Aggregate totals across all invoices
       let totalInvoiced = 0;
+      let totalSubtotal = 0; // pre-discount, used to check billing coverage
       let totalPaid = 0;
       let totalRefunded = 0;
 
       for (const inv of invoices) {
         totalInvoiced += Number(inv.total_after_discount || inv.total || inv.subtotal || 0);
+        totalSubtotal += Number(inv.subtotal || inv.total || 0);
         totalRefunded += Number(inv.total_refunded_amount || 0);
         
         // Get payments for each invoice
@@ -395,14 +401,15 @@ id, patient_id, patient_name, status, priority, order_date, expected_date, total
       const primaryInvoice = invoices[0];
       const { data: deliveryStatus } = await database.invoices.getDeliveryStatus(primaryInvoice.id);
 
-      return { 
-        orderId, 
+      return {
+        orderId,
         invoices,
         primaryInvoice,
         totalInvoiced,
+        totalSubtotal,
         totalRefunded,
-        paidAmount: totalPaid, 
-        deliveryStatus: deliveryStatus || {} 
+        paidAmount: totalPaid,
+        deliveryStatus: deliveryStatus || {}
       };
     });
 
@@ -538,12 +545,13 @@ id, patient_id, patient_name, status, priority, order_date, expected_date, total
         sample_collected_at: o.sample_collected_at,
         sample_collected_by: o.sample_collected_by,
 
-        // Billing status: "partial" if totalInvoiced < order amount+charges, else use DB status
+        // Billing status: "partial" if pre-discount subtotal < order amount+charges, else use DB status
+        // Use totalSubtotal (pre-discount) so a discount doesn't falsely mark the order as partially billed
         billing_status: (() => {
           if (!invoiceInfo?.invoices?.length) return o.billing_status;
           const orderAmount = (o.final_amount || o.total_amount || 0) + uninvoicedCharges;
-          const invoicedAmount = invoiceInfo.totalInvoiced || 0;
-          return (orderAmount - invoicedAmount) > 1 ? 'partial' : o.billing_status;
+          const invoicedSubtotal = invoiceInfo.totalSubtotal || 0;
+          return (orderAmount - invoicedSubtotal) > 1 ? 'partial' : o.billing_status;
         })(),
         is_billed: o.is_billed,
         // Use primary invoice ID for actions (most recent)
@@ -559,9 +567,11 @@ id, patient_id, patient_name, status, priority, order_date, expected_date, total
           const paidAmount = invoiceInfo?.paidAmount || 0;
           const refundedAmount = invoiceInfo?.totalRefunded || 0;
 
-          // effectiveTotal = max(order+uninvoiced, invoiced)
-          // When invoiced, invoice total already includes any invoiced charges
-          const effectiveTotal = Math.max(orderAmount, invoicedAmount);
+          // When invoice exists, use invoiced total (already reflects discounts) + any uninvoiced extras.
+          // Do NOT take max with orderAmount — that would ignore discounts applied on the invoice.
+          const effectiveTotal = invoicedAmount > 0
+            ? invoicedAmount + uninvoicedCharges
+            : orderAmount;
           return Math.max(0, effectiveTotal - paidAmount - refundedAmount);
         })(),
         // Payment status based on aggregated amounts
@@ -572,7 +582,9 @@ id, patient_id, patient_name, status, priority, order_date, expected_date, total
           const paidAmount = invoiceInfo?.paidAmount || 0;
           const refundedAmount = invoiceInfo?.totalRefunded || 0;
 
-          const effectiveTotal = Math.max(orderAmount, invoicedAmount);
+          const effectiveTotal = invoicedAmount > 0
+            ? invoicedAmount + uninvoicedCharges
+            : orderAmount;
           const netOwed = Math.max(0, effectiveTotal - refundedAmount);
 
           if (!netOwed) return "unpaid";
@@ -1529,35 +1541,53 @@ id,
       <div className={mobile.spacing}>
         {/* Header */}
         <div className="flex flex-col gap-3">
-          <div className="flex items-center justify-between">
-            <h1 className={`${mobile.titleSize} font-bold text-gray-900 flex items-center gap-2`}>
-              Test Orders
-              <button
-                onClick={() => setIsHeaderCollapsed(!isHeaderCollapsed)}
-                className="p-1.5 hover:bg-gray-100 rounded-lg transition-colors text-gray-500"
-                title={isHeaderCollapsed ? "Show Filters" : "Hide Filters"}
-              >
-                {isHeaderCollapsed ? <ChevronDown className="h-5 w-5" /> : <ChevronUp className="h-5 w-5" />}
-              </button>
-            </h1>
-            {!mobile.isMobile && (
-              <div className="flex items-center gap-2">
+          {!mobile.isMobile ? (
+            <div className="grid grid-cols-3 items-center">
+              {/* Left: Title */}
+              <h1 className={`${mobile.titleSize} font-bold text-gray-900 flex items-center gap-2`}>
+                Test Orders
+                <button
+                  onClick={() => setIsHeaderCollapsed(!isHeaderCollapsed)}
+                  className="p-1.5 hover:bg-gray-100 rounded-lg transition-colors text-gray-500"
+                  title={isHeaderCollapsed ? "Show Filters" : "Hide Filters"}
+                >
+                  {isHeaderCollapsed ? <ChevronDown className="h-5 w-5" /> : <ChevronUp className="h-5 w-5" />}
+                </button>
+              </h1>
+              {/* Center: Create Order — prominent CTA */}
+              <div className="flex justify-center">
+                <button
+                  onClick={() => setShowOrderForm(true)}
+                  className="inline-flex items-center gap-2 px-8 py-3 bg-blue-600 text-white text-lg font-bold rounded-xl hover:bg-blue-700 active:bg-blue-800 shadow-lg hover:shadow-xl transition-all"
+                >
+                  <Plus className="h-6 w-6" />
+                  Create Order
+                </button>
+              </div>
+              {/* Right: secondary controls */}
+              <div className="flex justify-end">
                 <button
                   onClick={() => setIsCollapsedView(!isCollapsedView)}
                   className={`px-4 py-2 rounded-lg font-medium transition-colors ${isCollapsedView ? "bg-blue-600 text-white" : "bg-gray-100 text-gray-700 hover:bg-gray-200"}`}
                 >
                   {isCollapsedView ? "Expand Cards" : "Collapse Cards"}
                 </button>
-                <button
-                  onClick={() => setShowOrderForm(true)}
-                  className="inline-flex items-center px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 shadow-sm"
-                >
-                  <Plus className="h-5 w-5 mr-2" />
-                  Create Order
-                </button>
               </div>
-            )}
-          </div>
+            </div>
+          ) : (
+            <div className="flex items-center justify-between">
+              <h1 className={`${mobile.titleSize} font-bold text-gray-900 flex items-center gap-2`}>
+                Test Orders
+                <button
+                  onClick={() => setIsHeaderCollapsed(!isHeaderCollapsed)}
+                  className="p-1.5 hover:bg-gray-100 rounded-lg transition-colors text-gray-500"
+                  title={isHeaderCollapsed ? "Show Filters" : "Hide Filters"}
+                >
+                  {isHeaderCollapsed ? <ChevronDown className="h-5 w-5" /> : <ChevronUp className="h-5 w-5" />}
+                </button>
+              </h1>
+            </div>
+          )}
 
           {mobile.isMobile && (
             <button

@@ -57,7 +57,7 @@ serve(async (req) => {
       // Find lab's test group by name (limit(1) guards against duplicate names in the same lab)
       const { data: labGroup, error: labGroupError } = await supabaseClient
         .from('test_groups')
-        .select('id, name, lab_id, group_interpretation')
+        .select('id, name, lab_id, group_interpretation, global_test_catalog_id')
         .eq('lab_id', lab_id)
         .ilike('name', test_group_name)
         .limit(1)
@@ -101,10 +101,110 @@ serve(async (req) => {
       let analytesUpdated = 0;
       let analytesHydrated = 0;
 
+      const buildHydratedLabAnalytePayload = async (analyteIds: string[]) => {
+        if (analyteIds.length === 0) return [] as Record<string, any>[];
+
+        const analyteMap = new Map<string, any>();
+        for (let i = 0; i < analyteIds.length; i += 1000) {
+          const { data: analyteRows, error: analyteErr } = await supabaseClient
+            .from('analytes')
+            .select(`
+              id,
+              name,
+              unit,
+              category,
+              reference_range,
+              low_critical,
+              high_critical,
+              interpretation_low,
+              interpretation_normal,
+              interpretation_high,
+              method,
+              description,
+              ref_range_knowledge,
+              ai_processing_type,
+              ai_prompt_override,
+              group_ai_mode,
+              is_calculated,
+              formula,
+              formula_variables,
+              formula_description,
+              value_type,
+              expected_normal_values,
+              expected_value_flag_map,
+              code,
+              is_critical,
+              normal_range_min,
+              normal_range_max
+            `)
+            .in('id', analyteIds.slice(i, i + 1000));
+
+          if (analyteErr) {
+            console.error('Error loading analytes for lab_analytes hydration:', analyteErr);
+            continue;
+          }
+
+          for (const row of (analyteRows || [])) analyteMap.set(row.id, row);
+        }
+
+        return analyteIds
+          .map((analyteId) => {
+            const analyte = analyteMap.get(analyteId);
+            if (!analyte) return null;
+
+            return {
+              lab_id,
+              analyte_id: analyteId,
+              is_active: true,
+              visible: true,
+              name: analyte.name,
+              unit: analyte.unit,
+              category: analyte.category,
+              reference_range: analyte.reference_range,
+              low_critical: analyte.low_critical,
+              high_critical: analyte.high_critical,
+              interpretation_low: analyte.interpretation_low,
+              interpretation_normal: analyte.interpretation_normal,
+              interpretation_high: analyte.interpretation_high,
+              method: analyte.method ?? null,
+              description: analyte.description ?? null,
+              ref_range_knowledge: analyte.ref_range_knowledge ?? {},
+              ai_processing_type: analyte.ai_processing_type ?? null,
+              ai_prompt_override: analyte.ai_prompt_override ?? null,
+              group_ai_mode: analyte.group_ai_mode ?? 'individual',
+              is_calculated: analyte.is_calculated ?? false,
+              formula: analyte.formula ?? null,
+              formula_variables: analyte.formula_variables ?? [],
+              formula_description: analyte.formula_description ?? null,
+              value_type: analyte.value_type ?? 'numeric',
+              expected_normal_values: analyte.expected_normal_values ?? [],
+              expected_value_flag_map: analyte.expected_value_flag_map ?? {},
+              code: analyte.code ?? null,
+              is_critical: analyte.is_critical ?? null,
+              normal_range_min: analyte.normal_range_min ?? null,
+              normal_range_max: analyte.normal_range_max ?? null,
+              display_name: null,
+              default_value: null,
+            };
+          })
+          .filter(Boolean) as Record<string, any>[];
+      };
+
       if (toAdd.length > 0) {
-        // Ensure new analytes exist in lab_analytes (FK guard)
+        // Ensure new analytes exist in lab_analytes (FK guard), hydrated from global analytes first
+        const hydratedPayload = await buildHydratedLabAnalytePayload(
+          [...new Set(toAdd.map((m: any) => m.analyte_id))],
+        );
+        const hydratedMap = new Map<string, Record<string, any>>();
+        for (const row of hydratedPayload) hydratedMap.set(row.analyte_id, row);
+
         const labAnalytePayload = toAdd.map((m: any) => {
-          const entry: Record<string, any> = { lab_id, analyte_id: m.analyte_id, is_active: true, visible: true };
+          const entry: Record<string, any> = hydratedMap.get(m.analyte_id) || {
+            lab_id,
+            analyte_id: m.analyte_id,
+            is_active: true,
+            visible: true,
+          };
           if (m.custom_name != null) entry.lab_specific_name = m.custom_name;
           if (m.custom_unit != null) entry.lab_specific_unit = m.custom_unit;
           if (m.custom_interpretation_low != null) entry.lab_specific_interpretation_low = m.custom_interpretation_low;
@@ -181,14 +281,21 @@ serve(async (req) => {
         analytesUpdated = toUpdate.length;
       }
 
-      // Sync group_interpretation only if global has one and lab doesn't yet
+      // Sync the global catalog link and group_interpretation when missing.
       let interpretationSynced = false;
+      const singleGroupPatch: Record<string, unknown> = {};
+      if (labGroup.global_test_catalog_id !== catalogEntry.id) {
+        singleGroupPatch.global_test_catalog_id = catalogEntry.id;
+      }
       if (catalogEntry.group_interpretation && !labGroup.group_interpretation) {
-        const { error: interpErr } = await supabaseClient
+        singleGroupPatch.group_interpretation = catalogEntry.group_interpretation;
+      }
+      if (Object.keys(singleGroupPatch).length > 0) {
+        const { error: groupSyncErr } = await supabaseClient
           .from('test_groups')
-          .update({ group_interpretation: catalogEntry.group_interpretation })
+          .update(singleGroupPatch)
           .eq('id', labGroup.id);
-        if (!interpErr) interpretationSynced = true;
+        if (!groupSyncErr && 'group_interpretation' in singleGroupPatch) interpretationSynced = true;
       }
 
       // Seed report sections for this test group (non-destructive)
@@ -366,7 +473,7 @@ serve(async (req) => {
       // --- BULK PRE-FETCH: Load all existing test groups for this lab in ONE query ---
       const { data: existingLabGroups } = await supabaseClient
         .from('test_groups')
-        .select('id, code, name, default_ai_processing_type')
+        .select('id, code, name, default_ai_processing_type, global_test_catalog_id')
         .eq('lab_id', lab_id);
 
       // Build lookup Maps for O(1) access
@@ -443,6 +550,7 @@ serve(async (req) => {
             lab_id: lab_id,
             name: gtg.name,
             code: gtg.code,
+            global_test_catalog_id: gtg.id,
             category: gtg.department_default || gtg.category || 'General',
             clinical_purpose: gtg.description || gtg.name,
             price: gtg.default_price || 0,
@@ -588,7 +696,7 @@ serve(async (req) => {
         }
 
         // Pass 1: ensure all analyte rows exist (ignoreDuplicates — never clobbers existing rows)
-        const catalogLabPayload = allValidIds.map(aid => ({ lab_id: lab_id, analyte_id: aid, is_active: true, visible: true }));
+        const catalogLabPayload = await buildHydratedLabAnalytePayload(allValidIds);
         for (let i = 0; i < catalogLabPayload.length; i += 500) {
           const { error: cErr } = await supabaseClient
             .from('lab_analytes')
@@ -681,6 +789,7 @@ serve(async (req) => {
               .from('test_groups')
               .update({
                 code: gtg.code,
+                global_test_catalog_id: gtg.id,
                 default_ai_processing_type: gtg.default_ai_processing_type,
                 group_level_prompt: gtg.group_level_prompt || null,
                 ai_config: gtg.ai_config || {},

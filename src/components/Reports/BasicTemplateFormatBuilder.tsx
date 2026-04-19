@@ -346,6 +346,88 @@ ${flagSymbol === 'before' ? `
   font-style: italic !important;
 }
 
+.basic-report-template .group-interpretation-block {
+  margin-top: 10px !important;
+  font-size: ${basePx}px !important;
+}
+
+.basic-report-template .group-interpretation-block .section-header {
+  font-size: ${basePx + 2}px !important;
+  font-weight: 700 !important;
+  color: #0b4aa2 !important;
+  padding: 10px 0 6px 0 !important;
+  margin: 16px 0 8px 0 !important;
+  border-bottom: 2px solid #0b4aa2 !important;
+  letter-spacing: 0.02em !important;
+  background: transparent !important;
+}
+
+.basic-report-template .group-interpretation-block figure.table {
+  margin: 8px 0 0 0 !important;
+  width: 100% !important;
+}
+
+.basic-report-template .group-interpretation-block .tbl-interpretation {
+  width: 100% !important;
+  border-collapse: collapse !important;
+  table-layout: fixed !important;
+  font-size: ${basePx}px !important;
+  border: 1px solid #d1daf0 !important;
+  background: #fff !important;
+  margin-top: 8px !important;
+}
+
+.basic-report-template .group-interpretation-block .tbl-interpretation thead th {
+  background: #0b4aa2 !important;
+  color: #fff !important;
+  font-weight: 700 !important;
+  padding: 9px 12px !important;
+  text-align: left !important;
+  font-size: ${basePx}px !important;
+  border: 1px solid #0b4aa2 !important;
+  vertical-align: top !important;
+}
+
+.basic-report-template .group-interpretation-block .tbl-interpretation tbody td {
+  padding: 9px 12px !important;
+  border: 1px solid #e2eaf8 !important;
+  vertical-align: top !important;
+  line-height: 1.5 !important;
+  font-size: ${basePx}px !important;
+  color: #1f2937 !important;
+  word-break: break-word !important;
+}
+
+.basic-report-template .group-interpretation-block .tbl-interpretation tbody tr:nth-child(even) td {
+  background: #f5f8ff !important;
+}
+
+.basic-report-template .group-interpretation-block .tbl-interpretation th:first-child,
+.basic-report-template .group-interpretation-block .tbl-interpretation td:first-child {
+  width: 100px !important;
+  font-weight: 600 !important;
+  white-space: nowrap !important;
+  color: #1e3a6e !important;
+}
+
+.basic-report-template .group-interpretation-block .tbl-interpretation tbody td:first-child {
+  border-left: 3px solid #cbd5e1 !important;
+}
+
+.basic-report-template .group-interpretation-block .note {
+  margin-top: 10px !important;
+  padding: 10px 14px !important;
+  border-left: 4px solid #0b4aa2 !important;
+  background: #f0f5ff !important;
+  font-size: ${smallPx + 0.5}px !important;
+  color: #334155 !important;
+  line-height: 1.55 !important;
+}
+
+.basic-report-template .group-interpretation-block .note strong {
+  color: #0b4aa2 !important;
+}
+
 .basic-report-template .report-sections {
   margin-top: 14px !important;
   border-top: 1px solid #000 !important;
@@ -548,6 +630,7 @@ ${flagSymbol === 'before' ? `
           if (showFlagLegend && flagSymbol !== 'none') parts.push('H = High &nbsp; L = Low &nbsp; A = Abnormal &nbsp; H* = Critical High &nbsp; L* = Critical Low');
           return parts.length ? `<p class="calculated-note">${parts.join(' &nbsp;|&nbsp; ')}</p>` : '';
         })()}
+        ${group.groupInterpretation ? `<div class="group-interpretation-block">${group.groupInterpretation}</div>` : ''}
       </figure>
     `;
   }

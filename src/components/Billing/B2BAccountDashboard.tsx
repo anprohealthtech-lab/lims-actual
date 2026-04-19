@@ -75,7 +75,12 @@ const B2BAccountDashboard: React.FC = () => {
   // Actions
   const [pdfLoading, setPdfLoading]     = useState<string | null>(null);
   const [updatingStatus, setUpdatingStatus] = useState<string | null>(null);
-  const [paymentModal, setPaymentModal] = useState<{ accountId: string; accountName: string; amount: number } | null>(null);
+  const [paymentModal, setPaymentModal] = useState<{
+    accountId: string;
+    accountName: string;
+    amount: number;
+    consolidatedInvoiceId?: string;
+  } | null>(null);
 
   useEffect(() => { load(); }, []);
 
@@ -87,7 +92,7 @@ const B2BAccountDashboard: React.FC = () => {
       const [{ data: ciData }, { data: accounts }] = await Promise.all([
         supabase
           .from('consolidated_invoices')
-          .select('*, account:accounts(name, type, payment_terms)')
+          .select('*, account:accounts!consolidated_invoices_account_id_fkey(name, type, payment_terms)')
           .eq('lab_id', lab_id)
           .order('created_at', { ascending: false }),
         (database as any).accounts.getAll(),
@@ -374,7 +379,12 @@ const B2BAccountDashboard: React.FC = () => {
                                     </button>
                                     {!['paid','cancelled'].includes(inv.status) && (
                                       <button
-                                        onClick={() => setPaymentModal({ accountId: inv.account_id, accountName: inv.account_name, amount: inv.total_amount })}
+                                        onClick={() => setPaymentModal({
+                                          accountId: inv.account_id,
+                                          accountName: inv.account_name,
+                                          amount: inv.total_amount,
+                                          consolidatedInvoiceId: inv.id,
+                                        })}
                                         className="text-green-600 hover:text-green-800 text-xs flex items-center gap-1"
                                       >
                                         <CreditCard className="w-3 h-3" /> Pay
@@ -517,7 +527,12 @@ const B2BAccountDashboard: React.FC = () => {
                         </button>
                         {!['paid', 'cancelled'].includes(inv.status) && (
                           <button
-                            onClick={() => setPaymentModal({ accountId: inv.account_id, accountName: inv.account_name, amount: inv.total_amount })}
+                            onClick={() => setPaymentModal({
+                              accountId: inv.account_id,
+                              accountName: inv.account_name,
+                              amount: inv.total_amount,
+                              consolidatedInvoiceId: inv.id,
+                            })}
                             className="text-green-600 hover:text-green-800 flex items-center gap-1 text-xs"
                           >
                             <CreditCard className="w-3 h-3" /> Pay
@@ -550,6 +565,7 @@ const B2BAccountDashboard: React.FC = () => {
           accountId={paymentModal.accountId}
           accountName={paymentModal.accountName}
           currentBalance={paymentModal.amount}
+          consolidatedInvoiceId={paymentModal.consolidatedInvoiceId}
           onClose={() => setPaymentModal(null)}
           onSuccess={() => { load(); setPaymentModal(null); }}
         />

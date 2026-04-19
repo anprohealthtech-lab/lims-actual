@@ -615,6 +615,7 @@ const MonthlyAccountBilling: React.FC<MonthlyAccountBillingProps> = ({ onClose }
             accountId={summary.account.id}
             accountName={summary.account.name}
             currentBalance={summary.consolidatedInvoice ? (summary.consolidatedInvoice as any).total_amount : summary.totalAmount}
+            consolidatedInvoiceId={summary.consolidatedInvoice?.id}
             onClose={() => setShowPaymentModal(null)}
             onSuccess={() => { loadPeriodData(); setShowPaymentModal(null); }}
           />

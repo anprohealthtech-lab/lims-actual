@@ -42,6 +42,8 @@ type TestGroupForOrder = {
   test_group_name: string;
   order_test_group_id: string | null;
   order_test_id: string | null;
+  result_id?: string | null;
+  is_section_only?: boolean;
   analytes: AnalyteLite[];
 };
 
@@ -129,6 +131,7 @@ export default function OrderDetail() {
               code,
               category,
               lab_id,
+              is_section_only,
               test_group_analytes(
                 analyte_id,
                 lab_analyte_id,
@@ -167,6 +170,7 @@ export default function OrderDetail() {
               code,
               category,
               lab_id,
+              is_section_only,
               test_group_analytes(
                 analyte_id,
                 lab_analyte_id,
@@ -243,6 +247,8 @@ export default function OrderDetail() {
             test_group_name: otg.test_groups.name,
             order_test_group_id: otg.id,
             order_test_id: null,
+            result_id: data.results?.find((r: any) => r.order_test_group_id === otg.id || r.test_group_id === otg.test_groups.id)?.id || null,
+            is_section_only: !!otg.test_groups.is_section_only,
             analytes:
               otg.test_groups.test_group_analytes?.map((tga: any) => {
                 const a = tga.analytes;
@@ -276,6 +282,8 @@ export default function OrderDetail() {
             test_group_name: ot.test_groups.name,
             order_test_group_id: null,
             order_test_id: ot.id,
+            result_id: data.results?.find((r: any) => r.order_test_id === ot.id || r.test_group_id === ot.test_groups.id)?.id || null,
+            is_section_only: !!ot.test_groups.is_section_only,
             analytes:
               ot.test_groups.test_group_analytes?.map((tga: any) => {
                 const a = tga.analytes;
@@ -319,6 +327,8 @@ export default function OrderDetail() {
               order_test_group_id:
                 existing.order_test_group_id || current.order_test_group_id,
               order_test_id: existing.order_test_id || current.order_test_id,
+              result_id: existing.result_id || current.result_id,
+              is_section_only: existing.is_section_only || current.is_section_only,
             };
           }
           return acc;

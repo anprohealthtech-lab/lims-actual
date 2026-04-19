@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState, useCallback } from "react";
+import React, { useEffect, useMemo, useState, useCallback, useRef } from "react";
 import ReactDOM from "react-dom";
 import {
   Search,
@@ -43,7 +43,7 @@ import { useAIResultIntelligence, type VerifierSummaryResponse, type ClinicalSum
 import { generateAndSaveTrendCharts, saveClinicalSummary } from "../utils/reportExtrasService";
 import TrendGraphPanel from "../components/Results/TrendGraphPanel";
 import AIResultSuggestionCard from "../components/Results/AIResultSuggestionCard";
-import SectionEditor from "../components/Results/SectionEditor";
+import SectionEditor, { type SectionEditorRef } from "../components/Results/SectionEditor";
 import WorkflowExecutionPanel from "../components/Workflow/WorkflowExecutionPanel";
 import { useCalculatedParameters } from "../hooks/useCalculatedParameters";
 
@@ -56,10 +56,12 @@ type PanelRow = {
   result_id: string;
   test_group_id: string | null;
   test_group_name: string | null;
+  is_section_only?: boolean;
   expected_analytes: number;
   entered_analytes: number;
   approved_analytes: number;
   panel_ready: boolean;
+  result_verification_status?: string | null;
   patient_id: string;
   patient_name: string;
   order_date: string;
@@ -69,6 +71,7 @@ type Analyte = {
   id: string;
   result_id: string;
   analyte_id: string; // UUID reference to analytes table
+  lab_analyte_id?: string | null;
   parameter: string;
   value: string | null;
   unit: string;
@@ -496,6 +499,7 @@ const ResultVerificationConsole: React.FC = () => {
   const [rowsByResult, setRowsByResult] = useState<Record<string, Analyte[]>>({});
   const [open, setOpen] = useState<Record<string, boolean>>({}); // result_id -> bool
   const [busy, setBusy] = useState<Record<string, boolean>>({});  // small per-row spinner
+  const sectionEditorRefs = useRef<Record<string, SectionEditorRef | null>>({});
 
   // attachments cache by order_id
   const [attachmentsByOrder, setAttachmentsByOrder] = useState<Record<string, Attachment[]>>({});
@@ -627,7 +631,23 @@ const ResultVerificationConsole: React.FC = () => {
       setErr(error.message);
       setPanels([]);
     } else {
-      setPanels((data || []) as PanelRow[]);
+      const basePanels = (data || []) as PanelRow[];
+      const resultIds = Array.from(new Set(basePanels.map((row) => row.result_id).filter(Boolean)));
+
+      if (resultIds.length > 0) {
+        const { data: resultStatuses } = await supabase
+          .from("results")
+          .select("id, verification_status")
+          .in("id", resultIds);
+
+        const statusMap = new Map((resultStatuses || []).map((row: any) => [row.id, row.verification_status || null]));
+        setPanels(basePanels.map((row) => ({
+          ...row,
+          result_verification_status: statusMap.has(row.result_id) ? statusMap.get(row.result_id) ?? null : null,
+        })));
+      } else {
+        setPanels(basePanels);
+      }
     }
     if (!silent) setLoading(false);
   };
@@ -643,8 +663,12 @@ const ResultVerificationConsole: React.FC = () => {
     const k = q.trim().toLowerCase();
     const normalizedSearchId = normalizeIdForSearch(k);
 
-    // Only show panels that have at least one result value entered
-    let list = (panels || []).filter((r) => (r?.entered_analytes || 0) > 0);
+    // Show analyte-backed panels once values are entered, and always allow
+    // section-only panels because they are verified via report sections.
+    let list = (panels || []).filter((r) =>
+      (r?.entered_analytes || 0) > 0 ||
+      !!r.is_section_only
+    );
 
     if (k) {
       list = list.filter(
@@ -657,12 +681,22 @@ const ResultVerificationConsole: React.FC = () => {
     }
 
     if (stateFilter === "ready") {
-      list = list.filter((r) => r.panel_ready);
+      list = list.filter((r) =>
+        r.is_section_only ? r.result_verification_status === "verified" : r.panel_ready
+      );
     } else if (stateFilter === "pending") {
-      list = list.filter((r) => !r.panel_ready && (r.approved_analytes || 0) === 0);
+      list = list.filter((r) =>
+        r.is_section_only
+          ? r.result_verification_status !== "verified"
+          : (!r.panel_ready && (r.approved_analytes || 0) === 0)
+      );
     } else if (stateFilter === "partial") {
       list = list.filter(
-        (r) => !r.panel_ready && r.approved_analytes > 0 && r.approved_analytes < r.expected_analytes
+        (r) =>
+          !r.is_section_only &&
+          !r.panel_ready &&
+          r.approved_analytes > 0 &&
+          r.approved_analytes < r.expected_analytes
       );
     }
 
@@ -680,6 +714,7 @@ const ResultVerificationConsole: React.FC = () => {
           "id",
           "result_id",
           "analyte_id",
+          "lab_analyte_id",
           "parameter",
           "value",
           "unit",
@@ -704,7 +739,7 @@ const ResultVerificationConsole: React.FC = () => {
       if (String(error.message || "").includes("column") && String(error.message).includes("verify_status")) {
         const { data: data2, error: e2 } = await supabase
           .from("result_values")
-          .select("id,result_id,analyte_id,parameter,value,unit,reference_range,flag,is_auto_calculated,calculation_inputs,calculated_at")
+          .select("id,result_id,analyte_id,lab_analyte_id,parameter,value,unit,reference_range,flag,is_auto_calculated,calculation_inputs,calculated_at")
           .eq("result_id", result_id)
           .order("parameter", { ascending: true });
 
@@ -713,6 +748,7 @@ const ResultVerificationConsole: React.FC = () => {
             id: r.id,
             result_id: r.result_id,
             analyte_id: r.analyte_id,
+            lab_analyte_id: r.lab_analyte_id || null,
             parameter: r.parameter,
             value: r.value,
             unit: r.unit,
@@ -1007,6 +1043,37 @@ const ResultVerificationConsole: React.FC = () => {
   };
 
   const approveAllInPanel = async (row: PanelRow) => {
+    if (row.is_section_only) {
+      setBusyFor(row.result_id, true);
+      try {
+        const sectionEditor = sectionEditorRefs.current[row.result_id];
+        if (sectionEditor) {
+          await sectionEditor.save();
+        }
+
+        const { error } = await supabase
+          .from("results")
+          .update({
+            verification_status: "verified",
+            verified_at: new Date().toISOString(),
+            manually_verified: true,
+          })
+          .eq("id", row.result_id);
+
+        if (error) {
+          throw error;
+        }
+
+        await loadPanels(true);
+      } catch (error) {
+        console.error("Failed to approve section-only panel:", error);
+        alert("Failed to approve section-only report");
+      } finally {
+        setBusyFor(row.result_id, false);
+      }
+      return;
+    }
+
     const list = rowsByResult[row.result_id] || [];
     if (!list.length) return;
     const ids = list.map((a) => a.id);
@@ -1067,6 +1134,29 @@ const ResultVerificationConsole: React.FC = () => {
   };
 
   const unapproveAllInPanel = async (row: PanelRow) => {
+    if (row.is_section_only) {
+      if (!window.confirm("Revert this section-only report back to pending verification?")) return;
+
+      setBusyFor(row.result_id, true);
+      const { error } = await supabase
+        .from("results")
+        .update({
+          verification_status: "pending_verification",
+          verified_at: null,
+          is_locked: false,
+          locked_reason: null,
+          locked_at: null,
+          locked_by: null,
+        })
+        .eq("id", row.result_id);
+
+      if (!error) {
+        await loadPanels(true);
+      }
+      setBusyFor(row.result_id, false);
+      return;
+    }
+
     const list = rowsByResult[row.result_id] || [];
     const approvedIds = list.filter((a) => a.verify_status === "approved").map((a) => a.id);
     if (!approvedIds.length) return;
@@ -1115,18 +1205,18 @@ const ResultVerificationConsole: React.FC = () => {
 
     setRecalculating(prev => ({ ...prev, [row.result_id]: true }));
     try {
-      const calcIds = calcRows.map(a => a.analyte_id);
-      const srcIds  = srcRows.map(a => a.analyte_id).filter(Boolean) as string[];
+        const calcIds = calcRows.map(a => a.analyte_id);
+        const srcIds  = srcRows.map(a => a.analyte_id).filter(Boolean) as string[];
 
       const labId = currentLabId || await database.getCurrentUserLabId();
-      const [{ data: labFormulas }, { data: rawDeps }, { data: srcAnalytesData }] = await Promise.all([
+        const [{ data: labFormulas }, { data: rawDeps }, { data: srcAnalytesData }] = await Promise.all([
         // Prefer lab_analytes formula over global analytes formula
         supabase.from('lab_analytes')
           .select('analyte_id, is_calculated, formula, formula_variables')
           .eq('lab_id', labId!)
           .in('analyte_id', calcIds),
         supabase.from('analyte_dependencies')
-          .select('calculated_analyte_id, source_analyte_id, variable_name, lab_id')
+          .select('calculated_analyte_id, calculated_lab_analyte_id, source_analyte_id, source_lab_analyte_id, variable_name, lab_id')
           .in('calculated_analyte_id', calcIds)
           .or(`lab_id.eq.${labId},lab_id.is.null`),
         srcIds.length > 0
@@ -1144,10 +1234,10 @@ const ResultVerificationConsole: React.FC = () => {
       const formulas = Array.from(labFormulaMap.values()).map((r: any) => ({ id: r.analyte_id ?? r.id, formula: r.formula, formula_variables: r.formula_variables }));
       // Deduplicate deps: prefer lab-specific over global
       const depSeen = new Set<string>();
-      const deps: { calculated_analyte_id: string; source_analyte_id: string; variable_name: string }[] = [];
+      const deps: { calculated_analyte_id: string; calculated_lab_analyte_id?: string | null; source_analyte_id: string; source_lab_analyte_id?: string | null; variable_name: string }[] = [];
       const depsSorted = [...(rawDeps || [])].sort((a: any, b: any) => (a.lab_id ? -1 : 1) - (b.lab_id ? -1 : 1));
       for (const row of depsSorted as any[]) {
-        const key = `${row.calculated_analyte_id}:${row.variable_name}`;
+        const key = `${row.calculated_lab_analyte_id || row.calculated_analyte_id}:${row.variable_name}`;
         if (!depSeen.has(key)) { depSeen.add(key); deps.push(row); }
       }
 
@@ -1155,10 +1245,11 @@ const ResultVerificationConsole: React.FC = () => {
       const valueLookup = new Map<string, number>();
       for (const r of srcRows) {
         if (!r.value) continue;
-        const num = parseFloat(r.value);
-        if (isNaN(num)) continue;
-        if (r.analyte_id) valueLookup.set(r.analyte_id, num);
-        valueLookup.set(r.parameter.toLowerCase(), num);
+          const num = parseFloat(r.value);
+          if (isNaN(num)) continue;
+          if (r.analyte_id) valueLookup.set(r.analyte_id, num);
+          if (r.lab_analyte_id) valueLookup.set(r.lab_analyte_id, num);
+          valueLookup.set(r.parameter.toLowerCase(), num);
         const sa = (srcAnalytesData || []).find((s: any) => s.id === r.analyte_id);
         if (sa?.code) valueLookup.set((sa.code as string).toLowerCase(), num);
         if (sa?.name) valueLookup.set((sa.name as string).toLowerCase(), num);
@@ -1177,14 +1268,18 @@ const ResultVerificationConsole: React.FC = () => {
         const fi = (formulas || []).find((f: any) => f.id === calcRow.analyte_id);
         if (!fi?.formula) continue;
 
-        const rowDeps = (deps || []).filter((d: any) => d.calculated_analyte_id === calcRow.analyte_id);
+          const rowDeps = (deps || []).filter((d: any) =>
+            (calcRow.lab_analyte_id && d.calculated_lab_analyte_id === calcRow.lab_analyte_id) ||
+            (!d.calculated_lab_analyte_id && d.calculated_analyte_id === calcRow.analyte_id)
+          );
         const scope: Record<string, number> = {};
         let allFound = true;
 
         if (rowDeps.length > 0) {
           for (const dep of rowDeps) {
-            const val = valueLookup.get(dep.source_analyte_id) ??
-                        valueLookup.get((dep.variable_name as string).toLowerCase());
+              const val = valueLookup.get(dep.source_lab_analyte_id || '') ??
+                          valueLookup.get(dep.source_analyte_id) ??
+                          valueLookup.get((dep.variable_name as string).toLowerCase());
             if (val === undefined) { allFound = false; break; }
             scope[dep.variable_name] = val;
           }
@@ -1330,9 +1425,9 @@ const ResultVerificationConsole: React.FC = () => {
   /* ----------------- Stats ----------------- */
   const stats = useMemo(() => {
     const total = panels.length;
-    const ready = panels.filter((p) => p.panel_ready).length;
+    const ready = panels.filter((p) => p.is_section_only ? p.result_verification_status === "verified" : p.panel_ready).length;
     const pending = panels.filter(
-      (p) => !p.panel_ready && p.approved_analytes === 0
+      (p) => p.is_section_only ? p.result_verification_status !== "verified" : (!p.panel_ready && p.approved_analytes === 0)
     ).length;
     const partial = total - ready - pending;
     const critical = panels.filter(p =>
@@ -1368,6 +1463,26 @@ const ResultVerificationConsole: React.FC = () => {
   );
 
   const StateBadge: React.FC<{ row: PanelRow }> = ({ row }) => {
+    if (row.is_section_only) {
+      if (row.result_verification_status === "verified") {
+        return (
+          <span className="inline-flex items-center px-3 py-1.5 rounded-full text-sm font-semibold bg-gradient-to-r from-green-100 to-emerald-100 text-green-800 border border-green-200 shadow-sm">
+            <ShieldCheck className="h-4 w-4 mr-2" />
+            Verified
+          </span>
+        );
+      }
+
+      if (row.panel_ready) {
+        return (
+          <span className="inline-flex items-center px-3 py-1.5 rounded-full text-sm font-semibold bg-gradient-to-r from-blue-100 to-indigo-100 text-blue-800 border border-blue-200 shadow-sm">
+            <FileText className="h-4 w-4 mr-2" />
+            Ready For Approval
+          </span>
+        );
+      }
+    }
+
     if (row.panel_ready) {
       return (
         <span className="inline-flex items-center px-3 py-1.5 rounded-full text-sm font-semibold bg-gradient-to-r from-green-100 to-emerald-100 text-green-800 border border-green-200 shadow-sm">
@@ -1826,12 +1941,12 @@ const ResultVerificationConsole: React.FC = () => {
               title="Click to expand/collapse test details"
             >
               <TestTube className="h-5 w-5 text-gray-500" />
-              <span className="text-lg font-semibold text-gray-900">
-                {row.test_group_name}
-              </span>
-              <span className="text-sm text-gray-500">
-                ({row.expected_analytes} analytes)
-              </span>
+	              <span className="text-lg font-semibold text-gray-900">
+	                {row.test_group_name}
+	              </span>
+	              <span className="text-sm text-gray-500">
+	                {row.is_section_only ? '(Section-only report)' : `(${row.expected_analytes} analytes)`}
+	              </span>
               {isOpen ? (
                 <ChevronUp className="h-4 w-4 text-gray-400 ml-2" />
               ) : (
@@ -1910,9 +2025,9 @@ const ResultVerificationConsole: React.FC = () => {
                   ) : (
                     <CheckCircle2 className="h-4 w-4 sm:mr-2" />
                   )}
-                  <span className="hidden sm:inline">Approve All</span>
-                </button>
-                {isAdmin && row.approved_analytes > 0 && (
+	                  <span className="hidden sm:inline">{row.is_section_only ? 'Approve Report' : 'Approve All'}</span>
+	                </button>
+	                {isAdmin && (row.approved_analytes > 0 || row.result_verification_status === "verified") && (
                   <button
                     disabled={busy[row.result_id]}
                     onClick={() => unapproveAllInPanel(row)}
@@ -1933,9 +2048,14 @@ const ResultVerificationConsole: React.FC = () => {
           <div className="p-6 bg-gray-50">
             <div className="mb-6 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
               <div className="text-sm text-gray-600">
-                <span className="font-semibold">Entered:</span> {row.entered_analytes} •
-                <span className="font-semibold ml-2">Approved:</span> {row.approved_analytes}
-              </div>
+	                <span className="font-semibold">Entered:</span> {row.entered_analytes} •
+	                <span className="font-semibold ml-2">
+	                  {row.is_section_only ? 'Report Status:' : 'Approved:'}
+	                </span>{" "}
+	                {row.is_section_only
+	                  ? (row.result_verification_status === "verified" ? "Verified" : "Pending Verification")
+	                  : row.approved_analytes}
+	              </div>
               <div className="flex flex-wrap items-center gap-2">
                 {/* AI Delta Check Button - Quality control comparing current vs historical */}
                 <button
@@ -2064,21 +2184,21 @@ const ResultVerificationConsole: React.FC = () => {
                   ) : (
                     <Calculator className="h-5 w-5 mr-2" />
                   )}
-                  Recalculate
-                </button>
-                <button
-                  disabled={busy[row.result_id]}
-                  onClick={() => approveAllInPanel(row)}
-                  className="inline-flex items-center px-6 py-3 bg-gradient-to-r from-green-600 to-emerald-600 text-white rounded-xl hover:from-green-700 hover:to-emerald-700 transition-all duration-200 shadow-lg font-semibold disabled:opacity-50"
+	                  Recalculate
+	                </button>
+	                <button
+	                  disabled={busy[row.result_id]}
+	                  onClick={() => approveAllInPanel(row)}
+	                  className="inline-flex items-center px-6 py-3 bg-gradient-to-r from-green-600 to-emerald-600 text-white rounded-xl hover:from-green-700 hover:to-emerald-700 transition-all duration-200 shadow-lg font-semibold disabled:opacity-50"
                 >
                   {busy[row.result_id] ? (
                     <Loader2 className="h-5 w-5 mr-2 animate-spin" />
                   ) : (
                     <CheckCircle2 className="h-5 w-5 mr-2" />
                   )}
-                  Approve All Analytes
-                </button>
-                {isAdmin && row.approved_analytes > 0 && (
+	                  {row.is_section_only ? 'Approve Section Report' : 'Approve All Analytes'}
+	                </button>
+	                {isAdmin && (row.approved_analytes > 0 || row.result_verification_status === "verified") && (
                   <button
                     disabled={busy[row.result_id]}
                     onClick={() => unapproveAllInPanel(row)}
@@ -2092,8 +2212,21 @@ const ResultVerificationConsole: React.FC = () => {
               </div>
             </div>
 
-            <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
-              <table className="min-w-full">
+	            {row.is_section_only ? (
+	              <div className="bg-white rounded-xl shadow-sm border border-purple-200 p-6">
+	                <div className="flex items-start gap-3">
+	                  <FileText className="h-5 w-5 text-purple-600 mt-0.5" />
+	                  <div>
+	                    <h4 className="text-base font-semibold text-gray-900">Section-only report</h4>
+	                    <p className="text-sm text-gray-600 mt-1">
+	                      This test group is verified using section content instead of analyte rows.
+	                    </p>
+	                  </div>
+	                </div>
+	              </div>
+	            ) : (
+	            <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
+	              <table className="min-w-full">
                 <thead className="bg-gradient-to-r from-gray-50 to-gray-100">
                   <tr>
                     <th className="px-4 py-4 text-left text-sm font-bold text-gray-700 uppercase tracking-wider">
@@ -2121,8 +2254,9 @@ const ResultVerificationConsole: React.FC = () => {
                     <React.Fragment key={a.id}>{renderAnalyteRow(a, row.patient_id)}</React.Fragment>
                   ))}
                 </tbody>
-              </table>
-            </div>
+	              </table>
+	            </div>
+	            )}
 
             {/* Attachments section */}
             <div className="mt-6 bg-white rounded-xl shadow-sm border border-gray-200">
@@ -2198,8 +2332,11 @@ const ResultVerificationConsole: React.FC = () => {
             {/* Report Sections Editor (PBS/Radiology findings, impressions, etc.) */}
             {row.test_group_id && (
               <div className="mt-6">
-                <SectionEditor
-                  resultId={row.result_id}
+	                <SectionEditor
+	                  ref={(instance) => {
+	                    sectionEditorRefs.current[row.result_id] = instance;
+	                  }}
+	                  resultId={row.result_id}
                   testGroupId={row.test_group_id}
                   showAIAssistant={false}
                   onSave={() => {

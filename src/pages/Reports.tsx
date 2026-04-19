@@ -148,6 +148,8 @@ interface OrderSettingsGroupItem {
 
 type PreparedReport = ReportData;
 
+const REPORT_WEEK_OPTIONS = { weekStartsOn: 1 as const };
+
 const Reports: React.FC = () => {
   const [approvedResults, setApprovedResults] = useState<ApprovedResult[]>([]);
   const [loading, setLoading] = useState(true);
@@ -326,8 +328,8 @@ const Reports: React.FC = () => {
           break;
         }
         case 'week':
-          dateRange.start = startOfWeek(now);
-          dateRange.end = endOfWeek(now);
+          dateRange.start = startOfWeek(now, REPORT_WEEK_OPTIONS);
+          dateRange.end = endOfWeek(now, REPORT_WEEK_OPTIONS);
           break;
         case 'month':
           dateRange.start = startOfMonth(now);
@@ -599,17 +601,17 @@ const Reports: React.FC = () => {
       const searchLower = searchTerm.toLowerCase();
       filtered = filtered.filter(
         (result) =>
-          result.patient_full_name.toLowerCase().includes(searchLower) ||
-          result.test_name.toLowerCase().includes(searchLower) ||
-          result.sample_id.toLowerCase().includes(searchLower) ||
-          result.order_id.toLowerCase().includes(searchLower)
+          (result.patient_full_name || '').toLowerCase().includes(searchLower) ||
+          (result.test_name || '').toLowerCase().includes(searchLower) ||
+          (result.sample_id || '').toLowerCase().includes(searchLower) ||
+          (result.order_id || '').toLowerCase().includes(searchLower)
       );
     }
 
     // Apply test type filter
     if (selectedTestType !== 'all') {
       filtered = filtered.filter(result =>
-        result.test_name.toLowerCase().includes(selectedTestType.toLowerCase())
+        (result.test_name || '').toLowerCase().includes(selectedTestType.toLowerCase())
       );
     }
 
@@ -647,10 +649,10 @@ const Reports: React.FC = () => {
           age: r.age,
           gender: r.gender,
           order_date: r.order_date,
-          sample_ids: [r.sample_id],
+          sample_ids: r.sample_id ? [r.sample_id] : [],
           verified_at: r.verified_at,
           verified_by: r.verified_by,
-          test_names: [r.test_name],
+          test_names: r.test_name ? [r.test_name] : [],
           results: [r],
           is_report_ready: r.is_report_ready || false
         };
@@ -661,8 +663,8 @@ const Reports: React.FC = () => {
         if (!existingResult) {
           group.results.push(r);
         }
-        if (!group.sample_ids.includes(r.sample_id)) group.sample_ids.push(r.sample_id);
-        if (!group.test_names.includes(r.test_name)) group.test_names.push(r.test_name);
+        if (r.sample_id && !group.sample_ids.includes(r.sample_id)) group.sample_ids.push(r.sample_id);
+        if (r.test_name && !group.test_names.includes(r.test_name)) group.test_names.push(r.test_name);
         if (new Date(r.verified_at) > new Date(group.verified_at)) {
           group.verified_at = r.verified_at;
           group.verified_by = r.verified_by;
@@ -685,8 +687,8 @@ const Reports: React.FC = () => {
           bValue = new Date(b.order_date).getTime();
           break;
         case 'test_name':
-          aValue = a.test_names.join(', ');
-          bValue = b.test_names.join(', ');
+          aValue = (a.test_names || []).join(', ');
+          bValue = (b.test_names || []).join(', ');
           break;
         default:
           aValue = new Date(a.verified_at).getTime();
@@ -2091,7 +2093,7 @@ const Reports: React.FC = () => {
 
                         <div className="col-span-2">
                           <div className="space-y-1">
-                            {group.test_names.map((testName, idx) => (
+                            {(group.test_names || []).map((testName, idx) => (
                               <div key={idx} className="flex items-center space-x-2">
                                 <TestTube className="w-3 h-3 text-gray-400" />
                                 <span className="text-sm text-gray-900">{testName}</span>
@@ -2106,7 +2108,7 @@ const Reports: React.FC = () => {
                               {safeFormatDate(group.order_date, 'MMM d, yyyy')}
                             </div>
                             <div className="text-gray-600">
-                              Sample: {group.sample_ids.join(', ')}
+                              Sample: {(group.sample_ids || []).join(', ')}
                             </div>
                           </div>
                         </div>
@@ -2285,10 +2287,10 @@ const Reports: React.FC = () => {
                                     return (
                                       <QuickSendReport
                                         reportUrl={customDomainSmartUrl}
-                                        reportName={`Smart Report - ${group.patient_full_name} - ${group.test_names.join(', ')}`}
+                                        reportName={`Smart Report - ${group.patient_full_name} - ${(group.test_names || []).join(', ')}`}
                                         patientName={group.patient_full_name}
                                         patientPhone={result?.phone}
-                                        testName={group.test_names.join(', ')}
+                                        testName={(group.test_names || []).join(', ')}
                                         label="Smart Report via WhatsApp"
                                         onSent={(result) => alert(result.success ? 'Smart Report sent via WhatsApp!' : 'Failed: ' + result.message)}
                                       />
@@ -2307,10 +2309,10 @@ const Reports: React.FC = () => {
                                       <>
                                         <QuickSendReport
                                           reportUrl={customDomainReportUrl || `#demo-report-${group.order_id}`}
-                                          reportName={`${group.patient_full_name} - ${group.test_names.join(', ')}`}
+                                          reportName={`${group.patient_full_name} - ${(group.test_names || []).join(', ')}`}
                                           patientName={group.patient_full_name}
                                           patientPhone={result?.phone}
-                                          testName={group.test_names.join(', ')}
+                                          testName={(group.test_names || []).join(', ')}
                                           onSent={(result) => alert(result.success ? 'Report sent via WhatsApp!' : 'Failed: ' + result.message)}
                                         />
                                         <button
@@ -2415,14 +2417,14 @@ const Reports: React.FC = () => {
                           <div className="flex items-center justify-between">
                             <span className="text-sm text-gray-600">Tests:</span>
                             <span className="text-sm text-gray-900">
-                              {group.test_names.length} test{group.test_names.length !== 1 ? 's' : ''}
+                              {(group.test_names || []).length} test{(group.test_names || []).length !== 1 ? 's' : ''}
                             </span>
                           </div>
 
                           <div className="flex items-center justify-between">
                             <span className="text-sm text-gray-600">Sample ID:</span>
                             <span className="text-sm font-mono text-gray-900">
-                              {group.sample_ids.join(', ')}
+                              {(group.sample_ids || []).join(', ')}
                             </span>
                           </div>
                         </div>
@@ -2624,10 +2626,10 @@ const Reports: React.FC = () => {
                                         <div className="flex-1">
                                           <QuickSendReport
                                             reportUrl={customDomainSmartUrl}
-                                            reportName={`Smart Report - ${group.patient_full_name} - ${group.test_names.join(', ')}`}
+                                            reportName={`Smart Report - ${group.patient_full_name} - ${(group.test_names || []).join(', ')}`}
                                             patientName={group.patient_full_name}
                                             patientPhone={result?.phone}
-                                            testName={group.test_names.join(', ')}
+                                            testName={(group.test_names || []).join(', ')}
                                             label="Smart Report via WhatsApp"
                                             onSent={(result) => {
                                               if (result.success) {
@@ -2688,10 +2690,10 @@ const Reports: React.FC = () => {
                                         <div className="flex-1">
                                           <QuickSendReport
                                             reportUrl={reportUrl || `#demo-report-${group.order_id}`}
-                                            reportName={`${group.patient_full_name} - ${group.test_names.join(', ')}`}
+                                            reportName={`${group.patient_full_name} - ${(group.test_names || []).join(', ')}`}
                                             patientName={group.patient_full_name}
                                             patientPhone={result?.phone}
-                                            testName={group.test_names.join(', ')}
+                                            testName={(group.test_names || []).join(', ')}
                                             onSent={(result) => {
                                               if (result.success) {
                                                 alert('Report sent successfully via WhatsApp!');
@@ -3000,7 +3002,7 @@ const Reports: React.FC = () => {
           orderId={viewingOrder.order_id}
           patientName={viewingOrder.patient_full_name}
           patientPhone={viewingOrder.results[0]?.phone}
-          testNames={viewingOrder.test_names}
+          testNames={Array.isArray(viewingOrder.test_names) ? viewingOrder.test_names : []}
           doctorName={viewingOrder.results[0]?.doctor}
         />
       )}

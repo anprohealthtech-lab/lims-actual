@@ -55,6 +55,8 @@ const ReportDesignStudio: React.FC<ReportDesignStudioProps> = ({ orderId, onClos
         footer: string;
         settings?: any;
     } | null>(null);
+    const safeTestGroups = Array.isArray(testGroups) ? testGroups : [];
+    const safeExtraAssets = Array.isArray(config.extraAssets) ? config.extraAssets : [];
 
     // Fetch Data & Server HTML
     useEffect(() => {
@@ -380,7 +382,7 @@ const ReportDesignStudio: React.FC<ReportDesignStudioProps> = ({ orderId, onClos
         const footerDiv = `<div id="preview-footer-container" style="height: ${footerH}; overflow: hidden; margin-top: 20px;">${effectiveFooter}</div>`;
 
         // Inject Styles for Toggle Visibility
-                const testGroupCss = testGroups.map(g => {
+                const testGroupCss = safeTestGroups.map(g => {
                     const key = `testGroup_${g.id}`;
                     const visible = visibleSections[key] !== false; // default true
                     if (!visible) {
@@ -416,10 +418,10 @@ const ReportDesignStudio: React.FC<ReportDesignStudioProps> = ({ orderId, onClos
             </style>
         `;
 
-                const extraAssetsHtml = config.extraAssets.length
+                const extraAssetsHtml = safeExtraAssets.length
                         ? `
                                 <div class="report-extra-assets">
-                                    ${config.extraAssets.map((asset) => `
+                                    ${safeExtraAssets.map((asset) => `
                                         <div
                                             class="report-extra-asset"
                                             style="left:${asset.position.x}mm; top:${asset.position.y}mm; width:${asset.size.width}mm; height:${asset.size.height}mm;"
@@ -458,9 +460,9 @@ const ReportDesignStudio: React.FC<ReportDesignStudioProps> = ({ orderId, onClos
                     <span className="ml-4 px-3 py-1 bg-green-50 text-green-700 text-xs rounded-full font-medium">
                         Server-Side Preview
                     </span>
-                    {testGroups.length > 1 && (
+                    {safeTestGroups.length > 1 && (
                         <span className="ml-2 px-3 py-1 bg-blue-50 text-blue-700 text-xs rounded-full font-medium">
-                            {testGroups.length} Test Groups
+                            {safeTestGroups.length} Test Groups
                         </span>
                     )}
                 </div>
@@ -488,7 +490,7 @@ const ReportDesignStudio: React.FC<ReportDesignStudioProps> = ({ orderId, onClos
                     availableAssets={assets}
                     visibleSections={visibleSections}
                     setVisibleSections={setVisibleSections}
-                    testGroups={testGroups}
+                    testGroups={safeTestGroups}
                 />
 
                 {/* Canvas Area - Iframe Preview */}

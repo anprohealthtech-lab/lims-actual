@@ -6,6 +6,7 @@ interface ReceivePaymentModalProps {
     accountId: string;
     accountName: string;
     currentBalance?: number;
+    consolidatedInvoiceId?: string;
     onClose: () => void;
     onSuccess: () => void;
 }
@@ -14,6 +15,7 @@ const ReceivePaymentModal: React.FC<ReceivePaymentModalProps> = ({
     accountId,
     accountName,
     currentBalance = 0,
+    consolidatedInvoiceId,
     onClose,
     onSuccess
 }) => {
@@ -44,6 +46,25 @@ const ReceivePaymentModal: React.FC<ReceivePaymentModalProps> = ({
             });
 
             if (error) throw error;
+
+            // Consolidated B2B invoices are tracked in a separate table, so
+            // we need an explicit status update when the payment is tied to one.
+            if (consolidatedInvoiceId) {
+                const paymentAmount = parseFloat(amount);
+                const normalizedBalance = Number(currentBalance) || 0;
+                const newStatus = paymentAmount >= normalizedBalance ? 'paid' : 'partial';
+
+                const { error: invoiceError } = await (database as any).consolidatedInvoices?.update?.(
+                    consolidatedInvoiceId,
+                    {
+                        status: newStatus,
+                        paid_at: newStatus === 'paid' ? new Date().toISOString() : null,
+                    }
+                );
+
+                if (invoiceError) throw invoiceError;
+            }
+
             onSuccess();
             onClose();
         } catch (error) {

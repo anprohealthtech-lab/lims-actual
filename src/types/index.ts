@@ -183,6 +183,7 @@ export interface TestGroup {
   default_ai_processing_type?: string;
   group_level_prompt?: string;
   lab_id?: string;
+  global_test_catalog_id?: string | null;
   to_be_copied: boolean;
   description?: string;
   // New test configuration fields

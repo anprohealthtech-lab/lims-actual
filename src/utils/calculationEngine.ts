@@ -31,6 +31,7 @@ export interface CalculatedAnalyte {
 
 export interface AnalyteDependency {
   source_analyte_id: string;
+  source_lab_analyte_id?: string | null;
   source_name: string;
   variable_name: string;
 }
@@ -38,6 +39,7 @@ export interface AnalyteDependency {
 export interface ResultValue {
   id?: string;
   analyte_id?: string;
+  lab_analyte_id?: string | null;
   parameter: string;
   value: string;
   unit?: string;
@@ -105,8 +107,7 @@ export const calculationEngine = {
           is_calculated
         )
       `)
-      .eq('test_group_id', testGroupId)
-      .eq('analytes.is_calculated', true);
+      .eq('test_group_id', testGroupId);
 
     if (error || !data) return [];
 
@@ -124,27 +125,47 @@ export const calculationEngine = {
         reference_range: la?.lab_specific_reference_range ?? la?.reference_range ?? a.reference_range,
         category: a.category
       };
-    });
+    }).filter((item: any) => !!item.formula);
   },
 
   /**
    * Fetch dependencies for a calculated analyte
    */
-  async getDependencies(calculatedAnalyteId: string): Promise<AnalyteDependency[]> {
-    const { data, error } = await supabase
+  async getDependencies(
+    calculatedAnalyteId: string,
+    labId?: string,
+    calculatedLabAnalyteId?: string | null,
+  ): Promise<AnalyteDependency[]> {
+    let query = supabase
       .from('analyte_dependencies')
       .select(`
         source_analyte_id,
+        source_lab_analyte_id,
         variable_name,
-        analytes!analyte_dependencies_source_analyte_id_fkey(name)
-      `)
-      .eq('calculated_analyte_id', calculatedAnalyteId);
+        analytes!analyte_dependencies_source_analyte_id_fkey(name),
+        source_lab_analyte:lab_analytes!analyte_dependencies_source_lab_analyte_id_fkey(name)
+      `);
+
+    if (calculatedLabAnalyteId) {
+      query = query.or(
+        `calculated_lab_analyte_id.eq.${calculatedLabAnalyteId},and(calculated_lab_analyte_id.is.null,calculated_analyte_id.eq.${calculatedAnalyteId})`,
+      );
+    } else {
+      query = query.eq('calculated_analyte_id', calculatedAnalyteId);
+    }
+
+    if (labId) {
+      query = query.or(`lab_id.eq.${labId},lab_id.is.null`);
+    }
+
+    const { data, error } = await query;
 
     if (error || !data) return [];
 
     return data.map((item: any) => ({
       source_analyte_id: item.source_analyte_id,
-      source_name: item.analytes?.name || '',
+      source_lab_analyte_id: item.source_lab_analyte_id || null,
+      source_name: item.source_lab_analyte?.name || item.analytes?.name || '',
       variable_name: item.variable_name
     }));
   },
@@ -156,7 +177,8 @@ export const calculationEngine = {
   async computeCalculatedValues(
     resultValues: ResultValue[],
     testGroupId: string,
-    patientData?: PatientData
+    patientData?: PatientData,
+    labId?: string,
   ): Promise<CalculationResult[]> {
     // 1. Get calculated analytes for this test group
     const calculatedAnalytes = await this.getCalculatedAnalytesForTestGroup(testGroupId);
@@ -171,6 +193,8 @@ export const calculationEngine = {
         // Store by both full name and potential variable name
         valueMap[rv.parameter.toUpperCase()] = parseFloat(rv.value);
         valueMap[rv.parameter] = parseFloat(rv.value);
+        if (rv.analyte_id) valueMap[rv.analyte_id] = parseFloat(rv.value);
+        if (rv.lab_analyte_id) valueMap[rv.lab_analyte_id] = parseFloat(rv.value);
       }
     });
 
@@ -188,7 +212,7 @@ export const calculationEngine = {
     const results: CalculationResult[] = [];
 
     for (const analyte of calculatedAnalytes) {
-      const deps = await this.getDependencies(analyte.id);
+      const deps = await this.getDependencies(analyte.id, labId, analyte.lab_analyte_id);
       
       // Check if all required variables are present
       const scope: Record<string, number> = {};
@@ -199,7 +223,13 @@ export const calculationEngine = {
         const sourceName = dep.source_name.toUpperCase();
         
         // Try to find value by variable name or source analyte name
-        const value = valueMap[varName] ?? valueMap[sourceName] ?? valueMap[dep.variable_name] ?? valueMap[dep.source_name];
+        const value =
+          (dep.source_lab_analyte_id ? valueMap[dep.source_lab_analyte_id] : undefined) ??
+          valueMap[dep.source_analyte_id] ??
+          valueMap[varName] ??
+          valueMap[sourceName] ??
+          valueMap[dep.variable_name] ??
+          valueMap[dep.source_name];
         
         if (value === undefined || isNaN(value)) {
           allDepsPresent = false;
@@ -359,6 +389,7 @@ export const calculationEngine = {
     const resultValues: ResultValue[] = (currentValues || []).map((rv: any) => ({
       id: rv.id,
       analyte_id: rv.analyte_id,
+      lab_analyte_id: rv.lab_analyte_id || null,
       parameter: rv.parameter,
       value: rv.value,
       unit: rv.unit,
@@ -367,7 +398,7 @@ export const calculationEngine = {
     }));
 
     // Compute new calculated values
-    const calculations = await this.computeCalculatedValues(resultValues, testGroupId, patientData);
+    const calculations = await this.computeCalculatedValues(resultValues, testGroupId, patientData, labId);
 
     // Save successful calculations
     await this.saveCalculatedValues(resultId, orderId, testGroupId, labId, calculations);
@@ -379,11 +410,17 @@ export const calculationEngine = {
    * Check if an analyte has dependents (other calculated analytes that use it)
    * Used to determine if recalculation is needed when a value changes
    */
-  async hasDependents(analyteId: string): Promise<boolean> {
-    const { count, error } = await supabase
+  async hasDependents(analyteId: string, labId?: string): Promise<boolean> {
+    let query = supabase
       .from('analyte_dependencies')
       .select('*', { count: 'exact', head: true })
       .eq('source_analyte_id', analyteId);
+
+    if (labId) {
+      query = query.or(`lab_id.eq.${labId},lab_id.is.null`);
+    }
+
+    const { count, error } = await query;
 
     return !error && (count || 0) > 0;
   },
@@ -392,11 +429,17 @@ export const calculationEngine = {
    * Get all analytes that depend on a given analyte
    * Used for cascade recalculation
    */
-  async getDependentAnalytes(sourceAnalyteId: string): Promise<string[]> {
-    const { data, error } = await supabase
+  async getDependentAnalytes(sourceAnalyteId: string, labId?: string): Promise<string[]> {
+    let query = supabase
       .from('analyte_dependencies')
       .select('calculated_analyte_id')
       .eq('source_analyte_id', sourceAnalyteId);
+
+    if (labId) {
+      query = query.or(`lab_id.eq.${labId},lab_id.is.null`);
+    }
+
+    const { data, error } = await query;
 
     if (error || !data) return [];
     return data.map(d => d.calculated_analyte_id);

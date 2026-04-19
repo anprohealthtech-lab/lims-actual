@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import { useQZTray } from '../contexts/QZTrayContext';
 import { database, supabase, type LabPatientFieldConfig } from '../utils/supabase';
+import { isAdminOrManager } from '../utils/permissions';
 import EditUserModal from '../components/Users/EditUserModal';
 import { NotificationSettings } from '../components/Settings/NotificationSettings';
 import { NotificationTriggerSettings } from '../components/Settings/NotificationTriggerSettings';
@@ -521,6 +522,8 @@ const UserFormComponent: React.FC<{
 const Settings: React.FC = () => {
   const { user: authUser } = useAuth();
   const { status: qzStatus, connect: qzConnect, disconnect: qzDisconnect } = useQZTray();
+  const [hasAccess, setHasAccess] = useState<boolean | null>(null);
+  const [checkingAccess, setCheckingAccess] = useState(true);
   const [activeTab, setActiveTab] = useState<'team' | 'permissions' | 'usage' | 'lab' | 'notifications' | 'invoices' | 'analyzer' | 'patient_portal' | 'billing_items' | 'price_masters'>('team');
   const [showUserForm, setShowUserForm] = useState(false);
   const [showEditUserModal, setShowEditUserModal] = useState(false);
@@ -1041,6 +1044,47 @@ const Settings: React.FC = () => {
       default: return 'text-gray-600 bg-gray-100';
     }
   };
+
+  useEffect(() => {
+    const checkAccess = async () => {
+      if (!authUser?.id) { setCheckingAccess(false); setHasAccess(false); return; }
+      setCheckingAccess(true);
+      try {
+        const canAccess = await isAdminOrManager(authUser.id, authUser.email);
+        setHasAccess(canAccess);
+      } catch {
+        setHasAccess(false);
+      } finally {
+        setCheckingAccess(false);
+      }
+    };
+    checkAccess();
+  }, [authUser?.id, authUser?.email]);
+
+  if (checkingAccess) {
+    return (
+      <div className="flex items-center justify-center min-h-[400px]">
+        <Loader2 className="h-8 w-8 animate-spin text-blue-600" />
+      </div>
+    );
+  }
+
+  if (!hasAccess) {
+    return (
+      <div className="flex items-center justify-center min-h-[400px]">
+        <div className="text-center max-w-md">
+          <div className="w-16 h-16 bg-red-100 rounded-full flex items-center justify-center mx-auto mb-4">
+            <Shield className="h-8 w-8 text-red-600" />
+          </div>
+          <h2 className="text-xl font-semibold text-gray-900 mb-2">Access Denied</h2>
+          <p className="text-gray-600">
+            You don't have permission to access Settings.
+            This page is only available to administrators and lab managers.
+          </p>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="flex flex-col h-screen w-full bg-gray-50">

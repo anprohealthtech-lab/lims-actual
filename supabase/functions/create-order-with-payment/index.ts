@@ -19,6 +19,59 @@ interface OrderRequest {
   test_outsourcing?: Record<string, string>;
 }
 
+const COLOR_PALETTE: Array<{ hex: string; name: string }> = [
+  { hex: '#EF4444', name: 'Red' },
+  { hex: '#3B82F6', name: 'Blue' },
+  { hex: '#10B981', name: 'Green' },
+  { hex: '#F59E0B', name: 'Orange' },
+  { hex: '#8B5CF6', name: 'Purple' },
+  { hex: '#06B6D4', name: 'Cyan' },
+  { hex: '#EC4899', name: 'Pink' },
+  { hex: '#84CC16', name: 'Lime' },
+  { hex: '#F97316', name: 'Amber' },
+  { hex: '#6366F1', name: 'Indigo' },
+  { hex: '#14B8A6', name: 'Teal' },
+  { hex: '#A855F7', name: 'Violet' },
+];
+
+function getOrderAssignedColor(dailySequenceNumber: number): { color_code: string; color_name: string } {
+  const colorIndex = (dailySequenceNumber - 1) % COLOR_PALETTE.length;
+  const selectedColor = COLOR_PALETTE[colorIndex];
+
+  return {
+    color_code: selectedColor.hex,
+    color_name: selectedColor.name,
+  };
+}
+
+function generateOrderSampleId(date: Date, dailySequence: number, labCode?: string | null): string {
+  const day = date.getDate().toString().padStart(2, '0');
+  const month = date.toLocaleString('en-US', { month: 'short' });
+  const year = date.getFullYear();
+  const sequence = dailySequence.toString().padStart(3, '0');
+  const datePart = `${day}-${month}-${year}-${sequence}`;
+  return labCode ? `${labCode}-${datePart}` : datePart;
+}
+
+function generateOrderQRCodeData(order: {
+  id: string;
+  patientId: string;
+  sampleId: string;
+  orderDate: string;
+  colorCode: string;
+  colorName: string;
+}): string {
+  return JSON.stringify({
+    orderId: order.id,
+    patientId: order.patientId,
+    sampleId: order.sampleId,
+    orderDate: order.orderDate,
+    colorCode: order.colorCode,
+    colorName: order.colorName,
+    generated: new Date().toISOString(),
+  });
+}
+
 // Edge functions run in UTC. Send window times are configured in IST (UTC+5:30).
 const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000;
 
@@ -198,6 +251,33 @@ Deno.serve(async (req) => {
 
     const finalAmount = subtotal - discountAmount;
 
+    const orderDate = new Date().toISOString().split('T')[0];
+    const { data: labData } = await supabaseClient
+      .from('labs')
+      .select('code')
+      .eq('id', labId)
+      .maybeSingle();
+
+    const { count: dailyOrderCount, error: countError } = await supabaseClient
+      .from('orders')
+      .select('id', { count: 'exact', head: true })
+      .eq('lab_id', labId)
+      .gte('order_date', orderDate)
+      .lt(
+        'order_date',
+        new Date(new Date(orderDate).getTime() + 24 * 60 * 60 * 1000)
+          .toISOString()
+          .split('T')[0],
+      );
+
+    if (countError) {
+      throw new Error(`Failed to generate sample ID: ${countError.message}`);
+    }
+
+    const dailySequence = (dailyOrderCount || 0) + 1;
+    const sampleId = generateOrderSampleId(new Date(orderDate), dailySequence, labData?.code);
+    const { color_code, color_name } = getOrderAssignedColor(dailySequence);
+
     // 1. Create Order
     const { data: order, error: orderError } = await supabaseClient
       .from('orders')
@@ -209,6 +289,10 @@ Deno.serve(async (req) => {
         created_by: user.id,
         total_amount: subtotal,
         final_amount: finalAmount,
+        order_date: orderDate,
+        sample_id: sampleId,
+        color_code,
+        color_name,
         status: 'created',
       })
       .select()
@@ -219,6 +303,24 @@ Deno.serve(async (req) => {
     }
 
     console.log('✅ Order created:', order.id);
+
+    const qrCodeData = generateOrderQRCodeData({
+      id: order.id,
+      patientId: orderData.patient_id,
+      sampleId,
+      orderDate: order.order_date || orderDate,
+      colorCode: color_code,
+      colorName: color_name,
+    });
+
+    const { error: qrUpdateError } = await supabaseClient
+      .from('orders')
+      .update({ qr_code_data: qrCodeData })
+      .eq('id', order.id);
+
+    if (qrUpdateError) {
+      console.warn('Failed to update qr_code_data:', qrUpdateError.message);
+    }
 
     // 2. Create Order Tests
     const orderTests = orderData.test_ids.map((testId) => ({

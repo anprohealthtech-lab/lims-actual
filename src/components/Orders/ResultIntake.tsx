@@ -2,13 +2,14 @@
 // ───────────────────────────────────────────────────────────────────────────────
 // BLOCK 0: Imports
 // Keep paths as-is for your repo structure.
-import { useEffect, useMemo, useState, useCallback } from 'react'
+import { useEffect, useMemo, useState, useCallback, useRef } from 'react'
 import { supabase, database } from '../../utils/supabase'
 import { useAuth } from '../../contexts/AuthContext'
 import { calculateFlagsForResults } from '../../utils/flagCalculation'
 import { CheckCircle, AlertTriangle, Sparkles, Calculator } from 'lucide-react'
 import { resolveReferenceRanges } from '../../utils/referenceRangeService'
 import { evaluate } from 'mathjs'
+import SectionEditor, { type SectionEditorRef } from '../Results/SectionEditor'
 
 // ───────────────────────────────────────────────────────────────────────────────
 // BLOCK 1: Types
@@ -28,10 +29,14 @@ interface Analyte {
   lab_analyte_id?: string | null
   existing_result?: {
     id: string
+    result_id?: string | null
     value: string | null
     unit?: string | null
     reference_range?: string | null
     flag?: string | null
+    verify_status?: string | null
+    result_status?: string | null
+    result_verification_status?: string | null
   } | null
 }
 
@@ -40,6 +45,8 @@ interface TestGroup {
   test_group_name: string
   order_test_group_id: string | null
   order_test_id: string | null
+  result_id?: string | null
+  is_section_only?: boolean
   analytes: Analyte[]
 }
 
@@ -56,6 +63,7 @@ interface IntakeOrder {
 interface Props {
   order: IntakeOrder
   onResultProcessed: (resultId: string) => void
+  showAutoVerifyOption?: boolean
 }
 
 type Entry = {
@@ -75,8 +83,22 @@ type Entry = {
 // ───────────────────────────────────────────────────────────────────────────────
 // BLOCK 2: Helpers (pure)
 
-const isCompleted = (a: Analyte) =>
+const hasExistingValue = (a: Analyte) =>
   !!a.existing_result && a.existing_result.value !== null && `${a.existing_result.value}`.trim() !== ''
+
+const isCompleted = (a: Analyte) => {
+  if (!hasExistingValue(a)) return false
+
+  const resultStatus = `${a.existing_result?.result_status || ''}`.toLowerCase()
+  const verificationStatus = `${a.existing_result?.result_verification_status || ''}`.toLowerCase()
+  const valueVerificationStatus = `${a.existing_result?.verify_status || ''}`.toLowerCase()
+
+  return (
+    ['approved', 'reviewed', 'reported', 'verified'].includes(resultStatus) ||
+    verificationStatus === 'verified' ||
+    valueVerificationStatus === 'approved'
+  )
+}
 
 const flagOptions: { value: FlagCode; label: string }[] = [
   { value: '', label: 'Normal' },
@@ -88,7 +110,7 @@ const flagOptions: { value: FlagCode; label: string }[] = [
 // ───────────────────────────────────────────────────────────────────────────────
 // BLOCK 3: Component
 
-export function ResultIntake({ order, onResultProcessed }: Props) {
+export function ResultIntake({ order, onResultProcessed, showAutoVerifyOption = false }: Props) {
   const { user } = useAuth()
 
   // UI state
@@ -96,12 +118,15 @@ export function ResultIntake({ order, onResultProcessed }: Props) {
   const [saving, setSaving] = useState(false)
   const [submitting, setSubmitting] = useState(false)
   const [toast, setToast] = useState<string | null>(null)
+  const [autoVerifyOnSubmit, setAutoVerifyOnSubmit] = useState(false)
+  const [groupResultIds, setGroupResultIds] = useState<Record<string, string>>({})
+  const sectionEditorRefs = useRef<Record<string, SectionEditorRef | null>>({})
 
   // Editable entries keyed by analyte_id (only for NOT completed analytes)
   const [entries, setEntries] = useState<Record<string, Entry>>({})
 
   // Dependency map for calculated analytes: calculated_analyte_id -> [{variable_name, source_analyte_id}]
-  const [depMap, setDepMap] = useState<Record<string, { variable_name: string; source_analyte_id: string }[]>>({})
+    const [depMap, setDepMap] = useState<Record<string, { variable_name: string; source_analyte_id: string; source_lab_analyte_id?: string | null }[]>>({})
 
   // ───────────────────────────────────────────────────────────────────────────
   // BLOCK 3A: Initialize editable entries from order (pending analytes only)
@@ -115,10 +140,10 @@ export function ResultIntake({ order, onResultProcessed }: Props) {
             analyte_id: a.id,
             lab_analyte_id: a.lab_analyte_id || null,
             analyte_name: a.name,
-            value: '',
-            unit: a.units || a.unit || '',
-            reference: a.reference_range || '',
-            flag: '',
+            value: a.existing_result?.value ?? '',
+            unit: a.existing_result?.unit || a.units || a.unit || '',
+            reference: a.existing_result?.reference_range ?? a.reference_range ?? '',
+            flag: (a.existing_result?.flag as FlagCode) || '',
             test_group_id: tg.test_group_id,
             order_test_group_id: tg.order_test_group_id,
             order_test_id: tg.order_test_id,
@@ -127,6 +152,14 @@ export function ResultIntake({ order, onResultProcessed }: Props) {
       })
     })
     setEntries(next)
+  }, [order])
+
+  useEffect(() => {
+    const next: Record<string, string> = {}
+    order.test_groups.forEach(tg => {
+      if (tg.result_id) next[tg.test_group_id] = tg.result_id
+    })
+    setGroupResultIds(next)
   }, [order])
 
   // Fetch analyte_dependencies for all calculated analytes in this order
@@ -141,25 +174,26 @@ export function ResultIntake({ order, onResultProcessed }: Props) {
 
     const fetchDeps = async () => {
       // Fetch both lab-specific and global dependencies; prefer lab-specific when both exist
-      const { data } = await supabase
-        .from('analyte_dependencies')
-        .select('calculated_analyte_id, variable_name, source_analyte_id, lab_id')
-        .in('calculated_analyte_id', calculatedIds)
-        .or(`lab_id.eq.${order.lab_id},lab_id.is.null`)
-      if (!data) return
-      // Build map preferring lab-specific rows (lab_id != null) over global (lab_id == null)
-      const map: Record<string, { variable_name: string; source_analyte_id: string }[]> = {}
-      const seen = new Set<string>() // key: `${calculated_analyte_id}:${variable_name}`
-      // Process lab-specific rows first
-      const sorted = [...data].sort((a, b) => (a.lab_id ? -1 : 1) - (b.lab_id ? -1 : 1))
-      sorted.forEach((d: { calculated_analyte_id: string; variable_name: string; source_analyte_id: string; lab_id: string | null }) => {
-        const key = `${d.calculated_analyte_id}:${d.variable_name}`
-        if (seen.has(key)) return // skip global duplicate if lab-specific already added
-        seen.add(key)
-        if (!map[d.calculated_analyte_id]) map[d.calculated_analyte_id] = []
-        map[d.calculated_analyte_id].push({ variable_name: d.variable_name, source_analyte_id: d.source_analyte_id })
-      })
-      setDepMap(map)
+        const { data } = await supabase
+          .from('analyte_dependencies')
+          .select('calculated_analyte_id, calculated_lab_analyte_id, variable_name, source_analyte_id, source_lab_analyte_id, lab_id')
+          .in('calculated_analyte_id', calculatedIds)
+          .or(`lab_id.eq.${order.lab_id},lab_id.is.null`)
+        if (!data) return
+        // Build map preferring lab-specific rows (lab_id != null) over global (lab_id == null)
+        const map: Record<string, { variable_name: string; source_analyte_id: string; source_lab_analyte_id?: string | null }[]> = {}
+        const seen = new Set<string>() // key: `${calcKey}:${variable_name}`
+        // Process lab-specific rows first
+        const sorted = [...data].sort((a, b) => (a.lab_id ? -1 : 1) - (b.lab_id ? -1 : 1))
+        sorted.forEach((d: { calculated_analyte_id: string; calculated_lab_analyte_id?: string | null; variable_name: string; source_analyte_id: string; source_lab_analyte_id?: string | null; lab_id: string | null }) => {
+          const calcKey = d.calculated_lab_analyte_id || d.calculated_analyte_id
+          const key = `${calcKey}:${d.variable_name}`
+          if (seen.has(key)) return // skip global duplicate if lab-specific already added
+          seen.add(key)
+          if (!map[calcKey]) map[calcKey] = []
+          map[calcKey].push({ variable_name: d.variable_name, source_analyte_id: d.source_analyte_id, source_lab_analyte_id: d.source_lab_analyte_id || null })
+        })
+        setDepMap(map)
     }
     fetchDeps()
   }, [order])
@@ -178,20 +212,28 @@ export function ResultIntake({ order, onResultProcessed }: Props) {
 
       calculated.forEach(calc => {
         if (!calc.formula || isCompleted(calc)) return
-        const deps = depMap[calc.id]
-        if (!deps || deps.length === 0) return
+          const deps = depMap[calc.lab_analyte_id || calc.id]
+          if (!deps || deps.length === 0) return
 
         // Build scope from source analyte values
         // Resolution: 1) exact analyte_id  2) name match (handles duplicate analytes with different IDs)
         const scope: Record<string, number> = {}
-        let allPresent = true
-        for (const dep of deps) {
-          // 1. Exact ID match
-          let sourceAnalyte = allAnalytes.find(a => a.id === dep.source_analyte_id)
-          let rawValue = (prev[dep.source_analyte_id]?.value) || sourceAnalyte?.existing_result?.value
+          let allPresent = true
+          for (const dep of deps) {
+            // 1. Exact lab_analyte_id match
+            let sourceAnalyte = dep.source_lab_analyte_id
+              ? allAnalytes.find(a => a.lab_analyte_id === dep.source_lab_analyte_id)
+              : undefined
+            let rawValue = sourceAnalyte ? (prev[sourceAnalyte.id]?.value || sourceAnalyte.existing_result?.value) : undefined
 
-          // 2. Name-based fallback — dep points to a different copy of the same analyte
-          if (!rawValue || isNaN(parseFloat(rawValue))) {
+            // 2. Exact analyte_id match
+            if (!rawValue || isNaN(parseFloat(rawValue))) {
+              sourceAnalyte = allAnalytes.find(a => a.id === dep.source_analyte_id)
+              rawValue = (prev[dep.source_analyte_id]?.value) || sourceAnalyte?.existing_result?.value
+            }
+
+            // 3. Name-based fallback — dep points to a different copy of the same analyte
+            if (!rawValue || isNaN(parseFloat(rawValue))) {
             const byName = allAnalytes.find(
               a => a.id !== dep.source_analyte_id &&
                    a.name?.toLowerCase() === (sourceAnalyte?.name || dep.variable_name)?.toLowerCase()
@@ -269,10 +311,77 @@ export function ResultIntake({ order, onResultProcessed }: Props) {
     setEntries(prev => ({ ...prev, [analyteId]: { ...prev[analyteId], ...patch } }))
   }
 
+  const ensureResultForGroup = useCallback(async (
+    tg: TestGroup,
+    mode: 'draft' | 'submit' = 'draft',
+  ) => {
+    const existingResultId = groupResultIds[tg.test_group_id] || tg.analytes.find(a => a.existing_result?.result_id)?.existing_result?.result_id
+    if (existingResultId) return existingResultId
+
+    const { data: orderTest } = await supabase
+      .from('order_tests')
+      .select('outsourced_lab_id')
+      .eq('order_id', order.id)
+      .eq('test_group_id', tg.test_group_id)
+      .maybeSingle()
+
+    const resultRow = {
+      order_id: order.id,
+      patient_id: order.patient_id,
+      patient_name: order.patient_name,
+      test_name: tg.test_group_name || 'Unknown Test',
+      status: mode === 'draft' ? 'Entered' : 'pending_verification',
+      verification_status: mode === 'submit' ? 'pending_verification' : null,
+      entered_by: user?.user_metadata?.full_name || user?.email || 'Unknown User',
+      entered_date: new Date().toISOString().split('T')[0],
+      test_group_id: tg.test_group_id,
+      lab_id: order.lab_id,
+      ...(tg.order_test_group_id && { order_test_group_id: tg.order_test_group_id }),
+      ...(tg.order_test_id && { order_test_id: tg.order_test_id }),
+      ...(orderTest?.outsourced_lab_id && {
+        outsourced_to_lab_id: orderTest.outsourced_lab_id,
+        outsourced_status: 'pending_send',
+        outsourced_logistics_status: 'pending_dispatch'
+      }),
+    }
+
+    const { data: insertedResult, error: insertErr } = await supabase
+      .from('results')
+      .insert(resultRow)
+      .select('id')
+      .single()
+
+    if (insertErr) throw insertErr
+
+    setGroupResultIds(prev => ({ ...prev, [tg.test_group_id]: insertedResult.id }))
+    return insertedResult.id as string
+  }, [groupResultIds, order.id, order.lab_id, order.patient_id, order.patient_name, user])
+
   // ───────────────────────────────────────────────────────────────────────────
   // BLOCK 3C-2: AI Handler
 
   const [aiLoadingGroup, setAiLoadingGroup] = useState<string | null>(null)
+
+  useEffect(() => {
+    const sectionOnlyGroups = order.test_groups.filter(tg => tg.is_section_only && !groupResultIds[tg.test_group_id])
+    if (sectionOnlyGroups.length === 0) return
+
+    let cancelled = false
+    ;(async () => {
+      for (const tg of sectionOnlyGroups) {
+        if (cancelled) return
+        try {
+          await ensureResultForGroup(tg, 'draft')
+        } catch (err) {
+          console.error('Failed to initialize section-only result row:', err)
+        }
+      }
+    })()
+
+    return () => {
+      cancelled = true
+    }
+  }, [order.test_groups, groupResultIds, ensureResultForGroup])
 
   const handleAIResolve = async (tgId: string) => {
     // 1. Gather analytes for this group
@@ -337,7 +446,8 @@ export function ResultIntake({ order, onResultProcessed }: Props) {
 
   const persist = async (mode: 'draft' | 'submit') => {
     const activeEntries = Object.values(entries).filter(e => `${e.value}`.trim() !== '')
-    if (activeEntries.length === 0) {
+    const groupsWithSectionEditors = order.test_groups.filter(tg => !!groupResultIds[tg.test_group_id])
+    if (activeEntries.length === 0 && groupsWithSectionEditors.length === 0) {
       setToast('Please enter at least one result value.')
       return
     }
@@ -355,6 +465,38 @@ export function ResultIntake({ order, onResultProcessed }: Props) {
       }, {})
 
       let firstSavedResultId: string | undefined
+      const savedResultIds: string[] = []
+      const savedResultValueIds: string[] = []
+      const { data: existingResults, error: existingResultsError } = await supabase
+        .from('results')
+        .select('id, test_group_id, order_test_group_id, order_test_id, status, verification_status')
+        .eq('order_id', order.id)
+
+      if (existingResultsError) throw existingResultsError
+
+      for (const tg of order.test_groups) {
+        if (!groupResultIds[tg.test_group_id] && tg.is_section_only) {
+          const ensuredResultId = await ensureResultForGroup(tg, mode)
+          if (ensuredResultId) {
+            savedResultIds.push(ensuredResultId)
+            if (!firstSavedResultId) firstSavedResultId = ensuredResultId
+          }
+        }
+      }
+
+      // Batch-fetch outsourced lab IDs for all test groups in one query (eliminates N sequential round-trips)
+      const groupIds = Object.keys(byGroup)
+      const outsourcedMap = new Map<string, string | null>()
+      if (groupIds.length > 0) {
+        const { data: outsourcedRows } = await supabase
+          .from('order_tests')
+          .select('test_group_id, outsourced_lab_id')
+          .eq('order_id', order.id)
+          .in('test_group_id', groupIds)
+        for (const row of (outsourcedRows || [])) {
+          outsourcedMap.set(row.test_group_id, row.outsourced_lab_id || null)
+        }
+      }
 
       for (const tgId of Object.keys(byGroup)) {
         const list = byGroup[tgId]
@@ -363,44 +505,69 @@ export function ResultIntake({ order, onResultProcessed }: Props) {
         const tgMeta = order.test_groups.find(t => t.test_group_id === tgId)
         const testGroupName = tgMeta?.test_group_name || 'Unknown Test'
 
-        // Check if this test is outsourced by querying order_tests
-        const { data: orderTest } = await supabase
-          .from('order_tests')
-          .select('outsourced_lab_id')
-          .eq('order_id', order.id)
-          .eq('test_group_id', tgId)
-          .maybeSingle()
+        const outsourcedLabId = outsourcedMap.get(tgId) || null
 
-        // Prepare results row
-        const resultRow = {
-          order_id: order.id,
-          patient_id: order.patient_id,
-          patient_name: order.patient_name,
-          test_name: testGroupName,
-          status: mode === 'draft' ? 'entered' : 'pending_verification',
-          entered_by: user?.user_metadata?.full_name || user?.email || 'Unknown User',
-          entered_date: new Date().toISOString().split('T')[0],
-          test_group_id: tgId,
-          lab_id: order.lab_id,
-          // keep links to originating order_test_group/order_test when present
-          ...(tgMeta?.order_test_group_id && { order_test_group_id: tgMeta.order_test_group_id }),
-          ...(tgMeta?.order_test_id && { order_test_id: tgMeta.order_test_id }),
-          // Set outsourced flags if test is sent to external lab
-          ...(orderTest?.outsourced_lab_id && {
-            outsourced_to_lab_id: orderTest.outsourced_lab_id,
-            outsourced_status: 'pending_send',
-            outsourced_logistics_status: 'pending_dispatch'
-          }),
+        const existingResult = (existingResults || []).find((row: any) =>
+          (tgMeta?.order_test_group_id && row.order_test_group_id === tgMeta.order_test_group_id) ||
+          (tgMeta?.order_test_id && row.order_test_id === tgMeta.order_test_id) ||
+          row.test_group_id === tgId
+        )
+
+        let savedResult: any
+        if (existingResult?.id) {
+          const { data: updatedResult, error: updateErr } = await supabase
+            .from('results')
+            .update({
+              test_name: testGroupName,
+              status: mode === 'draft' ? 'Entered' : 'pending_verification',
+              verification_status: mode === 'submit' ? 'pending_verification' : (existingResult.verification_status || null),
+              entered_by: user?.user_metadata?.full_name || user?.email || 'Unknown User',
+              entered_date: new Date().toISOString().split('T')[0],
+              lab_id: order.lab_id,
+              ...(outsourcedLabId && {
+                outsourced_to_lab_id: outsourcedLabId,
+                outsourced_status: 'pending_send',
+                outsourced_logistics_status: 'pending_dispatch'
+              }),
+            })
+            .eq('id', existingResult.id)
+            .select()
+            .single()
+
+          if (updateErr) throw updateErr
+          savedResult = updatedResult
+        } else {
+          const resultRow = {
+            order_id: order.id,
+            patient_id: order.patient_id,
+            patient_name: order.patient_name,
+            test_name: testGroupName,
+            status: mode === 'draft' ? 'Entered' : 'pending_verification',
+            verification_status: mode === 'submit' ? 'pending_verification' : null,
+            entered_by: user?.user_metadata?.full_name || user?.email || 'Unknown User',
+            entered_date: new Date().toISOString().split('T')[0],
+            test_group_id: tgId,
+            lab_id: order.lab_id,
+            ...(tgMeta?.order_test_group_id && { order_test_group_id: tgMeta.order_test_group_id }),
+            ...(tgMeta?.order_test_id && { order_test_id: tgMeta.order_test_id }),
+            ...(outsourcedLabId && {
+              outsourced_to_lab_id: outsourcedLabId,
+              outsourced_status: 'pending_send',
+              outsourced_logistics_status: 'pending_dispatch'
+            }),
+          }
+
+          const { data: insertedResult, error: insertErr } = await supabase
+            .from('results')
+            .insert(resultRow)
+            .select()
+            .single()
+
+          if (insertErr) throw insertErr
+          savedResult = insertedResult
         }
-
-        const { data: savedResult, error: insertErr } = await supabase
-          .from('results')
-          .insert(resultRow)
-          .select()
-          .single()
-
-        if (insertErr) throw insertErr
         if (!firstSavedResultId) firstSavedResultId = savedResult.id
+        savedResultIds.push(savedResult.id)
 
         // Build values + compute flags (if user didn’t pick)
         const forFlag = list.map(v => ({
@@ -433,11 +600,25 @@ export function ResultIntake({ order, onResultProcessed }: Props) {
           };
         })
 
-        const { error: valuesErr } = await supabase.from('result_values').insert(values)
+        const analyteIds = list.map(v => v.analyte_id).filter(Boolean)
+        if (analyteIds.length > 0) {
+          const { error: deleteValuesErr } = await supabase
+            .from('result_values')
+            .delete()
+            .eq('result_id', savedResult.id)
+            .in('analyte_id', analyteIds)
+          if (deleteValuesErr) throw deleteValuesErr
+        }
+
+        const { data: insertedValues, error: valuesErr } = await supabase
+          .from('result_values')
+          .insert(values)
+          .select('id')
         if (valuesErr) throw valuesErr
+        savedResultValueIds.push(...(insertedValues || []).map((row: { id: string }) => row.id))
 
         // Auto-consume inventory for non-outsourced tests (non-blocking)
-        if (!orderTest?.outsourced_lab_id) {
+        if (!outsourcedLabId) {
           database.inventory.triggerAutoConsume({
             labId: order.lab_id,
             orderId: order.id,
@@ -447,15 +628,80 @@ export function ResultIntake({ order, onResultProcessed }: Props) {
         }
       }
 
-      // Run AI flag analysis ONCE after ALL test groups are saved (optimization)
-      try {
-        const { runAIFlagAnalysis } = await import('../../utils/aiFlagAnalysis');
-        await runAIFlagAnalysis(order.id, { applyToDatabase: true, createAudit: true });
-      } catch (flagErr) {
-        console.warn('AI flag analysis failed (non-blocking):', flagErr);
+      for (const tg of groupsWithSectionEditors) {
+        const resultId = groupResultIds[tg.test_group_id]
+        if (!resultId) continue
+        const { error: resultStatusError } = await supabase
+          .from('results')
+          .update({
+            status: mode === 'draft' ? 'Entered' : 'pending_verification',
+            verification_status: mode === 'submit' ? 'pending_verification' : null,
+            entered_by: user?.user_metadata?.full_name || user?.email || 'Unknown User',
+            entered_date: new Date().toISOString().split('T')[0],
+            lab_id: order.lab_id,
+          })
+          .eq('id', resultId)
+        if (resultStatusError) throw resultStatusError
+
+        const ref = sectionEditorRefs.current[tg.test_group_id]
+        if (ref) {
+          await ref.save()
+        }
       }
 
-      setToast(mode === 'draft' ? 'Draft saved successfully.' : 'Results submitted successfully.')
+      // Run AI flag analysis after save — fire-and-forget so it never blocks the UI response
+      import('../../utils/aiFlagAnalysis')
+        .then(({ runAIFlagAnalysis }) =>
+          runAIFlagAnalysis(order.id, { applyToDatabase: true, createAudit: true })
+        )
+        .catch(flagErr => console.warn('AI flag analysis failed (non-blocking):', flagErr))
+
+      let successMessage = mode === 'draft' ? 'Draft saved successfully.' : 'Results submitted successfully.'
+
+      if (mode === 'submit' && autoVerifyOnSubmit && savedResultIds.length > 0) {
+        try {
+          const verifiedAt = new Date().toISOString()
+
+          if (savedResultValueIds.length > 0) {
+            // Direct update — skips getCurrentUser() round-trip + heavy join select inside bulkApprove
+            const { error: verifyError } = await supabase
+              .from('result_values')
+              .update({
+                verify_status: 'approved',
+                verified: true,
+                verified_by: user?.id || null,
+                verified_at: verifiedAt,
+                updated_at: verifiedAt,
+                verify_note: 'Auto-verified during corporate bulk result entry.',
+              })
+              .in('id', savedResultValueIds)
+            if (verifyError) throw verifyError
+          }
+
+          const { error: resultVerifyError } = await supabase
+            .from('results')
+            .update({
+              status: 'Reviewed',
+              verification_status: 'verified',
+              verified_at: verifiedAt,
+              verified_by: user?.id || null,
+            })
+            .in('id', savedResultIds)
+          if (resultVerifyError) throw resultVerifyError
+
+          await database.orders.checkAndUpdateStatus(order.id)
+          successMessage = savedResultValueIds.length > 0
+            ? 'Results submitted and auto-verified successfully.'
+            : 'Section report submitted and auto-verified successfully.'
+        } catch (autoVerifyError) {
+          console.error('Auto-verify error:', autoVerifyError)
+          successMessage = 'Results saved, but auto-verification could not be completed.'
+        }
+      } else if (mode === 'submit') {
+        await database.orders.checkAndUpdateStatus(order.id)
+      }
+
+      setToast(successMessage)
       // Clear the entered rows we just saved (local UX), parent will reload and hide them permanently
       const submittedIds = new Set(activeEntries.map(e => e.analyte_id))
       setEntries(prev => {
@@ -463,6 +709,12 @@ export function ResultIntake({ order, onResultProcessed }: Props) {
         submittedIds.forEach(id => delete next[id])
         return next
       })
+
+      if (!firstSavedResultId) {
+        firstSavedResultId = groupsWithSectionEditors
+          .map(tg => groupResultIds[tg.test_group_id])
+          .find(Boolean)
+      }
 
       // Notify parent to reload (so completed analytes disappear)
       if (firstSavedResultId) onResultProcessed(firstSavedResultId)
@@ -501,7 +753,8 @@ export function ResultIntake({ order, onResultProcessed }: Props) {
       {/* Groups */}
       {groups.map(({ tg, pending, completed, progress }) => {
         // If a group is fully completed and user is not showing completed → skip
-        if (!showCompleted && pending.length === 0) return null
+        // But always show section-only groups (they have 0 analytes but need SectionEditor)
+        if (!showCompleted && pending.length === 0 && !tg.is_section_only) return null
 
         const rows = showCompleted ? [...pending, ...completed] : pending
 
@@ -510,7 +763,14 @@ export function ResultIntake({ order, onResultProcessed }: Props) {
             {/* Group header */}
             <div className="px-4 py-3 border-b bg-gray-50 flex items-center justify-between">
               <div>
-                <h3 className="text-base font-semibold">{tg.test_group_name}</h3>
+                <h3 className="text-base font-semibold flex items-center gap-2">
+                  <span>{tg.test_group_name}</span>
+                  {tg.is_section_only && (
+                    <span className="inline-flex items-center rounded-full bg-blue-100 px-2 py-0.5 text-[11px] font-medium text-blue-700">
+                      Section-only
+                    </span>
+                  )}
+                </h3>
                 <p className="text-xs text-gray-500">
                   {progress.completed}/{progress.total} completed
                 </p>
@@ -541,25 +801,26 @@ export function ResultIntake({ order, onResultProcessed }: Props) {
             </div>
 
             {/* Table (mobile-friendly) */}
-            <div className="overflow-x-auto">
-              <table className="min-w-full divide-y divide-gray-200">
-                <thead className="bg-gray-50">
-                  <tr>
-                    <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Parameter</th>
-                    <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase w-36">Value</th>
-                    <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase w-24">Unit</th>
-                    <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase w-40">Reference</th>
-                    <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase w-28">Flag</th>
-                  </tr>
-                </thead>
-                <tbody className="bg-white divide-y divide-gray-100">
-                  {rows.map(analyte => {
-                    const completedRow = isCompleted(analyte)
-                    const entry = entries[analyte.id]
-                    const isCalc = analyte.is_calculated && !!analyte.formula
+            {rows.length > 0 ? (
+              <div className="overflow-x-auto">
+                <table className="min-w-full divide-y divide-gray-200">
+                  <thead className="bg-gray-50">
+                    <tr>
+                      <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Parameter</th>
+                      <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase w-36">Value</th>
+                      <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase w-24">Unit</th>
+                      <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase w-40">Reference</th>
+                      <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase w-28">Flag</th>
+                    </tr>
+                  </thead>
+                  <tbody className="bg-white divide-y divide-gray-100">
+                    {rows.map(analyte => {
+                      const completedRow = isCompleted(analyte)
+                      const entry = entries[analyte.id]
+                      const isCalc = analyte.is_calculated && !!analyte.formula
 
-                    return (
-                      <tr key={analyte.id} className={completedRow ? 'bg-green-50/40' : isCalc ? 'bg-blue-50/40' : ''}>
+                      return (
+                        <tr key={analyte.id} className={completedRow ? 'bg-green-50/40' : isCalc ? 'bg-blue-50/40' : ''}>
                         {/* Parameter */}
                         <td className="px-3 py-2 align-top">
                           <div className="text-sm font-medium text-gray-900">{analyte.name}</div>
@@ -572,7 +833,7 @@ export function ResultIntake({ order, onResultProcessed }: Props) {
                               Auto: {analyte.formula}
                             </div>
                           )}
-                          {completedRow && analyte.existing_result?.value != null && (
+                          {hasExistingValue(analyte) && analyte.existing_result?.value != null && (
                             <div className="mt-1 inline-flex items-center text-xs text-green-700">
                               <CheckCircle className="h-3.5 w-3.5 mr-1" />
                               Current: {analyte.existing_result.value}
@@ -661,18 +922,39 @@ export function ResultIntake({ order, onResultProcessed }: Props) {
                             </select>
                           )}
                         </td>
-                      </tr>
-                    )
-                  })}
-                </tbody>
-              </table>
-            </div>
+                        </tr>
+                      )
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            ) : (
+              <div className="px-4 py-4 text-sm text-blue-800 bg-blue-50 border-t border-blue-100">
+                {tg.is_section_only
+                  ? 'This test group is section-only. Technicians can fill the configured report sections below.'
+                  : 'No analyte rows available for this test group.'}
+              </div>
+            )}
+
+            {groupResultIds[tg.test_group_id] && (
+              <div className="border-t bg-white px-4 py-4">
+                <SectionEditor
+                  ref={(instance) => {
+                    sectionEditorRefs.current[tg.test_group_id] = instance
+                  }}
+                  resultId={groupResultIds[tg.test_group_id]}
+                  testGroupId={tg.test_group_id}
+                  editorRole="technician"
+                  showAIAssistant={true}
+                />
+              </div>
+            )}
           </div>
         )
       })}
 
       {/* Empty state */}
-      {totalPendingAnalytes === 0 && !showCompleted && (
+      {totalPendingAnalytes === 0 && !showCompleted && !order.test_groups.some(tg => tg.is_section_only) && (
         <div className="p-4 rounded border border-green-200 bg-green-50 text-green-800 text-sm flex items-start">
           <CheckCircle className="h-4 w-4 mt-0.5 mr-2" />
           All analytes for this order already have results. Use the toggle above if you want to view them.
@@ -697,7 +979,25 @@ export function ResultIntake({ order, onResultProcessed }: Props) {
       )}
 
       {/* Actions */}
-      <div className="flex justify-end gap-3">
+      <div className="space-y-3">
+        {showAutoVerifyOption && (
+          <label className="flex items-start gap-2 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-800">
+            <input
+              type="checkbox"
+              className="mt-0.5 h-4 w-4 rounded border-emerald-300"
+              checked={autoVerifyOnSubmit}
+              onChange={(e) => setAutoVerifyOnSubmit(e.target.checked)}
+              disabled={saving || submitting}
+            />
+            <span>
+              Auto-verify after submit
+              <span className="ml-1 text-emerald-700">
+                New result values will be approved immediately and the order status will refresh automatically.
+              </span>
+            </span>
+          </label>
+        )}
+        <div className="flex justify-end gap-3">
         <button
           onClick={() => persist('draft')}
           disabled={saving || submitting}
@@ -712,6 +1012,7 @@ export function ResultIntake({ order, onResultProcessed }: Props) {
         >
           {submitting ? 'Submitting…' : 'Submit Results'}
         </button>
+        </div>
       </div>
     </div>
   )

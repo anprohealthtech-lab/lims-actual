@@ -24,6 +24,412 @@ import {
 import { attachments, database } from '../../utils/supabase';
 import { generateSectionContent, getQuickPromptsForSection, SectionGeneratorResponse } from '../../utils/aiSectionService';
 
+// ── Cascade types (mirrors ManageReportSections) ──────────────────────────
+
+interface CascadeOption {
+  id: string;
+  value: string;
+  sub_levels?: CascadeLevel[];
+}
+
+interface CascadeLevel {
+  id: string;
+  label: string;
+  multi_select: boolean;
+  options: CascadeOption[];
+}
+
+interface MatrixConfig {
+  rows: string[];
+  columns: string[];
+  cellOptions?: string[]; // if set, cells render as dropdowns (e.g. ["S","I","R"])
+}
+
+interface SectionConfig {
+  mode: 'flat' | 'cascading' | 'matrix';
+  cascade_levels: CascadeLevel[];
+  matrix: MatrixConfig;
+}
+
+// ── Cascade helpers ────────────────────────────────────────────────────────
+
+function buildCascadeContent(levels: CascadeLevel[], selections: Record<string, string[]>): string {
+  const lines: string[] = [];
+  function traverse(levs: CascadeLevel[]) {
+    for (const level of levs) {
+      const selectedIds = selections[level.id] || [];
+      if (selectedIds.length === 0) continue;
+      const selectedOpts = level.options.filter(o => selectedIds.includes(o.id));
+      const values = selectedOpts.map(o => o.value).join(', ');
+      if (values) lines.push(level.label ? `${level.label}: ${values}` : values);
+      for (const opt of selectedOpts) {
+        if (opt.sub_levels) traverse(opt.sub_levels);
+      }
+    }
+  }
+  traverse(levels);
+  return lines.join('\n');
+}
+
+function getVisibleLevels(levels: CascadeLevel[], selections: Record<string, string[]>): CascadeLevel[] {
+  const visible: CascadeLevel[] = [];
+  function traverse(levs: CascadeLevel[]) {
+    for (const level of levs) {
+      visible.push(level);
+      const selectedIds = selections[level.id] || [];
+      for (const optId of selectedIds) {
+        const opt = level.options.find(o => o.id === optId);
+        if (opt?.sub_levels) traverse(opt.sub_levels);
+      }
+    }
+  }
+  traverse(levels);
+  return visible;
+}
+
+const MATRIX_CELL_PREFIX = 'matrix:';
+
+function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+const MATRIX_COL_LABEL_PREFIX = 'col_label:';
+const MATRIX_COL_ORDER_KEY = 'matrix_col_order';
+
+function matrixCellKey(row: string, column: string): string {
+  return `${MATRIX_CELL_PREFIX}${row}::${column}`;
+}
+
+function matrixColLabelKey(column: string): string {
+  return `${MATRIX_COL_LABEL_PREFIX}${column}`;
+}
+
+function getMatrixCellValue(selections: Record<string, unknown> | undefined, row: string, column: string): string {
+  const raw = selections?.[matrixCellKey(row, column)];
+  if (Array.isArray(raw)) return String(raw[0] || '');
+  return typeof raw === 'string' ? raw : '';
+}
+
+function getColLabel(selections: Record<string, unknown> | undefined, column: string): string {
+  const raw = selections?.[matrixColLabelKey(column)];
+  return typeof raw === 'string' && raw.trim() ? raw.trim() : column;
+}
+
+// Returns the active column key list for this result (may differ from template if user added/removed)
+function getActiveColumns(selections: Record<string, unknown> | undefined, templateColumns: string[]): string[] {
+  const raw = selections?.[MATRIX_COL_ORDER_KEY];
+  if (Array.isArray(raw) && raw.length > 0) return raw as string[];
+  return templateColumns;
+}
+
+function cellOptionColor(value: string, cellOptions: string[]): string {
+  if (!cellOptions.length) return '';
+  const idx = cellOptions.findIndex(o => o.trim().toUpperCase() === value.trim().toUpperCase());
+  if (idx === -1) return '';
+  // first option = green (sensitive), last option = red (resistant), middle = orange (intermediate)
+  if (cellOptions.length === 1) return 'background:#d1fae5;color:#065f46;font-weight:600;';
+  if (idx === 0) return 'background:#d1fae5;color:#065f46;font-weight:600;';
+  if (idx === cellOptions.length - 1) return 'background:#fee2e2;color:#991b1b;font-weight:600;';
+  return 'background:#fff3cd;color:#92400e;font-weight:600;';
+}
+
+function buildMatrixHtml(config: MatrixConfig | undefined, selections: Record<string, unknown> | undefined, customText: string): string {
+  const rows = (config?.rows || []).map((row) => row.trim()).filter(Boolean);
+  const templateCols = (config?.columns || []).map((c) => c.trim()).filter(Boolean);
+  const columns = getActiveColumns(selections, templateCols);
+  if (rows.length === 0 || columns.length === 0) {
+    return customText.trim();
+  }
+  const cellOptions = config?.cellOptions || [];
+
+  const headerHtml = columns
+    .map((column) => `<th style="border:1px solid #9ca3af;padding:8px;text-align:left;background:#f8fafc;">${escapeHtml(getColLabel(selections, column))}</th>`)
+    .join('');
+
+  const bodyHtml = rows
+    .map((row) => {
+      const cells = columns
+        .map((column) => {
+          const val = getMatrixCellValue(selections, row, column);
+          const colorStyle = val ? cellOptionColor(val, cellOptions) : '';
+          return `<td style="border:1px solid #9ca3af;padding:8px;min-width:80px;text-align:center;${colorStyle}">${escapeHtml(val)}</td>`;
+        })
+        .join('');
+      return `<tr><th style="border:1px solid #9ca3af;padding:8px;text-align:left;background:#f8fafc;">${escapeHtml(row)}</th>${cells}</tr>`;
+    })
+    .join('');
+
+  const notesHtml = customText.trim()
+    ? `<div style="margin-top:12px;white-space:pre-wrap;">${escapeHtml(customText.trim()).replace(/\n/g, '<br/>')}</div>`
+    : '';
+
+  return `<table style="width:100%;border-collapse:collapse;font-size:13px;"><thead><tr><th style="border:1px solid #9ca3af;padding:8px;background:#f8fafc;"></th>${headerHtml}</tr></thead><tbody>${bodyHtml}</tbody></table>${notesHtml}`;
+}
+
+// ── CascadeSelector component ──────────────────────────────────────────────
+
+interface CascadeSelectorProps {
+  section: TemplateSection;
+  selections: Record<string, string[]>;
+  onChange: (newSelections: Record<string, string[]>, finalContent: string) => void;
+  disabled?: boolean;
+}
+
+const CascadeSelector: React.FC<CascadeSelectorProps> = ({ section, selections, onChange, disabled }) => {
+  const config = section.section_config;
+  if (!config || config.cascade_levels.length === 0) {
+    return (
+      <div className="text-sm text-gray-400 italic py-2">
+        No cascading options configured for this section.
+      </div>
+    );
+  }
+
+  const visibleLevels = getVisibleLevels(config.cascade_levels, selections);
+
+  const handleSelect = (levelId: string, optionId: string, multiSelect: boolean) => {
+    const current = selections[levelId] || [];
+    const newSelected = multiSelect
+      ? current.includes(optionId)
+        ? current.filter(id => id !== optionId)
+        : [...current, optionId]
+      : current.includes(optionId) ? [] : [optionId];
+
+    const draft = { ...selections, [levelId]: newSelected };
+
+    // Prune selections for levels that are no longer visible
+    const nowVisible = new Set(getVisibleLevels(config.cascade_levels, draft).map(l => l.id));
+    const cleaned: Record<string, string[]> = {};
+    for (const [id, sel] of Object.entries(draft)) {
+      if (nowVisible.has(id)) cleaned[id] = sel;
+    }
+
+    onChange(cleaned, buildCascadeContent(config.cascade_levels, cleaned));
+  };
+
+  return (
+    <div className="space-y-4">
+      {visibleLevels.map((level, idx) => {
+        const selectedIds = selections[level.id] || [];
+        return (
+          <div key={level.id}>
+            {idx > 0 && <div className="border-t border-gray-100 pt-4" />}
+            <label className="block text-sm font-medium text-gray-700 mb-2">
+              {level.label || 'Select an option'}
+              {level.multi_select && (
+                <span className="ml-1 text-xs font-normal text-gray-400">(select multiple)</span>
+              )}
+            </label>
+            <div className="space-y-1.5">
+              {level.options.map(option => {
+                const isSelected = selectedIds.includes(option.id);
+                return (
+                  <button
+                    key={option.id}
+                    type="button"
+                    onClick={() => !disabled && handleSelect(level.id, option.id, level.multi_select)}
+                    disabled={disabled}
+                    className={`w-full text-left px-3 py-2.5 rounded-lg border text-sm transition-all ${
+                      isSelected
+                        ? 'bg-blue-50 border-blue-300 text-blue-900 font-medium'
+                        : 'bg-gray-50 border-gray-200 text-gray-700 hover:bg-gray-100'
+                    } ${disabled ? 'cursor-not-allowed opacity-60' : 'cursor-pointer'}`}
+                  >
+                    <div className="flex items-center gap-2.5">
+                      {/* Radio/checkbox indicator */}
+                      {level.multi_select ? (
+                        <div className={`w-4 h-4 rounded border-2 flex items-center justify-center flex-shrink-0 ${
+                          isSelected ? 'bg-blue-500 border-blue-500' : 'border-gray-400 bg-white'
+                        }`}>
+                          {isSelected && (
+                            <CheckSquare className="w-3 h-3 text-white" />
+                          )}
+                        </div>
+                      ) : (
+                        <div className={`w-4 h-4 rounded-full border-2 flex items-center justify-center flex-shrink-0 ${
+                          isSelected ? 'border-blue-500' : 'border-gray-400 bg-white'
+                        }`}>
+                          {isSelected && <div className="w-2 h-2 rounded-full bg-blue-500" />}
+                        </div>
+                      )}
+                      <span>{option.value}</span>
+                      {option.sub_levels && option.sub_levels.length > 0 && (
+                        <span className="ml-auto text-xs text-gray-400">
+                          {isSelected ? '▼ more options' : '▶ has sub-options'}
+                        </span>
+                      )}
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+};
+
+interface MatrixEditorProps {
+  section: TemplateSection;
+  values: Record<string, any>;
+  customText: string;
+  disabled?: boolean;
+  onChange: (newSelections: Record<string, any>, finalContent: string) => void;
+}
+
+const MatrixEditor: React.FC<MatrixEditorProps> = ({ section, values, customText, disabled, onChange }) => {
+  const matrix = section.section_config?.matrix;
+  const rows = (matrix?.rows || []).map((row) => row.trim()).filter(Boolean);
+  const templateColumns = (matrix?.columns || []).map((c) => c.trim()).filter(Boolean);
+  const columns = getActiveColumns(values, templateColumns);
+
+  if (rows.length === 0 || templateColumns.length === 0) {
+    return <div className="text-sm text-gray-400 italic py-2">No matrix rows/columns configured for this section.</div>;
+  }
+
+  const updateCell = (row: string, column: string, value: string) => {
+    const nextSelections = {
+      ...(values || {}),
+      [matrixCellKey(row, column)]: value ? [value] : [],
+    };
+    onChange(nextSelections, buildMatrixHtml(matrix, nextSelections, customText));
+  };
+
+  const updateColLabel = (column: string, label: string) => {
+    const nextSelections = {
+      ...(values || {}),
+      [matrixColLabelKey(column)]: label,
+    };
+    onChange(nextSelections, buildMatrixHtml(matrix, nextSelections, customText));
+  };
+
+  const addColumn = () => {
+    const newKey = `col_extra_${Date.now()}`;
+    const nextCols = [...columns, newKey];
+    const nextSelections = {
+      ...(values || {}),
+      [MATRIX_COL_ORDER_KEY]: nextCols,
+      [matrixColLabelKey(newKey)]: `Organism ${nextCols.length}`,
+    };
+    onChange(nextSelections, buildMatrixHtml(matrix, nextSelections, customText));
+  };
+
+  const removeColumn = (colKey: string) => {
+    if (columns.length <= 1) return;
+    const nextCols = columns.filter(c => c !== colKey);
+    // clean up cell data for removed column
+    const nextSelections: Record<string, unknown> = { ...(values || {}), [MATRIX_COL_ORDER_KEY]: nextCols };
+    delete nextSelections[matrixColLabelKey(colKey)];
+    rows.forEach(row => delete nextSelections[matrixCellKey(row, colKey)]);
+    onChange(nextSelections, buildMatrixHtml(matrix, nextSelections, customText));
+  };
+
+  return (
+    <div className="overflow-x-auto">
+      <table className="min-w-full border border-gray-300 rounded-lg overflow-hidden">
+        <thead className="bg-gray-50">
+          <tr>
+            <th className="border border-gray-300 px-3 py-2 text-left text-sm font-medium text-gray-700"></th>
+            {columns.map((column) => (
+              <th key={column} className="border border-gray-300 px-2 py-1 text-sm font-medium text-gray-700 min-w-[140px]">
+                <div className="flex items-center gap-1">
+                  <input
+                    type="text"
+                    value={getColLabel(values, column)}
+                    onChange={(e) => updateColLabel(column, e.target.value)}
+                    disabled={disabled}
+                    placeholder={column}
+                    className={`flex-1 min-w-0 px-2 py-1 border border-blue-300 rounded text-sm font-semibold bg-blue-50 focus:ring-2 focus:ring-blue-500 focus:outline-none ${disabled ? 'cursor-not-allowed opacity-60' : ''}`}
+                  />
+                  {!disabled && columns.length > 1 && (
+                    <button
+                      type="button"
+                      onClick={() => removeColumn(column)}
+                      title="Remove this organism"
+                      className="flex-shrink-0 text-gray-400 hover:text-red-500 transition-colors"
+                    >
+                      <X className="w-3.5 h-3.5" />
+                    </button>
+                  )}
+                </div>
+              </th>
+            ))}
+            {!disabled && (
+              <th className="border border-gray-300 px-2 py-1">
+                <button
+                  type="button"
+                  onClick={addColumn}
+                  title="Add organism column"
+                  className="flex items-center gap-1 text-xs text-blue-600 hover:text-blue-800 font-medium whitespace-nowrap"
+                >
+                  <span className="text-base leading-none">+</span> Add
+                </button>
+              </th>
+            )}
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((row) => (
+            <tr key={row}>
+              <th className="border border-gray-300 px-3 py-2 text-left text-sm font-medium text-gray-700 bg-gray-50">
+                {row}
+              </th>
+              {columns.map((column) => {
+                const cellVal = getMatrixCellValue(values, row, column);
+                const opts = matrix?.cellOptions || [];
+                const colorClass = opts.length && cellVal ? (() => {
+                  const idx = opts.findIndex(o => o.trim().toUpperCase() === cellVal.trim().toUpperCase());
+                  if (idx === -1) return '';
+                  if (opts.length === 1 || idx === 0) return 'bg-green-100 text-green-800 font-semibold';
+                  if (idx === opts.length - 1) return 'bg-red-100 text-red-800 font-semibold';
+                  return 'bg-yellow-100 text-yellow-800 font-semibold';
+                })() : '';
+                return (
+                  <td key={`${row}-${column}`} className="border border-gray-300 p-1.5">
+                    {opts.length > 0 ? (
+                      <select
+                        value={cellVal}
+                        onChange={(e) => updateCell(row, column, e.target.value)}
+                        disabled={disabled}
+                        className={`w-full px-2 py-1.5 border rounded text-sm focus:ring-2 focus:ring-blue-500 text-center ${colorClass} ${
+                          disabled ? 'bg-gray-100 cursor-not-allowed' : ''
+                        }`}
+                      >
+                        <option value="">—</option>
+                        {opts.map(opt => <option key={opt} value={opt}>{opt}</option>)}
+                      </select>
+                    ) : (
+                      <input
+                        type="text"
+                        value={cellVal}
+                        onChange={(e) => updateCell(row, column, e.target.value)}
+                        disabled={disabled}
+                        className={`w-full px-2 py-1.5 border rounded text-sm focus:ring-2 focus:ring-blue-500 ${
+                          disabled ? 'bg-gray-100 cursor-not-allowed' : 'bg-white'
+                        }`}
+                        placeholder={`${row} ${column}`}
+                      />
+                    )}
+                  </td>
+                );
+              })}
+              {!disabled && <td className="border border-gray-300" />}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+};
+
+// ── Component interfaces ────────────────────────────────────────────────────
+
 interface TemplateSection {
   id: string;
   section_type: string;
@@ -36,16 +442,18 @@ interface TemplateSection {
   allow_images?: boolean;
   allow_technician_entry?: boolean;
   placeholder_key: string | null;
+  section_config?: SectionConfig;
 }
 
 interface SectionContent {
   id?: string;
   section_id: string;
-  selected_options: number[]; // Indices of selected predefined options
+  selected_options: number[]; // Indices of selected predefined options (flat mode)
   custom_text: string;
   final_content: string;
   image_urls?: string[];
   is_finalized: boolean;
+  cascading_selections?: Record<string, any>; // levelId → optionId[] or matrix cell payloads
 }
 
 interface SectionEditorProps {
@@ -159,6 +567,7 @@ const SectionEditor = forwardRef<SectionEditorRef, SectionEditorProps>(({
             final_content: existing.final_content || '',
             image_urls: existing.image_urls || [],
             is_finalized: existing.is_finalized || false,
+            cascading_selections: existing.cascading_selections || {},
           });
         } else {
           // Initialize with defaults
@@ -199,9 +608,10 @@ const SectionEditor = forwardRef<SectionEditorRef, SectionEditorProps>(({
       if (charCode < 97 || charCode > 122) return; // only a-z
       const optionIndex = charCode - 97;
 
-      // Find the first expanded section that has an option at this index and is not locked
+      // Find the first expanded flat section that has an option at this index and is not locked
       for (const section of sections) {
         if (!expandedSections.has(section.id)) continue;
+        if (section.section_config?.mode === 'cascading') continue; // skip cascading sections
         if (!section.predefined_options || section.predefined_options.length <= optionIndex) continue;
         const content = contents.get(section.id);
         if (content?.is_finalized) continue;
@@ -271,15 +681,27 @@ const SectionEditor = forwardRef<SectionEditorRef, SectionEditorProps>(({
       if (!content || content.is_finalized) return prev;
 
       const section = sections.find(s => s.id === sectionId);
-      const selectedTexts = content.selected_options
-        .sort((a, b) => a - b)
-        .map(i => section?.predefined_options[i])
-        .filter(Boolean);
-      
-      const finalContent = [
-        ...selectedTexts,
-        text.trim(),
-      ].filter(Boolean).join('\n\n');
+
+      let baseContent: string;
+      if (section?.section_config?.mode === 'cascading' && section.section_config.cascade_levels.length > 0) {
+        baseContent = buildCascadeContent(section.section_config.cascade_levels, content.cascading_selections || {});
+      } else if (section?.section_config?.mode === 'matrix') {
+        baseContent = buildMatrixHtml(section.section_config.matrix, content.cascading_selections || {}, text);
+        newMap.set(sectionId, {
+          ...content,
+          custom_text: text,
+          final_content: baseContent,
+        });
+        return newMap;
+      } else {
+        const selectedTexts = content.selected_options
+          .sort((a, b) => a - b)
+          .map(i => section?.predefined_options[i])
+          .filter(Boolean) as string[];
+        baseContent = selectedTexts.join('\n\n');
+      }
+
+      const finalContent = [baseContent, text.trim()].filter(Boolean).join('\n\n');
 
       newMap.set(sectionId, {
         ...content,
@@ -496,20 +918,20 @@ const SectionEditor = forwardRef<SectionEditorRef, SectionEditorProps>(({
       if (!content || content.is_finalized) return prev;
 
       const section = sections.find(s => s.id === sectionId);
-      const selectedTexts = content.selected_options
-        .sort((a, b) => a - b)
-        .map(i => section?.predefined_options[i])
-        .filter(Boolean);
-
       // Append AI content to custom text
       const newCustomText = content.custom_text
         ? `${content.custom_text}\n\n${aiResult.generatedContent}`
         : aiResult.generatedContent;
 
-      const finalContent = [
-        ...selectedTexts,
-        newCustomText.trim(),
-      ].filter(Boolean).join('\n\n');
+      const finalContent = section?.section_config?.mode === 'matrix'
+        ? buildMatrixHtml(section.section_config.matrix, content.cascading_selections || {}, newCustomText)
+        : [
+          ...content.selected_options
+            .sort((a, b) => a - b)
+            .map(i => section?.predefined_options[i])
+            .filter(Boolean),
+          newCustomText.trim(),
+        ].filter(Boolean).join('\n\n');
 
       newMap.set(sectionId, {
         ...content,
@@ -544,6 +966,7 @@ const SectionEditor = forwardRef<SectionEditorRef, SectionEditorProps>(({
             custom_text: content.custom_text,
             final_content: content.final_content,
             image_urls: content.image_urls || [],
+            cascading_selections: content.cascading_selections || {},
           }, currentUser.user.id)
         );
       }
@@ -668,52 +1091,100 @@ const SectionEditor = forwardRef<SectionEditorRef, SectionEditorProps>(({
               {/* Section Body */}
               {isExpanded && (
                 <div className="border-t border-gray-200 p-4 space-y-4">
-                  {/* Predefined Options */}
-                  {section.predefined_options && section.predefined_options.length > 0 && (
-                    <div>
-                      <label className="block text-sm font-medium text-gray-700 mb-2">
-                        Select from predefined options:
-                      </label>
-                      <div className="space-y-2">
-                        {section.predefined_options.map((option, idx) => {
-                          const isSelected = content?.selected_options.includes(idx);
-                          const shortcutKey = idx < 26 ? String.fromCharCode(97 + idx) : null; // a, b, c...
-                          return (
-                            <button
-                              key={idx}
-                              onClick={() => !isLocked && toggleOption(section.id, idx)}
-                              disabled={isLocked}
-                              className={`w-full text-left p-3 rounded-lg border transition-all ${
-                                isSelected
-                                  ? 'bg-blue-50 border-blue-300 text-blue-900'
-                                  : 'bg-gray-50 border-gray-200 text-gray-700 hover:bg-gray-100'
-                              } ${isLocked ? 'cursor-not-allowed opacity-75' : 'cursor-pointer'}`}
-                            >
-                              <div className="flex items-start">
-                                <CheckSquare
-                                  className={`h-5 w-5 mr-3 mt-0.5 flex-shrink-0 ${
-                                    isSelected ? 'text-blue-600' : 'text-gray-400'
-                                  }`}
-                                />
-                                {shortcutKey && (
-                                  <span className="inline-flex items-center justify-center w-5 h-5 mr-2 text-xs font-bold bg-gray-200 text-gray-600 rounded border border-gray-300 flex-shrink-0 mt-0.5">
-                                    {shortcutKey.toUpperCase()}
-                                  </span>
-                                )}
-                                <span className="text-sm">{option}</span>
-                              </div>
-                            </button>
-                          );
-                        })}
+                  {/* Options — cascade or flat depending on section config */}
+                  {section.section_config?.mode === 'cascading' ? (
+                    <CascadeSelector
+                      section={section}
+                      selections={content?.cascading_selections || {}}
+                      onChange={(newSelections, cascadeContent) => {
+                        setContents(prev => {
+                          const newMap = new Map(prev);
+                          const existing = newMap.get(section.id);
+                          if (!existing || existing.is_finalized) return prev;
+                          const custom = existing.custom_text?.trim() || '';
+                          const combined = [cascadeContent, custom].filter(Boolean).join('\n\n');
+                          newMap.set(section.id, {
+                            ...existing,
+                            cascading_selections: newSelections,
+                            final_content: combined,
+                          });
+                          return newMap;
+                        });
+                      }}
+                      disabled={isLocked}
+                    />
+                  ) : section.section_config?.mode === 'matrix' ? (
+                    <MatrixEditor
+                      section={section}
+                      values={content?.cascading_selections || {}}
+                      customText={content?.custom_text || ''}
+                      disabled={isLocked}
+                      onChange={(newSelections, finalContent) => {
+                        setContents(prev => {
+                          const newMap = new Map(prev);
+                          const existing = newMap.get(section.id);
+                          if (!existing || existing.is_finalized) return prev;
+                          newMap.set(section.id, {
+                            ...existing,
+                            cascading_selections: newSelections,
+                            final_content: finalContent,
+                          });
+                          return newMap;
+                        });
+                      }}
+                    />
+                  ) : (
+                    /* Flat predefined options */
+                    section.predefined_options && section.predefined_options.length > 0 && (
+                      <div>
+                        <label className="block text-sm font-medium text-gray-700 mb-2">
+                          Select from predefined options:
+                        </label>
+                        <div className="space-y-2">
+                          {section.predefined_options.map((option, idx) => {
+                            const isSelected = content?.selected_options.includes(idx);
+                            const shortcutKey = idx < 26 ? String.fromCharCode(97 + idx) : null;
+                            return (
+                              <button
+                                key={idx}
+                                onClick={() => !isLocked && toggleOption(section.id, idx)}
+                                disabled={isLocked}
+                                className={`w-full text-left p-3 rounded-lg border transition-all ${
+                                  isSelected
+                                    ? 'bg-blue-50 border-blue-300 text-blue-900'
+                                    : 'bg-gray-50 border-gray-200 text-gray-700 hover:bg-gray-100'
+                                } ${isLocked ? 'cursor-not-allowed opacity-75' : 'cursor-pointer'}`}
+                              >
+                                <div className="flex items-start">
+                                  <CheckSquare
+                                    className={`h-5 w-5 mr-3 mt-0.5 flex-shrink-0 ${
+                                      isSelected ? 'text-blue-600' : 'text-gray-400'
+                                    }`}
+                                  />
+                                  {shortcutKey && (
+                                    <span className="inline-flex items-center justify-center w-5 h-5 mr-2 text-xs font-bold bg-gray-200 text-gray-600 rounded border border-gray-300 flex-shrink-0 mt-0.5">
+                                      {shortcutKey.toUpperCase()}
+                                    </span>
+                                  )}
+                                  <span className="text-sm">{option}</span>
+                                </div>
+                              </button>
+                            );
+                          })}
+                        </div>
                       </div>
-                    </div>
+                    )
                   )}
 
                   {/* Custom Text */}
                   {section.is_editable && (
                     <div>
                       <label className="block text-sm font-medium text-gray-700 mb-2">
-                        {section.predefined_options?.length > 0 ? 'Add custom text (optional):' : 'Enter content:'}
+                        {section.section_config?.mode === 'matrix'
+                          ? 'Add notes below table (optional):'
+                          : section.predefined_options?.length > 0
+                            ? 'Add custom text (optional):'
+                            : 'Enter content:'}
                       </label>
                       <textarea
                         value={content?.custom_text || ''}
@@ -912,25 +1383,34 @@ const SectionEditor = forwardRef<SectionEditorRef, SectionEditorProps>(({
                   )}
 
                   {/* Preview — editable so the user can fine-tune the composed content */}
-                  {(content?.final_content || (content?.image_urls && content.image_urls.length > 0)) && (
-                    <div>
-                      <label className="block text-sm font-medium text-gray-700 mb-2">
-                        Preview (will appear in report):
-                      </label>
-                      <div className="bg-gray-50 border border-gray-200 rounded-lg space-y-3 overflow-hidden">
-                        {content?.final_content !== undefined && (
-                          <textarea
-                            value={content.final_content}
-                            onChange={(e) => !isLocked && updateFinalContent(section.id, e.target.value)}
-                            disabled={isLocked}
-                            rows={6}
-                            className={`w-full px-4 py-3 text-sm text-gray-800 bg-transparent border-0 focus:ring-2 focus:ring-blue-400 focus:outline-none resize-y ${
-                              isLocked ? 'cursor-not-allowed text-gray-500' : ''
-                            }`}
-                          />
-                        )}
-                        {content?.image_urls && content.image_urls.length > 0 && (
-                          <div className="grid grid-cols-2 gap-3 px-4 pb-3">
+	                  {(content?.final_content || (content?.image_urls && content.image_urls.length > 0)) && (
+	                    <div>
+	                      <label className="block text-sm font-medium text-gray-700 mb-2">
+	                        Preview (will appear in report):
+	                      </label>
+	                      <div className="bg-gray-50 border border-gray-200 rounded-lg space-y-3 overflow-hidden">
+	                        {content?.final_content !== undefined && (
+	                          section.section_config?.mode === 'matrix' ? (
+	                            <div className="px-4 py-3">
+	                              <div
+	                                className="text-sm text-gray-800 overflow-x-auto"
+	                                dangerouslySetInnerHTML={{ __html: content.final_content }}
+	                              />
+	                            </div>
+	                          ) : (
+	                            <textarea
+	                              value={content.final_content}
+	                              onChange={(e) => !isLocked && updateFinalContent(section.id, e.target.value)}
+	                              disabled={isLocked}
+	                              rows={6}
+	                              className={`w-full px-4 py-3 text-sm text-gray-800 bg-transparent border-0 focus:ring-2 focus:ring-blue-400 focus:outline-none resize-y ${
+	                                isLocked ? 'cursor-not-allowed text-gray-500' : ''
+	                              }`}
+	                            />
+	                          )
+	                        )}
+	                        {content?.image_urls && content.image_urls.length > 0 && (
+	                          <div className="grid grid-cols-2 gap-3 px-4 pb-3">
                             {content.image_urls.map((url) => (
                               <img
                                 key={url}
@@ -950,6 +1430,23 @@ const SectionEditor = forwardRef<SectionEditorRef, SectionEditorProps>(({
           );
         })}
       </div>
+
+      {!readOnly && (
+        <div className="flex justify-end pt-2">
+          <button
+            onClick={saveAll}
+            disabled={saving}
+            className="inline-flex items-center px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 transition-colors"
+          >
+            {saving ? (
+              <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+            ) : (
+              <Save className="h-4 w-4 mr-2" />
+            )}
+            Save Sections
+          </button>
+        </div>
+      )}
     </div>
   );
 });

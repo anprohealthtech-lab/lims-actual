@@ -1027,9 +1027,9 @@ export const database = {
           .from("users")
           .select(`
             id,
+            name,
             email,
             lab_id,
-            raw_user_meta_data,
             labs(id, name, code)
           `)
           .eq("email", authData.user.email)
@@ -3640,9 +3640,9 @@ export const database = {
         const { data: order, error: orderError } = await supabase
           .from("orders")
           .select(`
-            *,
-            order_tests(test_name),
-            results(id, status, result_values(id))
+            id, status,
+            order_tests(id),
+            results(id, status, verification_status, result_values(id))
           `)
           .eq("id", orderId)
           .single();
@@ -4273,7 +4273,7 @@ export const database = {
             verified_by,
             verified_at,
             order_id,
-            users:verified_by(id, email, raw_user_meta_data, lab_id)
+            users:verified_by(id, name, email, lab_id)
           `);
 
         // Log the verification event if we have workflow support
@@ -4419,7 +4419,7 @@ export const database = {
             ai_interpretation,
             ai_audit_status,
             orders(id, order_number, patient_id, patients(name)),
-            users:verified_by(email, raw_user_meta_data)
+            users:verified_by(id, name, email, lab_id)
           `)
           .eq("lab_id", labId)
           .in("verify_status", ["pending", "rejected"])
@@ -5024,7 +5024,7 @@ export const database = {
         .from("consolidated_invoices")
         .select(`
           *,
-          accounts(name)
+          account:accounts!consolidated_invoices_account_id_fkey(name)
         `)
         .eq("lab_id", lab_id)
         .order("created_at", { ascending: false });
@@ -5037,7 +5037,7 @@ export const database = {
         .from("consolidated_invoices")
         .select(`
           *,
-          accounts(name)
+          account:accounts!consolidated_invoices_account_id_fkey(name)
         `)
         .eq("id", id)
         .single();
@@ -5699,6 +5699,7 @@ export const database = {
           unit,
           display_name,
           default_value,
+          test_group_analytes(count),
           analytes(*)
         `)
         .eq("lab_id", labId)
@@ -5751,6 +5752,9 @@ export const database = {
             return {
               ...analyteObj,
               lab_analyte_id: item.id,
+              test_group_count: Array.isArray(item.test_group_analytes)
+                ? (item.test_group_analytes[0]?.count ?? 0)
+                : 0,
               is_active: item.is_active,
               visible: item.visible,
               // Prioritize lab-specific category if it exists, otherwise use global
@@ -5903,7 +5907,34 @@ export const database = {
             analyte_id: data.id,
             is_active: true,
             visible: true,
+            name: data.name,
+            unit: data.unit,
+            category: data.category,
+            reference_range: data.reference_range,
+            low_critical: data.low_critical,
+            high_critical: data.high_critical,
+            interpretation_low: data.interpretation_low,
+            interpretation_normal: data.interpretation_normal,
+            interpretation_high: data.interpretation_high,
+            method: data.method || null,
+            description: data.description || null,
+            ref_range_knowledge: data.ref_range_knowledge || null,
             ai_processing_type: data.ai_processing_type || null,
+            ai_prompt_override: data.ai_prompt_override || null,
+            group_ai_mode: data.group_ai_mode || "individual",
+            is_calculated: data.is_calculated || false,
+            formula: data.formula || null,
+            formula_variables: data.formula_variables || [],
+            formula_description: data.formula_description || null,
+            value_type: data.value_type || "numeric",
+            expected_normal_values: data.expected_normal_values || [],
+            expected_value_flag_map: data.expected_value_flag_map || {},
+            code: data.code || null,
+            is_critical: data.is_critical ?? null,
+            normal_range_min: data.normal_range_min ?? null,
+            normal_range_max: data.normal_range_max ?? null,
+            display_name: null,
+            default_value: null,
           }]);
       }
 
@@ -6346,6 +6377,19 @@ export const database = {
 
   // Lab-specific analyte management
   labAnalytes: {
+    // Get one lab_analyte row by its own primary key
+    getById: async (labAnalyteId: string) => {
+      const { data, error } = await supabase
+        .from("lab_analytes")
+        .select(`
+          *,
+          analytes(*)
+        `)
+        .eq("id", labAnalyteId)
+        .single();
+      return { data, error };
+    },
+
     // Get lab-specific analyte configuration
     getByLabAndAnalyte: async (labId: string, analyteId: string) => {
       const { data, error } = await supabase
@@ -6436,6 +6480,17 @@ export const database = {
       return { data, error };
     },
 
+    // Update one exact lab_analytes row by its own primary key
+    updateFieldsById: async (labAnalyteId: string, updates: Record<string, any>) => {
+      const { data, error } = await supabase
+        .from("lab_analytes")
+        .update(updates)
+        .eq("id", labAnalyteId)
+        .select()
+        .single();
+      return { data, error };
+    },
+
     // Update a specific lab_analytes row by its own primary key (for deactivating duplicates)
     updateById: async (labAnalyteId: string, updates: { is_active?: boolean; visible?: boolean }) => {
       const { data, error } = await supabase
@@ -6461,6 +6516,7 @@ export const database = {
         .from("lab_analytes")
         .select(`
           *,
+          test_group_analytes(count),
           analytes(*)
         `)
         .eq("lab_id", labId)
@@ -6658,7 +6714,9 @@ export const database = {
             ref_range_ai_config,
             collection_charge,
             group_interpretation,
+            global_test_catalog_id,
             analyzer_connection_id,
+            is_section_only,
             test_group_analytes(
               analyte_id,
               lab_analyte_id,
@@ -6762,10 +6820,12 @@ export const database = {
             default_outsourced_lab_id,
             required_patient_inputs,
             ref_range_ai_config,
-            collection_charge,
-            group_interpretation,
-            analyzer_connection_id,
-            test_group_analytes(
+	            collection_charge,
+		            group_interpretation,
+		            global_test_catalog_id,
+		            analyzer_connection_id,
+	            is_section_only,
+	            test_group_analytes(
               analyte_id,
               lab_analyte_id,
               sort_order,
@@ -6969,9 +7029,11 @@ export const database = {
 	            ? Number(testGroupData.report_priority)
 	            : null,
 	          collection_charge: testGroupData.collection_charge ?? null,
-          group_interpretation: testGroupData.group_interpretation || null,
-          analyzer_connection_id: testGroupData.analyzer_connection_id || null,
-        };
+		          group_interpretation: testGroupData.group_interpretation || null,
+		          global_test_catalog_id: testGroupData.global_test_catalog_id || null,
+		          analyzer_connection_id: testGroupData.analyzer_connection_id || null,
+	          is_section_only: testGroupData.is_section_only || false,
+	        };
 
         console.log("Creating test group with data:", sanitizedData);
 
@@ -7037,13 +7099,11 @@ export const database = {
 
     update: async (id: string, updates: any) => {
       try {
-        // Step 1: Update the test group
-        const { data, error } = await supabase
-          .from("test_groups")
-          .update({
-            name: updates.name,
-            code: updates.code,
-            category: updates.category,
+	        // Step 1: Update the test group
+	        const updatePayload: Record<string, any> = {
+	            name: updates.name,
+	            code: updates.code,
+	            category: updates.category,
             clinical_purpose: updates.clinicalPurpose,
             methodology: updates.methodology ?? null,
             price: updates.price,
@@ -7088,13 +7148,21 @@ export const database = {
 	              ? Number(updates.report_priority)
 	              : null,
 	            collection_charge: updates.collection_charge ?? null,
-            group_interpretation: updates.group_interpretation ?? null,
-            analyzer_connection_id: updates.analyzer_connection_id || null,
-            updated_at: new Date().toISOString(),
-          })
-          .eq("id", id)
-          .select()
-          .single();
+	            group_interpretation: updates.group_interpretation ?? null,
+	            analyzer_connection_id: updates.analyzer_connection_id || null,
+		            is_section_only: updates.is_section_only || false,
+		            updated_at: new Date().toISOString(),
+	        };
+	        if (Object.prototype.hasOwnProperty.call(updates, "global_test_catalog_id")) {
+	          updatePayload.global_test_catalog_id = updates.global_test_catalog_id || null;
+	        }
+
+	        const { data, error } = await supabase
+	          .from("test_groups")
+	          .update(updatePayload)
+	          .eq("id", id)
+	          .select()
+	          .single();
 
         if (error) {
           console.error("Error updating test group:", error);
@@ -7470,6 +7538,7 @@ export const database = {
       allow_images?: boolean;
       allow_technician_entry?: boolean;
       placeholder_key?: string;
+      section_config?: any;
     }) => {
       const lab_id = await database.getCurrentUserLabId();
       if (!lab_id) return { data: null, error: { message: "No lab context" } };
@@ -7498,6 +7567,7 @@ export const database = {
         allow_images: boolean;
         allow_technician_entry: boolean;
         placeholder_key: string;
+        section_config: any;
       }>,
     ) => {
       const { data, error } = await supabase
@@ -7510,9 +7580,15 @@ export const database = {
     },
 
     /**
-     * Delete a section
+     * Delete a section — clears result_section_content rows first to satisfy FK constraint
      */
     delete: async (id: string) => {
+      const { error: contentErr } = await supabase
+        .from("result_section_content")
+        .delete()
+        .eq("section_id", id);
+      if (contentErr) return { error: contentErr };
+
       const { error } = await supabase
         .from("lab_template_sections")
         .delete()
@@ -7542,7 +7618,8 @@ export const database = {
             allow_images,
             allow_technician_entry,
             placeholder_key,
-            display_order
+            display_order,
+            section_config
           )
         `)
         .eq("result_id", resultId)
@@ -7604,6 +7681,7 @@ export const database = {
       custom_text?: string;
       final_content: string;
       image_urls?: string[];
+      cascading_selections?: Record<string, string[]>;
     }, userId: string) => {
       const { data, error } = await supabase
         .from("result_section_content")
@@ -7757,20 +7835,71 @@ export const database = {
   // ============================================
   // ANALYTE DEPENDENCIES (Calculated parameters)
   // ============================================
-  analyteDependencies: {
-    /**
-     * Get all dependencies for a calculated analyte
-     */
-    getByAnalyte: async (calculatedAnalyteId: string) => {
-      const { data, error } = await supabase
-        .from("analyte_dependencies")
-        .select(`
-          *,
-          source_analyte:analytes!analyte_dependencies_source_analyte_id_fkey(id, name, unit)
-        `)
-        .eq("calculated_analyte_id", calculatedAnalyteId);
-      return { data, error };
-    },
+    analyteDependencies: {
+      /**
+       * Get all dependencies for a calculated analyte
+       */
+      getByAnalyte: async (
+        calculatedAnalyteId: string,
+        options?: { labId?: string; calculatedLabAnalyteId?: string | null },
+      ) => {
+        let query = supabase
+          .from("analyte_dependencies")
+          .select(`
+            *,
+            source_analyte:analytes!analyte_dependencies_source_analyte_id_fkey(id, name, unit),
+            source_lab_analyte:lab_analytes!analyte_dependencies_source_lab_analyte_id_fkey(id, analyte_id, name, unit, category)
+          `);
+
+        if (options?.calculatedLabAnalyteId) {
+          query = query.or(
+            `calculated_lab_analyte_id.eq.${options.calculatedLabAnalyteId},and(calculated_lab_analyte_id.is.null,calculated_analyte_id.eq.${calculatedAnalyteId})`,
+          );
+        } else {
+          query = query.eq("calculated_analyte_id", calculatedAnalyteId);
+        }
+
+        if (options?.labId) {
+          query = query.or(`lab_id.eq.${options.labId},lab_id.is.null`);
+        }
+
+        const { data, error } = await query;
+        if (error || !data) {
+          return { data, error };
+        }
+
+        let resolved = data;
+
+        // Prefer exact calculated_lab_analyte matches when they exist.
+        // This avoids mixing old fallback dependency rows with the newer
+        // exact lab-analyte dependency rows for the same calculated analyte.
+        if (options?.calculatedLabAnalyteId) {
+          const exact = resolved.filter(
+            (row: any) => row.calculated_lab_analyte_id === options.calculatedLabAnalyteId,
+          );
+          if (exact.length > 0) {
+            resolved = exact;
+          } else if (options?.labId) {
+            const labScopedFallback = resolved.filter(
+              (row: any) =>
+                !row.calculated_lab_analyte_id &&
+                row.lab_id === options.labId,
+            );
+            if (labScopedFallback.length > 0) {
+              resolved = labScopedFallback;
+            }
+          }
+        } else if (options?.labId) {
+          const labScoped = resolved.filter(
+            (row: any) => row.lab_id === options.labId || row.lab_id == null,
+          );
+          if (labScoped.length > 0) {
+            resolved = labScoped;
+          }
+        }
+
+        return { data: resolved, error };
+      },
 
     /**
      * Get all analytes that depend on a source analyte
@@ -7789,16 +7918,20 @@ export const database = {
     /**
      * Create a dependency (circular check is done at DB level)
      */
-    create: async (dependencyData: {
-      calculated_analyte_id: string;
-      source_analyte_id: string;
-      variable_name: string;
-    }) => {
-      // Client-side circular check before DB call
-      const hasCycle = await database.analyteDependencies.checkCircular(
-        dependencyData.calculated_analyte_id,
-        dependencyData.source_analyte_id,
-      );
+      create: async (dependencyData: {
+        calculated_analyte_id: string;
+        source_analyte_id: string;
+        variable_name: string;
+        lab_id?: string;
+        calculated_lab_analyte_id?: string | null;
+        source_lab_analyte_id?: string | null;
+      }) => {
+        // Client-side circular check before DB call
+        const hasCycle = await database.analyteDependencies.checkCircular(
+          dependencyData.calculated_analyte_id,
+          dependencyData.source_analyte_id,
+          dependencyData.lab_id,
+        );
       if (hasCycle) {
         return {
           data: null,
@@ -7832,12 +7965,13 @@ export const database = {
      * Check for circular dependencies (client-side BFS)
      * Returns true if adding this dependency would create a cycle
      */
-    checkCircular: async (
-      calculatedAnalyteId: string,
-      sourceAnalyteId: string,
-    ): Promise<boolean> => {
-      const visited = new Set<string>([calculatedAnalyteId]);
-      const queue = [sourceAnalyteId];
+      checkCircular: async (
+        calculatedAnalyteId: string,
+        sourceAnalyteId: string,
+        labId?: string,
+      ): Promise<boolean> => {
+        const visited = new Set<string>([calculatedAnalyteId]);
+        const queue = [sourceAnalyteId];
 
       while (queue.length > 0) {
         const current = queue.shift()!;
@@ -7851,10 +7985,16 @@ export const database = {
         visited.add(current);
 
         // Get what this analyte depends on (if it's calculated)
-        const { data } = await supabase
-          .from("analyte_dependencies")
-          .select("source_analyte_id")
-          .eq("calculated_analyte_id", current);
+          let query = supabase
+            .from("analyte_dependencies")
+            .select("source_analyte_id")
+            .eq("calculated_analyte_id", current);
+
+          if (labId) {
+            query = query.or(`lab_id.eq.${labId},lab_id.is.null`);
+          }
+
+          const { data } = await query;
 
         if (data) {
           for (const dep of data) {
@@ -7873,22 +8013,32 @@ export const database = {
      * Pass labId to store lab-specific dependencies (recommended).
      * Omit labId only for seeding global/default dependencies.
      */
-    setDependencies: async (
-      calculatedAnalyteId: string,
-      dependencies: Array<{
-        source_analyte_id: string;
-        variable_name: string;
-      }>,
-      labId?: string,
-    ) => {
-      // Delete existing dependencies for this analyte scoped to the same lab
-      const deleteQuery = supabase
-        .from("analyte_dependencies")
-        .delete()
-        .eq("calculated_analyte_id", calculatedAnalyteId);
-      if (labId) {
-        await deleteQuery.eq("lab_id", labId);
-      } else {
+      setDependencies: async (
+        calculatedAnalyteId: string,
+        dependencies: Array<{
+          source_analyte_id: string;
+          variable_name: string;
+          source_lab_analyte_id?: string | null;
+        }>,
+        labId?: string,
+        calculatedLabAnalyteId?: string | null,
+      ) => {
+        // Delete existing dependencies for this analyte scoped to the same lab
+        let deleteQuery = supabase
+          .from("analyte_dependencies")
+          .delete();
+
+        if (calculatedLabAnalyteId) {
+          deleteQuery = deleteQuery.or(
+            `calculated_lab_analyte_id.eq.${calculatedLabAnalyteId},and(calculated_lab_analyte_id.is.null,calculated_analyte_id.eq.${calculatedAnalyteId})`,
+          );
+        } else {
+          deleteQuery = deleteQuery.eq("calculated_analyte_id", calculatedAnalyteId);
+        }
+
+        if (labId) {
+          await deleteQuery.eq("lab_id", labId);
+        } else {
         await deleteQuery.is("lab_id", null);
       }
 
@@ -7897,11 +8047,12 @@ export const database = {
       }
 
       // Check for cycles before inserting
-      for (const dep of dependencies) {
-        const hasCycle = await database.analyteDependencies.checkCircular(
-          calculatedAnalyteId,
-          dep.source_analyte_id,
-        );
+        for (const dep of dependencies) {
+          const hasCycle = await database.analyteDependencies.checkCircular(
+            calculatedAnalyteId,
+            dep.source_analyte_id,
+            labId,
+          );
         if (hasCycle) {
           return {
             data: null,
@@ -7914,12 +8065,14 @@ export const database = {
       }
 
       // Insert new lab-specific dependencies
-      const insertData = dependencies.map((dep) => ({
-        calculated_analyte_id: calculatedAnalyteId,
-        source_analyte_id: dep.source_analyte_id,
-        variable_name: dep.variable_name,
-        ...(labId ? { lab_id: labId } : {}),
-      }));
+        const insertData = dependencies.map((dep) => ({
+          calculated_analyte_id: calculatedAnalyteId,
+          source_analyte_id: dep.source_analyte_id,
+          variable_name: dep.variable_name,
+          ...(dep.source_lab_analyte_id ? { source_lab_analyte_id: dep.source_lab_analyte_id } : {}),
+          ...(calculatedLabAnalyteId ? { calculated_lab_analyte_id: calculatedLabAnalyteId } : {}),
+          ...(labId ? { lab_id: labId } : {}),
+        }));
 
       const { data, error } = await supabase
         .from("analyte_dependencies")
@@ -12543,6 +12696,20 @@ const pdfQueue = {
       }
 
       // Check for successful completion
+      if (data?.status === "processing") {
+        console.log("â³ PDF generation already in progress:", data?.jobId);
+        onProgress?.("PDF generation already in progress", 35);
+        return {
+          data: {
+            success: true,
+            status: "processing",
+            jobId: data?.jobId || null,
+            message: data?.message || "Already processing",
+          },
+          error: null,
+        };
+      }
+
       if (!data?.success || !data?.pdfUrl) {
         console.error("❌ Edge function returned unexpected response:", data);
         return {

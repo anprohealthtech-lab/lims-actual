@@ -88,7 +88,8 @@ export function useCalculatedParameters(
       const results = await calculationEngine.computeCalculatedValues(
         inputValues,
         testGroupId,
-        patientData
+        patientData,
+        labId
       );
       setCalculatedValues(results);
       return results;
@@ -147,8 +148,8 @@ export function useCalculatedParameters(
    */
   const shouldRecalculate = useCallback(async (changedAnalyteId: string): Promise<boolean> => {
     if (!autoRecalculate) return false;
-    return await calculationEngine.hasDependents(changedAnalyteId);
-  }, [autoRecalculate]);
+    return await calculationEngine.hasDependents(changedAnalyteId, labId);
+  }, [autoRecalculate, labId]);
 
   return {
     calculatedValues,

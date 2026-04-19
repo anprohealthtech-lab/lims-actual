@@ -22,6 +22,7 @@ export const LiveA4Preview: React.FC<LiveA4PreviewProps> = ({
     // A4 dimensions
     const widthMm = 210;
     const heightMm = 297;
+    const safeExtraAssets = Array.isArray(config.extraAssets) ? config.extraAssets : [];
 
     return (
         <div
@@ -85,7 +86,7 @@ export const LiveA4Preview: React.FC<LiveA4PreviewProps> = ({
             )}
 
             {/* Extra Draggable/Floating Assets */}
-            {config.extraAssets.map(asset => (
+            {safeExtraAssets.map(asset => (
                 <img
                     key={asset.id}
                     src={asset.url}

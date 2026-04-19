@@ -1,7 +1,8 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { supabase, database } from '../../utils/supabase';
-import { Download, FileDown, RefreshCw, Loader2, CheckCircle2, Clock, AlertCircle, ExternalLink, Filter, ClipboardEdit } from 'lucide-react';
+import { Download, FileDown, RefreshCw, Loader2, CheckCircle2, Clock, AlertCircle, ExternalLink, Filter, ClipboardEdit, Printer } from 'lucide-react';
 import QuickResultModal from './QuickResultModal';
+import QuickSendReport from '../WhatsApp/QuickSendReport';
 
 interface Account {
   id: string;
@@ -22,6 +23,7 @@ interface OrderRow {
   order_display: string | null;
   order_date: string;
   patient_name: string;
+  patient_phone: string | null;
   status: string;
   total_amount: number;
   final_amount: number | null;
@@ -29,6 +31,8 @@ interface OrderRow {
   bulk_batch_id: string | null;
   report_generation_status: string | null;
   smart_report_url: string | null;
+  report_pdf_url: string | null;
+  report_print_pdf_url: string | null;
   has_report: boolean;
 }
 
@@ -102,7 +106,8 @@ const AccountOrdersView: React.FC<AccountOrdersViewProps> = ({ initialAccountId,
           id, order_display, order_date, patient_name, status,
           total_amount, final_amount, account_id, bulk_batch_id,
           report_generation_status, smart_report_url,
-          reports!reports_order_id_fkey(id)
+          patients(phone),
+          reports!reports_order_id_fkey(id, pdf_url, print_pdf_url)
         `)
         .order('order_date', { ascending: false })
         .limit(200);
@@ -124,6 +129,7 @@ const AccountOrdersView: React.FC<AccountOrdersViewProps> = ({ initialAccountId,
         order_display: string | null;
         order_date: string;
         patient_name: string;
+        patients: { phone: string | null } | null;
         status: string;
         total_amount: number;
         final_amount: number | null;
@@ -131,13 +137,16 @@ const AccountOrdersView: React.FC<AccountOrdersViewProps> = ({ initialAccountId,
         bulk_batch_id: string | null;
         report_generation_status: string | null;
         smart_report_url: string | null;
-        reports: { id: string }[] | { id: string } | null;
+        reports: { id: string; pdf_url: string | null; print_pdf_url: string | null }[] | { id: string; pdf_url: string | null; print_pdf_url: string | null } | null;
       }) => ({
         ...o,
+        patient_phone: o.patients?.phone || null,
+        report_pdf_url: Array.isArray(o.reports) ? (o.reports[0]?.pdf_url || null) : (o.reports?.pdf_url || null),
+        report_print_pdf_url: Array.isArray(o.reports) ? (o.reports[0]?.print_pdf_url || null) : (o.reports?.print_pdf_url || null),
         has_report: !!(
           o.smart_report_url ||
           o.report_generation_status === 'completed' ||
-          (Array.isArray(o.reports) ? o.reports.length > 0 : !!o.reports)
+          (Array.isArray(o.reports) ? o.reports.some((r) => !!(r?.pdf_url || r?.print_pdf_url)) : !!(o.reports?.pdf_url || o.reports?.print_pdf_url))
         ),
       }));
       setOrders(mapped);
@@ -410,7 +419,7 @@ const AccountOrdersView: React.FC<AccountOrdersViewProps> = ({ initialAccountId,
                   <th className="text-left px-3 py-2.5 text-xs font-medium text-gray-600">Status</th>
                   <th className="text-right px-3 py-2.5 text-xs font-medium text-gray-600">Amount</th>
                   <th className="text-center px-3 py-2.5 text-xs font-medium text-gray-600">Report</th>
-                  <th className="px-3 py-2.5 w-10"></th>
+                  <th className="px-3 py-2.5 text-xs font-medium text-gray-600">Actions</th>
                 </tr>
               </thead>
               <tbody>
@@ -446,7 +455,7 @@ const AccountOrdersView: React.FC<AccountOrdersViewProps> = ({ initialAccountId,
                       }
                     </td>
                     <td className="px-3 py-2.5">
-                      <div className="flex items-center gap-1.5">
+                      <div className="flex items-center gap-1.5 flex-wrap">
                         <button
                           onClick={() => setQuickResultOrderId(order.id)}
                           title="Quick Result Entry"
@@ -454,6 +463,41 @@ const AccountOrdersView: React.FC<AccountOrdersViewProps> = ({ initialAccountId,
                         >
                           <ClipboardEdit className="w-3.5 h-3.5" />
                         </button>
+                        {order.report_pdf_url && (
+                          <>
+                            <a
+                              href={order.report_pdf_url}
+                              target="_blank"
+                              rel="noreferrer"
+                              title="Open eCopy PDF"
+                              className="inline-flex items-center gap-1 rounded px-2 py-1 text-xs bg-green-600 text-white hover:bg-green-700"
+                            >
+                              <Download className="w-3.5 h-3.5" />
+                              <span>eCopy</span>
+                            </a>
+                            <QuickSendReport
+                              reportUrl={order.report_pdf_url}
+                              reportName={`${order.patient_name} - Report`}
+                              patientName={order.patient_name}
+                              patientPhone={order.patient_phone || ''}
+                              label="WhatsApp"
+                              buttonClassName="inline-flex items-center gap-1 rounded px-2 py-1 text-xs bg-emerald-600 text-white hover:bg-emerald-700"
+                              showIcon={false}
+                            />
+                          </>
+                        )}
+                        {order.report_print_pdf_url && (
+                          <a
+                            href={order.report_print_pdf_url}
+                            target="_blank"
+                            rel="noreferrer"
+                            title="Open print PDF"
+                            className="inline-flex items-center gap-1 rounded px-2 py-1 text-xs bg-amber-500 text-white hover:bg-amber-600"
+                          >
+                            <Printer className="w-3.5 h-3.5" />
+                            <span>Print</span>
+                          </a>
+                        )}
                         <a
                           href={`/orders/${order.id}`}
                           target="_blank"

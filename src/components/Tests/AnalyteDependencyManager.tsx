@@ -5,6 +5,7 @@ import { database } from '../../utils/supabase';
 interface AnalyteDependencyManagerProps {
   analyte: {
     id: string;
+    lab_analyte_id?: string | null;
     name: string;
     formula: string;
     formulaVariables: string[];
@@ -15,6 +16,7 @@ interface AnalyteDependencyManagerProps {
 
 interface Analyte {
   id: string;
+  lab_analyte_id?: string | null;
   name: string;
   unit: string;
   category: string;
@@ -24,6 +26,7 @@ interface Dependency {
   id?: string;
   variable_name: string;
   source_analyte_id: string;
+  source_lab_analyte_id?: string | null;
   source_analyte?: {
     id: string;
     name: string;
@@ -48,9 +51,13 @@ const AnalyteDependencyManager: React.FC<AnalyteDependencyManagerProps> = ({
     const loadData = async () => {
       try {
         setLoading(true);
+        const labId = await database.getCurrentUserLabId();
         
         // Load existing dependencies
-        const { data: existingDeps, error: depsError } = await database.analyteDependencies.getByAnalyte(analyte.id);
+        const { data: existingDeps, error: depsError } = await database.analyteDependencies.getByAnalyte(analyte.id, {
+          labId: labId || undefined,
+          calculatedLabAnalyteId: analyte.lab_analyte_id || null,
+        });
         if (depsError) throw depsError;
         
         // Load all analytes (except the calculated one itself)
@@ -67,7 +74,14 @@ const AnalyteDependencyManager: React.FC<AnalyteDependencyManagerProps> = ({
             id: d.id,
             variable_name: d.variable_name,
             source_analyte_id: d.source_analyte_id,
-            source_analyte: d.source_analyte
+            source_lab_analyte_id: (d as any).source_lab_analyte_id || null,
+            source_analyte: (d as any).source_lab_analyte
+              ? {
+                  id: (d as any).source_lab_analyte.analyte_id || (d as any).source_analyte_id,
+                  name: (d as any).source_lab_analyte.name,
+                  unit: (d as any).source_lab_analyte.unit,
+                }
+              : d.source_analyte
           })));
         }
       } catch (err: any) {
@@ -109,7 +123,10 @@ const AnalyteDependencyManager: React.FC<AnalyteDependencyManagerProps> = ({
     }
     
     // Check if analyte is already used
-    if (dependencies.some(d => d.source_analyte_id === sourceAnalyte.id)) {
+    if (dependencies.some(d =>
+      (d.source_lab_analyte_id && sourceAnalyte.lab_analyte_id && d.source_lab_analyte_id === sourceAnalyte.lab_analyte_id) ||
+      d.source_analyte_id === sourceAnalyte.id
+    )) {
       setError(`Analyte "${sourceAnalyte.name}" is already linked to another variable`);
       return;
     }
@@ -117,6 +134,7 @@ const AnalyteDependencyManager: React.FC<AnalyteDependencyManagerProps> = ({
     setDependencies(prev => [...prev, {
       variable_name: variableName,
       source_analyte_id: sourceAnalyte.id,
+      source_lab_analyte_id: sourceAnalyte.lab_analyte_id || null,
       source_analyte: {
         id: sourceAnalyte.id,
         name: sourceAnalyte.name,
@@ -136,6 +154,7 @@ const AnalyteDependencyManager: React.FC<AnalyteDependencyManagerProps> = ({
     try {
       setSaving(true);
       setError(null);
+      const labId = await database.getCurrentUserLabId();
 
       // Validate all required variables are linked
       const missingVariables = requiredVariables.filter(v => !linkedVariables.has(v));
@@ -150,8 +169,11 @@ const AnalyteDependencyManager: React.FC<AnalyteDependencyManagerProps> = ({
         analyte.id,
         dependencies.map(d => ({
           source_analyte_id: d.source_analyte_id,
+          source_lab_analyte_id: d.source_lab_analyte_id || null,
           variable_name: d.variable_name
-        }))
+        })),
+        labId || undefined,
+        analyte.lab_analyte_id || null,
       );
 
       if (saveError) throw saveError;

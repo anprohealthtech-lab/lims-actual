@@ -236,8 +236,8 @@ REQUIREMENTS:
     "formula": "string or null (required when is_calculated=true; example: 'LDL/5')",
     "formula_variables": "array of strings (required when is_calculated=true; example: ['LDL'])",
     "formula_description": "string or null",
-    "value_type": "numeric | text | null",
-    "expected_normal_values": "array of strings for qualitative analytes"
+    "value_type": "string (one of: numeric, qualitative, semi_quantitative, descriptive)",
+    "expected_normal_values": "array of strings for qualitative or semi-quantitative analytes; empty array for numeric/descriptive"
   }],
   "test_group_analytes": [{
     "test_group_code": "string (matches test_group.code)",
@@ -287,6 +287,13 @@ REQUIREMENTS:
 9. group_level_prompt must be present and actionable (never null)
 10. If an analyte is derived (e.g., VLDL from LDL/5), mark it as calculated and provide formula/formula_variables.
 11. If user prompt specifies low/optimal/high style ranges, encode that in reference_range text and keep interpretation_low/normal/high clinically meaningful.
+12. Set analyte.value_type carefully:
+   - numeric: measurable numbers like Hemoglobin, Glucose
+   - qualitative: Positive/Negative, Reactive/Non-Reactive, Present/Absent
+   - semi_quantitative: Trace/1+/2+/3+/4+ or Mild/Moderate/Severe
+   - descriptive: microscopy comments, morphology, culture remarks, narrative observations
+13. If value_type is qualitative or semi_quantitative, populate expected_normal_values with the valid choices.
+14. For qualitative, semi_quantitative, or descriptive analytes, unit should usually be an empty string unless a real measurement unit truly applies.
 
 CONTEXT:
 - This is for a clinical laboratory information system

@@ -20,6 +20,69 @@ const corsHeaders = {
   "Access-Control-Allow-Methods": "POST, OPTIONS",
 };
 
+// ─── Inline Code 128-B barcode generator (no external API) ───────────────────
+// Eliminates dependency on barcodeapi.org which may return "FAILED" images
+// when called from PDF rendering servers.
+// renderWidth: rendered pixel width (SVG scales via viewBox to fit exactly)
+function generateCode128SVG(data: string, height = 36, renderWidth = 100): string {
+  if (!data) return "";
+  // Code 128 symbol bar patterns (0-106)
+  const PATTERNS = [
+    "11011001100","11001101100","11001100110","10010011000","10010001100",
+    "10001001100","10011001000","10011000100","10001100100","11001001000",
+    "11001000100","11000100100","10110011100","10011011100","10011001110",
+    "10111001100","10011101100","10011100110","11001110010","11001011100",
+    "11001001110","11011100100","11001110100","11101101110","11101001100",
+    "11100101100","11100100110","11101100100","11100110100","11100110010",
+    "11011011000","11011000110","11000110110","10100011000","10001011000",
+    "10001000110","10110001000","10001101000","10001100010","11010001000",
+    "11000101000","11000100010","10110111000","10110001110","10001101110",
+    "10111011000","10111000110","10001110110","11101110110","11010001110",
+    "11000101110","11011101000","11011100010","11011101110","11101011000",
+    "11101000110","11100010110","11101101000","11101100010","11100011010",
+    "11101111010","11001000010","11110001010","10100110000","10100001100",
+    "10010110000","10010000110","10000101100","10000100110","10110010000",
+    "10110000100","10011010000","10011000010","10000110100","10000110010",
+    "11000010010","11001010000","11110111010","11000010100","10001111010",
+    "10100111100","10010111100","10010011110","10111100100","10011110100",
+    "10011110010","11110100100","11110010100","11110010010","11011011110",
+    "11011110110","11110110110","10101111000","10100011110","10001011110",
+    "10111101000","10111100010","11110101000","11110100010","10111011110",
+    "10111101110","11101011110","11110101110","11010000100","11010010000",
+    "11010011100","11000111010",
+  ];
+  const START_B = 104;
+  const STOP    = 106;
+
+  const values: number[] = [START_B];
+  let checksum = START_B;
+  for (let i = 0; i < data.length; i++) {
+    const c = data.charCodeAt(i);
+    if (c < 32 || c > 126) continue; // Code 128-B range
+    const v = c - 32;
+    values.push(v);
+    checksum += (i + 1) * v;
+  }
+  values.push(checksum % 103);
+  values.push(STOP);
+
+  // Build binary pattern string (each module = 1 unit in viewBox coords)
+  let bits = "";
+  for (const v of values) bits += PATTERNS[v];
+  bits += "11"; // termination bar (2 modules)
+
+  const totalModules = bits.length;
+  let rects = "";
+  for (let i = 0; i < bits.length; i++) {
+    if (bits[i] === "1") {
+      rects += `<rect x="${i}" y="0" width="1" height="${height}"/>`;
+    }
+  }
+  // viewBox scales all modules to fit renderWidth exactly — no overflow
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${totalModules} ${height}" width="${renderWidth}" height="${height}" style="display:block;"><g fill="#000000">${rects}</g></svg>`;
+}
+// ─────────────────────────────────────────────────────────────────────────────
+
 // Custom domain for reports storage (configured via Deno environment variable)
 const CUSTOM_REPORTS_DOMAIN = Deno.env.get("CUSTOM_STORAGE_DOMAIN") || "";
 
@@ -2001,9 +2064,28 @@ function generateClassicDefaultTemplateHtml(
     </div>
   `;
 
+  // Determine if this is a section-only report (no analytes, only section content)
+  const hasAnalytes = Array.from(analytesByGroup.values()).some(a => a && a.length > 0);
+  const hasSections = Object.keys(normalizedSectionContent).length > 0;
+
+  const buildSectionLabel = (key: string) => {
+    if (sectionLabels?.[key]) return sectionLabels[key];
+    const { rawKey } = normalizeSectionKey(key);
+    if (!rawKey) return "Report Section";
+    return rawKey
+      .replace(/[_-]+/g, " ")
+      .split(" ")
+      .filter(Boolean)
+      .map((part: string) => part.charAt(0).toUpperCase() + part.slice(1).toLowerCase())
+      .join(" ");
+  };
+
   // Test Results Section
   let testResultsHtml = '<div class="test-results">';
-  testResultsHtml += '<h3 style="font-size: 14px; font-weight: 600; color: #1e40af; margin-bottom: 8px; border-bottom: 2px solid #3b82f6; padding-bottom: 4px;">Test Results</h3>';
+
+  if (hasAnalytes) {
+    // Normal analyte-based rendering
+    testResultsHtml += '<h3 style="font-size: 14px; font-weight: 600; color: #1e40af; margin-bottom: 8px; border-bottom: 2px solid #3b82f6; padding-bottom: 4px;">Test Results</h3>';
 
   for (const [groupId, analytes] of analytesByGroup) {
     if (!analytes || analytes.length === 0) continue;
@@ -2137,6 +2219,95 @@ function generateClassicDefaultTemplateHtml(
     `;
   }
 
+  } else if (hasSections) {
+    // ── Section-only rendering (radiology, micro, etc.) ──
+    // No analyte table — render section content directly as the primary report body
+    const groupName = testGroupNames.size > 0
+      ? Array.from(testGroupNames.values())[0]
+      : "Report";
+
+    testResultsHtml += `
+      <div class="test-group-section" style="margin-bottom: 16px;">
+        <h3 style="font-size: 16px; font-weight: 600; color: #1e40af; margin-bottom: 8px; border-bottom: 2px solid #3b82f6; padding-bottom: 4px;">${groupName}</h3>
+    `;
+
+    for (const [key, content] of Object.entries(normalizedSectionContent)) {
+      const rawContent = String(content).trim();
+      if (!rawContent) continue;
+
+      const heading = (sectionLabels && sectionLabels[key])
+        ? sectionLabels[key]
+        : buildSectionLabel(key);
+
+      // Rich HTML (e.g. Glass Prescription table) — pass through
+      if (/<table\b/i.test(rawContent)) {
+        testResultsHtml += `
+          <div style="margin-top: 14px; page-break-inside: avoid;">
+            <h4 style="font-size: 13px; font-weight: 600; color: #374151; margin: 0 0 6px; text-transform: uppercase; letter-spacing: 0.3px;">${heading}</h4>
+            ${rawContent}
+          </div>
+        `;
+        continue;
+      }
+
+      // Parse text → lines
+      const plainText = rawContent
+        .replace(/<div[^>]*>/gi, "").replace(/<\/div>/gi, "\n")
+        .replace(/<br\s*\/?>/gi, "\n")
+        .replace(/<[^>]+>/g, "")
+        .trim();
+
+      const lines = plainText.split(/\n/).map((l: string) => l.trim()).filter(Boolean);
+      const colonLines = lines.filter((l: string) => l.indexOf(":") > 0);
+      const hasStructuredData = colonLines.length >= lines.length * 0.5 && colonLines.length >= 2;
+
+      if (hasStructuredData) {
+        // Key-value pairs → Parameter | Finding table
+        const rowsHtml = lines.map((line: string, idx: number) => {
+          const colonIdx = line.indexOf(":");
+          if (colonIdx > 0) {
+            const rowLabel = line.substring(0, colonIdx).trim();
+            const rowValue = line.substring(colonIdx + 1).trim();
+            const rowBg = idx % 2 === 0 ? "#ffffff" : "#f8fafc";
+            return `<tr style="background: ${rowBg};">
+              <td style="padding: 8px 12px; border: 1px solid #e5e7eb; font-weight: 500; width: 40%;">${rowLabel}</td>
+              <td style="padding: 8px 12px; border: 1px solid #e5e7eb; width: 60%;">${rowValue}</td>
+            </tr>`;
+          }
+          return `<tr><td colspan="2" style="padding: 8px 12px; border: 1px solid #e5e7eb; font-weight: 600; background: #f1f5f9;">${line}</td></tr>`;
+        }).join("");
+
+        testResultsHtml += `
+          <div style="margin-top: 14px; page-break-inside: avoid;">
+            <h4 style="font-size: 13px; font-weight: 600; color: #374151; margin: 0 0 6px; text-transform: uppercase; letter-spacing: 0.3px;">${heading}</h4>
+            <table style="width: 100%; border-collapse: collapse; font-size: 12px;">
+              <thead>
+                <tr style="background: #f1f5f9;">
+                  <th style="padding: 8px 12px; border: 1px solid #e5e7eb; text-align: left; font-weight: 600; width: 40%;">Parameter</th>
+                  <th style="padding: 8px 12px; border: 1px solid #e5e7eb; text-align: left; font-weight: 600; width: 60%;">Finding</th>
+                </tr>
+              </thead>
+              <tbody>${rowsHtml}</tbody>
+            </table>
+          </div>
+        `;
+      } else {
+        // Free text / bulky text (impression, conclusion, etc.)
+        const formatted = formatSectionContentToHtml(rawContent);
+        testResultsHtml += `
+          <div style="margin-top: 14px; page-break-inside: avoid;">
+            <h4 style="font-size: 13px; font-weight: 600; color: #374151; margin: 0 0 6px; text-transform: uppercase; letter-spacing: 0.3px;">${heading}</h4>
+            <div style="font-size: 12px; color: #1f2937; line-height: 1.6; padding: 8px 12px; border: 1px solid #e5e7eb; border-radius: 4px; background: #fafafa;">
+              ${formatted}
+            </div>
+          </div>
+        `;
+      }
+    }
+
+    testResultsHtml += `</div>`;
+  }
+
   testResultsHtml += "</div>";
 
   // Signatory Section
@@ -2152,32 +2323,22 @@ function generateClassicDefaultTemplateHtml(
     </div>
   `;
 
-  const buildSectionLabel = (key: string) => {
-    if (sectionLabels?.[key]) return sectionLabels[key];
-    const { rawKey } = normalizeSectionKey(key);
-    if (!rawKey) return "Report Section";
-    return rawKey
-      .replace(/[_-]+/g, " ")
-      .split(" ")
-      .filter(Boolean)
-      .map((part: string) => part.charAt(0).toUpperCase() + part.slice(1).toLowerCase())
-      .join(" ");
-  };
-
   let reportSectionsHtml = "";
-  if (includeSections && Object.keys(normalizedSectionContent).length > 0) {
+  // Only render separate "Report Sections" block when there ARE analytes
+  // (sections supplement the analyte table). For section-only groups, sections
+  // were already rendered as primary content above.
+  if (hasAnalytes && includeSections && Object.keys(normalizedSectionContent).length > 0) {
     const sectionItems = Object.entries(normalizedSectionContent)
       .filter(([, content]) => content && String(content).trim().length > 0)
       .map(([key, content]) => {
-        const formatted = formatSectionContentToHtml(String(content));
-        if (!formatted) return "";
+        const rawContent = String(content).trim();
+        if (!rawContent) return "";
         const heading = buildSectionLabel(key);
-        return `
-          <div style="margin-top: 12px;">
-            <h4 style="font-size: 13px; font-weight: 600; color: #111827; margin: 0 0 6px;">${heading}</h4>
-            ${formatted}
-          </div>
-        `;
+        return renderSectionContentForTemplate(
+          rawContent,
+          heading,
+          'font-size: 13px; font-weight: 600; color: #111827; margin: 0 0 6px;',
+        );
       })
       .filter(Boolean)
       .join("");
@@ -2203,12 +2364,87 @@ function generateClassicDefaultTemplateHtml(
 }
 
 /**
+ * Helper: render section content as a Parameter | Finding table when content has
+ * colon-separated key:value lines. Falls back to formatSectionContentToHtml for
+ * unstructured content. Rich HTML (e.g. <table>) is passed through as-is.
+ */
+function renderSectionContentForTemplate(
+  rawContent: string,
+  heading: string,
+  headingStyle: string,
+): string {
+  if (!rawContent) return "";
+
+  // Rich HTML (e.g. Glass Prescription table) — pass through
+  if (/<table\b/i.test(rawContent)) {
+    return `
+      <div style="margin-top: 12px;">
+        <h4 style="${headingStyle}">${heading}</h4>
+        ${rawContent}
+      </div>
+    `;
+  }
+
+  // Strip HTML wrappers to get plain text lines
+  const plainText = rawContent
+    .replace(/<div[^>]*>/gi, "").replace(/<\/div>/gi, "\n")
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/<[^>]+>/g, "")
+    .trim();
+
+  const lines = plainText.split(/\n/).map((l: string) => l.trim()).filter(Boolean);
+  const colonLines = lines.filter((l: string) => l.indexOf(":") > 0);
+  const hasStructuredData = colonLines.length >= lines.length * 0.5 && colonLines.length >= 2;
+
+  if (hasStructuredData) {
+    const rowsHtml = lines.map((line: string, idx: number) => {
+      const colonIdx = line.indexOf(":");
+      if (colonIdx > 0) {
+        const rowLabel = line.substring(0, colonIdx).trim();
+        const rowValue = line.substring(colonIdx + 1).trim();
+        const rowBg = idx % 2 === 0 ? "#ffffff" : "#f8fafc";
+        return `<tr style="background: ${rowBg};">
+          <td style="padding: 8px 12px; border: 1px solid #e5e7eb; font-weight: 500; width: 40%;">${rowLabel}</td>
+          <td style="padding: 8px 12px; border: 1px solid #e5e7eb; width: 60%;">${rowValue}</td>
+        </tr>`;
+      }
+      return `<tr><td colspan="2" style="padding: 8px 12px; border: 1px solid #e5e7eb; font-weight: 600;">${line}</td></tr>`;
+    }).join("");
+
+    return `
+      <div style="margin-top: 12px;">
+        <h4 style="${headingStyle}">${heading}</h4>
+        <table style="width: 100%; border-collapse: collapse; font-size: 12px;">
+          <thead>
+            <tr style="background: #f1f5f9;">
+              <th style="padding: 10px 12px; border: 1px solid #e5e7eb; text-align: left; font-weight: 600; width: 40%;">Parameter</th>
+              <th style="padding: 10px 12px; border: 1px solid #e5e7eb; text-align: left; font-weight: 600; width: 60%;">Finding</th>
+            </tr>
+          </thead>
+          <tbody>${rowsHtml}</tbody>
+        </table>
+      </div>
+    `;
+  }
+
+  // Fallback: render as formatted HTML paragraphs
+  const formatted = formatSectionContentToHtml(rawContent);
+  if (!formatted) return "";
+  return `
+    <div style="margin-top: 12px;">
+      <h4 style="${headingStyle}">${heading}</h4>
+      ${formatted}
+    </div>
+  `;
+}
+
+/**
  * "Basic" template — old-school plain layout matching traditional printed lab reports.
  *
  * Design rules:
  *  - "TEST REPORT" title bar with 1.5px border top/bottom
  *  - Patient info as figure.table with <th> labels (15%) + <td> values (35%)
- *  - 4 columns: TEST NAME (55%) | VALUE (15%) | UNITS (15%) | Bio. Ref. Interval (15%)
+ *  - 4 columns: TEST NAME (38%) | VALUE (12%) | UNITS (10%) | Bio. Ref. Interval (40%)
  *  - Column header row: 1.5px solid border top/bottom only — no cell borders
  *  - Group name as center-title (underlined, uppercase) inside main-group-row
  *  - Section headings: sub-section-header class (uppercase, small, bold)
@@ -2290,6 +2526,20 @@ function generateBasicDefaultTemplateHtml(
   padding: 3px 4px !important;
 }
 
+/* Protect rich HTML section content (e.g. Glass Prescription table) from the resets above.
+   These rules MUST come after the general td/th resets and use higher specificity. */
+.basic-report-template .section-rich-content table {
+  border-collapse: collapse !important;
+}
+.basic-report-template .section-rich-content table td,
+.basic-report-template .section-rich-content table th {
+  border: 1px solid #9ca3af !important;
+  padding: 8px !important;
+  font-weight: inherit !important;
+  background-color: inherit !important;
+  vertical-align: middle !important;
+}
+
 .basic-report-template .result-normal,
 .basic-report-template .flag-normal,
 .basic-report-template .value-normal,
@@ -2338,13 +2588,17 @@ function generateBasicDefaultTemplateHtml(
 }
 
 .basic-report-template .report-title-barcode {
-  width: 110px !important;
+  width: 108px !important;
   flex-shrink: 0 !important;
   text-align: right !important;
+  margin-right: 8px !important;
+  overflow: hidden !important;
 }
 
-.basic-report-template .report-title-barcode img {
+.basic-report-template .report-title-barcode img,
+.basic-report-template .report-title-barcode svg {
   height: 36px !important;
+  width: 100px !important;
   display: block !important;
   margin-left: auto !important;
 }
@@ -2400,25 +2654,25 @@ function generateBasicDefaultTemplateHtml(
 }
 
 ${flagSymbol === "before" ? `
-.basic-report-template .tbl-results thead th:nth-child(1) { width: 44% !important; text-align: left !important; }
-.basic-report-template .tbl-results thead th:nth-child(2) { width: 7% !important; text-align: center !important; }
-.basic-report-template .tbl-results thead th:nth-child(3) { width: 14% !important; text-align: right !important; }
+.basic-report-template .tbl-results thead th:nth-child(1) { width: 35% !important; text-align: left !important; }
+.basic-report-template .tbl-results thead th:nth-child(2) { width: 6% !important; text-align: center !important; }
+.basic-report-template .tbl-results thead th:nth-child(3) { width: 11% !important; text-align: right !important; }
 .basic-report-template .tbl-results thead th:nth-child(4) { width: 10% !important; text-align: left !important; }
-.basic-report-template .tbl-results thead th:nth-child(5) { width: 25% !important; text-align: left !important; }
-.basic-report-template .tbl-results tbody td:nth-child(1) { width: 44% !important; text-align: left !important; color: #111 !important; }
-.basic-report-template .tbl-results tbody td:nth-child(2) { width: 7% !important; text-align: center !important; font-weight: 700 !important; }
-.basic-report-template .tbl-results tbody td:nth-child(3) { width: 14% !important; text-align: right !important; }
+.basic-report-template .tbl-results thead th:nth-child(5) { width: 38% !important; text-align: left !important; }
+.basic-report-template .tbl-results tbody td:nth-child(1) { width: 35% !important; text-align: left !important; color: #111 !important; }
+.basic-report-template .tbl-results tbody td:nth-child(2) { width: 6% !important; text-align: center !important; font-weight: 700 !important; }
+.basic-report-template .tbl-results tbody td:nth-child(3) { width: 11% !important; text-align: right !important; }
 .basic-report-template .tbl-results tbody td:nth-child(4) { width: 10% !important; text-align: left !important; color: #444 !important; white-space: nowrap !important; }
-.basic-report-template .tbl-results tbody td:nth-child(5) { width: 25% !important; text-align: left !important; color: #666 !important; }
+.basic-report-template .tbl-results tbody td:nth-child(5) { width: 38% !important; text-align: left !important; color: #666 !important; }
 ` : `
-.basic-report-template .tbl-results thead th:nth-child(1) { width: 50% !important; text-align: left !important; }
-.basic-report-template .tbl-results thead th:nth-child(2) { width: 15% !important; text-align: right !important; }
+.basic-report-template .tbl-results thead th:nth-child(1) { width: 38% !important; text-align: left !important; }
+.basic-report-template .tbl-results thead th:nth-child(2) { width: 12% !important; text-align: right !important; }
 .basic-report-template .tbl-results thead th:nth-child(3) { width: 10% !important; text-align: left !important; }
-.basic-report-template .tbl-results thead th:nth-child(4) { width: 25% !important; text-align: left !important; }
-.basic-report-template .tbl-results tbody td:nth-child(1) { width: 50% !important; text-align: left !important; color: #111 !important; }
-.basic-report-template .tbl-results tbody td:nth-child(2) { width: 15% !important; text-align: right !important; }
+.basic-report-template .tbl-results thead th:nth-child(4) { width: 40% !important; text-align: left !important; }
+.basic-report-template .tbl-results tbody td:nth-child(1) { width: 38% !important; text-align: left !important; color: #111 !important; }
+.basic-report-template .tbl-results tbody td:nth-child(2) { width: 12% !important; text-align: right !important; }
 .basic-report-template .tbl-results tbody td:nth-child(3) { width: 10% !important; text-align: left !important; color: #444 !important; white-space: nowrap !important; }
-.basic-report-template .tbl-results tbody td:nth-child(4) { width: 25% !important; text-align: left !important; color: #666 !important; }
+.basic-report-template .tbl-results tbody td:nth-child(4) { width: 40% !important; text-align: left !important; color: #666 !important; }
 `}
 
 .basic-report-template .tbl-results td,
@@ -2595,14 +2849,55 @@ ${flagSymbol === "before" ? `
       <div class="report-title-spacer"></div>
       <h2 class="report-main-title">TEST REPORT</h2>
       <div class="report-title-barcode">
-        <img src="https://barcodeapi.org/api/code128/{{sampleId}}" alt="{{sampleId}}" onerror="this.style.display='none';" />
+        {{barcode_image}}
       </div>
     </div>
   `;
 
-  const patientInfoHtml = patientInfoConfig
-    ? buildPatientInfoHtml(patientInfoConfig, '#5a7f3a', extraFieldConfigs)
-    : `
+  const patientInfoHtml = (() => {
+    // Build the field list from config, or use fallback defaults
+    const configFields = patientInfoConfig
+      ? patientInfoConfig.fields
+          .map(key => {
+            if (PATIENT_INFO_FIELD_MAP[key]) return { ...PATIENT_INFO_FIELD_MAP[key], key };
+            if (key.startsWith('custom_')) {
+              const found = extraFieldConfigs?.find(f => `custom_${f.field_key}` === key);
+              const label = found ? found.label : key.replace(/^custom_/, '').replace(/_/g, ' ').replace(/\b\w/g, (c: string) => c.toUpperCase());
+              return { label, placeholder: `{{${key}}}`, key };
+            }
+            return undefined;
+          })
+          .filter(Boolean) as Array<{ label: string; placeholder: string; key: string }>
+      : null;
+
+    if (configFields && configFields.length > 0) {
+      // Combine age + gender into a single "Age / Sex" field when both are present
+      const ageIdx = configFields.findIndex(f => f.key === 'age');
+      const genderIdx = configFields.findIndex(f => f.key === 'gender');
+      if (ageIdx >= 0 && genderIdx >= 0) {
+        configFields[ageIdx] = { label: 'Age / Sex', placeholder: '{{patientAge}} / {{patientGender}}', key: 'ageGender' };
+        configFields.splice(genderIdx > ageIdx ? genderIdx : ageIdx + 1, 1);
+      }
+
+      const rows: string[] = [];
+      for (let i = 0; i < configFields.length; i += 2) {
+        const f1 = configFields[i];
+        const f2 = configFields[i + 1];
+        rows.push(`<tr>
+          <th>${f1.label}</th><td>: ${f1.placeholder}</td>
+          ${f2 ? `<th>${f2.label}</th><td>: ${f2.placeholder}</td>` : `<th></th><td></td>`}
+        </tr>`);
+      }
+      return `
+      <figure class="table" style="margin: 0 0 10px;">
+        <table class="patient-header-table">
+          <tbody>${rows.join('')}</tbody>
+        </table>
+      </figure>`;
+    }
+
+    // Default fallback when no config
+    return `
     <figure class="table" style="margin: 0 0 10px;">
       <table class="patient-header-table">
         <tbody>
@@ -2620,8 +2915,8 @@ ${flagSymbol === "before" ? `
           </tr>
         </tbody>
       </table>
-    </figure>
-  `;
+    </figure>`;
+  })();
 
   let testResultsHtml = '<div class="test-results">';
   for (const [groupId, analytes] of analytesByGroup) {
@@ -2824,27 +3119,83 @@ ${flagSymbol === "before" ? `
 
   let reportSectionsHtml = "";
   if (includeSections && Object.keys(normalizedSectionContent).length > 0) {
-    const sectionItems = Object.entries(normalizedSectionContent)
+    const sectionTables = Object.entries(normalizedSectionContent)
       .filter(([, content]) => content && String(content).trim().length > 0)
       .map(([key, content]) => {
-        const formatted = formatSectionContentToHtml(String(content));
-        if (!formatted) return "";
+        const rawContent = String(content).trim();
+        if (!rawContent) return "";
+        const label = (sectionLabels && sectionLabels[key]) ? sectionLabels[key] : buildSectionLabel(key);
+
+        // If content contains a real <table>, render as standalone rich HTML block
+        // to protect inner table borders from the basic template's border:none resets.
+        // Simple <div>-wrapped text (e.g. from Survey.js) is NOT rich — render in columns.
+        const isRichHtml = /<table\b/i.test(rawContent);
+        if (isRichHtml) {
+          return `
+            <div class="section-rich-content" style="margin: 8px 0 14px; page-break-inside: avoid;">
+              <div class="center-title" style="text-align:center;font-weight:700;text-decoration:underline;font-size:${basePx + 1}px;margin:8px 0 6px;text-transform:uppercase;color:#000;">${label}</div>
+              <div style="font-size:${basePx}px;">${rawContent}</div>
+            </div>
+          `;
+        }
+
+        // Plain text content: strip HTML tags, split into lines, render each as a proper analyte-style row
+        const plainText = rawContent
+          .replace(/<div[^>]*>/gi, "").replace(/<\/div>/gi, "\n")
+          .replace(/<br\s*\/?>/gi, "\n")
+          .replace(/<[^>]+>/g, "")
+          .trim();
+
+        const lines = plainText.split(/\n/).map(l => l.trim()).filter(Boolean);
+        const rowsHtml = lines.map(line => {
+          const colonIdx = line.indexOf(":");
+          if (colonIdx > 0) {
+            const rowLabel = line.substring(0, colonIdx).trim();
+            const rowValue = line.substring(colonIdx + 1).trim();
+            // Render as TEST NAME | VALUE | (empty UNITS) | (empty Ref) — matches analyte rows
+            return `<tr>
+              <td class="test-name-cell">
+                <div class="test-name" style="font-size:${basePx}px; font-weight:${testNameWeight};">${rowLabel}</div>
+              </td>
+              ${flagSymbol === "before" ? `<td></td>` : ""}
+              <td style="font-size:${basePx}px; font-weight:normal; vertical-align:top; padding:3px 6px;">${rowValue}</td>
+              <td></td>
+              <td></td>
+            </tr>`;
+          }
+          // No colon — full-width row (e.g. a heading line)
+          return `<tr class="descriptive-row"><td colspan="${colCount}" style="font-size:${basePx}px; font-weight:600;">${line}</td></tr>`;
+        }).join("");
+
         return `
-          <div style="margin-top: 10px; font-size: ${basePx}px;">
-            <div style="font-weight:700; margin-bottom:3px;">${buildSectionLabel(key)}</div>
-            ${formatted}
-          </div>
+          <figure class="table" style="margin: 0 0 14px;">
+            <table class="tbl-results">
+              <thead>
+                <tr>
+                  <th>TEST NAME</th>
+                  ${flagSymbol === "before" ? `<th>FLAG</th>` : ""}
+                  <th>VALUE</th>
+                  <th>UNITS</th>
+                  <th>Bio. Ref. Interval</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr class="main-group-row">
+                  <td colspan="${colCount}">
+                    <div class="center-title">${label}</div>
+                  </td>
+                </tr>
+                ${rowsHtml}
+              </tbody>
+            </table>
+          </figure>
         `;
       })
       .filter(Boolean)
       .join("");
 
-    if (sectionItems) {
-      reportSectionsHtml = `
-        <div class="report-sections">
-          ${sectionItems}
-        </div>
-      `;
+    if (sectionTables) {
+      reportSectionsHtml = sectionTables;
     }
   }
 
@@ -3417,15 +3768,14 @@ function generateDefaultTemplateHtml(
     const sectionItems = Object.entries(normalizedSectionContent)
       .filter(([, content]) => content && String(content).trim().length > 0)
       .map(([key, content]) => {
-        const formatted = formatSectionContentToHtml(String(content));
-        if (!formatted) return "";
+        const rawContent = String(content).trim();
+        if (!rawContent) return "";
         const heading = buildSectionLabel(key);
-        return `
-          <div style="margin-top: 12px;">
-            <h4 style="font-size: 13px; font-weight: 600; color: #111827; margin: 0 0 6px;">${heading}</h4>
-            ${formatted}
-          </div>
-        `;
+        return renderSectionContentForTemplate(
+          rawContent,
+          heading,
+          'font-size: 13px; font-weight: 600; color: #111827; margin: 0 0 6px;',
+        );
       })
       .filter(Boolean)
       .join("");
@@ -4334,15 +4684,35 @@ async function fetchSectionContent(
   if (!resultIds || resultIds.length === 0) return { sectionContent: {}, sectionLabels: {} };
 
   try {
+    // Build a map of result_id -> test_group_id so we can assign section content
+    // to the correct group even when lab_template_sections.test_group_id is NULL
+    // (section-only groups where the section template isn't linked to a specific group).
+    const resultToGroupMap = new Map<string, string>();
+    try {
+      const { data: resultGroupRows } = await supabaseClient
+        .from("results")
+        .select("id, test_group_id")
+        .in("id", resultIds);
+      for (const row of (resultGroupRows || [])) {
+        if (row.id && row.test_group_id) {
+          resultToGroupMap.set(row.id, row.test_group_id);
+        }
+      }
+    } catch (_e) {
+      // Non-fatal: fall back to section-level test_group_id only
+    }
+
     const { data, error } = await supabaseClient
       .from("result_section_content")
       .select(`
+        result_id,
         final_content,
         image_urls,
         lab_template_sections!inner(
           placeholder_key,
           section_name,
-          test_group_id
+          test_group_id,
+          display_order
         )
       `)
       .in("result_id", resultIds)
@@ -4353,32 +4723,56 @@ async function fetchSectionContent(
       return { sectionContent: {}, sectionLabels: {}, sectionContentByGroup: new Map() };
     }
 
+    // Sort by display_order so sections render in the configured order
+    data.sort((a: any, b: any) => {
+      const orderA = a.lab_template_sections?.display_order ?? 999;
+      const orderB = b.lab_template_sections?.display_order ?? 999;
+      if (orderA !== orderB) return orderA - orderB;
+      // Secondary sort: section_name alphabetically for stable ordering
+      const nameA = a.lab_template_sections?.section_name || "";
+      const nameB = b.lab_template_sections?.section_name || "";
+      return nameA.localeCompare(nameB);
+    });
+
     // Build map of placeholder_key -> final_content and placeholder_key -> section_name
     // Also build per-group map: test_group_id -> { placeholder_key -> content }
+    // FIX: When multiple sections share the same placeholder_key (e.g. two "findings"
+    // sections), use a unique suffix (_2, _3, …) so every section gets its own entry
+    // instead of the later one silently overwriting the earlier one.
     const sectionContent: Record<string, string> = {};
     const sectionLabels: Record<string, string> = {};
     const sectionContentByGroup = new Map<string, Record<string, string>>();
+    const keyCounters: Record<string, number> = {}; // tracks how many times a base key has been seen
     for (const item of data) {
-      const key = item.lab_template_sections?.placeholder_key;
-      if (key) {
+      const baseKey = item.lab_template_sections?.placeholder_key;
+      if (baseKey) {
         const label = item.lab_template_sections?.section_name;
-        if (label) sectionLabels[key] = label;
         const content = item.final_content ? String(item.final_content) : "";
         const imageUrls = parseSectionImageUrls(item.image_urls);
         const imagesHtml = includeImages ? buildSectionImagesHtml(imageUrls) : "";
         const combined = [content.trim(), imagesHtml].filter(Boolean).join("\n\n");
         if (combined) {
-          sectionContent[key] = combined;
-          const groupId = item.lab_template_sections?.test_group_id;
+          // Determine a unique key: first occurrence keeps the base key, subsequent get _2, _3, …
+          keyCounters[baseKey] = (keyCounters[baseKey] || 0) + 1;
+          const uniqueKey = keyCounters[baseKey] === 1 ? baseKey : `${baseKey}_${keyCounters[baseKey]}`;
+
+          if (label) sectionLabels[uniqueKey] = label;
+          sectionContent[uniqueKey] = combined;
+          // Use the section's own test_group_id first; fall back to the result's
+          // test_group_id for section-only groups where the section template is
+          // not explicitly linked to a test group (test_group_id IS NULL).
+          const groupId = item.lab_template_sections?.test_group_id
+            ?? resultToGroupMap.get(item.result_id);
           if (groupId) {
             if (!sectionContentByGroup.has(groupId)) {
               sectionContentByGroup.set(groupId, {});
             }
-            sectionContentByGroup.get(groupId)![key] = combined;
+            sectionContentByGroup.get(groupId)![uniqueKey] = combined;
           }
         }
       }
     }
+    console.log(`📝 fetchSectionContent: ${data.length} row(s) → ${Object.keys(sectionContent).length} unique section(s): [${Object.keys(sectionContent).join(", ")}]`);
 
     return { sectionContent, sectionLabels, sectionContentByGroup };
   } catch (err) {
@@ -5808,21 +6202,77 @@ serve(async (req) => {
         ),
       });
 
-      // Validate that we have actual test results
+      // Validate that we have actual test results.
+      // For section-only groups, saved report-section content is a valid result
+      // even when there are zero analyte rows in context.analytes.
       if (!context.analytes || context.analytes.length === 0) {
-        console.error("❌ No analytes found in context");
-        await failJob(
-          supabaseClient,
-          job.id,
-          "No test results found for this order",
-        );
-        return new Response(
-          JSON.stringify({ error: "No test results found for this order" }),
-          {
-            status: 500,
-            headers: { ...corsHeaders, "Content-Type": "application/json" },
-          },
-        );
+        console.warn("⚠️ No analytes found in context, checking for section-only report content...");
+
+        let hasSectionOnlyContent = false;
+        try {
+          const { data: resultRows, error: resultError } = await supabaseClient
+            .from("results")
+            .select("id")
+            .eq("order_id", orderId);
+
+          if (resultError) {
+            console.warn("⚠️ Failed to fetch result ids for section-only validation:", resultError.message);
+          } else {
+            const resultIds = (resultRows || []).map((row: any) => row.id).filter(Boolean);
+            if (resultIds.length > 0) {
+              const {
+                sectionContent: scWithImages,
+                sectionLabels,
+                sectionContentByGroup: scByGroupWithImages,
+              } = await fetchSectionContent(supabaseClient, resultIds, true);
+              const {
+                sectionContent: scNoImages,
+                sectionContentByGroup: scByGroupNoImages,
+              } = await fetchSectionContent(supabaseClient, resultIds, false);
+
+              hasSectionOnlyContent =
+                Object.keys(scWithImages).length > 0 ||
+                Object.keys(scNoImages).length > 0 ||
+                scByGroupWithImages.size > 0 ||
+                scByGroupNoImages.size > 0;
+
+              if (hasSectionOnlyContent) {
+                context.sectionContent = Object.keys(scWithImages).length > 0
+                  ? scWithImages
+                  : (context.sectionContent || {});
+                context.sectionContentNoImages = Object.keys(scNoImages).length > 0
+                  ? scNoImages
+                  : (context.sectionContentNoImages || context.sectionContent || {});
+                context.sectionLabels = sectionLabels;
+                context.sectionContentByGroup = scByGroupWithImages.size > 0
+                  ? scByGroupWithImages
+                  : (context.sectionContentByGroup || new Map());
+                context.placeholderValues = {
+                  ...(context.placeholderValues || {}),
+                  ...(context.sectionContent || {}),
+                };
+              }
+            }
+          }
+        } catch (sectionValidationError) {
+          console.warn("⚠️ Section-only validation failed:", sectionValidationError);
+        }
+
+        if (!hasSectionOnlyContent) {
+          console.error("❌ No analytes or section-only content found in context");
+          await failJob(
+            supabaseClient,
+            job.id,
+            "No test results found for this order",
+          );
+          return new Response(
+            JSON.stringify({ error: "No test results found for this order" }),
+            {
+              status: 500,
+              headers: { ...corsHeaders, "Content-Type": "application/json" },
+            },
+          );
+        }
       }
 
       // Check if analytes have values
@@ -7157,6 +7607,7 @@ serve(async (req) => {
 
           // Order aliases
           sampleId: baseContext.order?.sampleId || "",
+          sampleBarcode: baseContext.order?.sampleBarcode || baseContext.sampleBarcode || "",
           orderId: baseContext.orderId || "",
           orderDate: (() => {
             const raw = baseContext.order?.orderDate || baseContext.meta?.orderDate || "";
@@ -7190,11 +7641,11 @@ serve(async (req) => {
           verifyUrl: verifyUrl,
           qr_code: `<img src="https://api.qrserver.com/v1/create-qr-code/?size=100x100&data=${encodeURIComponent(verifyUrl)}" alt="Verify Report" style="width:80px;height:80px;" />`,
 
-          // Barcode image for report header (Code 128 barcode of sample/order ID)
+          // Barcode image for report header — inline SVG (no external API dependency)
           barcode_image: (() => {
-            const barcodeVal = baseContext.order?.sampleId || baseContext.sampleId || orderId || "";
+            const barcodeVal = baseContext.order?.sampleBarcode || baseContext.sampleBarcode || baseContext.order?.sampleId || baseContext.sampleId || orderId || "";
             if (!barcodeVal) return "";
-            return `<img src="https://barcodeapi.org/api/code128/${encodeURIComponent(barcodeVal)}" alt="${barcodeVal}" style="height:36px;display:block;" onerror="this.style.display='none';" />`;
+            return generateCode128SVG(barcodeVal, 36, 100);
           })(),
 
           // Custom patient fields (from patients.custom_fields JSONB)
@@ -7410,9 +7861,17 @@ serve(async (req) => {
 
         // Use contextTestGroupIds as the authoritative list of groups to render
         // This ensures we render all test groups even if analytes don't have test_group_id
+        const sectionContentByGroupForRender: Map<string, Record<string, string>> =
+          context.sectionContentByGroup || new Map();
         const groupsToRender = contextTestGroupIds.length > 0
-          ? contextTestGroupIds
-          : [...analytesByGroup.keys()];
+          ? Array.from(new Set([
+            ...contextTestGroupIds,
+            ...sectionContentByGroupForRender.keys(),
+          ]))
+          : Array.from(new Set([
+            ...analytesByGroup.keys(),
+            ...sectionContentByGroupForRender.keys(),
+          ]));
         console.log(`🔀 Groups to render: ${JSON.stringify(groupsToRender)}`);
 
         // Build histogramsByGroupId: assign each analyzer histogram to its test group section.
@@ -7453,6 +7912,9 @@ serve(async (req) => {
         for (const testGroupId of groupsToRender) {
           // Get analytes for this group (may be empty if grouping failed)
           let groupAnalytes = analytesByGroup.get(testGroupId) || [];
+          const groupSectionContent = sectionContentByGroupForRender.has(testGroupId)
+            ? sectionContentByGroupForRender.get(testGroupId)
+            : undefined;
 
           // If no analytes found for this group, try to find them from ungrouped
           if (groupAnalytes.length === 0 && analytesByGroup.has("ungrouped")) {
@@ -7469,7 +7931,12 @@ serve(async (req) => {
           );
 
           // Skip if no analytes for this group
-          if (groupAnalytes.length === 0) {
+          const hasGroupedSections = !!groupSectionContent &&
+            Object.keys(groupSectionContent).some((key) =>
+              String(groupSectionContent[key] || "").trim().length > 0
+            );
+
+          if (groupAnalytes.length === 0 && !hasGroupedSections) {
             console.log(
               `⚠️ No analytes found for test group: ${testGroupId}, skipping`,
             );
@@ -7556,10 +8023,9 @@ serve(async (req) => {
             const singleGroupMap = new Map<string, any[]>();
             singleGroupMap.set(testGroupId, groupAnalytes);
             // Use sections scoped to this test group; fall back to all sections only if no group mapping exists
-            const sectionContentByGroup: Map<string, Record<string, string>> = context.sectionContentByGroup || new Map();
-            const groupSectionContent = sectionContentByGroup.has(testGroupId)
-              ? sectionContentByGroup.get(testGroupId)
-              : (sectionContentByGroup.size === 0 && renderedSections.length === 0 ? groupFullContext?.sectionContent : undefined);
+            const groupSectionContentForRender = groupSectionContent
+              ? groupSectionContent
+              : (sectionContentByGroupForRender.size === 0 && renderedSections.length === 0 ? groupFullContext?.sectionContent : undefined);
             // Suppress min-height when this group shares a non-zero printOrder with its
             // neighbour (same-priority pair flows on one page — min-height would push the
             // second group off the page even though the page-break is suppressed).
@@ -7592,8 +8058,8 @@ serve(async (req) => {
               testGroupNames,
               singleGroupMap,
               signatoryInfo,
-              groupSectionContent,
-              groupSectionContent != null && Object.keys(groupSectionContent).length > 0,
+              groupSectionContentForRender,
+              groupSectionContentForRender != null && Object.keys(groupSectionContentForRender).length > 0,
               testGroupStyles.get(testGroupId) || labSettings?.default_template_style || 'beautiful',
               labSettings?.show_methodology ?? true,
               labSettings?.show_interpretation ?? false,

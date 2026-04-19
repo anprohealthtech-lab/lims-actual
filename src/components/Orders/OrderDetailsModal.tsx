@@ -89,12 +89,15 @@ interface ExtractedValue {
   reference_locked?: boolean;
   flag?: string;
   analyte_id?: string | null;
+  lab_analyte_id?: string | null;
   is_calculated?: boolean;
   expected_normal_values?: string[];
   expected_value_flag_map?: Record<string, string>;
   expected_value_codes?: Record<string, string>;
   value_type?: string;
   default_value?: string;
+  formula?: string | null;
+  formula_variables?: string[] | string | null;
   verify_note?: string; // Re-run request note from verifier
   is_rerun?: boolean; // Indicates this is a re-run request
   ai_color_observation?: string; // Color strip: observed pad color + reason for selected value
@@ -135,6 +138,7 @@ interface OrderDetailsModalProps {
 interface TestGroupResult {
   test_group_id: string;
   test_group_name: string;
+  is_section_only?: boolean;
   group_level_prompt?: string | null;
   default_ai_processing_type?: string | null;
   ref_range_ai_config?: { enabled?: boolean; consider_age?: boolean } | null;
@@ -657,7 +661,19 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
   const [progressRows, setProgressRows] = useState<any[]>([]);
   const [readonlyByTG, setReadonlyByTG] = useState<Record<string, any[]>>({});
   const [resultIdByTG, setResultIdByTG] = useState<Record<string, string>>({});
-  const [calcDeps, setCalcDeps] = useState<{ calculated_analyte_id: string; source_analyte_id: string; variable_name: string }[]>([]);
+  const [calcDeps, setCalcDeps] = useState<{ calculated_analyte_id: string; calculated_lab_analyte_id?: string | null; source_analyte_id: string; source_lab_analyte_id?: string | null; variable_name: string }[]>([]);
+
+  const getPreferredDepsForCalculated = React.useCallback((
+    deps: { calculated_analyte_id: string; calculated_lab_analyte_id?: string | null; source_analyte_id: string; source_lab_analyte_id?: string | null; variable_name: string }[],
+    analyteId?: string | null,
+    labAnalyteId?: string | null,
+  ) => {
+    const exact = labAnalyteId
+      ? deps.filter((d) => d.calculated_lab_analyte_id === labAnalyteId)
+      : [];
+    if (exact.length > 0) return exact;
+    return deps.filter((d) => !d.calculated_lab_analyte_id && d.calculated_analyte_id === analyteId);
+  }, []);
 
   // =========================================================
   // #endregion State
@@ -723,15 +739,18 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
         .map((analyte: any) => {
           const existingResult = analyte.existing_result;
           const isRerun = hasRerunRequest(existingResult);
-          return {
-            analyte_id: analyte.id,
-            parameter: analyte.name,
+            return {
+              analyte_id: analyte.id,
+              lab_analyte_id: (analyte as any).lab_analyte_id || null,
+              parameter: analyte.name,
             // Pre-fill with existing value for re-run requests so technician can see previous value
             value: isRerun && existingResult ? existingResult.value || "" : "",
             unit: analyte.unit || existingResult?.unit || "",
             reference: analyte.reference_range || existingResult?.reference_range || "",
             flag: isRerun && existingResult ? existingResult.flag : undefined,
             is_calculated: !!analyte.is_calculated,
+            formula: analyte.formula ?? null,
+            formula_variables: analyte.formula_variables ?? null,
             expected_normal_values: analyte.expected_normal_values || [],
             expected_value_flag_map: analyte.expected_value_flag_map || {},
             expected_value_codes: analyte.expected_value_codes || {},
@@ -851,6 +870,7 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
               id,
               name,
               code,
+              is_section_only,
               group_level_prompt,
               default_ai_processing_type,
               ref_range_ai_config,
@@ -858,6 +878,8 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
               test_group_analytes(
                 analyte_id,
                 lab_analyte_id,
+                sort_order,
+                display_order,
                 analytes(
                   id,
                   name,
@@ -906,6 +928,7 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
               id,
               name,
               code,
+              is_section_only,
               group_level_prompt,
               default_ai_processing_type,
               ref_range_ai_config,
@@ -913,6 +936,8 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
               test_group_analytes(
                 analyte_id,
                 lab_analyte_id,
+                sort_order,
+                display_order,
                 analytes(
                   id,
                   name,
@@ -986,6 +1011,7 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
         data.order_test_groups?.filter((otg: any) => otg.test_groups).map((otg: any) => ({
           test_group_id: otg.test_groups.id,
           test_group_name: otg.test_groups.name,
+          is_section_only: !!otg.test_groups.is_section_only,
           group_level_prompt: otg.test_groups.group_level_prompt || null,
           default_ai_processing_type: otg.test_groups.default_ai_processing_type || null,
           ref_range_ai_config: otg.test_groups.ref_range_ai_config || null,
@@ -993,7 +1019,13 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
           order_test_id: null,
           source: "order_test_groups" as const,
           analytes:
-            otg.test_groups.test_group_analytes?.map((tga: any) => {
+            [...(otg.test_groups.test_group_analytes || [])]
+              .sort((a: any, b: any) => {
+                const ao = a.sort_order ?? a.display_order ?? 0;
+                const bo = b.sort_order ?? b.display_order ?? 0;
+                return ao - bo;
+              })
+              .map((tga: any) => {
               const a = tga.analytes;
               const la = tga.lab_analyte_id ? tga.lab_analytes : null;
               return {
@@ -1046,6 +1078,7 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
           .map((ot: any) => ({
             test_group_id: ot.test_groups.id,
             test_group_name: ot.test_groups.name,
+            is_section_only: !!ot.test_groups.is_section_only,
             group_level_prompt: ot.test_groups.group_level_prompt || null,
             default_ai_processing_type: ot.test_groups.default_ai_processing_type || null,
             ref_range_ai_config: ot.test_groups.ref_range_ai_config || null,
@@ -1053,7 +1086,13 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
             order_test_id: ot.id,
             source: "order_tests" as const,
             analytes:
-              ot.test_groups.test_group_analytes?.map((tga: any) => {
+              [...(ot.test_groups.test_group_analytes || [])]
+                .sort((a: any, b: any) => {
+                  const ao = a.sort_order ?? a.display_order ?? 0;
+                  const bo = b.sort_order ?? b.display_order ?? 0;
+                  return ao - bo;
+                })
+                .map((tga: any) => {
                 const a = tga.analytes;
                 const la = tga.lab_analyte_id ? tga.lab_analytes : null;
                 return {
@@ -1117,12 +1156,69 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
             analytes: mergedAnalytes,
             order_test_group_id: existing.order_test_group_id || current.order_test_group_id,
             order_test_id: existing.order_test_id || current.order_test_id,
+            is_section_only: existing.is_section_only || current.is_section_only,
           };
         }
         return acc;
       }, []);
 
       setTestGroups(merged);
+
+      try {
+        const groupIds = merged.map((tg) => tg.test_group_id).filter(Boolean);
+        if (groupIds.length > 0) {
+          const { data: techSections } = await supabase
+            .from("lab_template_sections")
+            .select("test_group_id")
+            .eq("allow_technician_entry", true)
+            .in("test_group_id", groupIds);
+
+          const techGroupIds = new Set((techSections || []).map((s: any) => s.test_group_id));
+
+          // Also include section-only groups (e.g. radiology, microbiology)
+          // so they always get a result stub for SectionEditor to attach to
+          const sectionOnlyIds = new Set(
+            merged.filter((tg) => tg.is_section_only).map((tg) => tg.test_group_id)
+          );
+          const needsStubIds = new Set([...techGroupIds, ...sectionOnlyIds]);
+
+          if (needsStubIds.size > 0) {
+            const [{ data: { user: currentUser } }, userLabId] = await Promise.all([
+              supabase.auth.getUser(),
+              database.getCurrentUserLabId(),
+            ]);
+
+            for (const tg of merged) {
+              if (!needsStubIds.has(tg.test_group_id)) continue;
+              if (resultIdByTG[tg.test_group_id]) continue;
+
+              const { data: stub } = await supabase
+                .from("results")
+                .upsert({
+                  order_id: order.id,
+                  patient_id: safeUuid(order.patient_id),
+                  patient_name: order.patient_name,
+                  test_name: tg.test_group_name,
+                  status: "Entered",
+                  entered_by: currentUser?.email || "Unknown",
+                  entered_date: new Date().toISOString().split("T")[0],
+                  test_group_id: tg.test_group_id,
+                  lab_id: userLabId,
+                  ...(tg.order_test_group_id && { order_test_group_id: tg.order_test_group_id }),
+                  ...(tg.order_test_id && { order_test_id: tg.order_test_id }),
+                }, { onConflict: "order_id,test_name", ignoreDuplicates: false })
+                .select("id")
+                .single();
+
+              if (stub?.id) {
+                setResultIdByTG((prev) => ({ ...prev, [tg.test_group_id]: stub.id }));
+              }
+            }
+          }
+        }
+      } catch (sectionStubError) {
+        console.warn("Unable to pre-create section result rows:", sectionStubError);
+      }
 
       // Build flat analytes for initial manual seed (hide already-submitted ones)
       let flatAnalytes = merged.flatMap((tg) => tg.analytes);
@@ -1205,18 +1301,10 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
       if (calcAnalyteIds.length > 0) {
         const { data: depsData } = await supabase
           .from('analyte_dependencies')
-          .select('calculated_analyte_id, source_analyte_id, variable_name, lab_id')
+          .select('calculated_analyte_id, calculated_lab_analyte_id, source_analyte_id, source_lab_analyte_id, variable_name, lab_id')
           .in('calculated_analyte_id', calcAnalyteIds)
           .or(`lab_id.eq.${order.lab_id},lab_id.is.null`);
-        // Deduplicate: prefer lab-specific over global for same variable
-        const seen = new Set<string>();
-        const deduped: typeof calcDeps = [];
-        const sorted = [...(depsData || [])].sort((a: any, b: any) => (a.lab_id ? -1 : 1) - (b.lab_id ? -1 : 1));
-        for (const row of sorted as any[]) {
-          const key = `${row.calculated_analyte_id}:${row.variable_name}`;
-          if (!seen.has(key)) { seen.add(key); deduped.push(row); }
-        }
-        setCalcDeps(deduped);
+        setCalcDeps((depsData || []) as any);
       }
 
       setOrderAnalytes(flatAnalytes);
@@ -1423,7 +1511,8 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
         if (!idMap[key]) idMap[key] = r.id;
       });
       setReadonlyByTG(map);
-      setResultIdByTG(idMap);
+      // Use functional merge to avoid overwriting stubs created by fetchOrderAnalytes
+      setResultIdByTG((prev) => ({ ...prev, ...idMap }));
     } catch (e) {
       console.error("Error loading readonly results", e);
     }
@@ -1853,6 +1942,7 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
         .filter((v) => !v.is_calculated)
         .map((v) => ({
           id: v.analyte_id,
+          lab_analyte_id: v.lab_analyte_id || null,
           name: v.parameter,
           unit: v.unit || "",
           reference_range: v.reference || "",
@@ -1915,6 +2005,7 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
           flag: p.flag || undefined,
           matched: !!p.matched,
           analyte_id: p.analyte_id || null,
+          lab_analyte_id: p.lab_analyte_id || null,
           confidence: p.confidence || 0.95,
         }));
 
@@ -1939,25 +2030,31 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
 
         extractedParams.forEach((ep: ExtractedValue) => {
           const epParamName = ep.parameter || (ep as any).parameterName || '';
-          const rawEp = rawExtractedParams.find(
-            (r: any) => (r.parameter || r.parameterName) === epParamName
-          ) || {};
-          const epNameLower = epParamName.toLowerCase().trim();
-          const epAnalyteId = ep.analyte_id || rawEp.analyte_id;
+            const rawEp = rawExtractedParams.find(
+              (r: any) => (r.parameter || r.parameterName) === epParamName
+            ) || {};
+            const epNameLower = epParamName.toLowerCase().trim();
+            const epAnalyteId = ep.analyte_id || rawEp.analyte_id;
+            const epLabAnalyteId = ep.lab_analyte_id || rawEp.lab_analyte_id;
 
-          // Try multiple matching strategies (same as image AI)
-          const idx = updated.findIndex((v) => {
-            const vNameLower = v.parameter.toLowerCase().trim();
+            // Try multiple matching strategies (same as image AI)
+            const idx = updated.findIndex((v) => {
+              const vNameLower = v.parameter.toLowerCase().trim();
 
-            // 1. Match by analyte_id (most accurate)
-            if (v.analyte_id && epAnalyteId && v.analyte_id === epAnalyteId) {
-              return true;
-            }
+              // 1. Match by lab_analyte_id (most precise for lab-specific analytes)
+              if (v.lab_analyte_id && epLabAnalyteId && v.lab_analyte_id === epLabAnalyteId) {
+                return true;
+              }
 
-            // 2. Match by exact parameter name
-            if (vNameLower === epNameLower) {
-              return true;
-            }
+              // 2. Match by analyte_id
+              if (v.analyte_id && epAnalyteId && v.analyte_id === epAnalyteId) {
+                return true;
+              }
+
+              // 3. Match by exact parameter name
+              if (vNameLower === epNameLower) {
+                return true;
+              }
 
             // 3. Match if parameter names share significant overlap (exact only to avoid false positives)
             if (vNameLower === epNameLower) {
@@ -2165,6 +2262,7 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
 
       type AnalyteCatalogEntry = {
         id: string;
+        lab_analyte_id: string | null;
         name: string | null;
         unit: string | null;
         reference_range: string | null;
@@ -2183,6 +2281,7 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
           if (!catalog.has(analyte.id)) {
             catalog.set(analyte.id, {
               id: analyte.id,
+              lab_analyte_id: analyte.lab_analyte_id || null,
               name: analyte.name || analyte.analyte_name || null,
               unit: analyte.unit || analyte.units || null,
               reference_range: analyte.reference_range || null,
@@ -2368,6 +2467,7 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
               flag: p.flag || undefined,
               matched: !!p.matched,
               analyte_id: p.analyte_id || null,
+              lab_analyte_id: p.lab_analyte_id || null,
               confidence: p.confidence || 0.95,
             }));
           setExtractedValues(extractedParams);
@@ -2395,32 +2495,38 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
               const matchedTo = (rawEp.matched_to || '').toLowerCase().trim();
               const epNameLower = epParamName.toLowerCase().trim();
               const epAnalyteId = ep.analyte_id || rawEp.analyte_id;
+              const epLabAnalyteId = ep.lab_analyte_id || rawEp.lab_analyte_id;
 
               // Try multiple matching strategies
               const idx = updated.findIndex((v) => {
                 const vNameLower = v.parameter.toLowerCase().trim();
 
-                // 1. Match by analyte_id (most accurate)
+                // 1. Match by lab_analyte_id (most precise for lab-specific analytes)
+                if (v.lab_analyte_id && epLabAnalyteId && v.lab_analyte_id === epLabAnalyteId) {
+                  return true;
+                }
+
+                // 2. Match by analyte_id
                 if (v.analyte_id && epAnalyteId && v.analyte_id === epAnalyteId) {
                   return true;
                 }
 
-                // 2. Match by exact parameter name
+                // 3. Match by exact parameter name
                 if (vNameLower === epNameLower) {
                   return true;
                 }
 
-                // 3. Match if matched_to exactly equals the parameter name
+                // 4. Match if matched_to exactly equals the parameter name
                 if (matchedTo && matchedTo === vNameLower) {
                   return true;
                 }
 
-                // 4. Match if parameter names share significant overlap (e.g., "WBC" in "White Blood Cell Count (WBC)")
+                // 5. Match if parameter names share significant overlap (e.g., "WBC" in "White Blood Cell Count (WBC)")
                 if (vNameLower.includes(`(${epNameLower})`) || vNameLower.includes(` ${epNameLower} `)) {
                   return true;
                 }
 
-                // 5. Match common abbreviation patterns
+                // 6. Match common abbreviation patterns
                 const abbreviations: Record<string, string[]> = {
                   'wbc': ['white blood cell', 'leukocyte'],
                   'rbc': ['red blood cell', 'erythrocyte'],
@@ -2486,6 +2592,7 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
                   console.log(`  ➕ Adding new parameter: ${ep.parameter} (${ep.value})`);
                   addedParameters.push({
                     analyte_id: epAnalyteId,
+                    lab_analyte_id: epLabAnalyteId || null,
                     parameter: ep.parameter,
                     value: ep.value,
                     unit: ep.unit,
@@ -2716,7 +2823,32 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
   // Recompute all calculated analytes from current manualValues snapshot.
   // Called after any manual value change so calculated rows update live.
   const recomputeCalculatedValues = React.useCallback((values: ExtractedValue[]): ExtractedValue[] => {
-    const parseVars = (fv: string[] | string | null | undefined): string[] => {
+    const toVariableSlug = (name: string): string => {
+      const abbrevMap: Record<string, string> = {
+        'total cholesterol': 'TC', 'hdl cholesterol': 'HDL', 'ldl cholesterol': 'LDL',
+        'triglycerides': 'TG', 'hemoglobin': 'HGB', 'hematocrit': 'HCT',
+        'red blood cell': 'RBC', 'white blood cell': 'WBC', 'platelet': 'PLT',
+        'mean corpuscular volume': 'MCV', 'mean corpuscular hemoglobin': 'MCH',
+        'albumin': 'ALB', 'globulin': 'GLOB', 'total protein': 'TP',
+        'creatinine': 'CREAT', 'blood urea nitrogen': 'BUN', 'urea': 'UREA',
+        'glucose': 'GLU', 'calcium': 'CA', 'sodium': 'NA', 'potassium': 'K',
+      };
+      const lower = name.toLowerCase();
+      for (const [full, abbrev] of Object.entries(abbrevMap)) {
+        if (lower.includes(full)) return abbrev.toLowerCase();
+      }
+      const words = name.replace(/[^a-zA-Z0-9\s]/g, '').split(/\s+/);
+      if (words.length === 1) return words[0].substring(0, 4).toLowerCase();
+      return words.map(w => w.substring(0, 3)).join('').toLowerCase().substring(0, 6);
+    };
+
+    const toNumberLocal = (raw: string | number | null | undefined): number | null => {
+      if (raw === null || raw === undefined || raw === "") return null;
+      const parsed = Number(String(raw).trim());
+      return Number.isFinite(parsed) ? parsed : null;
+    };
+
+      const parseVars = (fv: string[] | string | null | undefined): string[] => {
       if (!fv) return [];
       if (Array.isArray(fv)) return fv.filter(Boolean);
       try { return (JSON.parse(fv) as string[]).filter(Boolean); } catch { return []; }
@@ -2737,45 +2869,61 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
       lookup.set('gender_female', patientGender === 'Female' ? 1 : 0);
       lookup.set('gender', patientGender === 'Male' ? 1 : 0);
     }
-    for (const v of values) {
-      if (v.is_calculated) continue;
-      const num = Number(String(v.value ?? "").trim());
-      if (!Number.isFinite(num) || v.value === "") continue;
-      if (v.analyte_id) lookup.set(v.analyte_id, num);
-      if (v.parameter) lookup.set(v.parameter.toLowerCase(), num);
-    }
-
-    // Helper: resolve a dep variable to a numeric value
-    // 1. dep → source_analyte_id (exact UUID)
-    // 2. dep → source analyte name fallback (handles duplicate analyte IDs)
-    // 3. direct variable name key
-    const allAnalytes = testGroups.flatMap(tg => tg.analytes);
-    const resolveVar = (variable: string): number | undefined => {
-      const key = variable.toLowerCase();
-      const dep = calcDeps.find(d => d.variable_name.toLowerCase() === key);
-      if (dep) {
-        const byId = lookup.get(dep.source_analyte_id);
-        if (byId !== undefined) return byId;
-        // Fallback: find analyte with same name as the dep's source
-        const srcAnalyte = allAnalytes.find(a => a.id === dep.source_analyte_id);
-        if (srcAnalyte) {
-          const byName = lookup.get(srcAnalyte.name?.toLowerCase() ?? '');
-          if (byName !== undefined) return byName;
+    for (const tg of testGroups) {
+      for (const a of tg.analytes) {
+        if (a.is_calculated) continue;
+        const savedVal = a.existing_result?.value;
+        const num = toNumberLocal(savedVal);
+        if (num !== null) {
+          if (a.id) lookup.set(a.id, num);
+          if ((a as any).lab_analyte_id) lookup.set((a as any).lab_analyte_id, num);
+          lookup.set(a.name.toLowerCase(), num);
+          lookup.set(toVariableSlug(a.name), num);
         }
       }
-      return lookup.get(key);
-    };
+    }
+
+    for (const v of values) {
+      if (v.is_calculated) continue;
+      const num = toNumberLocal(v.value);
+      if (num === null || v.value === "") continue;
+      if (v.analyte_id) lookup.set(v.analyte_id, num);
+      if (v.lab_analyte_id) lookup.set(v.lab_analyte_id, num);
+      if (v.parameter) lookup.set(v.parameter.toLowerCase(), num);
+      if (v.parameter) lookup.set(toVariableSlug(v.parameter), num);
+    }
 
     return values.map(v => {
       if (!v.is_calculated || !v.formula) return v;
 
-      // Find analyte definition to get formula_variables
       let formula = v.formula.trim();
       const analyteRef = testGroups.flatMap(tg => tg.analytes).find(a => a.id === v.analyte_id || a.name === v.parameter);
       const vars = parseVars(analyteRef?.formula_variables ?? null);
+      const analyteSliceDeps = getPreferredDepsForCalculated(calcDeps, v.analyte_id, v.lab_analyte_id);
 
       for (const variable of vars) {
-        const val = resolveVar(variable);
+        const key = variable.toLowerCase();
+        const dep = analyteSliceDeps.find(d => d.variable_name.toLowerCase() === key);
+
+        let val: number | undefined =
+          dep?.source_lab_analyte_id ? lookup.get(dep.source_lab_analyte_id) : undefined;
+        if (val === undefined) val = dep ? lookup.get(dep.source_analyte_id) : undefined;
+        if (val === undefined) val = lookup.get(key);
+        if (val === undefined && dep) {
+          const srcAnalyte = testGroups
+            .flatMap(tg => tg.analytes)
+            .find(a =>
+              ((a as any).lab_analyte_id && dep.source_lab_analyte_id && (a as any).lab_analyte_id === dep.source_lab_analyte_id) ||
+              a.id === dep.source_analyte_id
+            );
+          if (srcAnalyte?.name) {
+            val = lookup.get(srcAnalyte.name.toLowerCase());
+            if (val === undefined) {
+              val = lookup.get(toVariableSlug(srcAnalyte.name));
+            }
+          }
+        }
+
         if (val === undefined) return v; // missing source — keep old value
         formula = formula.replace(new RegExp(`\\b${variable}\\b`, "g"), String(val));
       }
@@ -2788,7 +2936,7 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
         return { ...v, value: String(Math.round(computed * 10000) / 10000) };
       } catch { return v; }
     });
-  }, [testGroups, calcDeps, order]);
+  }, [testGroups, calcDeps, order, getPreferredDepsForCalculated]);
 
   const handleManualValueChange = React.useCallback((index: number, field: keyof ExtractedValue, value: string) => {
     setManualValues((prev) => {
@@ -2890,36 +3038,125 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
     setSaveMessage(null);
 
     try {
-      const resultValues = validResults.map((item) => ({
-        parameter: item.parameter,
-        value: item.value,
-        unit: item.unit,
-        reference_range: item.reference,
-        flag: item.flag,
-      }));
-      const valuesWithFlags = calculateFlagsForResults(resultValues);
+      const [currentUser, userLabId] = await Promise.all([
+        supabase.auth.getUser(),
+        database.getCurrentUserLabId()
+      ]);
 
-      const resultData = {
-        order_id: order.id,
-        patient_name: order.patient_name,
-        patient_id: order.patient_id,
-        test_name: order.tests.join(", "),
-        status: "Entered" as const,
-        entered_by: user?.user_metadata?.full_name || user?.email || "Unknown User",
-        entered_date: new Date().toISOString().split("T")[0],
-        values: valuesWithFlags,
+      const getGroupKey = (tg: Pick<TestGroupResult, "test_group_id" | "order_test_group_id" | "order_test_id">) => {
+        if (tg.order_test_group_id) return `otg:${tg.order_test_group_id}`;
+        if (tg.order_test_id) return `ot:${tg.order_test_id}`;
+        return `tg:${tg.test_group_id}`;
       };
 
-      if (existingResultId) {
-        const { error } = await database.results.update(existingResultId, resultData);
-        if (error) throw new Error(error.message);
-      } else {
-        const { data, error } = await database.results.create(resultData);
-        if (error) throw new Error(error.message);
-        setExistingResultId(data.id);
+      const { data: existingRows, error: existingRowsError } = await supabase
+        .from("results")
+        .select("id, test_group_id, order_test_group_id, order_test_id")
+        .eq("order_id", order.id);
+      if (existingRowsError) throw existingRowsError;
+
+      const existingResultRowByGroupKey = new Map<string, string>();
+      for (const row of existingRows || []) {
+        if (row.order_test_group_id) existingResultRowByGroupKey.set(`otg:${row.order_test_group_id}`, row.id);
+        if (row.order_test_id) existingResultRowByGroupKey.set(`ot:${row.order_test_id}`, row.id);
+        if (row.test_group_id) existingResultRowByGroupKey.set(`tg:${row.test_group_id}`, row.id);
+      }
+
+      for (const testGroup of testGroups) {
+        const rowsToPersist = validResults.filter((v) =>
+          testGroup.analytes.some((a) =>
+            (v.analyte_id && a.id === v.analyte_id) || a.name === v.parameter
+          )
+        );
+        if (rowsToPersist.length === 0) continue;
+
+        const groupKey = getGroupKey(testGroup);
+        let resultRowId = existingResultRowByGroupKey.get(groupKey) || null;
+
+        if (!resultRowId) {
+          const { data: savedResult, error: resultError } = await supabase
+            .from("results")
+            .upsert({
+              order_id: order.id,
+              patient_id: order.patient_id,
+              patient_name: order.patient_name,
+              test_name: testGroup.test_group_name,
+              status: "Entered",
+              verification_status: null,
+              entered_by: currentUser.data.user?.email || "Unknown User",
+              entered_date: new Date().toISOString().split("T")[0],
+              test_group_id: testGroup.test_group_id,
+              lab_id: userLabId,
+              ...(testGroup.order_test_group_id && { order_test_group_id: testGroup.order_test_group_id }),
+              ...(testGroup.order_test_id && { order_test_id: testGroup.order_test_id }),
+            }, { onConflict: "order_id,test_name", ignoreDuplicates: false })
+            .select("id")
+            .single();
+          if (resultError) throw resultError;
+          resultRowId = savedResult.id;
+          existingResultRowByGroupKey.set(groupKey, resultRowId);
+        } else {
+          const { error: resultUpdateError } = await supabase
+            .from("results")
+            .update({
+              status: "Entered",
+              verification_status: null,
+              entered_by: currentUser.data.user?.email || "Unknown User",
+              entered_date: new Date().toISOString().split("T")[0],
+              lab_id: userLabId,
+            })
+            .eq("id", resultRowId);
+          if (resultUpdateError) throw resultUpdateError;
+        }
+
+        const analyteIdsToDelete = rowsToPersist
+          .map((r) => r.analyte_id || testGroup.analytes.find((a) => a.name === r.parameter)?.id)
+          .filter(Boolean) as string[];
+        if (analyteIdsToDelete.length > 0) {
+          const { error: deleteError } = await supabase
+            .from("result_values")
+            .delete()
+            .eq("result_id", resultRowId)
+            .in("analyte_id", analyteIdsToDelete);
+          if (deleteError) throw deleteError;
+        }
+
+        const resultValuesData = rowsToPersist.map((r) => {
+          const analyte = testGroup.analytes.find((a) => a.id === r.analyte_id)
+            || testGroup.analytes.find((a) => a.name?.trim().toLowerCase() === r.parameter?.trim().toLowerCase());
+          const autoFlag = r.flag || calculateFlag(r.value, r.reference || "");
+          return {
+            result_id: resultRowId!,
+            analyte_id: analyte?.id || r.analyte_id || undefined,
+            lab_analyte_id: analyte?.lab_analyte_id || null,
+            analyte_name: r.parameter,
+            parameter: r.parameter,
+            value: r.value && r.value.trim() !== "" ? r.value : null,
+            unit: r.unit || "",
+            reference_range: r.reference || "",
+            flag: autoFlag || null,
+            flag_source: r.flag ? 'manual' : (autoFlag ? 'auto_numeric' : undefined),
+            is_auto_calculated: !!r.is_calculated,
+            order_id: order.id,
+            test_group_id: testGroup.test_group_id,
+            lab_id: userLabId,
+            verify_status: 'pending',
+            ...(testGroup.order_test_group_id && { order_test_group_id: testGroup.order_test_group_id }),
+            ...(testGroup.order_test_id && { order_test_id: testGroup.order_test_id }),
+          };
+        });
+
+        const { error: valuesError } = await supabase.from("result_values").insert(resultValuesData);
+        if (valuesError) throw valuesError;
       }
 
       setSaveMessage("Draft saved successfully!");
+
+      await Promise.allSettled([
+        fetchReadonlyResults(),
+        fetchProgressView(),
+        fetchExistingResult(),
+      ]);
 
       // Call the callback if provided
       if (onAfterSaveDraft) {
@@ -3145,21 +3382,15 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
         .flatMap((tg) => tg.analytes.filter((a) => a.is_calculated).map((a) => a.id))
         .filter(Boolean) as string[];
 
-      type DepRow = { calculated_analyte_id: string; source_analyte_id: string; variable_name: string };
+      type DepRow = { calculated_analyte_id: string; calculated_lab_analyte_id?: string | null; source_analyte_id: string; source_lab_analyte_id?: string | null; variable_name: string };
       let allDeps: DepRow[] = [];
       if (allCalcAnalyteIds.length > 0) {
         const { data: depsData } = await supabase
           .from('analyte_dependencies')
-          .select('calculated_analyte_id, source_analyte_id, variable_name, lab_id')
+          .select('calculated_analyte_id, calculated_lab_analyte_id, source_analyte_id, source_lab_analyte_id, variable_name, lab_id')
           .in('calculated_analyte_id', allCalcAnalyteIds)
           .or(`lab_id.eq.${order.lab_id},lab_id.is.null`);
-        // Prefer lab-specific rows over global fallbacks
-        const seen = new Set<string>();
-        const sorted = [...(depsData || [])].sort((a: any, b: any) => (a.lab_id ? -1 : 1) - (b.lab_id ? -1 : 1));
-        for (const row of sorted as any[]) {
-          const key = `${row.calculated_analyte_id}:${row.variable_name}`;
-          if (!seen.has(key)) { seen.add(key); allDeps.push(row as DepRow); }
-        }
+        allDeps = (depsData || []) as DepRow[];
       }
 
       // evaluateCalculatedValue now receives the deps slice for this analyte.
@@ -3185,10 +3416,18 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
 
           // 1. UUID-based lookup via analyte_dependencies
           const dep = deps.find(
-            (d) => d.variable_name.toLowerCase() === variableKey
+            (d) =>
+              d.variable_name.toLowerCase() === variableKey &&
+              (
+                (analyte.lab_analyte_id && d.calculated_lab_analyte_id === analyte.lab_analyte_id) ||
+                (!d.calculated_lab_analyte_id && d.calculated_analyte_id === analyte.id)
+              )
           );
           let variableValue: number | undefined =
-            dep ? valueLookup.get(dep.source_analyte_id) : undefined;
+            dep?.source_lab_analyte_id ? valueLookup.get(dep.source_lab_analyte_id) : undefined;
+
+          if (variableValue === undefined)
+            variableValue = dep ? valueLookup.get(dep.source_analyte_id) : undefined;
 
           // 2. Direct key match (name / code / variable_name already in map)
           if (variableValue === undefined)
@@ -3230,10 +3469,11 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
           const aiOrManual = testGroupResults.find((v) => v.analyte_id === analyte.id) || testGroupResults.find((v) => v.parameter === analyte.name);
           const val = aiOrManual?.value ?? manual?.value ?? analyte.existing_result?.value;
           // Store by UUID (primary key — always unique, no naming convention needed)
-          if (analyte.id) {
-            const num = toNumber(val);
-            if (num !== null) valueLookup.set(analyte.id, num);
-          }
+        if (analyte.id) {
+          const num = toNumber(val);
+          if (num !== null) valueLookup.set(analyte.id, num);
+          if (num !== null && analyte.lab_analyte_id) valueLookup.set(analyte.lab_analyte_id, num);
+        }
           addLookupAliases(valueLookup, analyte.name, analyte.code, val);
         }
 
@@ -3243,7 +3483,7 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
           .map((a) => {
             const manual = manualValues.find((v) => v.analyte_id === a.id) || manualValues.find((v) => v.parameter === a.name);
             // Pass only deps for this specific calculated analyte
-            const analyteDepSlice = allDeps.filter((d) => d.calculated_analyte_id === a.id);
+            const analyteDepSlice = getPreferredDepsForCalculated(allDeps, a.id, (a as any).lab_analyte_id || null);
             const calculatedValue = evaluateCalculatedValue(a, valueLookup, analyteDepSlice);
             return {
               analyte_id: a.id,
@@ -3671,10 +3911,15 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
 
   // Plain function (not a React component) so it is called inline and never
   // unmounts/remounts on parent re-render, preserving input focus.
-  const renderTestGroupEntry = (testGroup: TestGroupResult, entryMode: "manual" | "ai") => {
-    const testGroupValues =
-      manualValues.filter((v) => testGroup.analytes.some((a) => a.name === v.parameter));
-    const actionableTestGroupValues = testGroupValues.filter((v) => !v.is_calculated);
+		  const renderTestGroupEntry = (testGroup: TestGroupResult, entryMode: "manual" | "ai") => {
+		    const testGroupValues = testGroup.analytes
+          .map((a) =>
+            manualValues.find((v) =>
+              (v.analyte_id && v.analyte_id === a.id) || v.parameter === a.name
+            )
+          )
+          .filter((v): v is ExtractedValue => !!v);
+	    const actionableTestGroupValues = testGroupValues.filter((v) => !v.is_calculated);
     const completedCount = actionableTestGroupValues.filter((v) => v.value && typeof v.value === 'string' && v.value.trim() !== "").length;
     const pendingCount = actionableTestGroupValues.length - completedCount;
 
@@ -3682,9 +3927,14 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
       <div className="border border-gray-200 rounded-lg p-3 sm:p-4 mb-4">
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between mb-4">
           <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:gap-4">
-            <h4 className="text-base sm:text-lg font-medium line-clamp-2">
-              {testGroup.test_group_name}
-            </h4>
+	            <h4 className="text-base sm:text-lg font-medium line-clamp-2">
+	              {testGroup.test_group_name}
+	            </h4>
+	            {testGroup.is_section_only && (
+	              <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-blue-100 text-blue-700">
+	                Section-only
+	              </span>
+	            )}
 
             {/* AI Auto-Range Button */}
             <button
@@ -3777,7 +4027,7 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
           </div>
         </div>
 
-        {entryMode === "ai" && (
+	        {entryMode === "ai" && testGroup.analytes.length > 0 && (
           <div className="mb-4 p-3 bg-purple-50 border border-purple-200 rounded-lg">
             <h5 className="text-sm font-medium text-purple-900 mb-2">AI Processing for {testGroup.test_group_name}</h5>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
@@ -3802,8 +4052,8 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
           </div>
         )}
 
-        <div className="-mx-4 overflow-x-auto">
-          <table className="min-w-full divide-y divide-gray-200">
+	        <div className="-mx-4 overflow-x-auto">
+	          <table className="min-w-full divide-y divide-gray-200">
             <thead className="bg-gray-50">
               <tr>
                 <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Parameter</th>
@@ -3840,7 +4090,7 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
                       )}
                       {value.is_calculated && (() => {
                         const analyteObj = testGroup.analytes.find((a: any) => a.id === value.analyte_id);
-                        const deps = calcDeps.filter(d => d.calculated_analyte_id === value.analyte_id);
+                        const deps = getPreferredDepsForCalculated(calcDeps, value.analyte_id, value.lab_analyte_id);
                         if (!analyteObj?.formula) return null;
                         return (
                           <div className="mt-1.5 text-xs bg-blue-50 border border-blue-100 rounded p-1.5 space-y-0.5">
@@ -3851,8 +4101,15 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
                               <div className="text-amber-600 font-medium">No dependencies saved — open Dependency Manager</div>
                             ) : (
                               deps.map(dep => {
-                                const sourceManual = manualValues.find(mv => mv.analyte_id === dep.source_analyte_id);
-                                const sourceName = orderAnalytes.find((a: any) => a.id === dep.source_analyte_id)?.name || dep.source_analyte_id.slice(0, 8);
+                                const sourceManual = manualValues.find(mv =>
+                                  (dep.source_lab_analyte_id && mv.lab_analyte_id === dep.source_lab_analyte_id) ||
+                                  mv.analyte_id === dep.source_analyte_id
+                                );
+                                const sourceName =
+                                  orderAnalytes.find((a: any) =>
+                                    (dep.source_lab_analyte_id && a.lab_analyte_id === dep.source_lab_analyte_id) ||
+                                    a.id === dep.source_analyte_id
+                                  )?.name || dep.source_analyte_id.slice(0, 8);
                                 const hasValue = sourceManual?.value && String(sourceManual.value).trim();
                                 return (
                                   <div key={dep.variable_name} className={`flex items-center gap-1 ${hasValue ? 'text-green-700' : 'text-red-600'}`}>
@@ -4012,19 +4269,31 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
                 );
               })}
 
-              {testGroupValues.length === 0 && (
-                <tr>
-                  <td colSpan={5} className="px-4 py-6 text-sm text-gray-500 text-center">
-                    All analytes for this test group are already submitted or verified.
-                  </td>
-                </tr>
-              )}
-            </tbody>
-          </table>
-        </div>
-      </div>
-    );
-  };
+	              {testGroupValues.length === 0 && (
+	                <tr>
+	                  <td colSpan={5} className="px-4 py-6 text-sm text-gray-500 text-center">
+	                    {testGroup.is_section_only
+	                      ? "This is a section-only test group. Fill the report sections below."
+	                      : "All analytes for this test group are already submitted or verified."}
+	                  </td>
+	                </tr>
+	              )}
+	            </tbody>
+	          </table>
+	        </div>
+	        {resultIdByTG[testGroup.test_group_id] && (
+	          <div className="mt-4 border-t border-blue-100 bg-blue-50/30 px-4 py-3 rounded-b-lg">
+	            <SectionEditor
+	              resultId={resultIdByTG[testGroup.test_group_id]}
+	              testGroupId={testGroup.test_group_id}
+	              editorRole="technician"
+	              showAIAssistant={false}
+	            />
+	          </div>
+	        )}
+	      </div>
+	    );
+	  };
 
   // =========================================================
   // #endregion Small render helpers
@@ -4567,9 +4836,9 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
                     {testGroups.map((tg) => {
                       const key = tg.test_group_id || tg.order_test_group_id || tg.order_test_id;
                       const rows = readonlyByTG[key as string] || [];
-                      if (!rows.length) return null;
-                      return (
-                        <div key={key} className="border rounded-lg">
+	                      if (!rows.length && !tg.is_section_only && !resultIdByTG[key]) return null;
+	                      return (
+	                        <div key={key} className="border rounded-lg">
                           <div className="px-4 py-2 bg-gray-50 border-b font-medium">{tg.test_group_name}</div>
                           <div className="overflow-x-auto">
                             <table className="min-w-full divide-y divide-gray-200">
@@ -4582,9 +4851,9 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
                                   <th className="px-4 py-2 text-left text-xs font-semibold text-gray-600">Flag</th>
                                 </tr>
                               </thead>
-                              <tbody className="bg-white divide-y divide-gray-100">
-                                {rows.map((rv: any) => (
-                                  <tr key={rv.id}>
+	                              <tbody className="bg-white divide-y divide-gray-100">
+	                                {rows.map((rv: any) => (
+	                                  <tr key={rv.id}>
                                     <td className="px-4 py-2 text-sm">{rv.analyte_name}</td>
                                     <td className="px-4 py-2 text-sm">{rv.value}</td>
                                     <td className="px-4 py-2 text-sm">{rv.unit}</td>
@@ -4593,8 +4862,17 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
                                       <span className={`px-1.5 py-0.5 rounded ${getFlagColor(rv.flag)}`}>{rv.flag || ""}</span>
                                     </td>
                                   </tr>
-                                ))}
-                              </tbody>
+	                                ))}
+	                                {rows.length === 0 && (
+	                                  <tr>
+	                                    <td colSpan={5} className="px-4 py-4 text-sm text-gray-500 text-center">
+	                                      {tg.is_section_only
+	                                        ? "No analyte rows for this section-only test group. Report sections are available below."
+	                                        : "No submitted analyte rows for this test group."}
+	                                    </td>
+	                                  </tr>
+	                                )}
+	                              </tbody>
                             </table>
                           </div>
                           {/* Report Sections for this test group */}

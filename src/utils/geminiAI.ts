@@ -258,7 +258,11 @@ class SecureGeminiAIService {
           group_level_prompt: response.testGroup.group_level_prompt || 'Extract and validate results for listed analytes. Return structured, analyte-mapped output with confidence.',
           to_be_copied: false
         },
-        analytes: (response.analytes || []).map((analyte: any) => ({
+        analytes: (response.analytes || []).map((analyte: any) => {
+          const expectedNormalValues = Array.isArray(analyte.expected_normal_values)
+            ? analyte.expected_normal_values.map(String).map((value: string) => value.trim()).filter(Boolean)
+            : [];
+          return {
           name: analyte.name || '',
           unit: analyte.unit || '',
           reference_range: this.formatReferenceRange(analyte.reference_min, analyte.reference_max),
@@ -279,9 +283,9 @@ class SecureGeminiAIService {
           formula: null,
           formula_variables: [],
           formula_description: null,
-          value_type: 'numeric',
-          expected_normal_values: []
-        })),
+          value_type: normalizeAnalyteValueType(analyte.value_type, expectedNormalValues, analyte.unit) || 'numeric',
+          expected_normal_values: expectedNormalValues
+        }}),
         test_group_analytes: (response.analytes || []).map((analyte: any) => ({
           test_group_code: this.generateTestCode(response.testGroup.name || ''),
           analyte_name: analyte.name || ''
@@ -356,6 +360,62 @@ export interface AnalyteConfigurationResponse {
   formula_description: string | null;
   confidence: number;
   reasoning: string;
+}
+
+export function normalizeAnalyteValueType(
+  rawValueType?: string | null,
+  expectedNormalValues?: string[] | null,
+  unit?: string | null,
+): 'numeric' | 'qualitative' | 'semi_quantitative' | 'descriptive' | null {
+  const normalized = (rawValueType || '').trim().toLowerCase();
+  const unitNormalized = (unit || '').trim().toLowerCase();
+  const hasExpectedValues = Array.isArray(expectedNormalValues) && expectedNormalValues.length > 0;
+
+  if (
+    normalized === 'numeric' ||
+    normalized === 'number' ||
+    normalized === 'quantitative'
+  ) {
+    return 'numeric';
+  }
+
+  if (
+    normalized === 'qualitative' ||
+    normalized === 'categorical' ||
+    normalized === 'category'
+  ) {
+    return 'qualitative';
+  }
+
+  if (
+    normalized === 'semi_quantitative' ||
+    normalized === 'semi-quantitative' ||
+    normalized === 'semiquantitative' ||
+    normalized === 'graded'
+  ) {
+    return 'semi_quantitative';
+  }
+
+  if (
+    normalized === 'descriptive' ||
+    normalized === 'text' ||
+    normalized === 'free_text' ||
+    normalized === 'free-text' ||
+    normalized === 'comment' ||
+    normalized === 'comments'
+  ) {
+    return 'descriptive';
+  }
+
+  if (hasExpectedValues) {
+    return 'qualitative';
+  }
+
+  if (unitNormalized === 'qualitative') {
+    return 'qualitative';
+  }
+
+  return null;
 }
 
 /**

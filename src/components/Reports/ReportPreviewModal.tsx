@@ -20,11 +20,12 @@ export const ReportPreviewModal: React.FC<ReportPreviewModalProps> = ({
     orderId,
     patientName,
     patientPhone,
-    testNames,
+    testNames = [],
     doctorName
 }) => {
     const [pdfUrl, setPdfUrl] = useState<string | null>(null);
     const [loading, setLoading] = useState(false);
+    const safeTestNames = Array.isArray(testNames) ? testNames : [];
 
     // Extra details needed for sending to doctor
     const [doctorPhone, setDoctorPhone] = useState<string>('');
@@ -119,10 +120,10 @@ export const ReportPreviewModal: React.FC<ReportPreviewModalProps> = ({
                         <h3 className="text-lg sm:text-xl font-bold text-gray-900 truncate">{patientName}</h3>
                         <div className="flex flex-wrap items-center gap-2 text-xs sm:text-sm text-gray-500 mt-1">
                             <span className="bg-blue-100 text-blue-800 px-2 py-0.5 rounded-full text-xs font-medium">
-                                {testNames.length} Test{testNames.length !== 1 ? 's' : ''}
+                                {safeTestNames.length} Test{safeTestNames.length !== 1 ? 's' : ''}
                             </span>
                             <span>•</span>
-                            <span className="line-clamp-2">{testNames.join(', ')}</span>
+                            <span className="line-clamp-2">{safeTestNames.join(', ')}</span>
                         </div>
                     </div>
                     <button
@@ -163,7 +164,7 @@ export const ReportPreviewModal: React.FC<ReportPreviewModalProps> = ({
                                 patientPhone={doctorPhone}
                                 doctorName={doctorName}
                                 mode="doctor"
-                                testName={testNames.join(', ')}
+                                testName={safeTestNames.join(', ')}
                                 buttonClassName="inline-flex items-center justify-center space-x-2 px-4 py-2 text-sm font-medium bg-green-50 text-green-700 border border-green-200 rounded-lg hover:bg-green-100 transition-colors w-full sm:w-auto"
                                 showIcon={true}
                                 label="Send to Dr."
@@ -177,7 +178,7 @@ export const ReportPreviewModal: React.FC<ReportPreviewModalProps> = ({
                                 reportName={`${patientName} - Report`}
                                 patientName={patientName}
                                 patientPhone={patientPhone}
-                                testName={testNames.join(', ')}
+                                testName={safeTestNames.join(', ')}
                                 buttonClassName="inline-flex items-center justify-center space-x-2 px-4 py-2 text-sm font-medium bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors shadow-sm w-full sm:w-auto"
                                 showIcon={true}
                                 label="Send WhatsApp"

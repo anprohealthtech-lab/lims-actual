@@ -4,6 +4,7 @@ import { database, supabase } from '../../utils/supabase';
 
 interface SourceAnalyte {
   id: string;
+  lab_analyte_id?: string | null;
   name: string;
   unit: string;
   category?: string;
@@ -101,6 +102,24 @@ export const SimpleAnalyteEditor: React.FC<SimpleAnalyteEditorProps> = ({
   const [expectedValueFlagMap, setExpectedValueFlagMap] = useState<Record<string, string>>(
     analyte.expected_value_flag_map || {}
   );
+
+  useEffect(() => {
+    setFormData(analyte);
+    setExpectedNormalValuesText(analyte.expected_normal_values?.join('\n') || '');
+    setValueType(analyte.value_type || '');
+    setDefaultValue(analyte.default_value || '');
+    setQuickCodes(
+      Object.entries(analyte.expected_value_codes || {}).map(([code, value]) => ({ code, value }))
+    );
+    setFormulaData({
+      is_calculated: analyte.is_calculated || false,
+      formula: analyte.formula || '',
+      formula_variables: analyte.formula_variables || [],
+      formula_description: analyte.formula_description || ''
+    });
+    setFormulaVariablesText((analyte.formula_variables || []).join(', '));
+    setExpectedValueFlagMap(analyte.expected_value_flag_map || {});
+  }, [analyte]);
   const [labFlagOptions, setLabFlagOptions] = useState<Array<{value: string; label: string}>>([
     { value: '', label: 'Normal' },
     { value: 'H', label: 'High' },
@@ -190,19 +209,60 @@ export const SimpleAnalyteEditor: React.FC<SimpleAnalyteEditorProps> = ({
     return words.map(w => w.substring(0, 3)).join('').toUpperCase().substring(0, 6);
   };
 
-  // Pre-populate selectedSources from existing formula_variables on mount
+  // Pre-populate selectedSources from saved dependency rows first.
+  // Falling back to formula_variables slug matching is lossy and can reopen
+  // the wrong analyte (for example ALB matching "Albumin, Urine").
   useEffect(() => {
-    if (analyte.formula_variables && analyte.formula_variables.length > 0 && availableAnalytes.length > 0) {
-      const sources = analyte.formula_variables.map((varName: string) => {
-        const matched = availableAnalytes.find(a => generateVariableSlug(a.name) === varName);
-        return matched
-          ? { ...matched, variableName: varName }
-          : { id: `_manual_${varName}`, name: varName, unit: '', variableName: varName };
-      });
-      setSelectedSources(sources);
-    }
+    const loadSelectedSources = async () => {
+      if (!formulaData.is_calculated && !analyte.is_calculated) {
+        setSelectedSources([]);
+        return;
+      }
+
+      try {
+        const labId = await database.getCurrentUserLabId();
+        const { data: existingDeps, error: depsError } = await database.analyteDependencies.getByAnalyte(analyte.id, {
+          labId: labId || undefined,
+          calculatedLabAnalyteId: analyte.lab_analyte_id || null,
+        });
+
+        if (!depsError && existingDeps && existingDeps.length > 0) {
+          const sources = existingDeps.map((dep: any) => {
+            const sourceLabAnalyte = dep.source_lab_analyte;
+            const sourceAnalyte = dep.source_analyte;
+            return {
+              id: sourceLabAnalyte?.analyte_id || sourceAnalyte?.id || dep.source_analyte_id,
+              lab_analyte_id: dep.source_lab_analyte_id || sourceLabAnalyte?.id || null,
+              name: sourceLabAnalyte?.name || sourceAnalyte?.name || dep.variable_name,
+              unit: sourceLabAnalyte?.unit || sourceAnalyte?.unit || '',
+              category: sourceLabAnalyte?.category,
+              variableName: dep.variable_name,
+            };
+          });
+          setSelectedSources(sources);
+          return;
+        }
+      } catch (e) {
+        console.error('Failed to load analyte dependencies for editor:', e);
+      }
+
+      if (analyte.formula_variables && analyte.formula_variables.length > 0 && availableAnalytes.length > 0) {
+        const sources = analyte.formula_variables.map((varName: string) => {
+          const matched = availableAnalytes.find(a => generateVariableSlug(a.name) === varName);
+          return matched
+            ? { ...matched, variableName: varName }
+            : { id: `_manual_${varName}`, name: varName, unit: '', variableName: varName };
+        });
+        setSelectedSources(sources);
+        return;
+      }
+
+      setSelectedSources([]);
+    };
+
+    loadSelectedSources();
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [analyte.id, analyte.lab_analyte_id, analyte.formula_variables, availableAnalytes]);
 
   // Sync selectedSources → formulaVariablesText
   useEffect(() => {
@@ -223,13 +283,10 @@ export const SimpleAnalyteEditor: React.FC<SimpleAnalyteEditorProps> = ({
   }, [showSourcePicker]);
 
   const inGroupSet = useMemo(() => new Set(testGroupAnalyteIds), [testGroupAnalyteIds]);
-  // Name set for fallback — a source analyte with a different ID but same name counts as "in group"
-  const inGroupNameSet = useMemo(
-    () => new Set(availableAnalytes.filter(a => inGroupSet.has(a.id)).map(a => a.name.toLowerCase())),
-    [availableAnalytes, inGroupSet]
-  );
-  const isInGroup = (source: { id: string; name: string }) =>
-    inGroupSet.has(source.id) || inGroupNameSet.has(source.name.toLowerCase());
+  // Treat "in group" as an exact analyte attachment check only.
+  // Name-based fallback makes duplicate same-name analytes (for example multiple
+  // Albumin rows) all appear as if they belong to this test group.
+  const isInGroup = (source: { id: string }) => inGroupSet.has(source.id);
 
   const filteredSourceAnalytes = useMemo(() => {
     const filtered = availableAnalytes.filter(a => {
@@ -241,13 +298,40 @@ export const SimpleAnalyteEditor: React.FC<SimpleAnalyteEditorProps> = ({
       }
       return true;
     });
+
+    // Collapse obvious duplicate choices in the picker. This keeps the source
+    // list aligned with what the user expects from test_group_analytes while
+    // still preserving distinct analytes when their displayed unit differs.
+    const dedupedMap = new Map<string, SourceAnalyte>();
+    for (const item of filtered) {
+      const key = `${item.name.trim().toLowerCase()}|${(item.unit || '').trim().toLowerCase()}`;
+      const existing = dedupedMap.get(key);
+      if (!existing) {
+        dedupedMap.set(key, item);
+        continue;
+      }
+
+      const existingScore =
+        (isInGroup(existing) ? 10 : 0) +
+        (existing.lab_analyte_id ? 2 : 0);
+      const itemScore =
+        (isInGroup(item) ? 10 : 0) +
+        (item.lab_analyte_id ? 2 : 0);
+
+      if (itemScore > existingScore) {
+        dedupedMap.set(key, item);
+      }
+    }
+
+    const deduped = Array.from(dedupedMap.values());
     // Sort: analytes in this test group appear first
-    filtered.sort((a, b) => {
+    deduped.sort((a, b) => {
       const aIn = isInGroup(a) ? 0 : 1;
       const bIn = isInGroup(b) ? 0 : 1;
-      return aIn - bIn;
+      if (aIn !== bIn) return aIn - bIn;
+      return a.name.localeCompare(b.name);
     });
-    return filtered.slice(0, 30);
+    return deduped.slice(0, 30);
   }, [availableAnalytes, selectedSources, sourceSearchTerm, analyte.id, inGroupSet]);
 
   const handleAddSource = (source: SourceAnalyte) => {
@@ -322,10 +406,7 @@ export const SimpleAnalyteEditor: React.FC<SimpleAnalyteEditorProps> = ({
 
       // Update lab_analytes table (lab-specific) — formula fields are stored here,
       // NOT in the global analytes table, so one lab's formula change never affects others.
-      const { data, error: updateError } = await database.labAnalytes.updateLabSpecific(
-        labId,
-        formData.id, // analyte_id
-        {
+      const updates = {
           // Update actual values
           name: formData.name,
           unit: formData.unit,
@@ -368,8 +449,15 @@ export const SimpleAnalyteEditor: React.FC<SimpleAnalyteEditorProps> = ({
           formula: formulaData.formula || null,
           formula_variables: parsedVars.length > 0 ? parsedVars : [],
           formula_description: formulaData.formula_description || null,
-        }
-      );
+        };
+
+      const { data, error: updateError } = formData.lab_analyte_id
+        ? await database.labAnalytes.updateFieldsById(formData.lab_analyte_id, updates)
+        : await database.labAnalytes.updateLabSpecific(
+            labId,
+            formData.id, // legacy fallback by analyte_id
+            updates
+          );
 
       if (updateError) throw updateError;
 
@@ -405,16 +493,16 @@ export const SimpleAnalyteEditor: React.FC<SimpleAnalyteEditorProps> = ({
       }
 
       // Save lab-specific analyte_dependencies if source analytes were selected via picker
-      if ((formulaData.is_calculated || analyte.is_calculated) && selectedSources.length > 0) {
-        const deps = selectedSources
-          .filter(s => !s.id.startsWith('_manual_')) // skip manual-only entries
-          .map(s => ({ source_analyte_id: s.id, variable_name: s.variableName }));
+        if ((formulaData.is_calculated || analyte.is_calculated) && selectedSources.length > 0) {
+          const deps = selectedSources
+            .filter(s => !s.id.startsWith('_manual_')) // skip manual-only entries
+            .map(s => ({ source_analyte_id: s.id, source_lab_analyte_id: s.lab_analyte_id || null, variable_name: s.variableName }));
 
-        if (deps.length > 0) {
-          const { error: depError } = await database.analyteDependencies.setDependencies(formData.id, deps, labId);
-          if (depError) {
-            console.error('Failed to save analyte dependencies:', depError);
-          }
+          if (deps.length > 0) {
+            const { error: depError } = await database.analyteDependencies.setDependencies(formData.id, deps, labId, analyte.lab_analyte_id || null);
+            if (depError) {
+              console.error('Failed to save analyte dependencies:', depError);
+            }
         }
       }
 

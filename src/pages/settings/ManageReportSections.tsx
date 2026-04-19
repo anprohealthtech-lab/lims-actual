@@ -60,6 +60,391 @@ const SECTION_TYPES = [
   { value: 'custom', label: 'Custom', icon: '📝' },
 ];
 
+// ============================================
+// CASCADE TYPES
+// ============================================
+
+interface CascadeOption {
+  id: string;
+  value: string;
+  sub_levels?: CascadeLevel[];
+}
+
+interface CascadeLevel {
+  id: string;
+  label: string;
+  multi_select: boolean;
+  options: CascadeOption[];
+}
+
+interface MatrixConfig {
+  rows: string[];
+  columns: string[];
+  cellOptions?: string[]; // if set, cells render as dropdowns (e.g. ["S","I","R"])
+}
+
+interface SectionConfig {
+  mode: 'flat' | 'cascading' | 'matrix';
+  cascade_levels: CascadeLevel[];
+  matrix: MatrixConfig;
+}
+
+// ============================================
+// CASCADE TREE HELPERS (immutable updates)
+// ============================================
+
+const genId = () => Math.random().toString(36).slice(2, 11);
+const DEFAULT_MATRIX_CONFIG: MatrixConfig = {
+  rows: ['RE', 'LE'],
+  columns: ['SPH', 'CYL', 'AXIS', 'ADD'],
+};
+
+function updateLevelLabelInTree(levels: CascadeLevel[], levelId: string, label: string): CascadeLevel[] {
+  return levels.map(lvl =>
+    lvl.id === levelId
+      ? { ...lvl, label }
+      : { ...lvl, options: lvl.options.map(opt => ({ ...opt, sub_levels: opt.sub_levels ? updateLevelLabelInTree(opt.sub_levels, levelId, label) : undefined })) }
+  );
+}
+
+function toggleMultiSelectInTree(levels: CascadeLevel[], levelId: string): CascadeLevel[] {
+  return levels.map(lvl =>
+    lvl.id === levelId
+      ? { ...lvl, multi_select: !lvl.multi_select }
+      : { ...lvl, options: lvl.options.map(opt => ({ ...opt, sub_levels: opt.sub_levels ? toggleMultiSelectInTree(opt.sub_levels, levelId) : undefined })) }
+  );
+}
+
+function removeLevelFromTree(levels: CascadeLevel[], levelId: string): CascadeLevel[] {
+  return levels
+    .filter(lvl => lvl.id !== levelId)
+    .map(lvl => ({ ...lvl, options: lvl.options.map(opt => ({ ...opt, sub_levels: opt.sub_levels ? removeLevelFromTree(opt.sub_levels, levelId) : undefined })) }));
+}
+
+function addOptionToLevelInTree(levels: CascadeLevel[], levelId: string, option: CascadeOption): CascadeLevel[] {
+  return levels.map(lvl =>
+    lvl.id === levelId
+      ? { ...lvl, options: [...lvl.options, option] }
+      : { ...lvl, options: lvl.options.map(opt => ({ ...opt, sub_levels: opt.sub_levels ? addOptionToLevelInTree(opt.sub_levels, levelId, option) : undefined })) }
+  );
+}
+
+function updateOptionValueInTree(levels: CascadeLevel[], optionId: string, value: string): CascadeLevel[] {
+  return levels.map(lvl => ({
+    ...lvl,
+    options: lvl.options.map(opt => {
+      if (opt.id === optionId) return { ...opt, value };
+      return { ...opt, sub_levels: opt.sub_levels ? updateOptionValueInTree(opt.sub_levels, optionId, value) : undefined };
+    }),
+  }));
+}
+
+function removeOptionFromTree(levels: CascadeLevel[], optionId: string): CascadeLevel[] {
+  return levels.map(lvl => ({
+    ...lvl,
+    options: lvl.options
+      .filter(opt => opt.id !== optionId)
+      .map(opt => ({ ...opt, sub_levels: opt.sub_levels ? removeOptionFromTree(opt.sub_levels, optionId) : undefined })),
+  }));
+}
+
+function addSubLevelToOptionInTree(levels: CascadeLevel[], optionId: string, newLevel: CascadeLevel): CascadeLevel[] {
+  return levels.map(lvl => ({
+    ...lvl,
+    options: lvl.options.map(opt => {
+      if (opt.id === optionId) return { ...opt, sub_levels: [...(opt.sub_levels || []), newLevel] };
+      return { ...opt, sub_levels: opt.sub_levels ? addSubLevelToOptionInTree(opt.sub_levels, optionId, newLevel) : undefined };
+    }),
+  }));
+}
+
+function clearSubLevelsInTree(levels: CascadeLevel[], optionId: string): CascadeLevel[] {
+  return levels.map(lvl => ({
+    ...lvl,
+    options: lvl.options.map(opt => {
+      if (opt.id === optionId) return { ...opt, sub_levels: undefined };
+      return { ...opt, sub_levels: opt.sub_levels ? clearSubLevelsInTree(opt.sub_levels, optionId) : undefined };
+    }),
+  }));
+}
+
+// ============================================
+// CASCADE LEVEL BUILDER COMPONENT
+// ============================================
+
+const DEPTH_STYLES = [
+  { bg: 'bg-blue-50', border: 'border-blue-200', dot: 'bg-blue-400' },
+  { bg: 'bg-green-50', border: 'border-green-200', dot: 'bg-green-400' },
+  { bg: 'bg-purple-50', border: 'border-purple-200', dot: 'bg-purple-400' },
+  { bg: 'bg-orange-50', border: 'border-orange-200', dot: 'bg-orange-400' },
+  { bg: 'bg-gray-50', border: 'border-gray-200', dot: 'bg-gray-400' },
+];
+
+interface CascadeLevelBuilderProps {
+  levels: CascadeLevel[];
+  onChange: (levels: CascadeLevel[]) => void;
+  depth?: number;
+}
+
+const CascadeLevelBuilder: React.FC<CascadeLevelBuilderProps> = ({ levels, onChange, depth = 0 }) => {
+  const style = DEPTH_STYLES[depth % DEPTH_STYLES.length];
+
+  return (
+    <div className="space-y-3">
+      {levels.map(level => (
+        <div key={level.id} className={`border rounded-lg p-3 ${style.bg} ${style.border}`}>
+          {/* Level header row */}
+          <div className="flex items-center gap-2 mb-3">
+            <span className={`w-2.5 h-2.5 rounded-full flex-shrink-0 ${style.dot}`} />
+            <span className="text-xs font-semibold text-gray-500 uppercase tracking-wider flex-shrink-0">Level</span>
+            <input
+              type="text"
+              value={level.label}
+              onChange={e => onChange(updateLevelLabelInTree(levels, level.id, e.target.value))}
+              placeholder="e.g. Specimen Type, Gross Examination..."
+              className="flex-1 px-2 py-1.5 border border-gray-300 rounded text-sm focus:ring-2 focus:ring-blue-400 bg-white"
+            />
+            <label className="flex items-center gap-1 text-xs text-gray-600 whitespace-nowrap cursor-pointer select-none">
+              <input
+                type="checkbox"
+                checked={level.multi_select}
+                onChange={() => onChange(toggleMultiSelectInTree(levels, level.id))}
+                className="w-3 h-3"
+              />
+              Multi-select
+            </label>
+            <button
+              type="button"
+              onClick={() => onChange(removeLevelFromTree(levels, level.id))}
+              className="p-1 text-red-400 hover:text-red-600 hover:bg-red-50 rounded flex-shrink-0"
+              title="Remove this level"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+
+          {/* Options list */}
+          <div className="space-y-2 ml-4">
+            {level.options.map(option => (
+              <div key={option.id}>
+                <div className="flex items-center gap-2">
+                  <GripVertical className="w-4 h-4 text-gray-300 flex-shrink-0" />
+                  <input
+                    type="text"
+                    value={option.value}
+                    onChange={e => onChange(updateOptionValueInTree(levels, option.id, e.target.value))}
+                    placeholder={`Option ${level.options.indexOf(option) + 1}`}
+                    className="flex-1 px-2 py-1.5 border border-gray-300 rounded text-sm focus:ring-2 focus:ring-blue-400 bg-white"
+                  />
+                  {option.sub_levels && option.sub_levels.length > 0 ? (
+                    <button
+                      type="button"
+                      onClick={() => onChange(clearSubLevelsInTree(levels, option.id))}
+                      className="px-2 py-1 text-xs text-orange-600 border border-orange-200 rounded hover:bg-orange-50 whitespace-nowrap"
+                      title="Remove sub-levels for this option"
+                    >
+                      ↳ Clear
+                    </button>
+	                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const newLevel: CascadeLevel = {
+                          id: genId(),
+                          label: '',
+                          multi_select: false,
+                          options: [{ id: genId(), value: '' }],
+                        };
+                        onChange(addSubLevelToOptionInTree(levels, option.id, newLevel));
+                      }}
+                      className="px-2 py-1 text-xs text-blue-600 border border-blue-200 rounded hover:bg-blue-50 whitespace-nowrap"
+                      title="Add a sub-level revealed when this option is selected"
+                    >
+                      ↳ Sub-level
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => onChange(removeOptionFromTree(levels, option.id))}
+                    className="p-1 text-gray-400 hover:text-red-500 hover:bg-red-50 rounded flex-shrink-0"
+                    title="Remove this option"
+                  >
+                    <X className="w-3 h-3" />
+                  </button>
+                </div>
+
+                {/* Recursive sub-levels under this option */}
+                {option.sub_levels && option.sub_levels.length > 0 && (
+                  <div className="ml-8 mt-2">
+                    <CascadeLevelBuilder
+                      levels={option.sub_levels}
+                      onChange={newSubLevels => {
+                        const updatedLevels = levels.map(lvl => ({
+                          ...lvl,
+                          options: lvl.options.map(opt =>
+                            opt.id === option.id ? { ...opt, sub_levels: newSubLevels } : opt
+                          ),
+                        }));
+                        onChange(updatedLevels);
+                      }}
+                      depth={depth + 1}
+                    />
+                  </div>
+                )}
+              </div>
+            ))}
+
+            <button
+              type="button"
+              onClick={() => onChange(addOptionToLevelInTree(levels, level.id, { id: genId(), value: '' }))}
+              className="text-sm text-blue-600 hover:text-blue-700 hover:underline"
+            >
+              + Add Option
+            </button>
+          </div>
+        </div>
+      ))}
+
+      {/* Add a new root-level level */}
+      <button
+        type="button"
+        onClick={() => {
+          const newLevel: CascadeLevel = {
+            id: genId(),
+            label: '',
+            multi_select: false,
+            options: [{ id: genId(), value: '' }],
+          };
+          onChange([...levels, newLevel]);
+        }}
+        className="w-full py-2 text-sm text-blue-600 border-2 border-dashed border-blue-200 rounded-lg hover:bg-blue-50 transition-colors"
+      >
+        + Add Level
+      </button>
+    </div>
+  );
+};
+
+interface MatrixBuilderProps {
+  config: MatrixConfig;
+  onChange: (config: MatrixConfig) => void;
+}
+
+const MatrixBuilder: React.FC<MatrixBuilderProps> = ({ config, onChange }) => {
+  const updateRow = (index: number, value: string) => {
+    onChange({
+      ...config,
+      rows: config.rows.map((row, idx) => idx === index ? value : row),
+    });
+  };
+
+  const updateColumn = (index: number, value: string) => {
+    onChange({
+      ...config,
+      columns: config.columns.map((column, idx) => idx === index ? value : column),
+    });
+  };
+
+  const addRow = () => onChange({ ...config, rows: [...config.rows, `Row ${config.rows.length + 1}`] });
+  const addColumn = () => onChange({ ...config, columns: [...config.columns, `Col ${config.columns.length + 1}`] });
+
+  const removeRow = (index: number) => {
+    if (config.rows.length <= 1) return;
+    onChange({ ...config, rows: config.rows.filter((_, idx) => idx !== index) });
+  };
+
+  const removeColumn = (index: number) => {
+    if (config.columns.length <= 1) return;
+    onChange({ ...config, columns: config.columns.filter((_, idx) => idx !== index) });
+  };
+
+  return (
+    <div className="space-y-4">
+      <div className="text-xs text-gray-500 bg-blue-50 border border-blue-100 rounded-lg px-3 py-2">
+        Configure the table headers and row labels. Users will get a grid input UI and the report will render as a real table.
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <div>
+          <div className="flex items-center justify-between mb-2">
+            <span className="text-sm font-medium text-gray-700">Rows</span>
+            <button type="button" onClick={addRow} className="text-sm text-blue-600 hover:text-blue-700">
+              + Add Row
+            </button>
+          </div>
+          <div className="space-y-2">
+            {config.rows.map((row, index) => (
+              <div key={`row-${index}`} className="flex items-center gap-2">
+                <input
+                  type="text"
+                  value={row}
+                  onChange={(e) => updateRow(index, e.target.value)}
+                  className="flex-1 px-3 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500 text-sm"
+                  placeholder={`Row ${index + 1}`}
+                />
+                {config.rows.length > 1 && (
+                  <button type="button" onClick={() => removeRow(index)} className="p-1 text-gray-400 hover:text-red-600">
+                    <X className="w-4 h-4" />
+                  </button>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+
+        <div>
+          <div className="flex items-center justify-between mb-2">
+            <span className="text-sm font-medium text-gray-700">Columns</span>
+            <button type="button" onClick={addColumn} className="text-sm text-blue-600 hover:text-blue-700">
+              + Add Column
+            </button>
+          </div>
+          <div className="space-y-2">
+            {config.columns.map((column, index) => (
+              <div key={`col-${index}`} className="flex items-center gap-2">
+                <input
+                  type="text"
+                  value={column}
+                  onChange={(e) => updateColumn(index, e.target.value)}
+                  className="flex-1 px-3 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500 text-sm"
+                  placeholder={`Column ${index + 1}`}
+                />
+                {config.columns.length > 1 && (
+                  <button type="button" onClick={() => removeColumn(index)} className="p-1 text-gray-400 hover:text-red-600">
+                    <X className="w-4 h-4" />
+                  </button>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      <div>
+        <div className="flex items-center justify-between mb-2">
+          <span className="text-sm font-medium text-gray-700">Cell Options (dropdown)</span>
+          <span className="text-xs text-gray-400">Leave empty for free-text. Add options for dropdowns (e.g. S, I, R).</span>
+        </div>
+        <input
+          type="text"
+          value={(config.cellOptions || []).join(', ')}
+          onChange={(e) => {
+            const opts = e.target.value.split(',').map(s => s.trim()).filter(Boolean);
+            onChange({ ...config, cellOptions: opts });
+          }}
+          className="w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500 text-sm"
+          placeholder="e.g.  S, I, R  — comma-separated"
+        />
+        {(config.cellOptions || []).length > 0 && (
+          <p className="text-xs text-gray-500 mt-1">
+            First option = green (sensitive), last = red (resistant), middle = orange.
+          </p>
+        )}
+      </div>
+    </div>
+  );
+};
+
 const ManageReportSections: React.FC = () => {
   // State
   const [sections, setSections] = useState<TemplateSection[]>([]);
@@ -72,7 +457,20 @@ const ManageReportSections: React.FC = () => {
   // Form state
   const [showForm, setShowForm] = useState(false);
   const [editingSection, setEditingSection] = useState<TemplateSection | null>(null);
-  const [formData, setFormData] = useState({
+  const [formData, setFormData] = useState<{
+    test_group_id: string;
+    section_type: string;
+    section_name: string;
+    display_order: number;
+    default_content: string;
+    predefined_options: string[];
+    is_required: boolean;
+    is_editable: boolean;
+    allow_images: boolean;
+    allow_technician_entry: boolean;
+    placeholder_key: string;
+    section_config: SectionConfig;
+  }>({
     test_group_id: '',
     section_type: 'findings',
     section_name: '',
@@ -83,7 +481,8 @@ const ManageReportSections: React.FC = () => {
     is_editable: true,
     allow_images: false,
     allow_technician_entry: false,
-    placeholder_key: ''
+    placeholder_key: '',
+    section_config: { mode: 'flat', cascade_levels: [], matrix: DEFAULT_MATRIX_CONFIG },
   });
 
   // AI Assistant state
@@ -132,7 +531,8 @@ const ManageReportSections: React.FC = () => {
       is_editable: true,
       allow_images: false,
       allow_technician_entry: false,
-      placeholder_key: ''
+      placeholder_key: '',
+      section_config: { mode: 'flat', cascade_levels: [], matrix: DEFAULT_MATRIX_CONFIG },
     });
     setEditingSection(null);
     setShowAIPanel(false);
@@ -168,13 +568,17 @@ const ManageReportSections: React.FC = () => {
 
       if (result.data) {
         // Update form with AI-generated content
+        const aiData = result.data!;
         setFormData(prev => ({
           ...prev,
-          section_name: result.data!.sectionHeading || prev.section_name,
-          default_content: result.data!.generatedContent || prev.default_content,
-          predefined_options: result.data!.suggestedOptions?.length
-            ? result.data!.suggestedOptions
-            : prev.predefined_options
+          section_name: aiData.sectionHeading || prev.section_name,
+          default_content: aiData.generatedContent || prev.default_content,
+          predefined_options: aiData.suggestedOptions?.length
+            ? aiData.suggestedOptions
+            : prev.predefined_options,
+          section_config: aiData.section_config
+            ? (aiData.section_config as SectionConfig)
+            : prev.section_config,
         }));
 
         setSuccess('AI generated section content successfully!');
@@ -213,6 +617,24 @@ const ManageReportSections: React.FC = () => {
       ];
     }
 
+    // Cascading prompts for biopsy/histopathology
+    if (testName.includes('biopsy') || testName.includes('histopath')) {
+      return [
+        'Create a cascading form for biopsy: Specimen Type → Gross Examination → Microscopic Examination → Anatomical Site',
+        'Create a cascading smart form for histopathology findings',
+        ...basePrompts.slice(0, 1)
+      ];
+    }
+
+    // Cascading prompts for microbiology/culture
+    if (testName.includes('micro') || testName.includes('culture') || testName.includes('sensitivity')) {
+      return [
+        'Create a cascading form for microbiology: Organism Found → Sensitivity Pattern → Antibiotics Tested',
+        'Create a cascading smart form for culture & sensitivity report',
+        ...basePrompts.slice(0, 1)
+      ];
+    }
+
     return basePrompts;
   };
 
@@ -230,13 +652,36 @@ const ManageReportSections: React.FC = () => {
       is_editable: section.is_editable,
       allow_images: section.allow_images ?? false,
       allow_technician_entry: section.allow_technician_entry ?? false,
-      placeholder_key: section.placeholder_key || ''
+      placeholder_key: section.placeholder_key || '',
+      section_config: {
+        mode: ((section as any).section_config?.mode || 'flat'),
+        cascade_levels: (section as any).section_config?.cascade_levels || [],
+        matrix: (section as any).section_config?.matrix || DEFAULT_MATRIX_CONFIG,
+      },
     });
     setShowForm(true);
   };
 
   // Handle form submit
-  const handleSubmit = async (e: React.FormEvent) => {
+  const getBlankSectionForm = (testGroupId = '') => ({
+    test_group_id: testGroupId,
+    section_type: 'findings',
+    section_name: '',
+    display_order: 0,
+    default_content: '',
+    predefined_options: [''],
+    is_required: false,
+    is_editable: true,
+    allow_images: false,
+    allow_technician_entry: false,
+    placeholder_key: '',
+    section_config: { mode: 'flat' as const, cascade_levels: [], matrix: DEFAULT_MATRIX_CONFIG },
+  });
+
+  const handleSubmit = async (
+    e: React.FormEvent,
+    options?: { addAnother?: boolean }
+  ) => {
     e.preventDefault();
     setSaving(true);
     setError(null);
@@ -250,8 +695,11 @@ const ManageReportSections: React.FC = () => {
         throw new Error('Section name is required');
       }
 
-      // Filter out empty options
-      const cleanedOptions = formData.predefined_options.filter(opt => opt.trim() !== '');
+      // Filter out empty options (only used in flat mode)
+      const usesStructuredConfig = formData.section_config.mode === 'cascading' || formData.section_config.mode === 'matrix';
+      const cleanedOptions = usesStructuredConfig
+        ? []
+        : formData.predefined_options.filter(opt => opt.trim() !== '');
 
       const sectionData = {
         test_group_id: formData.test_group_id,
@@ -264,7 +712,8 @@ const ManageReportSections: React.FC = () => {
         is_editable: formData.is_editable,
         allow_images: formData.allow_images,
         allow_technician_entry: formData.allow_technician_entry,
-        placeholder_key: formData.placeholder_key.trim() || formData.section_type
+        placeholder_key: formData.placeholder_key.trim() || formData.section_type,
+        section_config: formData.section_config,
       };
 
       if (editingSection) {
@@ -279,9 +728,16 @@ const ManageReportSections: React.FC = () => {
         setSuccess('Section created successfully');
       }
 
-      setShowForm(false);
-      resetForm();
-      loadData();
+      await loadData();
+
+      if (options?.addAnother) {
+        const preservedTestGroupId = formData.test_group_id;
+        setEditingSection(null);
+        setFormData(getBlankSectionForm(preservedTestGroupId));
+      } else {
+        setShowForm(false);
+        resetForm();
+      }
     } catch (err: any) {
       setError(err.message || 'Failed to save section');
     } finally {
@@ -291,7 +747,7 @@ const ManageReportSections: React.FC = () => {
 
   // Handle delete
   const handleDelete = async (id: string) => {
-    if (!confirm('Are you sure you want to delete this section? This cannot be undone.')) return;
+    if (!confirm('Delete this section? All result content entered for this section across all orders will also be permanently deleted.')) return;
 
     try {
       const { error: deleteErr } = await database.templateSections.delete(id);
@@ -621,7 +1077,7 @@ const ManageReportSections: React.FC = () => {
                       </button>
 
                       <p className="text-xs text-gray-500 text-center">
-                        AI will generate Section Name, Default Content, and Predefined Options
+                        AI generates Section Name, Default Content, and Options — say "cascading" or "smart form" to get a decision-tree form
                       </p>
                     </div>
                   )}
@@ -704,46 +1160,116 @@ const ManageReportSections: React.FC = () => {
                 />
               </div>
 
-              {/* Predefined Options */}
+              {/* Options Mode Toggle + Builder */}
               <div>
-                <div className="flex items-center justify-between mb-2">
-                  <label className="block text-sm font-medium text-gray-700">
-                    Predefined Options
-                  </label>
+                <label className="block text-sm font-medium text-gray-700 mb-2">Options Mode</label>
+                <div className="flex rounded-lg border border-gray-300 overflow-hidden mb-4">
                   <button
                     type="button"
-                    onClick={addOption}
-                    className="text-sm text-blue-600 hover:text-blue-700"
+                    onClick={() => setFormData(prev => ({ ...prev, section_config: { ...prev.section_config, mode: 'flat' } }))}
+                    className={`flex-1 py-2 text-sm font-medium transition-colors ${
+                      formData.section_config.mode === 'flat'
+                        ? 'bg-blue-600 text-white'
+                        : 'bg-white text-gray-600 hover:bg-gray-50'
+                    }`}
                   >
-                    + Add Option
+                    Flat Options
                   </button>
-                </div>
-                <div className="space-y-2 max-h-48 overflow-y-auto">
-                  {formData.predefined_options.map((option, index) => (
-                    <div key={index} className="flex items-center space-x-2">
-                      <GripVertical className="w-4 h-4 text-gray-400" />
-                      <input
-                        type="text"
-                        value={option}
-                        onChange={(e) => updateOption(index, e.target.value)}
-                        className="flex-1 px-3 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500 text-sm"
-                        placeholder={`Option ${index + 1}`}
-                      />
-                      {formData.predefined_options.length > 1 && (
-                        <button
-                          type="button"
-                          onClick={() => removeOption(index)}
-                          className="p-1 text-gray-400 hover:text-red-600"
-                        >
-                          <X className="w-4 h-4" />
-                        </button>
-                      )}
+	                  <button
+	                    type="button"
+	                    onClick={() => setFormData(prev => ({ ...prev, section_config: { ...prev.section_config, mode: 'cascading' } }))}
+                    className={`flex-1 py-2 text-sm font-medium transition-colors border-l ${
+                      formData.section_config.mode === 'cascading'
+                        ? 'bg-blue-600 text-white'
+                        : 'bg-white text-gray-600 hover:bg-gray-50'
+                    }`}
+	                  >
+	                    Cascading (Smart Form)
+	                  </button>
+	                  <button
+	                    type="button"
+	                    onClick={() => setFormData(prev => ({
+	                      ...prev,
+	                      section_config: {
+	                        ...prev.section_config,
+	                        mode: 'matrix',
+	                        matrix: prev.section_config.matrix || DEFAULT_MATRIX_CONFIG,
+	                      },
+	                    }))}
+	                    className={`flex-1 py-2 text-sm font-medium transition-colors border-l ${
+	                      formData.section_config.mode === 'matrix'
+	                        ? 'bg-blue-600 text-white'
+	                        : 'bg-white text-gray-600 hover:bg-gray-50'
+	                    }`}
+	                  >
+	                    Matrix Table
+	                  </button>
+	                </div>
+
+                {formData.section_config.mode === 'flat' ? (
+                  /* ── FLAT options ── */
+                  <div>
+                    <div className="flex items-center justify-between mb-2">
+                      <span className="text-sm text-gray-600">Click-to-select sentences for the doctor</span>
+                      <button type="button" onClick={addOption} className="text-sm text-blue-600 hover:text-blue-700">
+                        + Add Option
+                      </button>
                     </div>
-                  ))}
-                </div>
-                <p className="text-xs text-gray-500 mt-2">
-                  Doctors will be able to select these options when filling the section
-                </p>
+                    <div className="space-y-2 max-h-48 overflow-y-auto">
+                      {formData.predefined_options.map((option, index) => (
+                        <div key={index} className="flex items-center space-x-2">
+                          <GripVertical className="w-4 h-4 text-gray-400" />
+                          <input
+                            type="text"
+                            value={option}
+                            onChange={(e) => updateOption(index, e.target.value)}
+                            className="flex-1 px-3 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500 text-sm"
+                            placeholder={`Option ${index + 1}`}
+                          />
+                          {formData.predefined_options.length > 1 && (
+                            <button type="button" onClick={() => removeOption(index)} className="p-1 text-gray-400 hover:text-red-600">
+                              <X className="w-4 h-4" />
+                            </button>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                    <p className="text-xs text-gray-500 mt-2">
+                      Doctors will click to select these sentences when filling the section.
+                    </p>
+                  </div>
+                ) : formData.section_config.mode === 'cascading' ? (
+                  <div>
+                    <div className="flex items-center gap-2 mb-3">
+                      <div className="flex-1 text-xs text-gray-500 bg-blue-50 border border-blue-100 rounded-lg px-3 py-2">
+                        <strong>How it works:</strong> Each Level is a question (e.g. "Specimen Type"). Each option inside it can reveal a sub-level when selected, creating a guided form that narrows down based on prior answers.
+                      </div>
+                    </div>
+                    <div className="max-h-96 overflow-y-auto pr-1">
+                      <CascadeLevelBuilder
+                        levels={formData.section_config.cascade_levels}
+                        onChange={newLevels =>
+                          setFormData(prev => ({
+                            ...prev,
+                            section_config: { ...prev.section_config, cascade_levels: newLevels },
+                          }))
+                        }
+                      />
+                    </div>
+                  </div>
+                ) : (
+                  <div>
+                    <MatrixBuilder
+                      config={formData.section_config.matrix || DEFAULT_MATRIX_CONFIG}
+                      onChange={(matrix) =>
+                        setFormData(prev => ({
+                          ...prev,
+                          section_config: { ...prev.section_config, matrix },
+                        }))
+                      }
+                    />
+                  </div>
+                )}
               </div>
 
               {/* Flags */}
@@ -794,6 +1320,15 @@ const ManageReportSections: React.FC = () => {
                   className="px-4 py-2 text-gray-700 border rounded-lg hover:bg-gray-50"
                 >
                   Cancel
+                </button>
+                <button
+                  type="button"
+                  disabled={saving}
+                  onClick={(e) => handleSubmit(e as unknown as React.FormEvent, { addAnother: true })}
+                  className="px-4 py-2 border border-blue-200 text-blue-700 rounded-lg hover:bg-blue-50 disabled:opacity-50 flex items-center"
+                >
+                  {saving && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}
+                  {editingSection ? 'Update & Add New Section' : 'Create & Add Another'}
                 </button>
                 <button
                   type="submit"

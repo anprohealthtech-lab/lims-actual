@@ -194,6 +194,77 @@ ${
 }
 .descriptive-row td { border-bottom: 0.5px dotted #e5e5e5 !important; color: #111 !important; }
 .calculated-note { font-size: ${smallPx}px; color: #444; margin: 3px 0 6px; font-style: italic; }
+.group-interpretation-block {
+  margin-top: 10px;
+  font-size: ${basePx}px;
+}
+.group-interpretation-block .section-header {
+  font-size: ${basePx + 2}px;
+  font-weight: 700;
+  color: #0b4aa2;
+  padding: 10px 0 6px 0;
+  margin: 16px 0 8px 0;
+  border-bottom: 2px solid #0b4aa2;
+  letter-spacing: 0.02em;
+  background: transparent;
+}
+.group-interpretation-block figure.table {
+  margin: 8px 0 0 0;
+  width: 100%;
+}
+.group-interpretation-block .tbl-interpretation {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;
+  font-size: ${basePx}px;
+  border: 1px solid #d1daf0;
+  background: #fff;
+  margin-top: 8px;
+}
+.group-interpretation-block .tbl-interpretation thead th {
+  background: #0b4aa2;
+  color: #fff;
+  font-weight: 700;
+  padding: 9px 12px;
+  text-align: left;
+  font-size: ${basePx}px;
+  border: 1px solid #0b4aa2;
+  vertical-align: top;
+}
+.group-interpretation-block .tbl-interpretation tbody td {
+  padding: 9px 12px;
+  border: 1px solid #e2eaf8;
+  vertical-align: top;
+  line-height: 1.5;
+  font-size: ${basePx}px;
+  color: #1f2937;
+  word-break: break-word;
+}
+.group-interpretation-block .tbl-interpretation tbody tr:nth-child(even) td {
+  background: #f5f8ff;
+}
+.group-interpretation-block .tbl-interpretation th:first-child,
+.group-interpretation-block .tbl-interpretation td:first-child {
+  width: 100px;
+  font-weight: 600;
+  white-space: nowrap;
+  color: #1e3a6e;
+}
+.group-interpretation-block .tbl-interpretation tbody td:first-child {
+  border-left: 3px solid #cbd5e1;
+}
+.group-interpretation-block .note {
+  margin-top: 10px;
+  padding: 10px 14px;
+  border-left: 4px solid #0b4aa2;
+  background: #f0f5ff;
+  font-size: ${smallPx + 0.5}px;
+  color: #334155;
+  line-height: 1.55;
+}
+.group-interpretation-block .note strong {
+  color: #0b4aa2;
+}
 .report-sections { margin-top: 14px; border-top: 1px solid #000; padding-top: 6px; }
 .report-sections .section-block { margin-top: 8px; font-size: ${basePx}px; }
 .report-sections .section-label { font-weight: 700; margin-bottom: 2px; }
@@ -362,7 +433,7 @@ ${
       </tbody>
     </table>
     ${groupLegendParts.length ? `<p class="calculated-note">${groupLegendParts.join(" &nbsp;|&nbsp; ")}</p>` : ""}
-    ${group.groupInterpretation ? `<div style="margin-top:6px;padding:6px 0;border-top:1px solid #ddd;font-size:${basePx}px;">${group.groupInterpretation}</div>` : ""}
+    ${group.groupInterpretation ? `<div class="group-interpretation-block">${group.groupInterpretation}</div>` : ""}
   </figure>`;
   }
 

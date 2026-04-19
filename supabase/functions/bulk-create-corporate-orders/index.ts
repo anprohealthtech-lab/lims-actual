@@ -53,6 +53,8 @@ interface TestGroupMeta {
   id: string;
   name: string;
   price: number;
+  sample_type?: string | null;
+  sample_color?: string | null;
 }
 
 interface ChargeLine {
@@ -82,6 +84,25 @@ const formatOrderSampleId = (date: Date, sequence: number, labCode?: string | nu
   return labCode ? `${labCode}-${base}` : base;
 };
 
+const deriveCorporateDisplayPrefix = (accountCode?: string | null, accountName?: string | null) => {
+  const normalizedCode = (accountCode || '').trim().toUpperCase().replace(/[^A-Z0-9]/g, '');
+  if (normalizedCode) return normalizedCode;
+
+  const initials = (accountName || '')
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean)
+    .map((part) => part[0]?.toUpperCase() || '')
+    .join('')
+    .replace(/[^A-Z0-9]/g, '');
+
+  return initials || 'CORP';
+};
+
+const formatCorporateDisplayId = (date: Date, prefix: string, sequence: number) => (
+  `${prefix}-${MONTHS[date.getMonth()].toUpperCase()}-${String(date.getDate()).padStart(2, '0')}-${String(sequence).padStart(3, '0')}`
+);
+
 const getOrderAssignedColor = (sequence: number) => {
   switch ((sequence - 1) % 12) {
     case 0: return { color_code: '#EF4444', color_name: 'Red' };
@@ -98,6 +119,198 @@ const getOrderAssignedColor = (sequence: number) => {
     default: return { color_code: '#A855F7', color_name: 'Violet' };
   }
 };
+
+const SAMPLE_TYPE_CODES: Record<string, string> = {
+  Blood: 'BLD',
+  Serum: 'SRM',
+  Plasma: 'PLM',
+  Urine: 'URN',
+  Stool: 'STL',
+  Sputum: 'SPT',
+  CSF: 'CSF',
+  Swab: 'SWB',
+  Saliva: 'SAL',
+  Tissue: 'TIS',
+  'Whole Blood': 'WBL',
+  'EDTA Blood': 'EDTA',
+  'Heparin Plasma': 'HEP',
+  'Citrate Plasma': 'CIT',
+};
+
+const getSampleTypeCode = (sampleType: string) => SAMPLE_TYPE_CODES[sampleType] || 'UNK';
+
+const getContainerType = (sampleType: string) => {
+  const containerMap: Record<string, string> = {
+    Blood: 'Vacutainer',
+    Serum: 'SST Tube',
+    Plasma: 'EDTA Tube',
+    Urine: 'Urine Container',
+    Stool: 'Stool Container',
+    Sputum: 'Sputum Container',
+    CSF: 'Sterile Tube',
+    Swab: 'Swab Transport Media',
+    'EDTA Blood': 'EDTA Tube',
+    'Heparin Plasma': 'Heparin Tube',
+    'Citrate Plasma': 'Citrate Tube',
+  };
+
+  return containerMap[sampleType] || 'Standard Container';
+};
+
+const getStandardTubeColor = (sampleType: string) => {
+  const colorMap: Record<string, string> = {
+    Blood: '#DC2626',
+    Serum: '#F59E0B',
+    Plasma: '#8B5CF6',
+    'EDTA Blood': '#9333EA',
+    'Heparin Plasma': '#16A34A',
+    'Citrate Plasma': '#2563EB',
+    Urine: '#EAB308',
+    Stool: '#92400E',
+    CSF: '#6B7280',
+    Swab: '#9CA3AF',
+  };
+
+  return colorMap[sampleType] || '#DC2626';
+};
+
+const formatSampleDate = (date: Date) => {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}${month}${day}`;
+};
+
+const formatShortSampleDate = (date: Date) => formatSampleDate(date).slice(2);
+
+const generateNumericBarcode = (date: Date, sequence: number) =>
+  `${formatShortSampleDate(date)}${String(sequence).padStart(4, '0')}`;
+
+async function createSamplesForBulkOrder(
+  supabase: ReturnType<typeof createClient>,
+  orderId: string,
+  orderTests: Array<{ id: string; test_name: string; test_group_id: string | null }>,
+  testGroupMap: Map<string, TestGroupMeta>,
+  labId: string,
+  labCode: string,
+  patientId: string,
+) {
+  const sampleDate = new Date();
+  const dateStr = formatSampleDate(sampleDate);
+  const shortDate = formatShortSampleDate(sampleDate);
+
+  const sampleTypeGroups = new Map<string, Array<{ id: string; test_name: string; sample_color?: string | null }>>();
+
+  for (const orderTest of orderTests) {
+    if (!orderTest.test_group_id) continue;
+    const testMeta = testGroupMap.get(orderTest.test_group_id);
+    const sampleType = testMeta?.sample_type || 'Blood';
+    if (!sampleTypeGroups.has(sampleType)) sampleTypeGroups.set(sampleType, []);
+    sampleTypeGroups.get(sampleType)!.push({
+      id: orderTest.id,
+      test_name: orderTest.test_name,
+      sample_color: testMeta?.sample_color,
+    });
+  }
+
+  if (sampleTypeGroups.size === 0) return;
+
+  const { data: latestIds } = await supabase
+    .from('samples')
+    .select('id')
+    .like('id', `${labCode}-${dateStr}-%`)
+    .order('created_at', { ascending: false })
+    .limit(20);
+
+  let idSequence = 1;
+  for (const row of latestIds || []) {
+    const parts = String(row.id || '').split('-');
+    if (parts.length >= 3) {
+      const seqNum = parseInt(parts[2], 10);
+      if (!Number.isNaN(seqNum)) {
+        idSequence = Math.max(idSequence, seqNum + 1);
+      }
+    }
+  }
+
+  const { data: latestBarcodes } = await supabase
+    .from('samples')
+    .select('barcode')
+    .like('barcode', `${shortDate}%`)
+    .order('created_at', { ascending: false })
+    .limit(20);
+
+  let barcodeSequence = 1;
+  for (const row of latestBarcodes || []) {
+    const barcode = String(row.barcode || '');
+    if (barcode.length >= 10) {
+      const seqNum = parseInt(barcode.slice(6), 10);
+      if (!Number.isNaN(seqNum)) {
+        barcodeSequence = Math.max(barcodeSequence, seqNum + 1);
+      }
+    }
+  }
+
+  for (const [sampleType, groupedTests] of sampleTypeGroups.entries()) {
+    const sampleId = `${labCode}-${dateStr}-${String(idSequence).padStart(4, '0')}-${getSampleTypeCode(sampleType)}`;
+    const barcode = generateNumericBarcode(sampleDate, barcodeSequence);
+    const tubeColor = groupedTests[0]?.sample_color || getStandardTubeColor(sampleType);
+
+    const qr_code_data = {
+      sampleId,
+      sampleType,
+      patientId,
+      orderId,
+      labCode,
+      collectionDate: new Date().toISOString(),
+      barcode,
+      tubeColor,
+    };
+
+    const { data: sample, error: sampleError } = await supabase
+      .from('samples')
+      .insert({
+        id: sampleId,
+        order_id: orderId,
+        sample_type: sampleType,
+        barcode,
+        qr_code_data,
+        container_type: getContainerType(sampleType),
+        lab_id: labId,
+        status: 'created',
+      })
+      .select('id')
+      .single();
+
+    if (sampleError || !sample) {
+      throw new Error(`Sample creation failed: ${sampleError?.message || 'No sample returned'}`);
+    }
+
+    const orderTestIds = groupedTests.map((test) => test.id);
+    const { error: linkError } = await supabase
+      .from('order_tests')
+      .update({ sample_id: sample.id })
+      .in('id', orderTestIds);
+
+    if (linkError) {
+      throw new Error(`Failed linking samples to order tests: ${linkError.message}`);
+    }
+
+    await supabase.from('sample_events').insert({
+      sample_id: sample.id,
+      event_type: 'created',
+      metadata: {
+        test_groups: groupedTests.map((test) => ({
+          id: test.id,
+          test_name: test.test_name,
+        })),
+      },
+    });
+
+    idSequence += 1;
+    barcodeSequence += 1;
+  }
+}
 
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: corsHeaders });
@@ -138,7 +351,7 @@ Deno.serve(async (req) => {
 
     const { data: account, error: accountError } = await supabase
       .from('accounts')
-      .select('id, name, default_discount_percent, billing_mode')
+      .select('id, name, code, default_discount_percent, billing_mode')
       .eq('id', body.account_id)
       .eq('lab_id', labId)
       .eq('is_active', true)
@@ -171,12 +384,18 @@ Deno.serve(async (req) => {
     const allTestIds = dedupeIds([...allDirectTestIds, ...Array.from(packageMap.values()).flatMap((pkg) => pkg.testGroupIds)]);
     const { data: testGroupRows, error: testGroupRowsError } = await supabase
       .from('test_groups')
-      .select('id, name, price')
+      .select('id, name, price, sample_type, sample_color')
       .in('id', allTestIds);
     if (testGroupRowsError || !testGroupRows) throw new Error('Failed to fetch test groups');
 
     const testGroupMap = new Map<string, TestGroupMeta>();
-    testGroupRows.forEach((tg: any) => testGroupMap.set(tg.id, { id: tg.id, name: tg.name, price: Number(tg.price) || 0 }));
+    testGroupRows.forEach((tg: any) => testGroupMap.set(tg.id, {
+      id: tg.id,
+      name: tg.name,
+      price: Number(tg.price) || 0,
+      sample_type: tg.sample_type ?? null,
+      sample_color: tg.sample_color ?? null,
+    }));
 
     const { data: accountPrices } = allTestIds.length > 0
       ? await supabase.from('account_prices').select('test_group_id, price').eq('account_id', body.account_id).in('test_group_id', allTestIds).eq('is_active', true)
@@ -246,6 +465,7 @@ Deno.serve(async (req) => {
     ].join(', ');
 
     const orderDate = new Date().toISOString().split('T')[0];
+    const orderDateObj = new Date(`${orderDate}T00:00:00`);
     const nextDate = new Date(orderDate);
     nextDate.setDate(nextDate.getDate() + 1);
     const { count: existingOrderCount, error: existingOrderCountError } = await supabase
@@ -256,6 +476,19 @@ Deno.serve(async (req) => {
       .lt('order_date', nextDate.toISOString().split('T')[0]);
     if (existingOrderCountError) throw new Error(`Failed to determine daily order count: ${formatSupabaseError(existingOrderCountError, 'Unknown count error')}`);
     let nextDailySequence = (existingOrderCount || 0) + 1;
+    const corporateDisplayPrefix = deriveCorporateDisplayPrefix(account.code, account.name);
+    const corporateDisplayIdPattern = `${corporateDisplayPrefix}-${MONTHS[orderDateObj.getMonth()].toUpperCase()}-${String(orderDateObj.getDate()).padStart(2, '0')}-%`;
+    const { count: existingCorporatePatientCount, error: existingCorporatePatientCountError } = await supabase
+      .from('patients')
+      .select('id', { count: 'exact', head: true })
+      .eq('lab_id', labId)
+      .gte('created_at', `${orderDate}T00:00:00`)
+      .lt('created_at', `${nextDate.toISOString().split('T')[0]}T00:00:00`)
+      .ilike('display_id', corporateDisplayIdPattern);
+    if (existingCorporatePatientCountError) {
+      throw new Error(`Failed to determine corporate patient sequence: ${formatSupabaseError(existingCorporatePatientCountError, 'Unknown corporate patient count error')}`);
+    }
+    let nextCorporatePatientSequence = (existingCorporatePatientCount || 0) + 1;
 
     const batchInsertPayload = {
       lab_id: labId,
@@ -280,6 +513,7 @@ Deno.serve(async (req) => {
       try {
         let patientId = patientInput.existing_patient_id;
         if (!patientId) {
+          const corporateDisplayId = formatCorporateDisplayId(orderDateObj, corporateDisplayPrefix, nextCorporatePatientSequence);
           const { data: newPatient, error: patientError } = await supabase.from('patients').insert({
             lab_id: labId,
             name: patientInput.name,
@@ -295,9 +529,11 @@ Deno.serve(async (req) => {
             corporate_employee_id: patientInput.corporate_employee_id || null,
             custom_fields: patientInput.custom_fields || {},
             default_payment_type: 'credit',
+            display_id: corporateDisplayId,
           }).select('id').single();
           if (patientError || !newPatient) throw new Error(`Patient creation failed: ${patientError?.message}`);
           patientId = newPatient.id;
+          nextCorporatePatientSequence++;
         }
 
         const patientSelection = buildSelection(
@@ -396,11 +632,24 @@ Deno.serve(async (req) => {
           }),
         ];
 
-        const { error: otError } = await supabase.from('order_tests').insert(orderTestsInsert);
+        const { data: insertedOrderTests, error: otError } = await supabase
+          .from('order_tests')
+          .insert(orderTestsInsert)
+          .select('id, test_name, test_group_id');
         if (otError) {
           await supabase.from('orders').delete().eq('id', order.id);
           throw new Error(`Order tests failed: ${otError.message}`);
         }
+
+        await createSamplesForBulkOrder(
+          supabase,
+          order.id,
+          insertedOrderTests || [],
+          testGroupMap,
+          labId,
+          labCode || 'LIMSLAB',
+          patientId,
+        );
 
         // PATCH: force price=0 for package-covered tests (overrides any DB triggers)
         if (patientSelection.packageIds.length > 0 && patientSelection.finalTestGroupIds.length > 0) {
