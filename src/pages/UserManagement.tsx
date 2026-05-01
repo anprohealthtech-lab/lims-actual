@@ -1,5 +1,4 @@
 import React, { useState, useEffect } from 'react';
-import { useAuth } from '../contexts/AuthContext';
 import {
   Users,
   Plus,
@@ -22,8 +21,8 @@ import {
   CheckCircle,
 } from 'lucide-react';
 import { supabase, database } from '../utils/supabase';
-import { isAdmin } from '../utils/permissions';
-import AddUserMinimalModal from '../components/Users/AddUserMinimalModal';
+import { usePermissions } from '../hooks/usePermissions';
+import AddUserModal from '../components/Users/AddUserModal';
 import EditUserModal from '../components/Users/EditUserModal';
 
 interface User {
@@ -44,7 +43,7 @@ interface User {
 }
 
 const UserManagement: React.FC = () => {
-  const { user: authUser } = useAuth();
+  const { loading: permissionsLoading, hasPermission } = usePermissions();
   const [users, setUsers] = useState<User[]>([]);
   const [filteredUsers, setFilteredUsers] = useState<User[]>([]);
   const [loading, setLoading] = useState(true);
@@ -57,9 +56,6 @@ const UserManagement: React.FC = () => {
   const [showEditModal, setShowEditModal] = useState(false);
   const [editingUser, setEditingUser] = useState<User | null>(null);
   const [error, setError] = useState('');
-  const [hasAccess, setHasAccess] = useState<boolean | null>(null);
-  const [checkingAccess, setCheckingAccess] = useState(true);
-
   // Reset password state
   const [resetTarget, setResetTarget] = useState<User | null>(null);
   const [resetPassword, setResetPassword] = useState('');
@@ -68,30 +64,6 @@ const UserManagement: React.FC = () => {
   const [resetLoading, setResetLoading] = useState(false);
   const [resetError, setResetError] = useState('');
   const [resetDone, setResetDone] = useState(false);
-
-  // Check if user has admin/manager access
-  useEffect(() => {
-    const checkAccess = async () => {
-      if (!authUser?.id) {
-        setCheckingAccess(false);
-        setHasAccess(false);
-        return;
-      }
-      
-      setCheckingAccess(true);
-      try {
-        const canAccess = await isAdmin(authUser.id, authUser.email);
-        setHasAccess(canAccess);
-      } catch (err) {
-        console.error('Error checking access:', err);
-        setHasAccess(false);
-      } finally {
-        setCheckingAccess(false);
-      }
-    };
-    
-    checkAccess();
-  }, [authUser?.id, authUser?.email]);
 
   // Load users
   useEffect(() => {
@@ -272,8 +244,13 @@ const UserManagement: React.FC = () => {
   const inactiveUsers = users.filter(u => u.status === 'Inactive').length;
   const phlebotomists = users.filter(u => u.is_phlebotomist).length;
 
-  // Show loading while checking access
-  if (checkingAccess) {
+  const canViewUsers = hasPermission('users.view');
+  const canCreateUsers = hasPermission('users.create');
+  const canEditUsers = hasPermission('users.edit');
+  const canDeactivateUsers = hasPermission('users.deactivate');
+  const canResetPasswords = hasPermission('users.reset_password');
+
+  if (permissionsLoading) {
     return (
       <div className="flex items-center justify-center min-h-[400px]">
         <div className="text-center">
@@ -284,8 +261,7 @@ const UserManagement: React.FC = () => {
     );
   }
 
-  // Show access denied if not admin/manager
-  if (!hasAccess) {
+  if (!canViewUsers) {
     return (
       <div className="flex items-center justify-center min-h-[400px]">
         <div className="text-center max-w-md">
@@ -295,7 +271,7 @@ const UserManagement: React.FC = () => {
           <h2 className="text-xl font-semibold text-gray-900 mb-2">Access Denied</h2>
           <p className="text-gray-600">
             You don't have permission to access User Management.
-            This page is only available to administrators.
+            Ask an administrator to grant `users.view`.
           </p>
         </div>
       </div>
@@ -319,7 +295,7 @@ const UserManagement: React.FC = () => {
             setEditingUser(null);
             setShowUserModal(true);
           }}
-          disabled={!labId}
+          disabled={!labId || !canCreateUsers}
           className="flex items-center px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:bg-gray-400 disabled:cursor-not-allowed"
         >
           <Plus className="h-4 w-4 mr-2" />
@@ -532,6 +508,7 @@ const UserManagement: React.FC = () => {
                             setEditingUser(user);
                             setShowEditModal(true);
                           }}
+                          disabled={!canEditUsers}
                           className="text-blue-600 hover:text-blue-900 p-1 rounded hover:bg-blue-50"
                           title="Edit user"
                         >
@@ -539,6 +516,7 @@ const UserManagement: React.FC = () => {
                         </button>
                         <button
                           onClick={() => openResetModal(user)}
+                          disabled={!canResetPasswords}
                           className="text-amber-600 hover:text-amber-900 p-1 rounded hover:bg-amber-50"
                           title="Reset password"
                         >
@@ -546,6 +524,7 @@ const UserManagement: React.FC = () => {
                         </button>
                         <button
                           onClick={() => handleDeleteUser(user.id)}
+                          disabled={!canDeactivateUsers}
                           className="text-red-600 hover:text-red-900 p-1 rounded hover:bg-red-50"
                           title="Deactivate user"
                         >
@@ -561,19 +540,18 @@ const UserManagement: React.FC = () => {
         )}
       </div>
 
-      {/* Add User Modal (minimal - auth only) */}
+      {/* Add User Modal */}
       {showUserModal && labId && (
-        <AddUserMinimalModal
+        <AddUserModal
           onClose={() => {
             setShowUserModal(false);
             setEditingUser(null);
           }}
-          onSuccess={(_userId, _email) => {
+          onSuccess={() => {
             setShowUserModal(false);
             setEditingUser(null);
             loadUsers();
           }}
-          labId={labId}
         />
       )}
 

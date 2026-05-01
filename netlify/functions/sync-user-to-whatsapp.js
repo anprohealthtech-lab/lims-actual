@@ -18,6 +18,12 @@ export const handler = async (event) => {
     const apiKey = process.env.WHATSAPP_API_KEY || 'whatsapp-lims-secure-api-key-2024';
     const body = event.body ? JSON.parse(event.body) : {};
 
+    // Map LIMS user fields to what the WhatsApp backend expects
+    if (body.user) {
+      if (!body.user.id && body.user.auth_id) body.user.id = body.user.auth_id;
+      if (!body.user.email && body.user.username) body.user.email = body.user.username;
+    }
+
     // Proxy to backend user sync - use the correct external API endpoint
     const upstream = await fetch(new URL('/api/external/users/sync', base), {
       method: 'POST',

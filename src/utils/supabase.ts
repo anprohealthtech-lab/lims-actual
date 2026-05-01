@@ -18,6 +18,7 @@ export const supabase = createClient(supabaseUrl, supabaseAnonKey);
 export interface ReportTemplateContextMeta {
   orderNumber: string;
   orderDate: string | null;
+  reportDate: string | null;
   status: string;
   totalAmount: number | null;
   createdAt: string | null;
@@ -161,6 +162,52 @@ export interface LabPatientFieldConfig {
   sort_order: number;
   created_at?: string;
 }
+
+export interface LabPatientFormSettings {
+  id?: string;
+  lab_id?: string;
+  show_salutation: boolean;
+  salutation_options: string[];
+  show_middle_name: boolean;
+  age_mode: 'age' | 'dob' | 'both';
+  show_gender: boolean;
+  gender_options: string[];
+  phone_required: boolean;
+  show_email: boolean;
+  email_required: boolean;
+  show_address: boolean;
+  show_city: boolean;
+  show_state: boolean;
+  show_pincode: boolean;
+  show_emergency_contact: boolean;
+  show_blood_group: boolean;
+  show_allergies: boolean;
+  show_medical_history: boolean;
+  show_referring_doctor: boolean;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export const DEFAULT_PATIENT_FORM_SETTINGS: LabPatientFormSettings = {
+  show_salutation: false,
+  salutation_options: ['Mr.', 'Mrs.', 'Ms.', 'Dr.', 'Master', 'Baby', 'Prof.', 'Shri.', 'Smt.', 'Ku.'],
+  show_middle_name: true,
+  age_mode: 'both',
+  show_gender: true,
+  gender_options: ['Male', 'Female', 'Other'],
+  phone_required: true,
+  show_email: true,
+  email_required: false,
+  show_address: false,
+  show_city: false,
+  show_state: false,
+  show_pincode: false,
+  show_emergency_contact: false,
+  show_blood_group: false,
+  show_allergies: false,
+  show_medical_history: false,
+  show_referring_doctor: true,
+};
 
 interface LabContactRecord {
   id: string;
@@ -1869,6 +1916,33 @@ export const database = {
         .eq("searchable", true)
         .order("sort_order", { ascending: true });
       return data || [];
+    },
+  },
+
+  // ============================================================
+  // Patient Form Settings (per-lab built-in field visibility)
+  // ============================================================
+  patientFormSettings: {
+    get: async (): Promise<{ data: LabPatientFormSettings | null; error: any }> => {
+      const lab_id = await database.getCurrentUserLabId();
+      if (!lab_id) return { data: null, error: new Error('No lab_id') };
+      const { data, error } = await supabase
+        .from('lab_patient_form_settings')
+        .select('*')
+        .eq('lab_id', lab_id)
+        .maybeSingle();
+      return { data, error };
+    },
+
+    upsert: async (settings: Partial<Omit<LabPatientFormSettings, 'id' | 'lab_id' | 'created_at' | 'updated_at'>>): Promise<{ data: LabPatientFormSettings | null; error: any }> => {
+      const lab_id = await database.getCurrentUserLabId();
+      if (!lab_id) return { data: null, error: new Error('No lab_id') };
+      const { data, error } = await supabase
+        .from('lab_patient_form_settings')
+        .upsert({ ...settings, lab_id, updated_at: new Date().toISOString() }, { onConflict: 'lab_id' })
+        .select()
+        .single();
+      return { data, error };
     },
   },
 
@@ -5821,7 +5895,7 @@ export const database = {
     },
 
     // Create a new analyte
-    create: async (analyteData: {
+	    create: async (analyteData: {
       name: string;
       unit: string;
       reference_range: string;
@@ -5857,8 +5931,8 @@ export const database = {
       description?: string;
     }) => {
       // First create the analyte in the analytes table
-      const { data, error } = await supabase
-        .from("analytes")
+	      const { data, error } = await supabase
+	        .from("analytes")
         .insert([{
           name: analyteData.name,
           unit: analyteData.unit,
@@ -5898,23 +5972,26 @@ export const database = {
       }
 
       // Also create a lab_analytes entry for the current user's lab
-      const labId = await database.getCurrentUserLabId();
-      if (labId) {
-        await supabase
-          .from("lab_analytes")
-          .insert([{
-            lab_id: labId,
-            analyte_id: data.id,
-            is_active: true,
-            visible: true,
-            name: data.name,
-            unit: data.unit,
-            category: data.category,
-            reference_range: data.reference_range,
-            low_critical: data.low_critical,
-            high_critical: data.high_critical,
-            interpretation_low: data.interpretation_low,
-            interpretation_normal: data.interpretation_normal,
+	      const labId = await database.getCurrentUserLabId();
+	      let createdLabAnalyteId: string | null = null;
+	      if (labId) {
+	        const { data: labAnalyteRow, error: labAnalyteError } = await supabase
+	          .from("lab_analytes")
+	          .insert([{
+	            lab_id: labId,
+	            analyte_id: data.id,
+	            is_active: true,
+	            visible: true,
+	            name: data.name,
+	            unit: data.unit,
+	            category: data.category,
+	            reference_range: data.reference_range,
+	            reference_range_male: data.reference_range_male,
+	            reference_range_female: data.reference_range_female,
+	            low_critical: data.low_critical,
+	            high_critical: data.high_critical,
+	            interpretation_low: data.interpretation_low,
+	            interpretation_normal: data.interpretation_normal,
             interpretation_high: data.interpretation_high,
             method: data.method || null,
             description: data.description || null,
@@ -5934,12 +6011,26 @@ export const database = {
             normal_range_min: data.normal_range_min ?? null,
             normal_range_max: data.normal_range_max ?? null,
             display_name: null,
-            default_value: null,
-          }]);
-      }
+	            default_value: null,
+	          }])
+	          .select("id")
+	          .single();
 
-      return { data, error };
-    },
+	        if (labAnalyteError) {
+	          return { data: null, error: labAnalyteError };
+	        }
+
+	        createdLabAnalyteId = labAnalyteRow?.id || null;
+	      }
+
+	      return {
+	        data: {
+	          ...data,
+	          lab_analyte_id: createdLabAnalyteId,
+	        },
+	        error,
+	      };
+	    },
 
     // Update analyte global status
     updateGlobalStatus: async (analyteId: string, isGlobal: boolean) => {
@@ -7049,8 +7140,8 @@ export const database = {
           return { data: null, error: testGroupError };
         }
 
-        // Step 2: Create test group analyte relationships
-        if (testGroupData.analytes && testGroupData.analytes.length > 0) {
+	        // Step 2: Create test group analyte relationships
+	        if (testGroupData.analytes && testGroupData.analytes.length > 0) {
           const labId = testGroup.lab_id || testGroupData.lab_id || null;
 
           // Resolve lab_analyte_id for each analyte (direct FK, avoids duplicate-join risk)
@@ -7087,10 +7178,108 @@ export const database = {
             );
             // Still return the test group even if analyte relations failed
             return { data: testGroup, error: relationError };
-          }
-        }
+	          }
+	        }
 
-        return { data: testGroup, error: null };
+	        const normalizedCategory = String(testGroup.category || testGroupData.category || "").toLowerCase();
+	        const normalizedSampleType = String(testGroup.sample_type || testGroupData.sampleType || "").toLowerCase();
+	        const shouldSeedRadiologySections =
+	          !!testGroup.is_section_only &&
+	          (
+	            normalizedCategory.includes("radiology") ||
+	            normalizedSampleType.includes("x-ray") ||
+	            normalizedSampleType.includes("x ray") ||
+	            normalizedSampleType.includes("xray") ||
+	            normalizedSampleType.includes("ct") ||
+	            normalizedSampleType.includes("usg") ||
+	            normalizedSampleType.includes("ultrasound") ||
+	            normalizedSampleType.includes("sonography")
+	          );
+
+	        if (shouldSeedRadiologySections) {
+	          const { data: existingSections } = await supabase
+	            .from("lab_template_sections")
+	            .select("id")
+	            .eq("test_group_id", testGroup.id)
+	            .limit(1);
+
+	          if (!existingSections?.length) {
+	            await supabase.from("lab_template_sections").insert([
+	              {
+	                lab_id: testGroup.lab_id,
+	                test_group_id: testGroup.id,
+	                section_type: "clinical_history",
+	                section_name: "Clinical History",
+	                placeholder_key: "clinical_history",
+	                display_order: 1,
+	                default_content: "",
+	                predefined_options: [],
+	                is_required: false,
+	                is_editable: true,
+	                allow_images: false,
+	                allow_technician_entry: true,
+	              },
+	              {
+	                lab_id: testGroup.lab_id,
+	                test_group_id: testGroup.id,
+	                section_type: "technique",
+	                section_name: "Examination / Technique",
+	                placeholder_key: "technique",
+	                display_order: 2,
+	                default_content: "",
+	                predefined_options: [],
+	                is_required: false,
+	                is_editable: true,
+	                allow_images: false,
+	                allow_technician_entry: true,
+	              },
+	              {
+	                lab_id: testGroup.lab_id,
+	                test_group_id: testGroup.id,
+	                section_type: "findings",
+	                section_name: "Findings",
+	                placeholder_key: "findings",
+	                display_order: 3,
+	                default_content: "",
+	                predefined_options: [],
+	                is_required: true,
+	                is_editable: true,
+	                allow_images: true,
+	                allow_technician_entry: true,
+	              },
+	              {
+	                lab_id: testGroup.lab_id,
+	                test_group_id: testGroup.id,
+	                section_type: "impression",
+	                section_name: "Impression",
+	                placeholder_key: "impression",
+	                display_order: 4,
+	                default_content: "",
+	                predefined_options: [],
+	                is_required: true,
+	                is_editable: true,
+	                allow_images: false,
+	                allow_technician_entry: false,
+	              },
+	              {
+	                lab_id: testGroup.lab_id,
+	                test_group_id: testGroup.id,
+	                section_type: "recommendation",
+	                section_name: "Recommendation",
+	                placeholder_key: "recommendation",
+	                display_order: 5,
+	                default_content: "",
+	                predefined_options: [],
+	                is_required: false,
+	                is_editable: true,
+	                allow_images: false,
+	                allow_technician_entry: false,
+	              },
+	            ]);
+	          }
+	        }
+
+	        return { data: testGroup, error: null };
       } catch (error) {
         console.error("Unexpected error creating test group:", error);
         return { data: null, error };
@@ -7170,7 +7359,7 @@ export const database = {
         }
 
         // Step 2: Update analyte relationships if analytes are provided
-        if (updates.analytes && Array.isArray(updates.analytes)) {
+	        if (updates.analytes && Array.isArray(updates.analytes)) {
           const newAnalyteIds: string[] = updates.analytes;
           const analyteMetadata: Record<string, { sort_order?: number; section_heading?: string; is_visible?: boolean }> =
             updates.analyteMetadata || {};
@@ -7249,16 +7438,114 @@ export const database = {
 
           const { error: deleteError } = await deleteQuery;
 
-          if (deleteError) {
-            console.error(
-              "Error deleting removed analyte relationships:",
-              deleteError,
-            );
-            return { data, error: deleteError };
-          }
-        }
+	          if (deleteError) {
+	            console.error(
+	              "Error deleting removed analyte relationships:",
+	              deleteError,
+	            );
+	            return { data, error: deleteError };
+	          }
+	        }
 
-        return { data, error: null };
+	        const normalizedCategory = String(data?.category || updates.category || "").toLowerCase();
+	        const normalizedSampleType = String(data?.sample_type || updates.sampleType || "").toLowerCase();
+	        const shouldSeedRadiologySections =
+	          !!data?.is_section_only &&
+	          (
+	            normalizedCategory.includes("radiology") ||
+	            normalizedSampleType.includes("x-ray") ||
+	            normalizedSampleType.includes("x ray") ||
+	            normalizedSampleType.includes("xray") ||
+	            normalizedSampleType.includes("ct") ||
+	            normalizedSampleType.includes("usg") ||
+	            normalizedSampleType.includes("ultrasound") ||
+	            normalizedSampleType.includes("sonography")
+	          );
+
+	        if (shouldSeedRadiologySections) {
+	          const { data: existingSections } = await supabase
+	            .from("lab_template_sections")
+	            .select("id")
+	            .eq("test_group_id", id)
+	            .limit(1);
+
+	          if (!existingSections?.length) {
+	            await supabase.from("lab_template_sections").insert([
+	              {
+	                lab_id: data.lab_id,
+	                test_group_id: id,
+	                section_type: "clinical_history",
+	                section_name: "Clinical History",
+	                placeholder_key: "clinical_history",
+	                display_order: 1,
+	                default_content: "",
+	                predefined_options: [],
+	                is_required: false,
+	                is_editable: true,
+	                allow_images: false,
+	                allow_technician_entry: true,
+	              },
+	              {
+	                lab_id: data.lab_id,
+	                test_group_id: id,
+	                section_type: "technique",
+	                section_name: "Examination / Technique",
+	                placeholder_key: "technique",
+	                display_order: 2,
+	                default_content: "",
+	                predefined_options: [],
+	                is_required: false,
+	                is_editable: true,
+	                allow_images: false,
+	                allow_technician_entry: true,
+	              },
+	              {
+	                lab_id: data.lab_id,
+	                test_group_id: id,
+	                section_type: "findings",
+	                section_name: "Findings",
+	                placeholder_key: "findings",
+	                display_order: 3,
+	                default_content: "",
+	                predefined_options: [],
+	                is_required: true,
+	                is_editable: true,
+	                allow_images: true,
+	                allow_technician_entry: true,
+	              },
+	              {
+	                lab_id: data.lab_id,
+	                test_group_id: id,
+	                section_type: "impression",
+	                section_name: "Impression",
+	                placeholder_key: "impression",
+	                display_order: 4,
+	                default_content: "",
+	                predefined_options: [],
+	                is_required: true,
+	                is_editable: true,
+	                allow_images: false,
+	                allow_technician_entry: false,
+	              },
+	              {
+	                lab_id: data.lab_id,
+	                test_group_id: id,
+	                section_type: "recommendation",
+	                section_name: "Recommendation",
+	                placeholder_key: "recommendation",
+	                display_order: 5,
+	                default_content: "",
+	                predefined_options: [],
+	                is_required: false,
+	                is_editable: true,
+	                allow_images: false,
+	                allow_technician_entry: false,
+	              },
+	            ]);
+	          }
+	        }
+
+	        return { data, error: null };
       } catch (error) {
         console.error("Unexpected error updating test group:", error);
         return { data: null, error };
@@ -14286,7 +14573,7 @@ const locationReceivables = {
 const pricingHelper = {
   /**
    * Resolve the effective price for a test
-   * Priority: Account Price (B2B) → Location Price (B2C) → Base Price
+   * Priority: Direct Account Price (B2B) → Price Master Price → Location Price (B2C) → Base Price
    */
   async resolveTestPrice(
     testGroupId: string,
@@ -14300,7 +14587,7 @@ const pricingHelper = {
     source: "account" | "location" | "base";
     lab_receivable?: number;
   }> {
-    // 1. Check B2B account price (highest priority)
+    // 1. Check direct B2B account price (highest priority)
     if (options.accountId) {
       const { data: accountPrice } = await supabase
         .from("account_prices")
@@ -14316,9 +14603,29 @@ const pricingHelper = {
       if (accountPrice?.price !== undefined) {
         return { price: accountPrice.price, source: "account" };
       }
+
+      // 2. Check linked price master price
+      const { data: account } = await supabase
+        .from("accounts")
+        .select("price_master_id")
+        .eq("id", options.accountId)
+        .maybeSingle();
+
+      if (account?.price_master_id) {
+        const { data: planPrice } = await supabase
+          .from("price_master_items")
+          .select("price")
+          .eq("price_master_id", account.price_master_id)
+          .eq("test_group_id", testGroupId)
+          .maybeSingle();
+
+        if (planPrice?.price !== undefined) {
+          return { price: planPrice.price, source: "account" };
+        }
+      }
     }
 
-    // 2. Check location price (B2C franchise)
+    // 3. Check location price (B2C franchise)
     if (options.locationId) {
       const { data: locationPrice } = await locationTestPrices.getPrice(
         options.locationId,
@@ -14334,7 +14641,7 @@ const pricingHelper = {
       }
     }
 
-    // 3. Fall back to base price
+    // 4. Fall back to base price
     return { price: basePrice, source: "base" };
   },
 
@@ -14419,6 +14726,23 @@ const pricingHelper = {
 
     // Get account test prices (B2B)
     if (options.accountId) {
+      const { data: account } = await supabase
+        .from("accounts")
+        .select("price_master_id")
+        .eq("id", options.accountId)
+        .maybeSingle();
+
+      if (account?.price_master_id) {
+        const { data: priceMasterItems } = await supabase
+          .from("price_master_items")
+          .select("test_group_id, price")
+          .eq("price_master_id", account.price_master_id);
+
+        (priceMasterItems || []).forEach((p: any) => {
+          testPrices[p.test_group_id] = { price: p.price, source: "account" };
+        });
+      }
+
       const { data: accountTestPrices } = await supabase
         .from("account_prices")
         .select("test_group_id, price")
@@ -16901,20 +17225,25 @@ export const priceMasters = {
 
   /** Get all test prices for a specific plan, joined with test_group info */
   getItems: async (priceMasterId: string) => {
+    const lab_id = await database.getCurrentUserLabId();
+    if (!lab_id) return { data: null, error: new Error("No lab_id") };
     const { data, error } = await supabase
       .from("price_master_items")
-      .select("*, test_group:test_groups(name, code, price)")
+      .select("*, test_group:test_groups(id, name, code, price)")
       .eq("price_master_id", priceMasterId)
+      .eq("lab_id", lab_id)
       .order("test_group(name)");
     return { data, error };
   },
 
   /** Upsert a test price within a plan */
   upsertItem: async (priceMasterId: string, testGroupId: string, price: number) => {
+    const lab_id = await database.getCurrentUserLabId();
+    if (!lab_id) return { data: null, error: new Error("No lab_id") };
     const { data, error } = await supabase
       .from("price_master_items")
       .upsert(
-        { price_master_id: priceMasterId, test_group_id: testGroupId, price, updated_at: new Date().toISOString() },
+        { price_master_id: priceMasterId, test_group_id: testGroupId, lab_id, price, updated_at: new Date().toISOString() },
         { onConflict: "price_master_id,test_group_id" }
       )
       .select()
@@ -16924,7 +17253,9 @@ export const priceMasters = {
 
   /** Remove a test price from a plan */
   deleteItem: async (itemId: string) => {
-    const { error } = await supabase.from("price_master_items").delete().eq("id", itemId);
+    const lab_id = await database.getCurrentUserLabId();
+    if (!lab_id) return { error: new Error("No lab_id") };
+    const { error } = await supabase.from("price_master_items").delete().eq("id", itemId).eq("lab_id", lab_id);
     return { error };
   },
 

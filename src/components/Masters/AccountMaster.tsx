@@ -35,6 +35,7 @@ interface AccountPrice {
     account_id: string;
     test_group_id: string;
     price: number;
+    source?: 'direct' | 'price_master';
     test_group?: {
         name: string;
         code: string;
@@ -90,6 +91,7 @@ const AccountMaster: React.FC = () => {
     const [testGroups, setTestGroups] = useState<TestGroup[]>([]);
     const [loadingPrices, setLoadingPrices] = useState(false);
     const [priceSearchTerm, setPriceSearchTerm] = useState('');
+    const [priceMasterPrices, setPriceMasterPrices] = useState<Record<string, number>>({});
     
     // Price Masters (for dropdown in form)
     const [availablePriceMasters, setAvailablePriceMasters] = useState<PriceMaster[]>([]);
@@ -249,6 +251,7 @@ const AccountMaster: React.FC = () => {
         setShowPriceModal(true);
         setLoadingPrices(true);
         setPriceTab('tests');
+        setPriceMasterPrices({});
 
         try {
             // Fetch Test Groups
@@ -264,6 +267,7 @@ const AccountMaster: React.FC = () => {
             // Map to include base price for easier display
             const formattedPrices = (apData || []).map((ap: any) => ({
                 ...ap,
+                source: 'direct' as const,
                 test_group: {
                     name: ap.test_group.name,
                     code: ap.test_group.code,
@@ -272,6 +276,15 @@ const AccountMaster: React.FC = () => {
             }));
 
             setAccountPrices(formattedPrices);
+
+            if (account.price_master_id) {
+                const { data: pmItems } = await (database as any).priceMasters.getItems(account.price_master_id);
+                const inheritedPrices: Record<string, number> = {};
+                (pmItems || []).forEach((item: any) => {
+                    inheritedPrices[item.test_group_id] = Number(item.price || 0);
+                });
+                setPriceMasterPrices(inheritedPrices);
+            }
 
             // Fetch Packages
             const { data: pkgData } = await database.packages.getAll();
@@ -326,6 +339,7 @@ const AccountMaster: React.FC = () => {
 
             const formattedPrices = (apData || []).map((ap: any) => ({
                 ...ap,
+                source: 'direct' as const,
                 test_group: {
                     name: ap.test_group.name,
                     code: ap.test_group.code,
@@ -696,6 +710,9 @@ const AccountMaster: React.FC = () => {
                                 <div>
                                     <h2 className="text-xl font-bold text-gray-900">Manage Prices: {selectedAccountForPrices.name}</h2>
                                     <p className="text-sm text-gray-500">Set fixed prices for specific tests and packages. These override base prices and percentage discounts.</p>
+                                    {selectedAccountForPrices.price_master_id && (
+                                        <p className="text-xs text-indigo-600 mt-1">Linked price master values are shown as inherited prices. Direct account prices override them.</p>
+                                    )}
                                 </div>
                                 <button onClick={() => setShowPriceModal(false)}><X className="w-6 h-6 text-gray-500" /></button>
                             </div>
@@ -711,7 +728,7 @@ const AccountMaster: React.FC = () => {
                                     }`}
                                 >
                                     <DollarSign className="w-4 h-4 inline mr-2" />
-                                    Test Prices ({accountPrices.length} custom)
+                                    Test Prices ({accountPrices.length} custom{Object.keys(priceMasterPrices).length ? `, ${Object.keys(priceMasterPrices).length} inherited` : ''})
                                 </button>
                                 <button
                                     onClick={() => setPriceTab('packages')}
@@ -750,15 +767,17 @@ const AccountMaster: React.FC = () => {
                                         <tbody className="divide-y divide-gray-100">
                                             {filteredTestGroups.map(tg => {
                                                 const override = accountPrices.find(ap => ap.test_group_id === tg.id);
+                                                const inheritedPrice = priceMasterPrices[tg.id];
+                                                const effectivePrice = override ? override.price : inheritedPrice;
                                                 return (
-                                                    <tr key={tg.id} className={override ? "bg-purple-50" : ""}>
+                                                    <tr key={tg.id} className={override ? "bg-purple-50" : inheritedPrice !== undefined ? "bg-indigo-50" : ""}>
                                                         <td className="py-2 text-sm">{tg.name} <span className="text-xs text-gray-400">({tg.code})</span></td>
                                                         <td className="py-2 text-sm">₹{tg.price}</td>
                                                         <td className="py-2">
                                                             <input
                                                                 type="number"
-                                                                defaultValue={override ? override.price : ''}
-                                                                placeholder={override ? String(override.price) : "Default"}
+                                                                defaultValue={effectivePrice ?? ''}
+                                                                placeholder={override ? String(override.price) : inheritedPrice !== undefined ? `Inherited ${inheritedPrice}` : "Default"}
                                                                 onBlur={(e) => {
                                                                     const val = parseFloat(e.target.value);
                                                                     if (!isNaN(val)) {
@@ -769,14 +788,19 @@ const AccountMaster: React.FC = () => {
                                                             />
                                                         </td>
                                                         <td className="py-2 text-right">
-                                                            {override && (
-                                                                <button
-                                                                    onClick={() => handleRemovePrice(override.id)}
-                                                                    className="text-red-500 hover:text-red-700 text-xs underline"
-                                                                >
-                                                                    Reset
-                                                                </button>
-                                                            )}
+                                                            {override ? (
+                                                                <div className="flex items-center justify-end gap-3">
+                                                                    <span className="text-xs text-purple-700 font-medium">Direct</span>
+                                                                    <button
+                                                                        onClick={() => handleRemovePrice(override.id)}
+                                                                        className="text-red-500 hover:text-red-700 text-xs underline"
+                                                                    >
+                                                                        {inheritedPrice !== undefined ? 'Use Price List' : 'Reset'}
+                                                                    </button>
+                                                                </div>
+                                                            ) : inheritedPrice !== undefined ? (
+                                                                <span className="text-xs text-indigo-700 font-medium">Price List</span>
+                                                            ) : null}
                                                         </td>
                                                     </tr>
                                                 )

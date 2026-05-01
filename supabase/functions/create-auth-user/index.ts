@@ -52,14 +52,36 @@ const getSupabaseForUser = (req: Request) => {
   });
 };
 
+async function getEffectivePermissions(
+  supabaseAdmin: ReturnType<typeof createClient>,
+  roleId: string | null,
+  extraPermissions: string[] | null | undefined,
+) {
+  if (!roleId) {
+    return new Set(extraPermissions || []);
+  }
+
+  const { data: rolePermissions } = await supabaseAdmin
+    .from("role_permissions")
+    .select("permissions(permission_code)")
+    .eq("role_id", roleId);
+
+  const roleCodes = (rolePermissions || [])
+    .map((entry: any) => entry.permissions?.permission_code)
+    .filter(Boolean);
+
+  return new Set([...(extraPermissions || []), ...roleCodes]);
+}
+
 async function assertCallerIsAdminOfLab(
+  supabaseAdmin: ReturnType<typeof createClient>,
   supabaseUserClient: ReturnType<typeof createClient>,
   lab_id: string
 ) {
   // Query uses caller JWT (RLS enforced) to check if user belongs to lab with admin role
   const { data: userData, error: userError } = await supabaseUserClient
     .from("users")
-    .select("id, lab_id, role_id, role:user_roles(role_code)")
+    .select("id, lab_id, role_id, permissions, role:user_roles(role_code)")
     .eq("id", (await supabaseUserClient.auth.getUser()).data.user?.id)
     .single();
 
@@ -69,7 +91,13 @@ async function assertCallerIsAdminOfLab(
   
   // Check if user has admin-level role
   const roleCode = (userData.role as any)?.role_code;
-  if (!["admin", "owner"].includes(roleCode)) {
+  const permissions = await getEffectivePermissions(
+    supabaseAdmin,
+    (userData as any).role_id || null,
+    (userData as any).permissions || [],
+  );
+
+  if (!["admin", "owner"].includes(roleCode) && !permissions.has("users.create")) {
     throw new Error("User must have admin or owner role");
   }
 }
@@ -127,7 +155,7 @@ Deno.serve(async (req: Request) => {
 
     // Verify caller is admin of target lab
     console.log('[CREATE-AUTH-USER] Verifying caller is admin of lab:', lab_id);
-    await assertCallerIsAdminOfLab(supabaseUserClient, lab_id);
+    await assertCallerIsAdminOfLab(supabaseAdmin, supabaseUserClient, lab_id);
     console.log('[CREATE-AUTH-USER] Admin verification passed');
 
     // Generate strong random password if not provided

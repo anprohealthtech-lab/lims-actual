@@ -93,12 +93,22 @@ const DEFAULT_FLAG_OPTIONS = [
   { value: "A", label: "Abnormal" },
 ];
 
+const hasMeaningfulTextValue = (value: unknown): value is string =>
+  typeof value === "string" && value.trim() !== "";
+
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
 const toNumber = (raw: string | number | null | undefined): number | null => {
   if (raw === null || raw === undefined || raw === "") return null;
-  const n = Number(String(raw).trim());
+  const n = Number(String(raw).replace(/,/g, '').trim());
   return Number.isFinite(n) ? n : null;
+};
+
+const formatIndianNumber = (value: string): string => {
+  const cleaned = value.replace(/,/g, '').trim();
+  const num = parseFloat(cleaned);
+  if (!Number.isFinite(num) || Math.abs(num) < 1000) return cleaned || value.trim();
+  return new Intl.NumberFormat('en-IN').format(num);
 };
 
 const parseFormulaVars = (fv: string[] | string | null | undefined): string[] => {
@@ -452,7 +462,7 @@ const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, on
           }
           const envDefaultValue: string = la?.default_value || "";
           const isRerun = !!(a.existing_result?.verify_note && String(a.existing_result.verify_note).toUpperCase().includes("RE-RUN"));
-          const hasExisting = !!(a.existing_result?.value) && !isRerun;
+          const hasExisting = hasMeaningfulTextValue(a.existing_result?.value) && !isRerun;
           // Pre-fill default only for new (unsaved) results
           const prefillValue = hasExisting
             ? a.existing_result!.value
@@ -531,7 +541,7 @@ const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, on
         const calcVal = evalFormula(r.formula, vars, lookup, loadedDeps, r.analyte_id, r.lab_analyte_id);
         if (!calcVal) return r;
         const autoFlag = calculateFlag(calcVal, r.reference, undefined, undefined, undefined, undefined, undefined, undefined, r.value_type);
-        return { ...r, value: calcVal, flag: autoFlag || r.flag };
+        return { ...r, value: formatIndianNumber(calcVal), flag: autoFlag || r.flag };
       });
       setRows(flatWithCalc);
     } catch (err) {
@@ -548,12 +558,14 @@ const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, on
   }, []);
 
   const handleValueBlur = useCallback((idx: number, value: string) => {
+    const rawValue = value.replace(/,/g, '');
+    const displayValue = formatIndianNumber(rawValue);
     setRows(prev => {
       // 1. Update the edited row
       const next = prev.map((r, i) => {
         if (i !== idx) return r;
-        const auto = calculateFlag(value, r.reference, undefined, undefined, undefined, undefined, undefined, undefined, r.value_type);
-        return { ...r, value, flag: auto || r.flag };
+        const auto = calculateFlag(rawValue, r.reference, undefined, undefined, undefined, undefined, undefined, undefined, r.value_type);
+        return { ...r, value: displayValue, flag: auto || r.flag };
       });
 
       // 2. Rebuild value lookup from all non-calculated rows
@@ -606,7 +618,7 @@ const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, on
         const calcVal = evalFormula(r.formula, vars, lookup, calcDeps, r.analyte_id, r.lab_analyte_id);
         if (!calcVal) return r;
         const autoFlag = calculateFlag(calcVal, r.reference, undefined, undefined, undefined, undefined, undefined, undefined, r.value_type);
-        return { ...r, value: calcVal, flag: autoFlag || r.flag };
+        return { ...r, value: formatIndianNumber(calcVal), flag: autoFlag || r.flag };
       });
     });
   }, [calcDeps, testGroups]);
@@ -654,10 +666,93 @@ const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, on
         const calcVal = evalFormula(r.formula, vars, lookup, calcDeps, r.analyte_id, r.lab_analyte_id);
         if (!calcVal) return r;
         const autoFlag = calculateFlag(calcVal, r.reference, undefined, undefined, undefined, undefined, undefined, undefined, r.value_type);
-        return { ...r, value: calcVal, flag: autoFlag || r.flag };
+        return { ...r, value: formatIndianNumber(calcVal), flag: autoFlag || r.flag };
       });
     });
   }, [calcDeps, testGroups, order.patient]);
+
+  const getCalculatedDebugInfo = useCallback((row: AnalyteRow) => {
+    if (!row.is_calculated || !row.formula) return null;
+
+    const lookup = new Map<string, number>();
+    for (const tg of testGroups) {
+      for (const a of tg.analytes) {
+        if (a.is_calculated) continue;
+        const num = toNumber(a.existing_result?.value);
+        if (num !== null) {
+          if (a.id) lookup.set(a.id, num);
+          if ((a as any).lab_analyte_id) lookup.set((a as any).lab_analyte_id, num);
+          if (a.name) {
+            lookup.set(a.name.toLowerCase(), num);
+            const slug = toVariableSlug(a.name);
+            if (slug) lookup.set(slug, num);
+          }
+          if (a.code) lookup.set(String(a.code).toLowerCase(), num);
+        }
+      }
+    }
+    for (const currentRow of rows) {
+      if (currentRow.is_calculated) continue;
+      const num = toNumber(currentRow.value);
+      if (num !== null) {
+        if (currentRow.analyte_id) lookup.set(currentRow.analyte_id, num);
+        if (currentRow.lab_analyte_id) lookup.set(currentRow.lab_analyte_id, num);
+        lookup.set(currentRow.parameter.toLowerCase(), num);
+        const slug = toVariableSlug(currentRow.parameter);
+        if (slug) lookup.set(slug, num);
+      }
+    }
+
+    const deps = calcDeps.filter(d =>
+      (row.lab_analyte_id && d.calculated_lab_analyte_id === row.lab_analyte_id) ||
+      (!d.calculated_lab_analyte_id && d.calculated_analyte_id === row.analyte_id)
+    );
+    const allAnalytes = testGroups.flatMap(tg => tg.analytes);
+
+    if (deps.length > 0) {
+      const dependencies = deps.map(dep => {
+        const sourceAnalyte = allAnalytes.find((a: any) =>
+          (dep.source_lab_analyte_id && (a as any).lab_analyte_id === dep.source_lab_analyte_id) ||
+          a.id === dep.source_analyte_id
+        );
+        let value =
+          (dep.source_lab_analyte_id ? lookup.get(dep.source_lab_analyte_id) : undefined) ??
+          lookup.get(dep.source_analyte_id) ??
+          lookup.get(dep.variable_name.toLowerCase());
+        if (value === undefined && sourceAnalyte?.name) {
+          value = lookup.get(sourceAnalyte.name.toLowerCase());
+          if (value === undefined) {
+            const slug = toVariableSlug(sourceAnalyte.name);
+            if (slug) value = lookup.get(slug);
+          }
+        }
+        return {
+          variable: dep.variable_name,
+          sourceName: sourceAnalyte?.name || dep.source_analyte_id?.slice(0, 8) || dep.variable_name,
+          value,
+        };
+      });
+      return {
+        formula: row.formula,
+        dependencies,
+        missing: dependencies.filter(dep => dep.value === undefined).map(dep => dep.variable),
+        hasDependencies: true,
+      };
+    }
+
+    const vars = parseFormulaVars(row.formula_variables);
+    const dependencies = vars.map(variable => ({
+      variable,
+      sourceName: variable,
+      value: lookup.get(variable.toLowerCase()) ?? lookup.get(variable) ?? lookup.get(toVariableSlug(variable)),
+    }));
+    return {
+      formula: row.formula,
+      dependencies,
+      missing: dependencies.filter(dep => dep.value === undefined).map(dep => dep.variable),
+      hasDependencies: false,
+    };
+  }, [calcDeps, rows, testGroups]);
 
   // ── Keyboard navigation ─────────────────────────────────────────────────────
 
@@ -676,10 +771,23 @@ const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, on
     }
   };
 
+  const focusPrev = (currentRowIdx: number) => {
+    const pos = inputableIndexes.indexOf(currentRowIdx);
+    if (pos <= 0) return;
+    const prevRowIdx = inputableIndexes[pos - 1];
+    if (prevRowIdx !== undefined) {
+      valueRefs.current[prevRowIdx]?.focus();
+    }
+  };
+
   const handleKeyDown = (e: React.KeyboardEvent, rowIdx: number) => {
     if (e.key === "Enter") {
       e.preventDefault();
       focusNext(rowIdx);
+    }
+    if (e.key === "Tab" && e.shiftKey) {
+      e.preventDefault();
+      focusPrev(rowIdx);
     }
   };
 
@@ -692,7 +800,7 @@ const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, on
     setSaving(true);
     setMessage(null);
     try {
-      const resultValues = valid.map(r => ({ parameter: r.parameter, value: r.value, unit: r.unit, reference_range: r.reference, flag: r.flag, value_type: r.value_type }));
+      const resultValues = valid.map(r => ({ parameter: r.parameter, value: r.value.replace(/,/g, ''), unit: r.unit, reference_range: r.reference, flag: r.flag, value_type: r.value_type }));
       const withFlags = calculateFlagsForResults(resultValues);
 
       const payload = {
@@ -840,7 +948,7 @@ const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, on
               expected_value_flag_map: {},
             };
           })
-          .filter(r => r.value.trim());
+          .filter(r => hasMeaningfulTextValue(r.value));
 
         // Merge: prefer manual, add calc, dedup
         const toPersist = [...manualForGroup, ...calcForGroup].reduce<AnalyteRow[]>((acc, r) => {
@@ -903,14 +1011,15 @@ const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, on
 
           // Insert only the missing analyte values; unlock the result row so a fresh PDF can be generated
           const missingValueRows = trulyMissing.map(r => {
-            const autoFlag = r.flag || calculateFlag(r.value, r.reference, order.patient?.gender ?? undefined, undefined, undefined, undefined, undefined, undefined, r.value_type);
+            const rawVal = r.value.replace(/,/g, '');
+            const autoFlag = r.flag || calculateFlag(rawVal, r.reference, order.patient?.gender ?? undefined, undefined, undefined, undefined, undefined, undefined, r.value_type);
             return {
               result_id: resultRowId!,
               analyte_id: r.analyte_id || null,
               lab_analyte_id: r.lab_analyte_id || null,
               analyte_name: r.parameter,
               parameter: r.parameter,
-              value: r.value || null,
+              value: rawVal || null,
               unit: r.unit || "",
               reference_range: r.reference || "",
               flag: autoFlag || null,
@@ -935,6 +1044,19 @@ const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, on
           continue;
         }
 
+        const calculatedAnalyteIdsForGroup = tg.analytes
+          .filter(a => !!a.is_calculated && !!a.id)
+          .map(a => a.id);
+        if (calculatedAnalyteIdsForGroup.length > 0) {
+          const { error: cleanupNullCalcError } = await supabase
+            .from("result_values")
+            .delete()
+            .eq("result_id", resultRowId!)
+            .in("analyte_id", calculatedAnalyteIdsForGroup)
+            .is("value", null);
+          if (cleanupNullCalcError) throw cleanupNullCalcError;
+        }
+
         // Delete + re-insert result_values for these analytes
         // Use analyte_id (UUID) for the filter — analyte names may contain characters like "(%)"
         // that break PostgREST's in() URL parser, causing silent 400 errors.
@@ -949,8 +1071,9 @@ const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, on
         }
 
         const valueRows = toPersist.map(r => {
+          const rawVal = r.value.replace(/,/g, '');
           const autoFlag = r.flag || calculateFlag(
-            r.value,
+            rawVal,
             r.reference,
             order.patient?.gender ?? undefined,
             undefined,
@@ -966,7 +1089,7 @@ const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, on
           lab_analyte_id: r.lab_analyte_id || null,
           analyte_name: r.parameter,
           parameter: r.parameter,
-          value: r.value || null,
+          value: rawVal || null,
           unit: r.unit || "",
           reference_range: r.reference || "",
           flag: autoFlag || null,
@@ -1071,6 +1194,7 @@ const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, on
         <div className="px-5 py-2 text-xs text-gray-500 bg-gray-50 border-b flex gap-4 flex-wrap">
           <span><kbd className="bg-gray-200 px-1.5 py-0.5 rounded text-gray-700 font-mono text-xs">Enter</kbd> next analyte</span>
           <span><kbd className="bg-gray-200 px-1.5 py-0.5 rounded text-gray-700 font-mono text-xs">Tab</kbd> next field</span>
+          <span><kbd className="bg-gray-200 px-1.5 py-0.5 rounded text-gray-700 font-mono text-xs">Shift+Tab</kbd> previous analyte</span>
           <span><kbd className="bg-gray-200 px-1.5 py-0.5 rounded text-gray-700 font-mono text-xs">Ctrl+Enter</kbd> submit</span>
           {resultIds.size > 0 && <span><kbd className="bg-gray-200 px-1.5 py-0.5 rounded text-gray-700 font-mono text-xs">A B C…</kbd> select section options</span>}
         </div>
@@ -1111,6 +1235,7 @@ const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, on
                   <tbody>
                     {groupRows.map(({ row, globalIdx }) => {
                       const isCalc = row.is_calculated;
+                      const calcDebugInfo = isCalc ? getCalculatedDebugInfo(row) : null;
                       const isQualitative = row.value_type === 'qualitative';
                       const hasCodes = isQualitative && Object.keys(row.expected_value_codes || {}).length > 0;
                       // If expected_normal_values exist, always show dropdown regardless of value_type
@@ -1135,6 +1260,19 @@ const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, on
                             )}
                             {row.reference && (
                               <div className="text-xs text-gray-400 mt-0.5">{row.reference}</div>
+                            )}
+                            {isCalc && calcDebugInfo?.formula && (
+                              <div className="mt-1 text-[11px] bg-blue-50 border border-blue-100 rounded px-2 py-1 space-y-0.5">
+                                <div className="font-mono text-blue-700 truncate" title={calcDebugInfo.formula}>
+                                  f: {calcDebugInfo.formula}
+                                </div>
+                                {calcDebugInfo.hasDependencies && calcDebugInfo.missing.length > 0 && (
+                                  <div className="text-red-700">Missing: {calcDebugInfo.missing.join(", ")}</div>
+                                )}
+                                {!calcDebugInfo.hasDependencies && calcDebugInfo.missing.length > 0 && (
+                                  <div className="text-amber-700">Fallback vars missing: {calcDebugInfo.missing.join(", ")}</div>
+                                )}
+                              </div>
                             )}
                             {row.verify_note && (
                               <div className="text-xs text-orange-600 mt-1">{row.verify_note}</div>
@@ -1244,7 +1382,8 @@ const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, on
                                 value={row.value}
                                 placeholder={row.reference ? `e.g. ${row.reference.split("-")[0]?.trim()}` : "value..."}
                                 onChange={e => {
-                                  setRows(prev => prev.map((r, i) => i !== globalIdx ? r : { ...r, value: e.target.value, is_default: false }));
+                                  const raw = e.target.value.replace(/,/g, '');
+                                  setRows(prev => prev.map((r, i) => i !== globalIdx ? r : { ...r, value: raw, is_default: false }));
                                 }}
                                 onBlur={e => handleValueBlur(globalIdx, e.target.value)}
                                 onKeyDown={e => handleKeyDown(e, globalIdx)}

@@ -292,9 +292,11 @@ const buildContextFromReportTemplate = (
     referringDoctorName: order?.referringDoctorName ?? "",
     doctorName: order?.referringDoctorName ?? "",
     approvedAt: order?.approvedAt ? normalizeDateValue(order.approvedAt) : "",
-    reportDate: meta?.createdAt
-      ? normalizeDateValue(meta.createdAt)
-      : new Date().toISOString(),
+    reportDate: meta?.reportDate
+      ? normalizeDateValue(meta.reportDate)
+      : meta?.createdAt
+        ? normalizeDateValue(meta.createdAt)
+        : new Date().toISOString(),
     orderDate: meta?.orderDate ? normalizeDateValue(meta.orderDate) : "",
     orderStatus: meta?.status ?? "",
     totalAmount: meta?.totalAmount ?? "",
@@ -1074,7 +1076,7 @@ export const generateTemplatePreviewPDF = async (
       report: {
         reportId: context!.orderId,
         collectionDate: context!.order?.sampleCollectedAt || "",
-        reportDate: new Date().toISOString(),
+        reportDate: context?.meta?.reportDate ?? new Date().toISOString(),
         reportType: "Preview",
       },
       testResults: [],
@@ -1695,7 +1697,7 @@ export const createReportDataFromContext = (
     report: {
       reportId: context.orderId,
       collectionDate: order?.sampleCollectedAt ?? context.meta?.orderDate ?? "",
-      reportDate: new Date().toISOString(),
+      reportDate: context.meta?.reportDate ?? new Date().toISOString(),
       reportType: resolveReportType(context, isDraft),
     },
     testResults: testResults.length ? testResults : [

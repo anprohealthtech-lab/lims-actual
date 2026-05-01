@@ -213,14 +213,14 @@ const Subscription: React.FC = () => {
                   className="flex items-center gap-2 text-blue-700 hover:text-blue-900 font-medium text-sm transition-colors"
                 >
                   <Phone className="w-4 h-4" />
-                  +91 98765 43210
+                  +91 78630 57036
                 </a>
                 <a
-                  href="mailto:support@limsapp.in"
+                  href="mailto:anprohealthtech@gmail.com"
                   className="flex items-center gap-2 text-blue-700 hover:text-blue-900 font-medium text-sm transition-colors"
                 >
                   <Mail className="w-4 h-4" />
-                  support@limsapp.in
+                  anprohealthtech@gmail.com
                 </a>
               </div>
             </div>

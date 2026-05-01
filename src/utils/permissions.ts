@@ -3,6 +3,34 @@
 
 import { supabase } from './supabase';
 
+const PERMISSION_ALIASES: Record<string, string[]> = {
+  'whatsapp.connect': ['whatsapp.connect', 'connect_whatsapp'],
+  'whatsapp.send': ['whatsapp.send', 'connect_whatsapp'],
+  'users.view': ['users.view', 'view_users'],
+  'users.create': ['users.create', 'create_user'],
+  'users.edit': ['users.edit', 'edit_user'],
+  'users.deactivate': ['users.deactivate', 'delete_user'],
+  'users.reset_password': ['users.reset_password'],
+  'settings.view': ['settings.view', 'lab_settings'],
+  'settings.edit_lab': ['settings.edit_lab', 'lab_settings'],
+  'settings.manage_report_sections': ['settings.manage_report_sections', 'edit_report_templates'],
+  'results.view': ['results.view', 'view_results'],
+  'results.enter_general': ['results.enter_general', 'enter_results'],
+  'results.enter_radiology': ['results.enter_radiology', 'enter_results'],
+  'results.verify': ['results.verify', 'approve_results'],
+  'results.verify_radiology': ['results.verify_radiology', 'approve_results'],
+  'results.verify_section_only': ['results.verify_section_only', 'approve_results'],
+  'results.unapprove': ['results.unapprove', 'unapprove_results'],
+  'sections.edit_technician': ['sections.edit_technician'],
+  'sections.edit_doctor': ['sections.edit_doctor'],
+  'sections.edit_radiology': ['sections.edit_radiology'],
+};
+
+const getPermissionCandidates = (permissionCode: string) => {
+  const aliases = PERMISSION_ALIASES[permissionCode] || [];
+  return [...new Set([permissionCode, ...aliases])];
+};
+
 /**
  * Get LIMS user by auth_user_id (Supabase Auth UUID) or by email
  * Returns the full user record from public.users table
@@ -121,7 +149,29 @@ export async function getUserPermissions(userIdOrAuthId: string | number, email?
  */
 export async function hasPermission(userIdOrAuthId: string | number, permissionCode: string, email?: string): Promise<boolean> {
   const permissions = await getUserPermissions(userIdOrAuthId, email);
-  return permissions.includes(permissionCode);
+  return getPermissionCandidates(permissionCode).some((candidate) => permissions.includes(candidate));
+}
+
+export async function hasAnyPermission(
+  userIdOrAuthId: string | number,
+  permissionCodes: string[],
+  email?: string,
+): Promise<boolean> {
+  const permissions = await getUserPermissions(userIdOrAuthId, email);
+  return permissionCodes.some((permissionCode) =>
+    getPermissionCandidates(permissionCode).some((candidate) => permissions.includes(candidate)),
+  );
+}
+
+export async function hasAllPermissions(
+  userIdOrAuthId: string | number,
+  permissionCodes: string[],
+  email?: string,
+): Promise<boolean> {
+  const permissions = await getUserPermissions(userIdOrAuthId, email);
+  return permissionCodes.every((permissionCode) =>
+    getPermissionCandidates(permissionCode).some((candidate) => permissions.includes(candidate)),
+  );
 }
 
 /**
@@ -129,7 +179,7 @@ export async function hasPermission(userIdOrAuthId: string | number, permissionC
  * Accepts LIMS user ID, auth_user_id (UUID string), or email
  */
 export async function canConnectWhatsApp(userIdOrAuthId: string | number, email?: string): Promise<boolean> {
-  return hasPermission(userIdOrAuthId, 'connect_whatsapp', email);
+  return hasPermission(userIdOrAuthId, 'whatsapp.connect', email);
 }
 
 /**

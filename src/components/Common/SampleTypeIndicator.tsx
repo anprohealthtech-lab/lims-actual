@@ -27,7 +27,28 @@ const getSampleConfig = (sampleType: string, orderIndicatorColor?: string) => {
     // Determine CAP COLOR based on industry standard specimen types
     let capConfig = vacutainerCaps.red; // Fallback
 
-    if (type.includes('edta') || type.includes('purple') || type.includes('lavender') || type.includes('hb1ac') || type.includes('cbc') || type.includes('hematology')) {
+    if (type.includes('x ray') || type.includes('x-ray') || type.includes('xray')) {
+        return {
+            type: 'radiology-xray',
+            cap: '#1D4ED8',
+            label: 'X-Ray',
+            gradient: 'from-blue-600 to-blue-700'
+        };
+    } else if (type.includes('ct')) {
+        return {
+            type: 'radiology-ct',
+            cap: '#0F766E',
+            label: 'CT Scan',
+            gradient: 'from-teal-600 to-teal-700'
+        };
+    } else if (type.includes('usg') || type.includes('ultrasound') || type.includes('sonography')) {
+        return {
+            type: 'radiology-usg',
+            cap: '#7C3AED',
+            label: 'USG',
+            gradient: 'from-violet-600 to-violet-700'
+        };
+    } else if (type.includes('edta') || type.includes('purple') || type.includes('lavender') || type.includes('hb1ac') || type.includes('cbc') || type.includes('hematology')) {
         capConfig = vacutainerCaps.purple;
     } else if (type.includes('serum') || type.includes('sst') || type.includes('gold') || type.includes('yellow') || type.includes('thyroid') || type.includes('t3') || type.includes('t4') || type.includes('tsh') || type.includes('hormone') || type.includes('biochemistry')) {
         capConfig = vacutainerCaps.gold; // Modern labs use Gold/Yellow for Serum/Thyroid
@@ -284,6 +305,48 @@ const SwabIcon: React.FC<{ config: any; size: string }> = ({ config, size }) => 
     );
 };
 
+const RadiologyIcon: React.FC<{ config: any; size: string; mode: 'xray' | 'ct' | 'usg' }> = ({ config, size, mode }) => {
+    const sizes = {
+        sm: { width: 26, height: 26 },
+        md: { width: 34, height: 34 },
+        lg: { width: 42, height: 42 },
+    };
+
+    const { width, height } = sizes[size as keyof typeof sizes];
+    const cx = width / 2;
+    const cy = height / 2;
+    const stroke = config.cap || '#1D4ED8';
+
+    if (mode === 'ct') {
+        return (
+            <svg width={width} height={height} viewBox={`0 0 ${width} ${height}`} className="inline-block">
+                <circle cx={cx} cy={cy} r={width * 0.38} fill="white" stroke={stroke} strokeWidth="2" />
+                <circle cx={cx} cy={cy} r={width * 0.18} fill="none" stroke={stroke} strokeWidth="2" strokeDasharray="2 2" />
+                <rect x={width * 0.14} y={height * 0.43} width={width * 0.12} height={height * 0.14} rx="2" fill={stroke} opacity="0.8" />
+            </svg>
+        );
+    }
+
+    if (mode === 'usg') {
+        return (
+            <svg width={width} height={height} viewBox={`0 0 ${width} ${height}`} className="inline-block">
+                <rect x={width * 0.12} y={height * 0.12} width={width * 0.58} height={height * 0.5} rx="4" fill="white" stroke={stroke} strokeWidth="2" />
+                <path d={`M ${width * 0.74} ${height * 0.46} Q ${width * 0.88} ${height * 0.58} ${width * 0.78} ${height * 0.8}`} fill="none" stroke={stroke} strokeWidth="2" strokeLinecap="round" />
+                <path d={`M ${width * 0.26} ${height * 0.42} Q ${width * 0.38} ${height * 0.26} ${width * 0.52} ${height * 0.42}`} fill="none" stroke={stroke} strokeWidth="2" />
+            </svg>
+        );
+    }
+
+    return (
+        <svg width={width} height={height} viewBox={`0 0 ${width} ${height}`} className="inline-block">
+            <rect x={width * 0.12} y={height * 0.12} width={width * 0.76} height={height * 0.76} rx="5" fill="white" stroke={stroke} strokeWidth="2" />
+            <line x1={width * 0.28} y1={height * 0.24} x2={width * 0.28} y2={height * 0.76} stroke={stroke} strokeWidth="2" />
+            <line x1={width * 0.72} y1={height * 0.24} x2={width * 0.72} y2={height * 0.76} stroke={stroke} strokeWidth="2" />
+            <line x1={width * 0.22} y1={height * 0.5} x2={width * 0.78} y2={height * 0.5} stroke={stroke} strokeWidth="2" />
+        </svg>
+    );
+};
+
 export const SampleTypeIndicator: React.FC<SampleTypeIndicatorProps> = ({
     sampleType,
     sampleColor,
@@ -301,6 +364,12 @@ export const SampleTypeIndicator: React.FC<SampleTypeIndicatorProps> = ({
                 return <StoolContainer config={config} size={size} />;
             case 'swab':
                 return <SwabIcon config={config} size={size} />;
+            case 'radiology-xray':
+                return <RadiologyIcon config={config} size={size} mode="xray" />;
+            case 'radiology-ct':
+                return <RadiologyIcon config={config} size={size} mode="ct" />;
+            case 'radiology-usg':
+                return <RadiologyIcon config={config} size={size} mode="usg" />;
             case 'vacutainer':
             default:
                 return <VacutainerTube config={config} size={size} />;

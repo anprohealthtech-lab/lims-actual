@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { supabase } from '../../utils/supabase';
 import { priceMasters } from '../../utils/supabase';
+import { database } from '../../utils/supabase';
 import {
   Plus, Edit2, Trash2, Save, X, ChevronRight, ChevronDown,
   Loader2, AlertCircle, Tag, Search, CheckCircle2, ToggleLeft, ToggleRight,
@@ -66,9 +67,14 @@ const PriceMasterSettings: React.FC = () => {
   // ─── Load all tests once (for the items editor) ───────────────────────────
   const loadAllTests = async () => {
     if (allTests.length > 0) return;
+    const labId = await database.getCurrentUserLabId();
+
+    if (!labId) return;
+
     const { data } = await supabase
       .from('test_groups')
       .select('id, name, code, price')
+      .eq('lab_id', labId)
       .eq('is_active', true)
       .order('name');
     setAllTests(data || []);

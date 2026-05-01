@@ -27,6 +27,7 @@ interface PDFGenerationState {
   stage: string;
   progress: number;
   error?: string;
+  pdfUrl?: string;
 }
 
 export const usePDFGeneration = () => {
@@ -46,7 +47,8 @@ export const usePDFGeneration = () => {
       isGenerating: true,
       stage: 'Initializing...',
       progress: 0,
-      error: undefined
+      error: undefined,
+      pdfUrl: undefined
     });
 
     try {
@@ -81,7 +83,7 @@ export const usePDFGeneration = () => {
         throw new Error('No PDF URL returned from Edge Function');
       }
 
-      setState(prev => ({ ...prev, stage: 'PDF generated, downloading...', progress: 80 }));
+      setState(prev => ({ ...prev, stage: 'PDF generated, preparing preview...', progress: 80 }));
 
       // Choose eCopy or Print URL based on draftVariant
       const usePrint = draftVariant === 'print' && !!result.printPdfUrl;
@@ -89,43 +91,23 @@ export const usePDFGeneration = () => {
         console.warn('Print PDF URL not available, falling back to eCopy');
       }
       const pdfUrl = usePrint ? result.printPdfUrl : result.pdfUrl;
-      const fetchResponse = await fetch(pdfUrl);
-      
+      const fetchResponse = await fetch(pdfUrl, { method: 'HEAD' });
+
       if (fetchResponse.ok) {
-        const blob = await fetchResponse.blob();
-        const downloadUrl = window.URL.createObjectURL(blob);
-        
-        // Get patient name from context for filename
-        const { data: context } = await database.reports.getTemplateContext(orderId);
-        const safePatientName = context?.patient?.name?.replace(/\s+/g, '_') || 'Patient';
         const isDraft = result.status === 'draft';
-        const filename = `${safePatientName}_${orderId}${isDraft ? '_DRAFT' : ''}${usePrint ? '_PRINT' : ''}.pdf`;
-        
-        const link = document.createElement('a');
-        link.href = downloadUrl;
-        link.download = filename;
-        document.body.appendChild(link);
-        link.click();
-        document.body.removeChild(link);
-        window.URL.revokeObjectURL(downloadUrl);
-        
         setState(prev => ({
           ...prev,
-          stage: 'PDF downloaded successfully!',
-          progress: 100
+          stage: isDraft ? 'Draft PDF ready to view' : 'Final PDF ready to view',
+          progress: 100,
+          pdfUrl
         }));
 
         // Auto-print report via QZ Tray if enabled (only for final/approved reports, not drafts)
         if (!isDraft) {
           autoPrintReport(pdfUrl).catch(() => {});
         }
-
-        // Auto-hide after 2 seconds on success
-        setTimeout(() => {
-          setState(prev => ({ ...prev, isGenerating: false }));
-        }, 2000);
       } else {
-        throw new Error('Failed to download PDF from URL');
+        throw new Error('Failed to access generated PDF URL');
       }
     } catch (error) {
       console.error('Edge Function PDF generation failed:', error);
@@ -139,12 +121,13 @@ export const usePDFGeneration = () => {
   }, []);
 
   const resetState = useCallback(() => {
-    setState({
-      isGenerating: false,
-      stage: '',
-      progress: 0,
-      error: undefined
-    });
+      setState({
+        isGenerating: false,
+        stage: '',
+        progress: 0,
+        error: undefined,
+        pdfUrl: undefined
+      });
   }, []);
 
   /**
@@ -158,7 +141,8 @@ export const usePDFGeneration = () => {
       isGenerating: true,
       stage: 'Preparing for regeneration...',
       progress: 0,
-      error: undefined
+      error: undefined,
+      pdfUrl: undefined
     });
 
     try {
@@ -209,7 +193,7 @@ export const usePDFGeneration = () => {
       if (pdfUrl) {
         setState(prev => ({ ...prev, stage: 'Waiting for PDF to be ready...', progress: 85 }));
         
-        // Retry downloading the PDF with exponential backoff
+        // Retry checking the PDF with exponential backoff
         // PDF.co S3 URLs sometimes need time to propagate
         const maxDownloadRetries = 5;
         const baseDelay = 1500;
@@ -219,41 +203,27 @@ export const usePDFGeneration = () => {
           try {
             setState(prev => ({ 
               ...prev, 
-              stage: attempt > 1 ? `Retrying download (attempt ${attempt})...` : 'Downloading PDF...', 
+              stage: attempt > 1 ? `Retrying PDF check (attempt ${attempt})...` : 'Checking generated PDF...', 
               progress: 85 + (attempt * 2) 
             }));
             
-            const response = await fetch(pdfUrl);
+            const response = await fetch(pdfUrl, { method: 'HEAD' });
             if (response.ok) {
-              const blob = await response.blob();
-              const downloadUrl = window.URL.createObjectURL(blob);
-              
-              const link = document.createElement('a');
-              link.href = downloadUrl;
-              link.download = bundle.filename;
-              document.body.appendChild(link);
-              link.click();
-              document.body.removeChild(link);
-              window.URL.revokeObjectURL(downloadUrl);
-              
               setState(prev => ({
                 ...prev,
-                stage: 'PDF downloaded successfully!',
-                progress: 100
+                stage: 'PDF ready to view',
+                progress: 100,
+                pdfUrl
               }));
-              
-              setTimeout(() => {
-                setState(prev => ({ ...prev, isGenerating: false }));
-              }, 2000);
-              
+
               return pdfUrl;
             } else {
-              lastError = new Error(`Download failed with status ${response.status}`);
-              console.warn(`PDF download attempt ${attempt} failed:`, response.status);
+              lastError = new Error(`PDF check failed with status ${response.status}`);
+              console.warn(`PDF check attempt ${attempt} failed:`, response.status);
             }
           } catch (fetchError) {
-            lastError = fetchError instanceof Error ? fetchError : new Error('Download failed');
-            console.warn(`PDF download attempt ${attempt} error:`, fetchError);
+            lastError = fetchError instanceof Error ? fetchError : new Error('PDF check failed');
+            console.warn(`PDF check attempt ${attempt} error:`, fetchError);
           }
           
           // Wait before retry (exponential backoff)
@@ -262,7 +232,7 @@ export const usePDFGeneration = () => {
           }
         }
         
-        throw lastError || new Error('Failed to download PDF after multiple attempts');
+        throw lastError || new Error('Failed to access PDF after multiple attempts');
       }
       
       return null;

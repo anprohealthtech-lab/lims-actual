@@ -51,6 +51,7 @@ const TestForm: React.FC<TestFormProps> = ({ onClose, onSubmit, test }) => {
     'Molecular Biology',
     'Histopathology',
     'Cytology',
+    'Radiology',
   ];
 
   const sampleTypes = [
@@ -63,6 +64,11 @@ const TestForm: React.FC<TestFormProps> = ({ onClose, onSubmit, test }) => {
     'Sputum',
     'Swab',
     'Tissue',
+    'X-Ray',
+    'CT Scan',
+    'USG',
+    'Ultrasound',
+    'Sonography',
     'Other',
   ];
 

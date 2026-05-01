@@ -9,9 +9,17 @@ import {
   fetchLetterheadBackgroundForOrder,
   fetchHeaderFooterImages,
   imageUrlToBase64,
+  optimizeHeaderFooterImageUrl,
   buildHeaderHtml,
   buildFooterHtml,
 } from "./headerFooterHelper.ts";
+
+function formatIndianNumber(val: string | number): string {
+  const str = String(val).replace(/,/g, "").trim();
+  const num = parseFloat(str);
+  if (!Number.isFinite(num) || Math.abs(num) < 1000) return str || String(val);
+  return new Intl.NumberFormat("en-IN").format(num);
+}
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -1055,7 +1063,7 @@ function generateAnalytePlaceholders(analytes: any[]): Record<string, any> {
     // 1. Existing Short Key Logic (ANALYTE_HB_VALUE)
     const shortKey = generateAnalyteShortKey(name);
     if (shortKey) {
-      placeholders[`ANALYTE_${shortKey}_VALUE`] = analyte.value || "";
+      placeholders[`ANALYTE_${shortKey}_VALUE`] = formatIndianNumber(analyte.value || "");
       placeholders[`ANALYTE_${shortKey}_UNIT`] = analyte.unit || "";
       placeholders[`ANALYTE_${shortKey}_REFERENCE`] = analyte.reference_range ||
         "";
@@ -1075,10 +1083,10 @@ function generateAnalytePlaceholders(analytes: any[]): Record<string, any> {
     const slug = name.replace(/[^a-zA-Z0-9]+/g, " ").trim().replace(/\s+/g, "");
     if (slug) {
       // Direct values
-      placeholders[`${slug}`] = analyte.value || ""; // {{Hemoglobin}}
+      placeholders[`${slug}`] = formatIndianNumber(analyte.value || ""); // {{Hemoglobin}}
 
       // Suffix variations
-      placeholders[`${slug}_VALUE`] = analyte.value || "";
+      placeholders[`${slug}_VALUE`] = formatIndianNumber(analyte.value || "");
       placeholders[`${slug}_UNIT`] = analyte.unit || "";
       placeholders[`${slug}_REF_RANGE`] = analyte.reference_range || ""; // Matching _REF_RANGE from frontend
       placeholders[`${slug}_REFERENCE`] = analyte.reference_range || ""; // Alias
@@ -1102,7 +1110,7 @@ function generateAnalytePlaceholders(analytes: any[]): Record<string, any> {
       .replace(/\s+/g, "_"); // Replace spaces with underscores
 
     if (upperSnakeKey && upperSnakeKey !== shortKey) {
-      placeholders[`ANALYTE_${upperSnakeKey}_VALUE`] = analyte.value || "";
+      placeholders[`ANALYTE_${upperSnakeKey}_VALUE`] = formatIndianNumber(analyte.value || "");
       placeholders[`ANALYTE_${upperSnakeKey}_UNIT`] = analyte.unit || "";
       placeholders[`ANALYTE_${upperSnakeKey}_REFERENCE`] =
         analyte.reference_range || "";
@@ -1280,8 +1288,8 @@ function injectQrCode(html: string, verifyUrl: string): string {
     return html;
   }
 
-  // Already has QR code?
-  if (html.includes("qr-verify") || html.includes("api.qrserver.com")) {
+  // Already has QR code? Check for the actual HTML element, not just the CSS class name string
+  if (html.includes('class="qr-verify"') || html.includes("class='qr-verify'") || html.includes("api.qrserver.com")) {
     console.log("  ✅ QR code already present in template");
     return html;
   }
@@ -2033,6 +2041,87 @@ function generateClassicDefaultTemplateHtml(
   const normalizedSectionContent =
     sectionContent && typeof sectionContent === "object" ? sectionContent : {};
 
+  const stripLooseMarkdown = (value: string): string =>
+    value
+      .replace(/\*\*([^*]+)\*\*/g, "$1")
+      .replace(/^(\*\*+)\s*/gm, "")
+      .replace(/\s*(\*\*+)$/gm, "")
+      .trim();
+
+  const escapeNarrativeHtml = (value: string): string =>
+    value
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&#39;");
+
+  const formatNarrativeHtml = (rawContent: string): string => {
+    const trimmed = rawContent.trim();
+    if (!trimmed) return "";
+    if (/<[a-z][\s\S]*>/i.test(trimmed)) {
+      return trimmed.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+    }
+
+    const lines = trimmed
+      .replace(/\r\n/g, "\n")
+      .split("\n")
+      .map((line) => stripLooseMarkdown(line))
+      .filter(Boolean);
+
+    const parts: string[] = [];
+    let listItems: string[] = [];
+    const flushList = () => {
+      if (!listItems.length) return;
+      parts.push(`<ul>${listItems.join("")}</ul>`);
+      listItems = [];
+    };
+
+    for (const line of lines) {
+      if (/^[-*•]\s+/.test(line)) {
+        listItems.push(
+          `<li>${escapeNarrativeHtml(line.replace(/^[-*•]\s+/, "").trim())}</li>`,
+        );
+        continue;
+      }
+
+      flushList();
+
+      const colonIdx = line.indexOf(":");
+      if (colonIdx > 0 && colonIdx < 40) {
+        parts.push(`
+          <div class="narrative-kv-row">
+            <div class="narrative-kv-label">${escapeNarrativeHtml(line.slice(0, colonIdx).trim())}</div>
+            <div class="narrative-kv-value">${escapeNarrativeHtml(line.slice(colonIdx + 1).trim())}</div>
+          </div>`);
+        continue;
+      }
+
+      parts.push(`<p>${escapeNarrativeHtml(line)}</p>`);
+    }
+
+    flushList();
+    return parts.join("");
+  };
+
+  const isNarrativeGroup = (analytes: any[]): boolean => {
+    if (!analytes.length) return false;
+    const narrativeRows = analytes.filter((analyte) => {
+      const unit = String(analyte.unit || "").trim().toLowerCase();
+      const ref = String(analyte.reference_range || "").trim();
+      const valueTypeRaw = String(analyte.value_type || "").toLowerCase();
+      // Count any row with no unit and no numeric reference range as narrative,
+      // including section headers and plain-text paragraph rows (empty value).
+      return (
+        valueTypeRaw !== "qualitative" &&
+        (!unit || ["n/a", "na", "-", "none", "not applicable"].includes(unit)) &&
+        !/\d/.test(ref)
+      );
+    }).length;
+
+    return narrativeRows > 0 && narrativeRows / analytes.length >= 0.7;
+  };
+
   // Patient Information Section
   const patientInfoHtml = patientInfoConfig
     ? buildPatientInfoHtml(patientInfoConfig, '#5a7f3a', extraFieldConfigs)
@@ -2485,6 +2574,8 @@ function generateBasicDefaultTemplateHtml(
   const sectionHeaderInline = (printOptions?.sectionHeaderInline as boolean) ?? false;
   const flagSymbol = (printOptions?.flagSymbol as string) ?? "none";
   const showFlagLegend = (printOptions?.showFlagLegend as boolean) ?? false;
+  const testGroupTitlePosition = (printOptions?.testGroupTitlePosition as string) ?? "below_headers";
+  const qrHorizontalOffset = Math.max(0, Math.min(80, Number(printOptions?.qrHorizontalOffset ?? 0)));
   const colCount = flagSymbol === "before" ? 5 : 4;
   console.log("[generateBasicDefaultTemplateHtml] printOptions received:", JSON.stringify(printOptions));
   console.log("[generateBasicDefaultTemplateHtml] boldAllValues resolved to:", boldAllValues, "(raw value:", printOptions?.boldAllValues, "type:", typeof printOptions?.boldAllValues, ")");
@@ -2540,6 +2631,28 @@ function generateBasicDefaultTemplateHtml(
   vertical-align: middle !important;
 }
 
+/* Restore borders for clinical interpretation tables.
+   Print options CSS sets .limsv2-report td { border:none !important } which kills these.
+   Higher-specificity scoped rule with !important wins. */
+.basic-report-template .group-interpretation figure.table table,
+.basic-report-template .group-interpretation .tbl-interpretation {
+  border-collapse: collapse !important;
+  width: 100% !important;
+}
+.basic-report-template .group-interpretation figure.table table td,
+.basic-report-template .group-interpretation figure.table table th,
+.basic-report-template .group-interpretation .tbl-interpretation td,
+.basic-report-template .group-interpretation .tbl-interpretation th {
+  border: 1px solid #ccc !important;
+  padding: 5px 8px !important;
+  vertical-align: top !important;
+}
+.basic-report-template .group-interpretation figure.table table thead th,
+.basic-report-template .group-interpretation .tbl-interpretation thead th {
+  background-color: #f0f0f0 !important;
+  font-weight: 700 !important;
+}
+
 .basic-report-template .result-normal,
 .basic-report-template .flag-normal,
 .basic-report-template .value-normal,
@@ -2560,6 +2673,21 @@ function generateBasicDefaultTemplateHtml(
   color: #000 !important;
   font-weight: normal;
 }
+
+/* Restore flag colors inside interpretation blocks (group-interpretation tables) */
+.basic-report-template .group-interpretation .flag-high,
+.basic-report-template .group-interpretation .value-high { color: #dc2626 !important; font-weight: 700 !important; }
+.basic-report-template .group-interpretation .flag-low,
+.basic-report-template .group-interpretation .value-low { color: #ea580c !important; font-weight: 700 !important; }
+.basic-report-template .group-interpretation .flag-critical,
+.basic-report-template .group-interpretation .flag-critical_h,
+.basic-report-template .group-interpretation .value-critical { color: #dc2626 !important; font-weight: 900 !important; }
+.basic-report-template .group-interpretation .flag-abnormal,
+.basic-report-template .group-interpretation .value-abnormal { color: #dc2626 !important; font-weight: 700 !important; }
+.basic-report-template .group-interpretation .flag-trace,
+.basic-report-template .group-interpretation .value-trace { color: #ea580c !important; font-weight: 700 !important; }
+.basic-report-template .group-interpretation .flag-normal,
+.basic-report-template .group-interpretation .value-normal { color: #1f2937 !important; font-weight: 700 !important; }
 
 .basic-report-template .report-title-bar {
   display: flex !important;
@@ -2749,6 +2877,12 @@ ${flagSymbol === "before" ? `
   color: #000 !important;
 }
 
+.basic-report-template .center-title.left {
+  text-align: left !important;
+  text-decoration: none !important;
+  margin: 0 0 6px !important;
+}
+
 .basic-report-template .center-subtitle {
   text-align: center !important;
   font-size: ${smallPx + 1}px !important;
@@ -2795,6 +2929,70 @@ ${flagSymbol === "before" ? `
   padding-top: 6px !important;
 }
 
+.basic-report-template .narrative-panel {
+  margin: 0 0 14px !important;
+  border-top: 1.5px solid #000 !important;
+  border-bottom: 1px solid #d1d5db !important;
+  padding: 8px 0 10px !important;
+}
+
+.basic-report-template .narrative-panel .center-title {
+  margin-top: 0 !important;
+}
+
+.basic-report-template .narrative-body {
+  margin-top: 8px !important;
+  font-size: ${basePx}px !important;
+  line-height: 1.55 !important;
+  color: #111 !important;
+}
+
+.basic-report-template .narrative-kv-row {
+  display: grid !important;
+  grid-template-columns: minmax(140px, 220px) 1fr !important;
+  gap: 10px !important;
+  padding: 6px 0 !important;
+  border-bottom: 0.5px dotted #d1d5db !important;
+}
+
+.basic-report-template .narrative-kv-label {
+  font-weight: 700 !important;
+  color: #111 !important;
+}
+
+.basic-report-template .narrative-kv-value {
+  color: #111 !important;
+}
+
+.basic-report-template .narrative-body p {
+  margin: 0 0 8px !important;
+}
+
+.basic-report-template .narrative-body ul {
+  margin: 0 !important;
+  padding-left: 18px !important;
+}
+
+.basic-report-template .narrative-body li {
+  margin-bottom: 4px !important;
+}
+
+.basic-report-template .narrative-section-heading {
+  font-weight: 700 !important;
+  text-transform: uppercase !important;
+  font-size: ${basePx + 1}px !important;
+  padding: 10px 0 4px !important;
+  border-bottom: 0.5px solid #bbb !important;
+  margin-top: 8px !important;
+  letter-spacing: 0.02em !important;
+  color: #000 !important;
+}
+
+.basic-report-template .narrative-para {
+  margin: 3px 0 6px !important;
+  line-height: 1.55 !important;
+}
+
 .basic-report-template .report-footer {
   margin-top: auto !important;  /* pushes footer to bottom of available page space */
   padding-top: 30px !important; /* minimum breathing room above footer */
@@ -2803,6 +3001,10 @@ ${flagSymbol === "before" ? `
   align-items: flex-end !important;
   page-break-inside: avoid !important;
   border-top: none !important;
+}
+
+.basic-report-template .report-footer .qr-verify {
+  margin-left: ${qrHorizontalOffset}px !important;
 }
 
 .basic-report-template .auth-text {
@@ -2911,7 +3113,7 @@ ${flagSymbol === "before" ? `
           </tr>
           <tr>
             <th>Ref. By</th><td>: {{referringDoctorName}}</td>
-            <th>Report Date</th><td>: {{approvedAt}}</td>
+            <th>Report Date</th><td>: {{reportDate}}</td>
           </tr>
         </tbody>
       </table>
@@ -2919,6 +3121,47 @@ ${flagSymbol === "before" ? `
   })();
 
   let testResultsHtml = '<div class="test-results">';
+
+  // ── Narrative helpers (scoped to this function) ─────────────────────────
+  const _stripMd = (v: string) =>
+    v.replace(/\*\*([^*]+)\*\*/g, "$1").replace(/^(\*\*+)\s*/gm, "").replace(/\s*(\*\*+)$/gm, "").trim();
+  const _escHtml = (v: string) =>
+    v.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+  const _fmtNarrative = (raw: string): string => {
+    const t = raw.trim();
+    if (!t) return "";
+    if (/<[a-z][\s\S]*>/i.test(t)) return t.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+    const lines = t.replace(/\r\n/g, "\n").split("\n").map((l: string) => _stripMd(l)).filter(Boolean);
+    const parts: string[] = [];
+    let lis: string[] = [];
+    const flush = () => { if (lis.length) { parts.push(`<ul>${lis.join("")}</ul>`); lis = []; } };
+    for (const line of lines) {
+      if (/^[-*•]\s+/.test(line)) { lis.push(`<li>${_escHtml(line.replace(/^[-*•]\s+/, "").trim())}</li>`); continue; }
+      flush();
+      const ci = line.indexOf(":");
+      if (ci > 0 && ci < 40) {
+        parts.push(`<div class="narrative-kv-row"><div class="narrative-kv-label">${_escHtml(line.slice(0, ci).trim())}</div><div class="narrative-kv-value">${_escHtml(line.slice(ci + 1).trim())}</div></div>`);
+        continue;
+      }
+      parts.push(`<p>${_escHtml(line)}</p>`);
+    }
+    flush();
+    return parts.join("");
+  };
+  const _isNarrativeGroup = (analytes: any[]): boolean => {
+    if (!analytes.length) return false;
+    const n = analytes.filter((a: any) => {
+      const unit = String(a.unit || "").trim().toLowerCase();
+      const ref = String(a.reference_range || "").trim();
+      const vt = String(a.value_type || "").toLowerCase();
+      return vt !== "qualitative" &&
+        (!unit || ["n/a", "na", "-", "none", "not applicable"].includes(unit)) &&
+        !/\d/.test(ref);
+    }).length;
+    return n > 0 && n / analytes.length >= 0.7;
+  };
+  // ────────────────────────────────────────────────────────────────────────
+
   for (const [groupId, analytes] of analytesByGroup) {
     if (!analytes || analytes.length === 0) continue;
 
@@ -2934,8 +3177,59 @@ ${flagSymbol === "before" ? `
         ? `<div class="center-subtitle">Specimen: ${analytes[0].specimen}</div>`
         : "");
 
+    const groupTitleBelowHeaders = testGroupTitlePosition === "below_headers";
+    const groupTitleClass = testGroupTitlePosition === "above_headers_left" ? "center-title left" : "center-title";
+
+    if (_isNarrativeGroup(analytes)) {
+      const rowsHtml = analytes.map((analyte: any) => {
+        const rawParam = String(analyte.parameter || analyte.name || analyte.test_name || "").trim();
+        const rawValue = String(analyte.value ?? analyte.reference_range ?? "").trim();
+
+        // Clean ** bold markers
+        const param = _stripMd(rawParam);
+        const value = _stripMd(rawValue.replace(/^\*\*\s*/, "").replace(/\s*\*\*$/, ""));
+
+        if (!param && !value) return "";
+
+        // Section header: parameter starts with ** and value is empty or just **
+        const isSectionHeader =
+          /^\*\*/.test(rawParam) && (!rawValue || /^\*\*\s*$/.test(rawValue));
+
+        if (isSectionHeader) {
+          return `<div class="narrative-section-heading">${_escHtml(param)}</div>`;
+        }
+
+        // Free-text paragraph: no ** prefix on parameter and no value
+        if (!/^\*\*/.test(rawParam) && !value) {
+          return `<p class="narrative-para">${_escHtml(param)}</p>`;
+        }
+
+        // Key-value pair
+        return `
+          <div class="narrative-kv-row">
+            <div class="narrative-kv-label">${_escHtml(param)}</div>
+            <div class="narrative-kv-value">${_fmtNarrative(value)}</div>
+          </div>`;
+      }).join("");
+
+      const narrativeGroupInterpretation = groupInterpretations?.get(groupId) || analytes[0]?.groupInterpretation;
+      testResultsHtml += `
+        <section class="narrative-panel">
+          <div class="${groupTitleClass}">${groupName}</div>
+          ${specimenText}
+          <div class="narrative-body">${rowsHtml}</div>
+          ${narrativeGroupInterpretation ? `<div class="limsv2-report group-interpretation" style="margin-top:8px;padding:6px 0;border-top:1px solid #ddd;font-size:inherit;">${narrativeGroupInterpretation}</div>` : ""}
+        </section>
+      `;
+      continue;
+    }
+
     testResultsHtml += `
       <figure class="table" style="margin: 0 0 14px;">
+        ${!groupTitleBelowHeaders ? `
+          <div class="${groupTitleClass}">${groupName}</div>
+          ${specimenText}
+        ` : ""}
         <table class="tbl-results">
           <thead>
             <tr>
@@ -2947,12 +3241,14 @@ ${flagSymbol === "before" ? `
             </tr>
           </thead>
           <tbody>
+            ${groupTitleBelowHeaders ? `
             <tr class="main-group-row">
               <td colspan="${colCount}">
                 <div class="center-title">${groupName}</div>
                 ${specimenText}
               </td>
             </tr>
+            ` : ""}
     `;
 
     const sectionBlocks = groupAnalytesBySectionHeading(analytes);
@@ -2969,9 +3265,11 @@ ${flagSymbol === "before" ? `
         const parameterName = analyte.parameter || analyte.name || analyte.test_name || "";
         const isCalculated = analyte.is_auto_calculated || analyte.is_calculated;
         const rawValue = analyte.value ?? "";
-        const value = isCalculated && rawValue !== "" && !isNaN(Number(rawValue))
-          ? String(parseFloat(Number(rawValue).toFixed(2)))
-          : rawValue;
+        const value = formatIndianNumber(
+          isCalculated && rawValue !== "" && !isNaN(Number(rawValue))
+            ? String(parseFloat(Number(rawValue).toFixed(2)))
+            : rawValue
+        );
         const unit = analyte.unit || "";
         const refRange = (analyte.reference_range || "").replace(/\n/g, "<br>");
         const flag = analyte.flag || "";
@@ -3139,56 +3437,11 @@ ${flagSymbol === "before" ? `
           `;
         }
 
-        // Plain text content: strip HTML tags, split into lines, render each as a proper analyte-style row
-        const plainText = rawContent
-          .replace(/<div[^>]*>/gi, "").replace(/<\/div>/gi, "\n")
-          .replace(/<br\s*\/?>/gi, "\n")
-          .replace(/<[^>]+>/g, "")
-          .trim();
-
-        const lines = plainText.split(/\n/).map(l => l.trim()).filter(Boolean);
-        const rowsHtml = lines.map(line => {
-          const colonIdx = line.indexOf(":");
-          if (colonIdx > 0) {
-            const rowLabel = line.substring(0, colonIdx).trim();
-            const rowValue = line.substring(colonIdx + 1).trim();
-            // Render as TEST NAME | VALUE | (empty UNITS) | (empty Ref) — matches analyte rows
-            return `<tr>
-              <td class="test-name-cell">
-                <div class="test-name" style="font-size:${basePx}px; font-weight:${testNameWeight};">${rowLabel}</div>
-              </td>
-              ${flagSymbol === "before" ? `<td></td>` : ""}
-              <td style="font-size:${basePx}px; font-weight:normal; vertical-align:top; padding:3px 6px;">${rowValue}</td>
-              <td></td>
-              <td></td>
-            </tr>`;
-          }
-          // No colon — full-width row (e.g. a heading line)
-          return `<tr class="descriptive-row"><td colspan="${colCount}" style="font-size:${basePx}px; font-weight:600;">${line}</td></tr>`;
-        }).join("");
-
         return `
-          <figure class="table" style="margin: 0 0 14px;">
-            <table class="tbl-results">
-              <thead>
-                <tr>
-                  <th>TEST NAME</th>
-                  ${flagSymbol === "before" ? `<th>FLAG</th>` : ""}
-                  <th>VALUE</th>
-                  <th>UNITS</th>
-                  <th>Bio. Ref. Interval</th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr class="main-group-row">
-                  <td colspan="${colCount}">
-                    <div class="center-title">${label}</div>
-                  </td>
-                </tr>
-                ${rowsHtml}
-              </tbody>
-            </table>
-          </figure>
+          <section class="narrative-panel">
+            <div class="center-title">${label}</div>
+            <div class="narrative-body">${_fmtNarrative(rawContent)}</div>
+          </section>
         `;
       })
       .filter(Boolean)
@@ -3812,21 +4065,25 @@ function buildPdfBodyDocumentV2(
   pdfSettings?: any,
   verificationUrl?: string | null,
 ): string {
+  const useNativePdfHeaderFooter = !!pdfSettings?.displayHeaderFooter;
   console.log("🚀🚀🚀 VERSION 3.3 - PER-GROUP TEMPLATE STYLE 🚀🚀🚀");
   console.log("🏗️ buildPdfBodyDocumentV2 called with:", {
-    bodyHtmlLength: bodyHtml?.length || 0,
+	    bodyHtmlLength: bodyHtml?.length || 0,
     customCssLength: customCss?.length || 0,
-    letterheadUrl: letterheadBackgroundUrl || "NONE",
-    hasLetterhead: !!letterheadBackgroundUrl,
-    hasPdfSettings: !!pdfSettings,
-    verificationUrl: verificationUrl || "NONE",
-  });
+	    letterheadUrl: letterheadBackgroundUrl || "NONE",
+	    hasLetterhead: !!letterheadBackgroundUrl,
+	    hasPdfSettings: !!pdfSettings,
+      useNativePdfHeaderFooter,
+	    verificationUrl: verificationUrl || "NONE",
+	  });
 
   // Calculate spacer heights from settings (default to 130px)
   const topSpacerHeight = pdfSettings?.margins?.top ?? 130;
   const bottomSpacerHeight = pdfSettings?.margins?.bottom ?? 130;
   const leftPadding = pdfSettings?.margins?.left ?? 20;
   const rightPadding = pdfSettings?.margins?.right ?? 20;
+  const bodySidePaddingLeft = useNativePdfHeaderFooter ? 0 : leftPadding;
+  const bodySidePaddingRight = useNativePdfHeaderFooter ? 0 : rightPadding;
 
   // QR code is now placed in signature area (bottom) - not at top
   // The QR will be injected where signature exists, on the opposite side
@@ -3939,9 +4196,9 @@ function buildPdfBodyDocumentV2(
     }
 
     /* Safe content area - spacing handled by HTML TABLE spacers now */
-    .limsv2-report-body--pdf {
-      padding: 0 ${rightPadding}px 0 ${leftPadding}px !important;
-    }
+	    .limsv2-report-body--pdf {
+	      padding: 0 ${bodySidePaddingRight}px 0 ${bodySidePaddingLeft}px !important;
+	    }
 
     /* Prevent table rows from being cut across pages */
     .report-table tr,
@@ -4037,7 +4294,7 @@ ${
   }
 <style id="lims-margin-overrides">
 /* Left/right padding driven by lab PDF margin settings */
-.limsv2-report-body--pdf { padding-left: ${leftPadding}px !important; padding-right: ${rightPadding}px !important; }
+.limsv2-report-body--pdf { padding-left: ${bodySidePaddingLeft}px !important; padding-right: ${bodySidePaddingRight}px !important; }
 </style>
 </head>
 <body>
@@ -4606,23 +4863,64 @@ async function sendHtmlToPdfCo(
   console.log("  Header length:", options.headerHtml?.length || 0);
   console.log("  Footer length:", options.footerHtml?.length || 0);
 
+  const parsePxValue = (value: string | number | undefined, fallback: number): number => {
+    if (typeof value === "number" && Number.isFinite(value)) return value;
+    if (typeof value === "string") {
+      const match = value.match(/-?\d+(\.\d+)?/);
+      if (match) return Number(match[0]);
+    }
+    return fallback;
+  };
+
   const payload: Record<string, any> = {
     name: filename,
     html: html,
     async: true, // Use async for large documents
     margins: options.margins || DEFAULT_PDF_SETTINGS.margins,
-    paperSize: options.paperSize || DEFAULT_PDF_SETTINGS.paperSize,
-    displayHeaderFooter: options.displayHeaderFooter ??
+    papersize: options.paperSize || DEFAULT_PDF_SETTINGS.paperSize,
+    displayheaderfooter: options.displayHeaderFooter ??
       DEFAULT_PDF_SETTINGS.displayHeaderFooter,
     header: options.headerHtml || "",
     footer: options.footerHtml || "",
-    headerHeight: options.headerHeight || DEFAULT_PDF_SETTINGS.headerHeight,
-    footerHeight: options.footerHeight || DEFAULT_PDF_SETTINGS.footerHeight,
+    headerheight: options.headerHeight || DEFAULT_PDF_SETTINGS.headerHeight,
+    footerheight: options.footerHeight || DEFAULT_PDF_SETTINGS.footerHeight,
     scale: options.scale ?? DEFAULT_PDF_SETTINGS.scale,
-    mediaType: options.mediaType || DEFAULT_PDF_SETTINGS.mediaType,
-    printBackground: options.printBackground ??
+    mediatype: options.mediaType || DEFAULT_PDF_SETTINGS.mediaType,
+    printbackground: options.printBackground ??
       DEFAULT_PDF_SETTINGS.printBackground,
   };
+
+  console.log("  Payload settings:", {
+    margins: payload.margins,
+    papersize: payload.papersize,
+    displayheaderfooter: payload.displayheaderfooter,
+    headerheight: payload.headerheight,
+    footerheight: payload.footerheight,
+    mediatype: payload.mediatype,
+    printbackground: payload.printbackground,
+  });
+
+  if (payload.displayheaderfooter && typeof payload.margins === "string") {
+    const marginParts = payload.margins.trim().split(/\s+/);
+    const topMarginPx = parsePxValue(marginParts[0], 0);
+    const bottomMarginPx = parsePxValue(marginParts[2] ?? marginParts[0], 0);
+    const headerHeightPx = parsePxValue(payload.headerheight, 90);
+    const footerHeightPx = parsePxValue(payload.footerheight, 80);
+
+    if (topMarginPx > headerHeightPx + 40) {
+      console.warn("  ⚠️ Top margin is much larger than header height:", {
+        topMarginPx,
+        headerHeightPx,
+      });
+    }
+
+    if (bottomMarginPx > footerHeightPx + 40) {
+      console.warn("  ⚠️ Bottom margin is much larger than footer height:", {
+        bottomMarginPx,
+        footerHeightPx,
+      });
+    }
+  }
 
   // Add grayscale filter for print versions (converts colors to B&W)
   // PDF.co expects profiles as a JSON string with specific format
@@ -6547,50 +6845,68 @@ serve(async (req) => {
         console.log("  📍 Header URL:", headerUrl ? "FOUND" : "NOT FOUND");
         console.log("  📍 Footer URL:", footerUrl ? "FOUND" : "NOT FOUND");
 
-        // Convert to base64 for reliable rendering (with fallback to direct URL)
-        let headerSrc = headerUrl || '';
-        let footerSrc = footerUrl || '';
-
-        if (headerUrl) {
-          const headerBase64 = await imageUrlToBase64(headerUrl);
-          if (headerBase64) {
-            headerSrc = headerBase64;
-            console.log("  ✅ Header converted to base64");
-          } else {
-            console.log("  ⚠️ Header base64 failed, using direct URL");
-            // Apply ImageKit transform for quality if it's ImageKit URL
-            if (headerUrl.includes('ik.imagekit.io') && !headerUrl.includes('/tr:')) {
-              headerSrc = headerUrl.replace(/(ik\.imagekit\.io\/[^/]+)/, '$1/tr:w-2480,q-90');
-            }
-          }
-        }
-
-        if (footerUrl) {
-          const footerBase64 = await imageUrlToBase64(footerUrl);
-          if (footerBase64) {
-            footerSrc = footerBase64;
-            console.log("  ✅ Footer converted to base64");
-          } else {
-            console.log("  ⚠️ Footer base64 failed, using direct URL");
-            if (footerUrl.includes('ik.imagekit.io') && !footerUrl.includes('/tr:')) {
-              footerSrc = footerUrl.replace(/(ik\.imagekit\.io\/[^/]+)/, '$1/tr:w-2480,q-90');
-            }
-          }
-        }
-
-        // Build header/footer HTML for PDF.co
+        // Prefer optimized ImageKit URLs for native PDF.co header/footer rendering.
+        // Large base64 data URIs can fail when branding images are wide/full-bleed banners.
         const pdfLayoutSettings = labSettings?.pdf_layout_settings || {};
         const headerHeight = pdfLayoutSettings?.headerHeight || 90;
         const footerHeight = pdfLayoutSettings?.footerHeight || 80;
 
+        const optimizedHeaderUrl = headerUrl
+          ? optimizeHeaderFooterImageUrl(headerUrl, 'header', headerHeight)
+          : '';
+        const optimizedFooterUrl = footerUrl
+          ? optimizeHeaderFooterImageUrl(footerUrl, 'footer', footerHeight)
+          : '';
+
+        let headerSrc = optimizedHeaderUrl;
+        let footerSrc = optimizedFooterUrl;
+
+        console.log("  🖼️ Header source strategy:", headerUrl?.includes('ik.imagekit.io')
+          ? "optimized-imagekit-url"
+          : "original-url-or-base64");
+        console.log("  🖼️ Footer source strategy:", footerUrl?.includes('ik.imagekit.io')
+          ? "optimized-imagekit-url"
+          : "original-url-or-base64");
+
+        if (headerUrl) {
+          const headerBase64 = await imageUrlToBase64(optimizedHeaderUrl || headerUrl);
+          if (headerBase64) {
+            headerSrc = headerBase64;
+            console.log(headerUrl.includes('ik.imagekit.io')
+              ? "  ✅ Header optimized via ImageKit and converted to base64"
+              : "  ✅ Header converted to base64");
+          } else {
+            console.log("  ⚠️ Header base64 failed, using URL fallback");
+          }
+        }
+
+        if (footerUrl) {
+          const footerBase64 = await imageUrlToBase64(optimizedFooterUrl || footerUrl);
+          if (footerBase64) {
+            footerSrc = footerBase64;
+            console.log(footerUrl.includes('ik.imagekit.io')
+              ? "  ✅ Footer optimized via ImageKit and converted to base64"
+              : "  ✅ Footer converted to base64");
+          } else {
+            console.log("  ⚠️ Footer base64 failed, using URL fallback");
+          }
+        }
+
+        // Build header/footer HTML for PDF.co
+        const sideMargins = {
+          left: Number(pdfLayoutSettings?.margins?.left ?? 20),
+          right: Number(pdfLayoutSettings?.margins?.right ?? 20),
+        };
+
         headerFooterHtml = {
-          headerHtml: headerSrc ? buildHeaderHtml(headerSrc, headerHeight) : '',
-          footerHtml: footerSrc ? buildFooterHtml(footerSrc, footerHeight) : '',
+          headerHtml: headerSrc ? buildHeaderHtml(headerSrc, headerHeight, sideMargins) : '',
+          footerHtml: footerSrc ? buildFooterHtml(footerSrc, footerHeight, sideMargins) : '',
         };
 
         console.log("  ✅ Header/Footer mode configured:",
           "header:", headerFooterHtml.headerHtml.length, "chars,",
           "footer:", headerFooterHtml.footerHtml.length, "chars");
+        console.log("  ↔️ Header/Footer bleed margins:", sideMargins);
 
         // letterheadUrl stays null — no background image in this mode
       } else {
@@ -7629,7 +7945,8 @@ serve(async (req) => {
           // Friendly aliases used by CKE templates
           registrationDate: baseContext.order?.orderDate ||
             baseContext.meta?.orderDate || "",
-          reportDate: baseContext.order?.approvedAtFormatted ||
+          reportDate: baseContext.meta?.reportDate ||
+            baseContext.order?.approvedAtFormatted ||
             baseContext.order?.approved_at || baseContext.meta?.approvedAt ||
             "",
 
@@ -8768,20 +9085,30 @@ serve(async (req) => {
 
       // Build PDF.co options based on mode
       const isHeaderFooterMode = pdfLetterheadMode === 'header_footer';
+      const hasNativeHeaderFooterAssets = isHeaderFooterMode &&
+        !!headerFooterHtml.headerHtml &&
+        !!headerFooterHtml.footerHtml;
+
+      if (isHeaderFooterMode) {
+        console.log(
+          "  🧾 Native PDF.co header/footer payload:",
+          hasNativeHeaderFooterAssets ? "ENABLED" : "DISABLED (missing header or footer image)",
+        );
+      }
 
       const eCopyPromise = sendHtmlToPdfCo(
         processedBody,
         filename,
         PDFCO_API_KEY,
         {
-          headerHtml: isHeaderFooterMode ? headerFooterHtml.headerHtml : processedHeader,
-          footerHtml: isHeaderFooterMode ? headerFooterHtml.footerHtml : processedFooter,
-          margins: isHeaderFooterMode
+          headerHtml: hasNativeHeaderFooterAssets ? headerFooterHtml.headerHtml : processedHeader,
+          footerHtml: hasNativeHeaderFooterAssets ? headerFooterHtml.footerHtml : processedFooter,
+          margins: hasNativeHeaderFooterAssets
             ? (pdfSettings?.margins
               ? `${pdfSettings.margins.top}px ${pdfSettings.margins.right}px ${pdfSettings.margins.bottom}px ${pdfSettings.margins.left}px`
               : DEFAULT_PDF_SETTINGS.margins)
             : margins,
-          headerHeight: isHeaderFooterMode
+          headerHeight: hasNativeHeaderFooterAssets
             ? (pdfSettings?.headerHeight
               ? `${pdfSettings.headerHeight}px`
               : DEFAULT_PDF_SETTINGS.headerHeight)
@@ -8790,7 +9117,7 @@ serve(async (req) => {
               : (pdfSettings?.headerHeight
                 ? `${pdfSettings.headerHeight}px`
                 : DEFAULT_PDF_SETTINGS.headerHeight)),
-          footerHeight: isHeaderFooterMode
+          footerHeight: hasNativeHeaderFooterAssets
             ? (pdfSettings?.footerHeight
               ? `${pdfSettings.footerHeight}px`
               : DEFAULT_PDF_SETTINGS.footerHeight)
@@ -8800,7 +9127,7 @@ serve(async (req) => {
                 ? `${pdfSettings.footerHeight}px`
                 : DEFAULT_PDF_SETTINGS.footerHeight)),
           scale: pdfSettings?.scale ?? DEFAULT_PDF_SETTINGS.scale,
-          displayHeaderFooter: isHeaderFooterMode
+          displayHeaderFooter: hasNativeHeaderFooterAssets
             ? true
             : (letterheadUrl
               ? false
@@ -8818,27 +9145,18 @@ serve(async (req) => {
           `Print_${filename}`,
           PDFCO_API_KEY!,
           {
-            // When Header & Footer mode is on, compact print also respects the configured header/footer
-            headerHtml: isHeaderFooterMode ? headerFooterHtml.headerHtml : "",
-            footerHtml: isHeaderFooterMode ? headerFooterHtml.footerHtml : "",
-            // Header/footer mode: use configured margins directly.
-            // Letterhead mode: enforce minimum 20px so physical letterhead paper has space at top.
-            margins: isHeaderFooterMode
-              ? (pdfSettings?.margins
-                ? `${pdfSettings.margins.top}px ${pdfSettings.margins.right}px ${pdfSettings.margins.bottom}px ${pdfSettings.margins.left}px`
-                : DEFAULT_PDF_SETTINGS.margins)
-              : `${Math.max(pdfSettings?.margins?.top ?? 20, 20)}px ${Math.max(pdfSettings?.margins?.right ?? 20, 20)}px ${Math.max(pdfSettings?.margins?.bottom ?? 20, 20)}px ${Math.max(pdfSettings?.margins?.left ?? 20, 20)}px`,
-            headerHeight: isHeaderFooterMode
-              ? (pdfSettings?.headerHeight ? `${pdfSettings.headerHeight}px` : DEFAULT_PDF_SETTINGS.headerHeight)
-              : "0px",
-            footerHeight: isHeaderFooterMode
-              ? (pdfSettings?.footerHeight ? `${pdfSettings.footerHeight}px` : DEFAULT_PDF_SETTINGS.footerHeight)
-              : "0px",
+            // Print PDF should always be body-only.
+            // Native PDF.co header/footer is reserved for eCopy only.
+            headerHtml: "",
+            footerHtml: "",
+            margins: `${Math.max(pdfSettings?.margins?.top ?? 20, 20)}px ${Math.max(pdfSettings?.margins?.right ?? 20, 20)}px ${Math.max(pdfSettings?.margins?.bottom ?? 20, 20)}px ${Math.max(pdfSettings?.margins?.left ?? 20, 20)}px`,
+            headerHeight: "0px",
+            footerHeight: "0px",
             scale: pdfSettings?.scale ?? DEFAULT_PDF_SETTINGS.scale,
-            displayHeaderFooter: isHeaderFooterMode,
+            displayHeaderFooter: false,
             paperSize: DEFAULT_PDF_SETTINGS.paperSize,
             mediaType: "print",
-            printBackground: isHeaderFooterMode,
+            printBackground: true,
           },
         )
         : Promise.resolve(null);

@@ -11,6 +11,8 @@
 import { serve } from 'https://deno.land/std@0.168.0/http/server.ts';
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.38.4';
 
+const GEMINI_MODEL = 'gemini-2.5-flash';
+
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
@@ -96,7 +98,7 @@ ${itemsList || 'No existing items'}
 Respond ONLY with JSON, no other text.`;
 
   const response = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`,
+    `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${apiKey}`,
     {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -123,7 +125,7 @@ Respond ONLY with JSON, no other text.`;
   if (!response.ok) {
     const errorText = await response.text();
     console.error('Gemini API error:', errorText);
-    throw new Error(`Gemini API error: ${response.status} ${errorText}`);
+    throw new Error(`Gemini API error: ${response.status} (${GEMINI_MODEL}) ${errorText}`);
   }
 
   const data = await response.json();

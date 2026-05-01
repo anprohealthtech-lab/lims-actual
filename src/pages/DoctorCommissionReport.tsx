@@ -36,6 +36,12 @@ interface CommissionDetail {
     patient_name: string;
     date: string;
     gross_amount: number;
+    discount_amount: number;
+    discount_source: string | null;
+    discount_commission_mode: AdjustmentMode;
+    paid_amount: number;
+    due_amount: number;
+    payment_status: 'paid' | 'partial' | 'unpaid';
     adjustments: {
         dr_discount?: number;
         outsource_cost?: number;
@@ -44,7 +50,20 @@ interface CommissionDetail {
     sharing_base: number;
     sharing_percent: number;
     commission: number;
+    line_items: CommissionLineItem[];
 }
+
+interface CommissionLineItem {
+    item_type: 'test' | 'billing_item';
+    name: string;
+    amount: number;
+    sharing_base: number;
+    sharing_percent: number;
+    commission: number;
+}
+
+const formatCurrency = (amount: number | null | undefined): string =>
+    `Rs. ${Number(amount || 0).toLocaleString('en-IN')}`;
 
 /**
  * Doctor Commission Report Page
@@ -187,9 +206,19 @@ const DoctorCommissionReport: React.FC = () => {
                     .eq('doctor_id', doctorId)
                     .eq('is_active', true);
 
-                const testSharingMap = new Map(
-                    (testOverrides || []).map(o => [o.test_group_id, o.sharing_percent])
-                );
+	                const testSharingMap = new Map(
+	                    (testOverrides || []).map(o => [o.test_group_id, o.sharing_percent])
+	                );
+
+	                const { data: billingOverrides } = await supabase
+	                    .from('doctor_billing_item_sharing')
+	                    .select('*')
+	                    .eq('doctor_id', doctorId)
+	                    .eq('is_active', true);
+
+	                const billingSharingMap = new Map(
+	                    (billingOverrides || []).map(o => [o.billing_item_type_id, o.sharing_percent])
+	                );
 
                 // Get all packages with their included tests for package diff calculation
                 const { data: packagesData } = await supabase
@@ -225,15 +254,23 @@ const DoctorCommissionReport: React.FC = () => {
                         total_amount,
                         final_amount,
                         patients(name),
-                        order_tests(
-                            test_group_id,
-                            package_id,
-                            price,
-                            test_groups(name, is_outsourced),
-                            packages!order_tests_package_id_fkey(id, price)
-                        ),
-                        invoices(discount_source)
-                    `)
+	                        order_tests(
+	                            test_group_id,
+	                            package_id,
+	                            price,
+		                            test_groups(name, is_outsourced),
+	                            packages!order_tests_package_id_fkey(id, price)
+	                        ),
+		                        order_billing_items(
+		                            id,
+		                            name,
+		                            amount,
+		                            is_shareable_with_doctor,
+		                            lab_billing_item_type_id,
+		                            lab_billing_item_types(is_shareable_with_doctor)
+		                        ),
+		                        invoices(discount_source, discount, total, amount_paid, status)
+		                    `)
                     .eq('lab_id', labId)
                     .eq('referring_doctor_id', doctorId)
                     .gte('created_at', dateFrom)
@@ -251,21 +288,39 @@ const DoctorCommissionReport: React.FC = () => {
                 for (const order of (orders || [])) {
                     const patient = order.patients as any;
                     const patientName = patient?.name || 'Unknown';
-                    const totalDiscount = Math.max(0, (order.total_amount || 0) - (order.final_amount ?? order.total_amount ?? 0));
-                    // Only doctor-attributed discounts affect commission; lab discounts are absorbed by lab
-                    const invoiceList = (order as any).invoices as Array<{ discount_source?: string }> | null;
-                    const discountSource = invoiceList?.[0]?.discount_source ?? null;
-                    const discount = discountSource === 'doctor' ? totalDiscount : 0;
+	                    const totalDiscount = Math.max(0, (order.total_amount || 0) - (order.final_amount ?? order.total_amount ?? 0));
+	                    // Only doctor-attributed discounts affect commission; lab discounts are absorbed by lab.
+	                    const invoiceList = (order as any).invoices as Array<{
+	                        discount_source?: string | null;
+	                        discount?: number | null;
+	                        total?: number | null;
+	                        amount_paid?: number | null;
+	                        status?: string | null;
+	                    }> | null;
+	                    const invoiceDiscount = (invoiceList || []).reduce((sum, inv) => sum + Number(inv.discount || 0), 0);
+	                    const displayedDiscount = Math.max(totalDiscount, invoiceDiscount);
+	                    const invoiceTotal = (invoiceList || []).reduce((sum, inv) => sum + Number(inv.total || 0), 0);
+	                    const paidAmount = (invoiceList || []).reduce((sum, inv) => sum + Number(inv.amount_paid || 0), 0);
+	                    const dueAmount = Math.max(0, invoiceTotal - paidAmount);
+	                    const paymentStatus: CommissionDetail['payment_status'] =
+	                        invoiceTotal > 0 && paidAmount >= invoiceTotal - 1
+	                            ? 'paid'
+	                            : paidAmount > 0
+	                                ? 'partial'
+	                                : 'unpaid';
+	                    const discountSource = invoiceList?.find(inv => inv.discount_source)?.discount_source ?? null;
+	                    const discount = discountSource === 'doctor' ? displayedDiscount : 0;
 
                     let orderCommission = 0;
-                    let grossAmount = 0;
-                    let totalDeductFromCommission = 0;
-                    const adjustments: CommissionDetail['adjustments'] = {};
-
-                    for (const item of (order.order_tests || [])) {
-                        const testGroup = item.test_groups as any;
-                        const packageInfo = item.packages as any;
-                        const itemPrice = item.price || 0;
+	                    let grossAmount = 0;
+	                    let totalDeductFromCommission = 0;
+	                    const adjustments: CommissionDetail['adjustments'] = {};
+	                    const lineItems: CommissionLineItem[] = [];
+	
+	                    for (const item of (order.order_tests || [])) {
+	                        const testGroup = item.test_groups as any;
+	                        const packageInfo = item.packages as any;
+	                        const itemPrice = item.price || 0;
                         grossAmount += itemPrice;
 
                         // Get sharing percent (test-specific or default)
@@ -276,8 +331,8 @@ const DoctorCommissionReport: React.FC = () => {
                         let sharingBase = itemPrice;
 
                         // Handle Outsource Cost based on mode
-                        if (testGroup?.is_outsourced) {
-                            const outsourceCost = testGroup.outsource_cost || 0;
+	                        if (testGroup?.is_outsourced) {
+	                            const outsourceCost = 0;
                             
                             if (settings.outsource_cost_mode === 'exclude_from_base') {
                                 // Reduce sharing base before calculating commission
@@ -309,10 +364,45 @@ const DoctorCommissionReport: React.FC = () => {
                             }
                         }
 
-                        // Calculate commission for this item
-                        const itemCommission = sharingBase * (sharingPercent / 100);
-                        orderCommission += itemCommission;
-                    }
+	                        // Calculate commission for this item
+	                        const itemCommission = sharingBase * (sharingPercent / 100);
+	                        orderCommission += itemCommission;
+	                        lineItems.push({
+	                            item_type: 'test',
+	                            name: testGroup?.name || 'Test',
+	                            amount: itemPrice,
+	                            sharing_base: sharingBase,
+	                            sharing_percent: sharingPercent,
+	                            commission: itemCommission
+	                        });
+	                    }
+
+	                    for (const billingItem of ((order as any).order_billing_items || [])) {
+	                        const billingType = billingItem.lab_billing_item_types as any;
+	                        const isDoctorShareable = Boolean(
+	                            billingItem.is_shareable_with_doctor ||
+	                            billingType?.is_shareable_with_doctor
+	                        );
+	                        if (!isDoctorShareable) continue;
+
+	                        const itemPrice = Number(billingItem.amount || 0);
+	                        const sharingPercent = billingItem.lab_billing_item_type_id
+	                            ? (billingSharingMap.get(billingItem.lab_billing_item_type_id) || settings.default_sharing_percent)
+	                            : settings.default_sharing_percent;
+	                        const sharingBase = itemPrice;
+	                        const itemCommission = sharingBase * (sharingPercent / 100);
+
+	                        grossAmount += itemPrice;
+	                        orderCommission += itemCommission;
+	                        lineItems.push({
+	                            item_type: 'billing_item',
+	                            name: billingItem.name || 'Billing Item',
+	                            amount: itemPrice,
+	                            sharing_base: sharingBase,
+	                            sharing_percent: sharingPercent,
+	                            commission: itemCommission
+	                        });
+	                    }
 
                     // Handle Doctor Discount based on mode
                     if (discount > 0) {
@@ -336,16 +426,23 @@ const DoctorCommissionReport: React.FC = () => {
                     totalRevenue += grossAmount;
                     totalCommission += finalOrderCommission;
 
-                    details.push({
-                        order_id: order.order_display || order.sample_id || order.id,
-                        patient_name: patientName,
-                        date: order.created_at,
-                        gross_amount: grossAmount,
-                        adjustments,
-                        sharing_base: grossAmount,
-                        sharing_percent: settings.default_sharing_percent,
-                        commission: finalOrderCommission
-                    });
+	                    details.push({
+	                        order_id: order.order_display || order.sample_id || order.id,
+	                        patient_name: patientName,
+	                        date: order.created_at,
+	                        gross_amount: grossAmount,
+	                        discount_amount: displayedDiscount,
+	                        discount_source: discountSource,
+	                        discount_commission_mode: settings.dr_discount_mode,
+	                        paid_amount: paidAmount,
+	                        due_amount: dueAmount,
+	                        payment_status: paymentStatus,
+	                        adjustments,
+	                        sharing_base: grossAmount,
+	                        sharing_percent: settings.default_sharing_percent,
+	                        commission: finalOrderCommission,
+	                        line_items: lineItems
+	                    });
                 }
 
                 if (details.length > 0) {
@@ -409,9 +506,9 @@ const DoctorCommissionReport: React.FC = () => {
         for (const commission of commissions) {
             for (const detail of commission.details) {
                 const adjustmentsStr = [
-                    detail.adjustments.dr_discount ? `Dr Discount: ₹${detail.adjustments.dr_discount.toFixed(2)}` : '',
-                    detail.adjustments.outsource_cost ? `Outsource: ₹${detail.adjustments.outsource_cost.toFixed(2)}` : '',
-                    detail.adjustments.package_diff ? `Package: ₹${detail.adjustments.package_diff.toFixed(2)}` : ''
+                    detail.adjustments.dr_discount ? `Dr Discount: Rs. ${detail.adjustments.dr_discount.toFixed(2)}` : '',
+                    detail.adjustments.outsource_cost ? `Outsource: Rs. ${detail.adjustments.outsource_cost.toFixed(2)}` : '',
+                    detail.adjustments.package_diff ? `Package: Rs. ${detail.adjustments.package_diff.toFixed(2)}` : ''
                 ].filter(Boolean).join('; ');
 
                 rows.push([
@@ -607,7 +704,7 @@ const DoctorCommissionReport: React.FC = () => {
                             </div>
                             <div>
                                 <p className="text-sm text-gray-500">Total Revenue</p>
-                                <p className="text-2xl font-bold text-gray-900">₹{totals.revenue.toLocaleString()}</p>
+                                <p className="text-2xl font-bold text-gray-900">Rs. {totals.revenue.toLocaleString()}</p>
                             </div>
                         </div>
                     </div>
@@ -619,7 +716,7 @@ const DoctorCommissionReport: React.FC = () => {
                             </div>
                             <div>
                                 <p className="text-sm text-gray-500">Total Commission</p>
-                                <p className="text-2xl font-bold text-emerald-600">₹{totals.commission.toLocaleString()}</p>
+                                <p className="text-2xl font-bold text-emerald-600">Rs. {totals.commission.toLocaleString()}</p>
                             </div>
                         </div>
                     </div>
@@ -665,8 +762,8 @@ const DoctorCommissionReport: React.FC = () => {
                                         </div>
                                     </div>
                                     <div className="text-right">
-                                        <p className="text-sm text-gray-500">Revenue: ₹{commission.total_revenue.toLocaleString()}</p>
-                                        <p className="font-semibold text-emerald-600">Commission: ₹{commission.total_commission.toLocaleString()}</p>
+                                        <p className="text-sm text-gray-500">Revenue: Rs. {commission.total_revenue.toLocaleString()}</p>
+                                        <p className="font-semibold text-emerald-600">Commission: Rs. {commission.total_commission.toLocaleString()}</p>
                                     </div>
                                 </button>
                                 
@@ -678,42 +775,105 @@ const DoctorCommissionReport: React.FC = () => {
                                                 <tr className="border-b border-gray-200">
                                                     <th className="py-2 text-left text-gray-600">Order</th>
                                                     <th className="py-2 text-left text-gray-600">Patient</th>
-                                                    <th className="py-2 text-left text-gray-600">Date</th>
-                                                    <th className="py-2 text-right text-gray-600">Gross</th>
-                                                    <th className="py-2 text-right text-gray-600">Adjustments</th>
-                                                    <th className="py-2 text-right text-gray-600">Base</th>
-                                                    <th className="py-2 text-right text-gray-600">Commission</th>
+	                                                    <th className="py-2 text-left text-gray-600">Date</th>
+	                                                    <th className="py-2 text-right text-gray-600">Gross</th>
+	                                                    <th className="py-2 text-right text-gray-600">Discount</th>
+	                                                    <th className="py-2 text-right text-gray-600">Payment</th>
+	                                                    <th className="py-2 text-right text-gray-600">Adjustments</th>
+	                                                    <th className="py-2 text-right text-gray-600">Base</th>
+	                                                    <th className="py-2 text-right text-gray-600">Commission</th>
                                                 </tr>
                                             </thead>
                                             <tbody className="divide-y divide-gray-100">
-                                                {commission.details.map((detail, idx) => (
-                                                    <tr key={idx}>
+	                                                {commission.details.map((detail, idx) => (
+	                                                    <React.Fragment key={idx}>
+	                                                    <tr>
                                                         <td className="py-2 text-gray-900">{detail.order_id}</td>
                                                         <td className="py-2 text-gray-700">{detail.patient_name}</td>
                                                         <td className="py-2 text-gray-600">
                                                             {new Date(detail.date).toLocaleDateString()}
                                                         </td>
                                                         <td className="py-2 text-right text-gray-900">
-                                                            ₹{detail.gross_amount.toLocaleString()}
+                                                            Rs. {detail.gross_amount.toLocaleString()}
                                                         </td>
-                                                        <td className="py-2 text-right text-amber-600 text-xs">
+	                                                        <td className="py-2 text-right text-xs">
+	                                                            {detail.discount_amount > 0 ? (
+	                                                                <div className="space-y-0.5">
+	                                                                    <div className="font-medium text-orange-600">-Rs. {detail.discount_amount.toLocaleString()}</div>
+	                                                                    <div className="text-gray-500">{detail.discount_source || 'unknown'} discount</div>
+	                                                                    <div className="text-gray-500">
+	                                                                        {detail.discount_source === 'doctor'
+	                                                                            ? detail.discount_commission_mode.replace(/_/g, ' ')
+	                                                                            : 'absorbed by lab'}
+	                                                                    </div>
+	                                                                </div>
+	                                                            ) : (
+	                                                                <span className="text-gray-400">-</span>
+	                                                            )}
+	                                                        </td>
+	                                                        <td className="py-2 text-right text-xs">
+	                                                            <span className={`inline-flex rounded-full px-2 py-0.5 font-medium ${
+	                                                                detail.payment_status === 'paid'
+	                                                                    ? 'bg-green-100 text-green-700'
+	                                                                    : detail.payment_status === 'partial'
+	                                                                        ? 'bg-yellow-100 text-yellow-700'
+	                                                                        : 'bg-red-100 text-red-700'
+	                                                            }`}>
+	                                                                {detail.payment_status}
+	                                                            </span>
+	                                                            <div className="mt-1 text-gray-500">Paid Rs. {detail.paid_amount.toLocaleString()}</div>
+	                                                            {detail.due_amount > 0 && (
+	                                                                <div className="text-red-600">Due Rs. {detail.due_amount.toLocaleString()}</div>
+	                                                            )}
+	                                                        </td>
+	                                                        <td className="py-2 text-right text-amber-600 text-xs">
                                                             {Object.entries(detail.adjustments)
                                                                 .filter(([_, v]) => v > 0)
                                                                 .map(([k, v]) => (
                                                                     <span key={k} className="block">
-                                                                        -{k.replace('_', ' ')}: ₹{v?.toFixed(0)}
+                                                                        -{k.replace('_', ' ')}: Rs. {v?.toFixed(0)}
                                                                     </span>
                                                                 ))
                                                             }
                                                         </td>
                                                         <td className="py-2 text-right text-gray-700">
-                                                            ₹{detail.sharing_base.toLocaleString()}
+                                                            Rs. {detail.sharing_base.toLocaleString()}
                                                         </td>
                                                         <td className="py-2 text-right font-medium text-emerald-600">
-                                                            ₹{detail.commission.toLocaleString()}
+                                                            Rs. {detail.commission.toLocaleString()}
                                                         </td>
-                                                    </tr>
-                                                ))}
+	                                                    </tr>
+	                                                    {detail.line_items.length > 0 && (
+	                                                        <tr>
+	                                                            <td colSpan={9} className="pb-3">
+	                                                                <div className="ml-4 rounded-lg border border-gray-200 bg-white">
+	                                                                    <div className="grid grid-cols-6 gap-2 border-b border-gray-100 px-3 py-2 text-xs font-medium uppercase tracking-wide text-gray-500">
+	                                                                        <span className="col-span-2">Item</span>
+	                                                                        <span className="text-right">Amount</span>
+	                                                                        <span className="text-right">Sharing %</span>
+	                                                                        <span className="text-right">Base</span>
+	                                                                        <span className="text-right">Commission</span>
+	                                                                    </div>
+	                                                                    {detail.line_items.map((item, itemIdx) => (
+	                                                                        <div key={itemIdx} className="grid grid-cols-6 gap-2 px-3 py-2 text-xs text-gray-700">
+	                                                                            <span className="col-span-2">
+	                                                                                <span>{item.name}</span>
+	                                                                                <span className={`ml-2 rounded px-1.5 py-0.5 ${item.item_type === 'billing_item' ? 'bg-blue-50 text-blue-700' : 'bg-emerald-50 text-emerald-700'}`}>
+	                                                                                    {item.item_type === 'billing_item' ? 'Billing' : 'Test'}
+	                                                                                </span>
+	                                                                            </span>
+	                                                                            <span className="text-right">Rs. {item.amount.toLocaleString()}</span>
+	                                                                            <span className="text-right">{item.sharing_percent}%</span>
+	                                                                            <span className="text-right">Rs. {item.sharing_base.toLocaleString()}</span>
+	                                                                            <span className="text-right font-medium text-emerald-600">Rs. {item.commission.toLocaleString()}</span>
+	                                                                        </div>
+	                                                                    ))}
+	                                                                </div>
+	                                                            </td>
+	                                                        </tr>
+	                                                    )}
+	                                                    </React.Fragment>
+	                                                ))}
                                             </tbody>
                                         </table>
                                     </div>
@@ -781,7 +941,7 @@ const DoctorCommissionReport: React.FC = () => {
                                 <div className="bg-white rounded-xl border p-5">
                                     <p className="text-sm text-gray-500">Total Charges</p>
                                     <p className="text-2xl font-bold text-orange-600 mt-1">
-                                        ₹{phlebotomistVisits.reduce((s, v) => s + v.total_charges, 0).toLocaleString()}
+                                        Rs. {phlebotomistVisits.reduce((s, v) => s + v.total_charges, 0).toLocaleString()}
                                     </p>
                                 </div>
                                 <div className="bg-white rounded-xl border p-5">
@@ -815,7 +975,7 @@ const DoctorCommissionReport: React.FC = () => {
                                                     <span className="ml-2 text-xs text-orange-600">{group.visits.length} visits</span>
                                                 </div>
                                             </div>
-                                            <span className="font-bold text-orange-700">₹{group.total.toLocaleString()}</span>
+                                            <span className="font-bold text-orange-700">Rs. {group.total.toLocaleString()}</span>
                                         </div>
                                         <table className="w-full text-sm">
                                             <thead className="bg-gray-50 border-b">
@@ -843,12 +1003,12 @@ const DoctorCommissionReport: React.FC = () => {
                                                                                 <Stethoscope className="h-3 w-3 text-blue-400" />
                                                                             </span>
                                                                         )}
-                                                                        <span className="text-orange-600 font-medium ml-auto">₹{c.amount.toLocaleString()}</span>
+                                                                        <span className="text-orange-600 font-medium ml-auto">Rs. {c.amount.toLocaleString()}</span>
                                                                     </div>
                                                                 ))}
                                                             </div>
                                                         </td>
-                                                        <td className="px-4 py-2.5 text-right font-bold text-orange-700">₹{visit.total_charges.toLocaleString()}</td>
+                                                        <td className="px-4 py-2.5 text-right font-bold text-orange-700">Rs. {visit.total_charges.toLocaleString()}</td>
                                                     </tr>
                                                 ))}
                                             </tbody>

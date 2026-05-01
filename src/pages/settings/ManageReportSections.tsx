@@ -18,7 +18,8 @@ import {
   GripVertical,
   Sparkles,
   Send,
-  Lightbulb
+  Lightbulb,
+  Copy
 } from 'lucide-react';
 import { database } from '../../utils/supabase';
 import { generateSectionContent, getQuickPromptsForSection } from '../../utils/aiSectionService';
@@ -494,6 +495,11 @@ const ManageReportSections: React.FC = () => {
   // Filter state
   const [filterTestGroup, setFilterTestGroup] = useState<string>('');
 
+  // Copy-to-group modal state
+  const [copySourceGroupId, setCopySourceGroupId] = useState<string | null>(null);
+  const [copyTargetGroupId, setCopyTargetGroupId] = useState<string>('');
+  const [copying, setCopying] = useState(false);
+
   // Load data
   const loadData = useCallback(async () => {
     setLoading(true);
@@ -745,6 +751,45 @@ const ManageReportSections: React.FC = () => {
     }
   };
 
+  // Copy all sections from one test group to another
+  const handleCopyGroup = async () => {
+    if (!copySourceGroupId || !copyTargetGroupId) return;
+    if (copySourceGroupId === copyTargetGroupId) {
+      setError('Source and target test group must be different');
+      return;
+    }
+    setCopying(true);
+    setError(null);
+    try {
+      const sourceSections = sections.filter(s => s.test_group_id === copySourceGroupId);
+      for (const section of sourceSections) {
+        const { error: createErr } = await database.templateSections.create({
+          test_group_id: copyTargetGroupId,
+          section_type: section.section_type,
+          section_name: section.section_name,
+          display_order: section.display_order,
+          default_content: section.default_content || '',
+          predefined_options: section.predefined_options || [],
+          is_required: section.is_required,
+          is_editable: section.is_editable,
+          allow_images: section.allow_images ?? false,
+          allow_technician_entry: section.allow_technician_entry ?? false,
+          placeholder_key: section.placeholder_key || section.section_type,
+          section_config: (section as any).section_config || { mode: 'flat', cascade_levels: [], matrix: DEFAULT_MATRIX_CONFIG },
+        });
+        if (createErr) throw createErr;
+      }
+      setSuccess(`${sourceSections.length} section(s) copied successfully`);
+      setCopySourceGroupId(null);
+      setCopyTargetGroupId('');
+      await loadData();
+    } catch (err: any) {
+      setError(err.message || 'Failed to copy sections');
+    } finally {
+      setCopying(false);
+    }
+  };
+
   // Handle delete
   const handleDelete = async (id: string) => {
     if (!confirm('Delete this section? All result content entered for this section across all orders will also be permanently deleted.')) return;
@@ -870,9 +915,22 @@ const ManageReportSections: React.FC = () => {
         <div className="space-y-6">
           {Object.entries(groupedSections).map(([groupName, groupSections]) => (
             <div key={groupName} className="bg-white rounded-lg border shadow-sm">
-              <div className="px-4 py-3 bg-gray-50 border-b rounded-t-lg">
-                <h3 className="font-semibold text-gray-900">{groupName}</h3>
-                <span className="text-sm text-gray-500">{groupSections.length} section(s)</span>
+              <div className="px-4 py-3 bg-gray-50 border-b rounded-t-lg flex items-center justify-between">
+                <div>
+                  <h3 className="font-semibold text-gray-900">{groupName}</h3>
+                  <span className="text-sm text-gray-500">{groupSections.length} section(s)</span>
+                </div>
+                <button
+                  onClick={() => {
+                    const srcId = groupSections[0]?.test_group_id;
+                    if (srcId) { setCopySourceGroupId(srcId); setCopyTargetGroupId(''); }
+                  }}
+                  className="flex items-center gap-1.5 px-3 py-1.5 text-sm text-indigo-700 border border-indigo-200 bg-indigo-50 rounded-lg hover:bg-indigo-100 transition-colors"
+                  title="Copy all sections in this group to another test group"
+                >
+                  <Copy className="w-4 h-4" />
+                  Copy to Group
+                </button>
               </div>
               <div className="divide-y">
                 {groupSections
@@ -957,6 +1015,63 @@ const ManageReportSections: React.FC = () => {
               </div>
             </div>
           ))}
+        </div>
+      )}
+
+      {/* Copy to Group Modal */}
+      {copySourceGroupId && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-xl shadow-xl max-w-md w-full p-6">
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="text-lg font-semibold text-gray-900">Copy Sections to Another Group</h2>
+              <button onClick={() => { setCopySourceGroupId(null); setCopyTargetGroupId(''); }}>
+                <X className="w-5 h-5 text-gray-500" />
+              </button>
+            </div>
+
+            <div className="mb-2 p-3 bg-indigo-50 border border-indigo-100 rounded-lg text-sm text-indigo-800">
+              Copying <strong>{sections.filter(s => s.test_group_id === copySourceGroupId).length}</strong> section(s) from{' '}
+              <strong>{testGroups.find(tg => tg.id === copySourceGroupId)?.name || 'this group'}</strong>
+            </div>
+
+            <div className="mb-4 mt-4">
+              <label className="block text-sm font-medium text-gray-700 mb-1">
+                Target Test Group <span className="text-red-500">*</span>
+              </label>
+              <select
+                value={copyTargetGroupId}
+                onChange={(e) => setCopyTargetGroupId(e.target.value)}
+                className="w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-indigo-500"
+              >
+                <option value="">Select target group...</option>
+                {testGroups
+                  .filter(tg => tg.id !== copySourceGroupId)
+                  .map(tg => (
+                    <option key={tg.id} value={tg.id}>{tg.name} ({tg.category})</option>
+                  ))}
+              </select>
+              <p className="mt-1 text-xs text-gray-500">
+                All sections will be duplicated into the selected group. Existing sections in the target group will not be removed.
+              </p>
+            </div>
+
+            <div className="flex justify-end gap-3">
+              <button
+                onClick={() => { setCopySourceGroupId(null); setCopyTargetGroupId(''); }}
+                className="px-4 py-2 text-gray-700 border rounded-lg hover:bg-gray-50"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleCopyGroup}
+                disabled={!copyTargetGroupId || copying}
+                className="flex items-center gap-2 px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 disabled:opacity-50"
+              >
+                {copying ? <Loader2 className="w-4 h-4 animate-spin" /> : <Copy className="w-4 h-4" />}
+                {copying ? 'Copying...' : 'Copy Sections'}
+              </button>
+            </div>
+          </div>
         </div>
       )}
 

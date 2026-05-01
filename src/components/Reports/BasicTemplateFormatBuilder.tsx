@@ -12,6 +12,8 @@ export interface BasicPrintOptions {
   flagSymbol?: 'none' | 'before' | 'after'; // default 'none'; 'before' = separate flag column before value; 'after' = inline flag suffix
   showFlagLegend?: boolean;        // show H=High, L=Low legend below each group table
   resultColors?: { high?: string; low?: string; enabled?: boolean }; // custom flag colors (matches edge fn)
+  testGroupTitlePosition?: 'below_headers' | 'above_headers_center' | 'above_headers_left';
+  qrHorizontalOffset?: number;
 }
 
 interface Props {
@@ -100,6 +102,8 @@ function buildBasicHtml(
   const sectionHeaderInline = printOptions.sectionHeaderInline ?? false;
   const flagSymbol = printOptions.flagSymbol ?? 'none';
   const showFlagLegend = printOptions.showFlagLegend ?? false;
+  const testGroupTitlePosition = printOptions.testGroupTitlePosition ?? 'below_headers';
+  const qrHorizontalOffset = Math.max(0, Math.min(80, printOptions.qrHorizontalOffset ?? 0));
   const colCount = flagSymbol === 'before' ? 5 : 4;
   const highColor = printOptions.resultColors?.enabled ? (printOptions.resultColors?.high ?? '#dc2626') : '#dc2626';
   const lowColor  = printOptions.resultColors?.enabled ? (printOptions.resultColors?.low  ?? '#000')    : '#000';
@@ -306,6 +310,12 @@ ${flagSymbol === 'before' ? `
   color: #000 !important;
 }
 
+.basic-report-template .center-title.left {
+  text-align: left !important;
+  text-decoration: none !important;
+  margin: 0 0 6px !important;
+}
+
 .basic-report-template .center-subtitle {
   text-align: center !important;
   font-size: ${smallPx + 1}px !important;
@@ -444,6 +454,10 @@ ${flagSymbol === 'before' ? `
   border-top: none !important;
 }
 
+.basic-report-template .report-footer .qr-verify {
+  margin-left: ${qrHorizontalOffset}px !important;
+}
+
 .basic-report-template .auth-text {
   font-size: ${smallPx}px !important;
   color: #444 !important;
@@ -493,8 +507,15 @@ ${flagSymbol === 'before' ? `
       ? `<div class="center-subtitle">Specimen: ${analytes[0].specimen}</div>`
       : '';
 
+    const groupTitleBelowHeaders = testGroupTitlePosition === 'below_headers';
+    const groupTitleClass = testGroupTitlePosition === 'above_headers_left' ? 'center-title left' : 'center-title';
+
     testResultsHtml += `
       <figure class="table" style="margin: 0 0 14px;">
+        ${!groupTitleBelowHeaders ? `
+          <div class="${groupTitleClass}" style="font-size:${basePx + 1}px;">${groupName}</div>
+          ${specimenText}
+        ` : ''}
         <table class="tbl-results">
           <thead>
             <tr>
@@ -506,12 +527,14 @@ ${flagSymbol === 'before' ? `
             </tr>
           </thead>
           <tbody>
+            ${groupTitleBelowHeaders ? `
             <tr class="main-group-row">
               <td colspan="${colCount}">
                 <div class="center-title" style="font-size:${basePx + 1}px;">${groupName}</div>
                 ${specimenText}
               </td>
             </tr>
+            ` : ''}
     `;
 
     const sectionBlocks = groupAnalytesBySectionHeading(analytes);
@@ -630,7 +653,7 @@ ${flagSymbol === 'before' ? `
           if (showFlagLegend && flagSymbol !== 'none') parts.push('H = High &nbsp; L = Low &nbsp; A = Abnormal &nbsp; H* = Critical High &nbsp; L* = Critical Low');
           return parts.length ? `<p class="calculated-note">${parts.join(' &nbsp;|&nbsp; ')}</p>` : '';
         })()}
-        ${group.groupInterpretation ? `<div class="group-interpretation-block">${group.groupInterpretation}</div>` : ''}
+        ${analytes[0]?.groupInterpretation ? `<div class="group-interpretation-block">${analytes[0].groupInterpretation}</div>` : ''}
       </figure>
     `;
   }
@@ -639,6 +662,13 @@ ${flagSymbol === 'before' ? `
 
   const signatoryHtml = `
     <div class="report-footer">
+      <div class="qr-verify" style="text-align:left;">
+        <div style="width:60px;height:60px;border:1px solid #9ca3af;background:
+          linear-gradient(90deg,#111 10%,transparent 10%,transparent 20%,#111 20%,#111 30%,transparent 30%,transparent 40%,#111 40%,#111 50%,transparent 50%,transparent 60%,#111 60%,#111 70%,transparent 70%,transparent 80%,#111 80%,#111 90%,transparent 90%),
+          linear-gradient(#111 10%,transparent 10%,transparent 20%,#111 20%,#111 30%,transparent 30%,transparent 40%,#111 40%,#111 50%,transparent 50%,transparent 60%,#111 60%,#111 70%,transparent 70%,transparent 80%,#111 80%,#111 90%,transparent 90%);
+          background-size:12px 12px;background-color:#fff;"></div>
+        <p style="margin:2px 0 0 0;font-size:9px;color:#6b7280;">Scan to verify</p>
+      </div>
       <div class="auth-text">Authenticated Electronic Report</div>
       <div class="signature-box">
         <div style="font-weight:700; font-size:${sigPx}px;">Dr. Signatory Name</div>
@@ -756,6 +786,30 @@ export default function BasicTemplateFormatBuilder({ printOptions, showMethodolo
               <option value="label">Small caps label</option>
               <option value="inline">Inline shaded row</option>
             </select>
+          </Row>
+          <Row label="Test Group Title" hint="Place panel name above headers or below them">
+            <select
+              value={printOptions.testGroupTitlePosition ?? 'below_headers'}
+              onChange={(e) => setPO({ testGroupTitlePosition: e.target.value as BasicPrintOptions['testGroupTitlePosition'] })}
+              className="text-sm border border-gray-300 rounded px-2 py-1 bg-white"
+            >
+              <option value="below_headers">Below headers</option>
+              <option value="above_headers_center">Above headers centered</option>
+              <option value="above_headers_left">Above headers left</option>
+            </select>
+          </Row>
+          <Row label="QR Shift Right" hint="Move verification QR slightly right from left edge">
+            <div className="flex items-center gap-2">
+              <input
+                type="range" min={0} max={80} step={2}
+                value={printOptions.qrHorizontalOffset ?? 0}
+                onChange={(e) => setPO({ qrHorizontalOffset: Number(e.target.value) })}
+                className="w-24 accent-indigo-600"
+              />
+              <span className="w-10 text-sm font-mono font-semibold text-gray-700">
+                {printOptions.qrHorizontalOffset ?? 0}
+              </span>
+            </div>
           </Row>
           <Row label="Flag Symbol" hint="Show H/L symbol before or after value">
             <select

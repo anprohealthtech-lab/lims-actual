@@ -239,7 +239,7 @@ const Reports: React.FC = () => {
   };
 
   // PDF generation hook
-  const { isGenerating, stage, progress, generatePDF, regenerateWithSettings, resetState } = usePDFGeneration();
+  const { isGenerating, stage, progress, pdfUrl, generatePDF, regenerateWithSettings, resetState } = usePDFGeneration();
 
   // PDF Queue Status tracking
   const [pdfQueueStatus, setPdfQueueStatus] = useState<Map<string, any>>(new Map());
@@ -2823,6 +2823,8 @@ const Reports: React.FC = () => {
         isVisible={isGenerating}
         stage={stage}
         progress={progress}
+        pdfUrl={pdfUrl}
+        onView={() => { if (pdfUrl) window.open(pdfUrl, '_blank'); }}
         onClose={resetState}
       />
 

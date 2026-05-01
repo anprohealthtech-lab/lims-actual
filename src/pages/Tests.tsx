@@ -14,6 +14,7 @@ import { SimpleAnalyteEditor } from '../components/TestGroups/SimpleAnalyteEdito
 import AnalyteDependencyManager from '../components/Tests/AnalyteDependencyManager';
 import { AITestConfigurator } from '../components/AITools/AITestConfigurator';
 import { TestConfigurationResponse, normalizeAnalyteValueType } from '../utils/geminiAI';
+import { SampleTypeIndicator } from '../components/Common/SampleTypeIndicator';
 
 interface Test {
   id: string;
@@ -712,6 +713,7 @@ const Tests: React.FC = () => {
       'Serology': 'bg-green-100 text-green-800',
       'Microbiology': 'bg-purple-100 text-purple-800',
       'Immunology': 'bg-orange-100 text-orange-800',
+      'Radiology': 'bg-sky-100 text-sky-800',
     };
     return colors[category as keyof typeof colors] || 'bg-gray-100 text-gray-800';
   };
@@ -762,10 +764,11 @@ const Tests: React.FC = () => {
         return;
       }
 
-      if (newAnalyte) {
-        const transformedAnalyte = {
-          id: newAnalyte.id,
-          name: newAnalyte.name,
+	      if (newAnalyte) {
+	        const transformedAnalyte = {
+	          id: newAnalyte.id,
+	          lab_analyte_id: (newAnalyte as any).lab_analyte_id || null,
+	          name: newAnalyte.name,
           unit: newAnalyte.unit,
           referenceRange: newAnalyte.reference_range,
           lowCritical: newAnalyte.low_critical,
@@ -806,15 +809,18 @@ const Tests: React.FC = () => {
         setShowAnalyteForm(false);
 
         // If it's a calculated analyte with source dependencies selected in form, create them automatically
-        if (newAnalyte.is_calculated && formData.sourceDependencies?.length > 0) {
-          console.log('Creating dependencies automatically:', formData.sourceDependencies);
-          try {
-            const { error: depError } = await database.analyteDependencies.setDependencies(
-              newAnalyte.id,
-              formData.sourceDependencies
-            );
-            if (depError) {
-              console.error('Error creating dependencies:', depError);
+	        if (newAnalyte.is_calculated && formData.sourceDependencies?.length > 0) {
+	          console.log('Creating dependencies automatically:', formData.sourceDependencies);
+	          try {
+	            const depsLabId = await database.getCurrentUserLabId();
+	            const { error: depError } = await database.analyteDependencies.setDependencies(
+	              newAnalyte.id,
+	              formData.sourceDependencies,
+	              depsLabId ?? undefined,
+	              (newAnalyte as any).lab_analyte_id || null,
+	            );
+	            if (depError) {
+	              console.error('Error creating dependencies:', depError);
               alert('Analyte created but failed to link dependencies. Use "Manage Dependencies" button to link them manually.');
             } else {
               alert('Analyte created with dependencies linked successfully!');
@@ -2081,9 +2087,14 @@ const Tests: React.FC = () => {
                         <td className="px-3 py-2">
                           <div className="font-medium text-gray-900">₹{group.price || 0}</div>
                         </td>
-                        <td className="px-3 py-2 text-gray-600 text-xs">
-                          {group.sampleType || 'N/A'}
-                        </td>
+                          <td className="px-3 py-2 text-gray-600 text-xs">
+                            {group.sampleType ? (
+                              <div className="flex items-center gap-2">
+                                <SampleTypeIndicator sampleType={group.sampleType} size="sm" />
+                                <span>{group.sampleType}</span>
+                              </div>
+                            ) : 'N/A'}
+                          </td>
                         <td className="px-3 py-2 text-sm font-medium">
                           <button
                             onClick={() => handleViewTestGroup(group)}
@@ -2418,11 +2429,12 @@ const Tests: React.FC = () => {
               onClose={handleCloseAnalyteForm}
               onSubmit={editingAnalyte ? handleUpdateAnalyte : handleAddAnalyte}
               analyte={editingAnalyte}
-              availableAnalytes={analytes.filter(a => a.id !== undefined).map(a => ({
-                id: a.id,
-                name: a.name,
-                unit: a.unit,
-                category: a.category
+	              availableAnalytes={analytes.filter(a => a.id !== undefined).map(a => ({
+	                id: a.id,
+	                lab_analyte_id: (a as any).lab_analyte_id || null,
+	                name: a.name,
+	                unit: a.unit,
+	                category: a.category
               }))}
               labFlagOptions={labFlagOptions}
             />

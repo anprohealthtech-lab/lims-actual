@@ -184,7 +184,7 @@ Compare extracted methodology and sample_type to current values.
 Only include in test_group_updates if extracted value is non-null and meaningfully different.
 
 **2. Analyte Matching**
-For each extracted analyte find the best match using name/code/unit similarity.
+For each extracted analyte find the best match using name/code/unit similarity across the FULL lab analyte catalog below.
 Handle common variants: Haemoglobin↔Hemoglobin, TLC/Total Leucocyte Count↔WBC,
 Platelet Count↔PLT, Haematocrit↔Hematocrit, MCHC, MCV, MCH, RBC, etc.
 - match_confidence: 0.0–1.0. Use ≥0.75 as valid-match threshold.
@@ -192,11 +192,14 @@ Platelet Count↔PLT, Haematocrit↔Hematocrit, MCHC, MCV, MCH, RBC, etc.
 
 **3. CRUD Payloads**
 - lab_analyte_updates: Only fields where extracted value DIFFERS from current DB value (unit, reference_range, reference_range_male, reference_range_female). Omit unchanged fields.
-- tga_updates: section_heading if different, sort_order from extracted position if different.
+- Check whether the matched analyte is already attached to this test group by looking it up in existing test_group_analytes config.
+- needs_attachment: true if the analyte exists in the lab catalog but is NOT currently attached to this test group.
+- tga_updates: for attached analytes, include section_heading if different and sort_order if different. For unattached analytes, include the extracted section_heading and sort_order so a new test_group_analytes row can be created correctly.
 - has_lab_analyte_changes: true only if lab_analyte_updates has ≥1 key
-- has_tga_changes: true only if tga_updates has ≥1 key
+- has_tga_changes: true only if tga_updates has ≥1 key OR needs_attachment is true
 - current_values: Always fill from DB (not extracted) — used by diff UI.
-- Do NOT include entries where both flags are false.
+- is_currently_attached: true if found in existing test_group_analytes config, else false.
+- Do NOT include entries where both flags are false and needs_attachment is false.
 
 Return ONLY this JSON structure (no extra text or markdown):
 {
@@ -210,6 +213,8 @@ Return ONLY this JSON structure (no extra text or markdown):
       "matched_name": "Hemoglobin",
       "matched_code": "HB",
       "match_confidence": 0.97,
+      "is_currently_attached": true,
+      "needs_attachment": false,
       "lab_analyte_updates": {
         "reference_range_male": "13.0-17.0",
         "reference_range_female": "11.0-15.0"
@@ -228,7 +233,16 @@ Return ONLY this JSON structure (no extra text or markdown):
     }
   ],
   "unmatched_analytes": [
-    { "extracted_name": "MPV", "unit": "fL", "reference_range": "7.5-12.5", "section_header": "Platelet Parameters", "position": 9 }
+    {
+      "extracted_name": "MPV",
+      "unit": "fL",
+      "reference_range": "7.5-12.5",
+      "reference_range_male": null,
+      "reference_range_female": null,
+      "reference_range_pediatric": null,
+      "section_header": "Platelet Parameters",
+      "position": 9
+    }
   ],
   "extraction_notes": "Optional notes about ambiguous matches"
 }`
