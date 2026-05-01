@@ -408,7 +408,7 @@ figure.table table thead th,
 .section-content {
   font-family: var(--report-font-family, "Inter", Arial, sans-serif);
   color: var(--report-text-color, #1f2937);
-  font-size: 13px;
+  font-size: var(--section-font-size, 13px);
   line-height: 1.7;
   margin: 0.5rem 0;
   white-space: pre-wrap;
@@ -421,7 +421,7 @@ figure.table table thead th,
   margin: 0.4rem 0;
   color: var(--report-text-color, #1f2937);
   line-height: 1.7;
-  font-size: 13px;
+  font-size: var(--section-font-size, 13px);
 }
 
 .section-content p:first-child {
@@ -1210,7 +1210,7 @@ function injectSignatureImage(
   // Build complete signature block with image and text
   const signatureBlockHtml = `
     <div style="margin-top: 10px;">
-      <img src="${signatoryImageUrl}" alt="Signature" style="display:block;max-height:40px;max-width:120px;width:auto;height:auto;object-fit:contain;margin-top:5px;margin-bottom:0px;" />
+      <img src="${signatoryImageUrl}" alt="Signature" style="display:block;max-height:40px;max-width:120px;width:auto;height:auto;object-fit:contain;margin-top:5px;margin-bottom:0px;" onerror="this.style.display='none'" />
       ${
     signatoryName
       ? `<p style="margin-top:8px;margin-bottom:4px;font-weight:600;font-size:14px;">${signatoryName}</p>`
@@ -2019,6 +2019,115 @@ function groupAnalytesBySectionHeading(
   return blocks;
 }
 
+// ── Dual-signatory footer helper ─────────────────────────────────────────────
+// Builds the side-by-side "Verified By | Approved By" footer when
+// signatoryInfo.showDualSignatory is true and technicianInfo is present.
+// Falls back to a plain right-aligned single-signatory div otherwise.
+function buildSignatoryFooterHtml(
+  signatoryInfo: any,
+  opts: {
+    wrapperClass?: string;          // e.g. "signatures" or "report-footer"
+    wrapperStyle?: string;
+    approvedImgStyle?: string;
+    approvedNameStyle?: string;
+    approvedDesigStyle?: string;
+    techImgMaxHeight?: number;
+    showAuthText?: boolean;         // classic template shows "Authenticated Electronic Report"
+    authTextStyle?: string;
+    basePx?: number;
+    sigPx?: number;
+  } = {},
+): string {
+  const showDual = !!(signatoryInfo?.showDualSignatory);
+  const techInfo = signatoryInfo?.technicianInfo as { names: string; signatures: Array<{ imageUrl: string; name: string }> } | null;
+
+  const sigName = signatoryInfo?.signatoryName || "";
+  const sigDesignation = signatoryInfo?.signatoryDesignation || "";
+  const sigImageUrl = signatoryInfo?.signatoryImageUrl || "";
+
+  const wrapperClass = opts.wrapperClass || "signatures";
+  const techImgMax = opts.techImgMaxHeight ?? 45;
+  const basePx = opts.basePx ?? 13;
+  const sigPx = opts.sigPx ?? basePx;
+
+  const approvedImgStyle = opts.approvedImgStyle ||
+    `max-height:${techImgMax}px;max-width:140px;margin-bottom:4px;object-fit:contain;`;
+  const approvedNameStyle = opts.approvedNameStyle ||
+    `margin:0;font-weight:600;font-size:${sigPx}px;`;
+  const approvedDesigStyle = opts.approvedDesigStyle ||
+    `margin:4px 0 0;color:#64748b;font-size:${basePx - 2}px;`;
+
+  const labelStyle =
+    `font-size:${basePx - 3}px;color:#64748b;margin-bottom:4px;` +
+    `text-transform:uppercase;letter-spacing:0.05em;`;
+
+  const approvedBlock = `
+    <div style="text-align:right;">
+      <div style="${labelStyle}">Approved By</div>
+      ${sigImageUrl
+        ? `<img src="${sigImageUrl}" alt="Signature" style="${approvedImgStyle}" onerror="this.style.display='none'" />`
+        : ""}
+      ${sigName ? `<div style="${approvedNameStyle}">${sigName}</div>` : ""}
+      ${sigDesignation ? `<div style="${approvedDesigStyle}">${sigDesignation}</div>` : ""}
+    </div>`;
+
+  if (showDual && techInfo) {
+    const techImagesHtml = techInfo.signatures
+      .filter((s) => s.imageUrl)
+      .map((s) =>
+        `<img src="${s.imageUrl}" alt="Signature" style="max-height:${techImgMax}px;max-width:100px;object-fit:contain;" onerror="this.style.display='none'" />`
+      )
+      .join("");
+
+    const verifiedBlock = `
+      <div style="text-align:left;">
+        <div style="${labelStyle}">Verified By</div>
+        ${techImagesHtml
+          ? `<div style="display:flex;gap:6px;flex-wrap:wrap;align-items:flex-end;margin-bottom:4px;">${techImagesHtml}</div>`
+          : ""}
+        ${techInfo.names
+          ? `<div style="font-weight:600;font-size:${sigPx}px;">${techInfo.names}</div>`
+          : ""}
+      </div>`;
+
+    const authText = opts.showAuthText
+      ? `<div style="${opts.authTextStyle || "font-size:10px;color:#888;align-self:flex-end;"}">Authenticated Electronic Report</div>`
+      : "";
+
+    return `
+      <div class="${wrapperClass}" style="margin-top:20px;display:flex;justify-content:space-between;align-items:flex-end;page-break-inside:avoid;${opts.wrapperStyle || ""}">
+        ${verifiedBlock}
+        ${authText}
+        ${approvedBlock}
+      </div>`;
+  }
+
+  // Single-signatory fallback
+  if (opts.showAuthText) {
+    return `
+      <div class="${wrapperClass}" style="${opts.wrapperStyle || ""}">
+        <div style="${opts.authTextStyle || "font-size:10px;color:#888;"}">Authenticated Electronic Report</div>
+        <div style="text-align:right;">
+          ${sigImageUrl
+            ? `<img src="${sigImageUrl}" alt="Signature" style="${approvedImgStyle}" onerror="this.style.display='none'" />`
+            : ""}
+          ${sigName ? `<div style="${approvedNameStyle}">${sigName}</div>` : ""}
+          ${sigDesignation ? `<div style="${approvedDesigStyle}">${sigDesignation}</div>` : ""}
+        </div>
+      </div>`;
+  }
+
+  return `
+    <div class="${wrapperClass}" style="margin-top:20px;text-align:right;page-break-inside:avoid;${opts.wrapperStyle || ""}">
+      ${sigImageUrl
+        ? `<img src="${sigImageUrl}" alt="Signature" style="${approvedImgStyle}" onerror="this.style.display='none'" />`
+        : ""}
+      ${sigName ? `<div style="${approvedNameStyle}">${sigName}</div>` : ""}
+      ${sigDesignation ? `<div style="${approvedDesigStyle}">${sigDesignation}</div>` : ""}
+    </div>`;
+}
+// ─────────────────────────────────────────────────────────────────────────────
+
 /**
  * Classic default template - plain table with flag text styling.
  * This is the original default template before the 3-band color matrix was added.
@@ -2037,6 +2146,7 @@ function generateClassicDefaultTemplateHtml(
   extraFieldConfigs?: Array<{ field_key: string; label: string }>,
   groupInterpretations?: Map<string, string>,
   sectionLabels?: Record<string, string>,
+  sectionFontSizes?: Record<string, number>,
 ): string {
   const normalizedSectionContent =
     sectionContent && typeof sectionContent === "object" ? sectionContent : {};
@@ -2383,10 +2493,11 @@ function generateClassicDefaultTemplateHtml(
       } else {
         // Free text / bulky text (impression, conclusion, etc.)
         const formatted = formatSectionContentToHtml(rawContent);
+        const secFontPx = sectionFontSizes?.[key] ?? 13;
         testResultsHtml += `
           <div style="margin-top: 14px; page-break-inside: avoid;">
-            <h4 style="font-size: 13px; font-weight: 600; color: #374151; margin: 0 0 6px; text-transform: uppercase; letter-spacing: 0.3px;">${heading}</h4>
-            <div style="font-size: 12px; color: #1f2937; line-height: 1.6; padding: 8px 12px; border: 1px solid #e5e7eb; border-radius: 4px; background: #fafafa;">
+            <h4 style="font-size: ${secFontPx + 1}px; font-weight: 600; color: #374151; margin: 0 0 6px; text-transform: uppercase; letter-spacing: 0.3px;">${heading}</h4>
+            <div style="font-size: ${secFontPx}px; color: #1f2937; line-height: 1.6; padding: 8px 12px; border: 1px solid #e5e7eb; border-radius: 4px; background: #fafafa;">
               ${formatted}
             </div>
           </div>
@@ -2400,17 +2511,15 @@ function generateClassicDefaultTemplateHtml(
   testResultsHtml += "</div>";
 
   // Signatory Section
-  const sigName = signatoryInfo?.signatoryName || "";
-  const sigDesignation = signatoryInfo?.signatoryDesignation || "";
-  const sigImageUrl = signatoryInfo?.signatoryImageUrl || "";
-
-  const signatoryHtml = `
-    <div class="signatures" style="margin-top: 20px; text-align: right; page-break-inside: avoid;">
-      ${sigImageUrl ? `<img src="${sigImageUrl}" alt="Signature" style="max-height: 50px; max-width: 150px; margin-bottom: 5px;" />` : ""}
-      ${sigName ? `<p style="margin: 0; font-weight: 600; font-size: 14px;">${sigName}</p>` : ""}
-      ${sigDesignation ? `<p style="margin: 4px 0 0 0; color: #64748b; font-size: 12px;">${sigDesignation}</p>` : ""}
-    </div>
-  `;
+  const signatoryHtml = buildSignatoryFooterHtml(signatoryInfo, {
+    wrapperClass: "signatures",
+    approvedImgStyle: "max-height:50px;max-width:150px;margin-bottom:5px;object-fit:contain;",
+    approvedNameStyle: "margin:0;font-weight:600;font-size:14px;",
+    approvedDesigStyle: "margin:4px 0 0;color:#64748b;font-size:12px;",
+    techImgMaxHeight: 50,
+    basePx: 13,
+    sigPx: 14,
+  });
 
   let reportSectionsHtml = "";
   // Only render separate "Report Sections" block when there ARE analytes
@@ -2423,10 +2532,12 @@ function generateClassicDefaultTemplateHtml(
         const rawContent = String(content).trim();
         if (!rawContent) return "";
         const heading = buildSectionLabel(key);
+        const secFontPx = sectionFontSizes?.[key] ?? 13;
         return renderSectionContentForTemplate(
           rawContent,
           heading,
-          'font-size: 13px; font-weight: 600; color: #111827; margin: 0 0 6px;',
+          `font-size: ${secFontPx + 1}px; font-weight: 600; color: #111827; margin: 0 0 6px;`,
+          secFontPx,
         );
       })
       .filter(Boolean)
@@ -2461,6 +2572,7 @@ function renderSectionContentForTemplate(
   rawContent: string,
   heading: string,
   headingStyle: string,
+  bodyFontPx = 13,
 ): string {
   if (!rawContent) return "";
 
@@ -2469,7 +2581,7 @@ function renderSectionContentForTemplate(
     return `
       <div style="margin-top: 12px;">
         <h4 style="${headingStyle}">${heading}</h4>
-        ${rawContent}
+        <div style="font-size: ${bodyFontPx}px;">${rawContent}</div>
       </div>
     `;
   }
@@ -2493,21 +2605,21 @@ function renderSectionContentForTemplate(
         const rowValue = line.substring(colonIdx + 1).trim();
         const rowBg = idx % 2 === 0 ? "#ffffff" : "#f8fafc";
         return `<tr style="background: ${rowBg};">
-          <td style="padding: 8px 12px; border: 1px solid #e5e7eb; font-weight: 500; width: 40%;">${rowLabel}</td>
-          <td style="padding: 8px 12px; border: 1px solid #e5e7eb; width: 60%;">${rowValue}</td>
+          <td style="padding: 8px 12px; border: 1px solid #e5e7eb; font-weight: 500; width: 40%; font-size: ${bodyFontPx}px;">${rowLabel}</td>
+          <td style="padding: 8px 12px; border: 1px solid #e5e7eb; width: 60%; font-size: ${bodyFontPx}px;">${rowValue}</td>
         </tr>`;
       }
-      return `<tr><td colspan="2" style="padding: 8px 12px; border: 1px solid #e5e7eb; font-weight: 600;">${line}</td></tr>`;
+      return `<tr><td colspan="2" style="padding: 8px 12px; border: 1px solid #e5e7eb; font-weight: 600; font-size: ${bodyFontPx}px;">${line}</td></tr>`;
     }).join("");
 
     return `
       <div style="margin-top: 12px;">
         <h4 style="${headingStyle}">${heading}</h4>
-        <table style="width: 100%; border-collapse: collapse; font-size: 12px;">
+        <table style="width: 100%; border-collapse: collapse; font-size: ${bodyFontPx}px;">
           <thead>
             <tr style="background: #f1f5f9;">
-              <th style="padding: 10px 12px; border: 1px solid #e5e7eb; text-align: left; font-weight: 600; width: 40%;">Parameter</th>
-              <th style="padding: 10px 12px; border: 1px solid #e5e7eb; text-align: left; font-weight: 600; width: 60%;">Finding</th>
+              <th style="padding: 10px 12px; border: 1px solid #e5e7eb; text-align: left; font-weight: 600; width: 40%; font-size: ${bodyFontPx}px;">Parameter</th>
+              <th style="padding: 10px 12px; border: 1px solid #e5e7eb; text-align: left; font-weight: 600; width: 60%; font-size: ${bodyFontPx}px;">Finding</th>
             </tr>
           </thead>
           <tbody>${rowsHtml}</tbody>
@@ -2520,7 +2632,7 @@ function renderSectionContentForTemplate(
   const formatted = formatSectionContentToHtml(rawContent);
   if (!formatted) return "";
   return `
-    <div style="margin-top: 12px;">
+    <div style="margin-top: 12px; font-size: ${bodyFontPx}px; line-height: 1.7;">
       <h4 style="${headingStyle}">${heading}</h4>
       ${formatted}
     </div>
@@ -2557,6 +2669,7 @@ function generateBasicDefaultTemplateHtml(
   groupId?: string,
   groupInterpretations?: Map<string, string>,
   sectionLabels?: Record<string, string>,
+  sectionFontSizes?: Record<string, number>,
 ): string {
   const normalizedSectionContent =
     sectionContent && typeof sectionContent === "object" ? sectionContent : {};
@@ -3386,22 +3499,18 @@ ${flagSymbol === "before" ? `
 
   testResultsHtml += "</div>";
 
-  const sigName = signatoryInfo?.signatoryName || "";
-  const sigDesignation = signatoryInfo?.signatoryDesignation || "";
-  const sigImageUrl = signatoryInfo?.signatoryImageUrl || "";
-
-  const signatoryHtml = `
-    <div class="report-footer">
-      <div class="auth-text">Authenticated Electronic Report</div>
-      <div class="signature-box">
-        ${sigImageUrl
-          ? `<img src="${sigImageUrl}" alt="Signature" style="max-height: 45px; max-width: 130px; margin-bottom: 4px; display: block; margin-left: auto;" />`
-          : ""}
-        ${sigName ? `<div style="font-weight:700; font-size:${sigPx}px;">${sigName}</div>` : ""}
-        ${sigDesignation ? `<div style="font-size:${basePx - 1}px; margin-top:2px;">${sigDesignation}</div>` : ""}
-      </div>
-    </div>
-  `;
+  const signatoryHtml = buildSignatoryFooterHtml(signatoryInfo, {
+    wrapperClass: "report-footer",
+    wrapperStyle: "display:flex;justify-content:space-between;align-items:flex-end;margin-top:20px;padding-top:8px;",
+    showAuthText: true,
+    authTextStyle: `font-size:${basePx - 2}px;color:#444;font-style:italic;align-self:flex-end;`,
+    approvedImgStyle: `max-height:45px;max-width:130px;margin-bottom:4px;display:block;margin-left:auto;object-fit:contain;`,
+    approvedNameStyle: `font-weight:700;font-size:${sigPx}px;`,
+    approvedDesigStyle: `font-size:${basePx - 1}px;margin-top:2px;`,
+    techImgMaxHeight: 45,
+    basePx,
+    sigPx,
+  });
 
   const buildSectionLabel = (key: string) => {
     if (sectionLabels?.[key]) return sectionLabels[key];
@@ -3427,12 +3536,13 @@ ${flagSymbol === "before" ? `
         // If content contains a real <table>, render as standalone rich HTML block
         // to protect inner table borders from the basic template's border:none resets.
         // Simple <div>-wrapped text (e.g. from Survey.js) is NOT rich — render in columns.
+        const secFontPx = sectionFontSizes?.[key] ?? basePx;
         const isRichHtml = /<table\b/i.test(rawContent);
         if (isRichHtml) {
           return `
             <div class="section-rich-content" style="margin: 8px 0 14px; page-break-inside: avoid;">
-              <div class="center-title" style="text-align:center;font-weight:700;text-decoration:underline;font-size:${basePx + 1}px;margin:8px 0 6px;text-transform:uppercase;color:#000;">${label}</div>
-              <div style="font-size:${basePx}px;">${rawContent}</div>
+              <div class="center-title" style="text-align:center;font-weight:700;text-decoration:underline;font-size:${secFontPx + 1}px;margin:8px 0 6px;text-transform:uppercase;color:#000;">${label}</div>
+              <div style="font-size:${secFontPx}px;">${rawContent}</div>
             </div>
           `;
         }
@@ -3440,7 +3550,7 @@ ${flagSymbol === "before" ? `
         return `
           <section class="narrative-panel">
             <div class="center-title">${label}</div>
-            <div class="narrative-body">${_fmtNarrative(rawContent)}</div>
+            <div class="narrative-body" style="font-size:${secFontPx}px;">${formatMixedNarrativeSectionContent(rawContent)}</div>
           </section>
         `;
       })
@@ -3493,6 +3603,7 @@ function generateDefaultTemplateHtml(
   groupId?: string,
   groupInterpretations?: Map<string, string>,
   sectionLabels?: Record<string, string>,
+  sectionFontSizes?: Record<string, number>,
 ): string {
   // Branch to classic template if requested
   if (templateStyle === 'classic') {
@@ -3500,7 +3611,7 @@ function generateDefaultTemplateHtml(
       context, testGroupNames, analytesByGroup, signatoryInfo,
       sectionContent, includeSections, showMethodology, showInterpretation,
       patientInfoConfig, printOptions, extraFieldConfigs, groupInterpretations,
-      sectionLabels,
+      sectionLabels, sectionFontSizes,
     );
   }
 
@@ -3510,7 +3621,7 @@ function generateDefaultTemplateHtml(
       context, testGroupNames, analytesByGroup, signatoryInfo,
       sectionContent, includeSections, showMethodology, showInterpretation,
       patientInfoConfig, printOptions, extraFieldConfigs,
-      groupId, groupInterpretations, sectionLabels,
+      groupId, groupInterpretations, sectionLabels, sectionFontSizes,
     );
   }
 
@@ -3978,31 +4089,16 @@ function generateDefaultTemplateHtml(
   testResultsHtml += "</div>";
 
   // ── Signatory Section ──
-  const sigName = signatoryInfo?.signatoryName || "";
-  const sigDesignation = signatoryInfo?.signatoryDesignation || "";
-  const sigImageUrl = signatoryInfo?.signatoryImageUrl || "";
-
-  const signatoryHtml = `
-    <div class="signatures" style="margin-top: 30px; text-align: right; page-break-inside: avoid;">
-      <div style="display: inline-block; text-align: center; min-width: 200px;">
-        ${
-    sigImageUrl
-      ? `<img src="${sigImageUrl}" alt="Signature" style="max-height: 50px; max-width: 150px; margin-bottom: 5px;" />`
-      : ""
-  }
-        ${
-    sigName
-      ? `<div style="border-bottom: 1px solid #374151; padding-bottom: 4px; margin-bottom: 4px; font-size: 14px; font-weight: 600; color: #1f2937;">${sigName}</div>`
-      : ""
-  }
-        ${
-    sigDesignation
-      ? `<div style="font-size: 11px; color: #6b7280;">${sigDesignation}</div>`
-      : ""
-  }
-      </div>
-    </div>
-  `;
+  const signatoryHtml = buildSignatoryFooterHtml(signatoryInfo, {
+    wrapperClass: "signatures",
+    wrapperStyle: "margin-top:30px;page-break-inside:avoid;",
+    approvedImgStyle: "max-height:50px;max-width:150px;margin-bottom:5px;object-fit:contain;",
+    approvedNameStyle: "border-bottom:1px solid #374151;padding-bottom:4px;margin-bottom:4px;font-size:14px;font-weight:600;color:#1f2937;",
+    approvedDesigStyle: "font-size:11px;color:#6b7280;",
+    techImgMaxHeight: 50,
+    basePx: 13,
+    sigPx: 14,
+  });
 
   const buildSectionLabel = (key: string) => {
     if (sectionLabels?.[key]) return sectionLabels[key];
@@ -4024,10 +4120,12 @@ function generateDefaultTemplateHtml(
         const rawContent = String(content).trim();
         if (!rawContent) return "";
         const heading = buildSectionLabel(key);
+        const secFontPx = sectionFontSizes?.[key] ?? 13;
         return renderSectionContentForTemplate(
           rawContent,
           heading,
-          'font-size: 13px; font-weight: 600; color: #111827; margin: 0 0 6px;',
+          `font-size: ${secFontPx + 1}px; font-weight: 600; color: #111827; margin: 0 0 6px;`,
+          secFontPx,
         );
       })
       .filter(Boolean)
@@ -4978,8 +5076,8 @@ async function fetchSectionContent(
   supabaseClient: any,
   resultIds: string[],
   includeImages = true,
-): Promise<{ sectionContent: Record<string, string>; sectionLabels: Record<string, string> }> {
-  if (!resultIds || resultIds.length === 0) return { sectionContent: {}, sectionLabels: {} };
+): Promise<{ sectionContent: Record<string, string>; sectionLabels: Record<string, string>; sectionFontSizes: Record<string, number> }> {
+  if (!resultIds || resultIds.length === 0) return { sectionContent: {}, sectionLabels: {}, sectionFontSizes: {} };
 
   try {
     // Build a map of result_id -> test_group_id so we can assign section content
@@ -5010,7 +5108,8 @@ async function fetchSectionContent(
           placeholder_key,
           section_name,
           test_group_id,
-          display_order
+          display_order,
+          font_size
         )
       `)
       .in("result_id", resultIds)
@@ -5039,12 +5138,16 @@ async function fetchSectionContent(
     // instead of the later one silently overwriting the earlier one.
     const sectionContent: Record<string, string> = {};
     const sectionLabels: Record<string, string> = {};
+    const sectionFontSizes: Record<string, number> = {};
     const sectionContentByGroup = new Map<string, Record<string, string>>();
     const keyCounters: Record<string, number> = {}; // tracks how many times a base key has been seen
     for (const item of data) {
       const baseKey = item.lab_template_sections?.placeholder_key;
       if (baseKey) {
         const label = item.lab_template_sections?.section_name;
+        const fontSize = typeof item.lab_template_sections?.font_size === "number"
+          ? item.lab_template_sections.font_size
+          : 13;
         const content = item.final_content ? String(item.final_content) : "";
         const imageUrls = parseSectionImageUrls(item.image_urls);
         const imagesHtml = includeImages ? buildSectionImagesHtml(imageUrls) : "";
@@ -5055,6 +5158,7 @@ async function fetchSectionContent(
           const uniqueKey = keyCounters[baseKey] === 1 ? baseKey : `${baseKey}_${keyCounters[baseKey]}`;
 
           if (label) sectionLabels[uniqueKey] = label;
+          sectionFontSizes[uniqueKey] = fontSize;
           sectionContent[uniqueKey] = combined;
           // Use the section's own test_group_id first; fall back to the result's
           // test_group_id for section-only groups where the section template is
@@ -5072,10 +5176,10 @@ async function fetchSectionContent(
     }
     console.log(`📝 fetchSectionContent: ${data.length} row(s) → ${Object.keys(sectionContent).length} unique section(s): [${Object.keys(sectionContent).join(", ")}]`);
 
-    return { sectionContent, sectionLabels, sectionContentByGroup };
+    return { sectionContent, sectionLabels, sectionFontSizes, sectionContentByGroup };
   } catch (err) {
     console.warn("Error fetching section content:", err);
-    return { sectionContent: {}, sectionLabels: {}, sectionContentByGroup: new Map() };
+    return { sectionContent: {}, sectionLabels: {}, sectionFontSizes: {}, sectionContentByGroup: new Map() };
   }
 }
 
@@ -5139,6 +5243,28 @@ function formatSectionContentToHtml(content: string): string {
       return `<p>${withBreaks}</p>`;
     })
     .filter(Boolean)
+    .join("");
+}
+
+function formatMixedNarrativeSectionContent(content: string): string {
+  if (!content) return "";
+
+  const trimmed = content.trim();
+  if (!trimmed) return "";
+
+  const sectionImagesRegex = /(<div class="section-images"[\s\S]*?<\/div>)/gi;
+  if (!sectionImagesRegex.test(trimmed)) {
+    return formatSectionContentToHtml(trimmed);
+  }
+
+  return trimmed
+    .split(sectionImagesRegex)
+    .filter(Boolean)
+    .map((segment) =>
+      /<div class="section-images"[\s\S]*?<\/div>/i.test(segment)
+        ? segment
+        : formatSectionContentToHtml(segment)
+    )
     .join("");
 }
 
@@ -5237,7 +5363,7 @@ function injectSectionContent(
     const formattedContent = formatSectionContentToHtml(content);
     // Add inline styles as fallback in case CSS doesn't load
     const wrappedContent =
-      `<div class="section-content" style="font-family: 'Inter', Arial, sans-serif; font-size: 13px; line-height: 1.7; color: #1f2937;">${formattedContent}</div>`;
+      `<div class="section-content" style="font-family: 'Inter', Arial, sans-serif; line-height: 1.7; color: #1f2937;">${formattedContent}</div>`;
 
     let found = false;
 
@@ -6521,6 +6647,7 @@ serve(async (req) => {
               const {
                 sectionContent: scWithImages,
                 sectionLabels,
+                sectionFontSizes: scFontSizes,
                 sectionContentByGroup: scByGroupWithImages,
               } = await fetchSectionContent(supabaseClient, resultIds, true);
               const {
@@ -6542,6 +6669,7 @@ serve(async (req) => {
                   ? scNoImages
                   : (context.sectionContentNoImages || context.sectionContent || {});
                 context.sectionLabels = sectionLabels;
+                context.sectionFontSizes = scFontSizes;
                 context.sectionContentByGroup = scByGroupWithImages.size > 0
                   ? scByGroupWithImages
                   : (context.sectionContentByGroup || new Map());
@@ -6667,7 +6795,7 @@ serve(async (req) => {
             .filter(Boolean);
 
           if (resultIds.length > 0) {
-            const { sectionContent: scWithImages, sectionLabels, sectionContentByGroup: scByGroupWithImages } = await fetchSectionContent(
+            const { sectionContent: scWithImages, sectionLabels, sectionFontSizes: scFontSizes2, sectionContentByGroup: scByGroupWithImages } = await fetchSectionContent(
               supabaseClient,
               resultIds,
               true,
@@ -6688,6 +6816,7 @@ serve(async (req) => {
             context.sectionContent = withImages;
             context.sectionContentNoImages = noImages;
             context.sectionLabels = sectionLabels;
+            context.sectionFontSizes = scFontSizes2;
             context.sectionContentByGroup = scByGroupWithImages.size > 0 ? scByGroupWithImages : (context.sectionContentByGroup || new Map());
             context.placeholderValues = {
               ...(context.placeholderValues || {}),
@@ -6809,7 +6938,8 @@ serve(async (req) => {
         default_template_style,
         show_methodology,
         show_interpretation,
-        report_patient_info_config
+        report_patient_info_config,
+        show_dual_signatory
       `)
         .eq("id", job.lab_id)
         .single();
@@ -7086,84 +7216,110 @@ serve(async (req) => {
           verifierUserId ? `${verifierName} (${verifierUserId})` : "None",
         );
 
-        // If we have a verifier, check if they have a signature (prioritize default)
-        if (verifierUserId) {
-          const { data: userSignature } = await supabaseClient
-            .from("lab_user_signatures")
-            .select(
-              "imagekit_url, file_url, signature_name, is_default, variants",
-            )
-            .eq("user_id", verifierUserId)
-            .eq("lab_id", job.lab_id)
-            .eq("is_active", true)
-            .order("is_default", { ascending: false }) // Default first
-            .limit(1)
-            .maybeSingle();
+        // Check for the lab-wide default signature first (set via Digital Signatures tab).
+        // This takes priority over the verifier's personal signature for the image so
+        // the admin-chosen branding signature always appears on reports.
+        const { data: labDefaultSig } = await supabaseClient
+          .from("lab_user_signatures")
+          .select("imagekit_url, file_url, signature_name, variants")
+          .eq("lab_id", job.lab_id)
+          .eq("is_active", true)
+          .eq("is_default", true)
+          .limit(1)
+          .maybeSingle();
 
-          if (userSignature) {
-            // Priority: variants.optimized > imagekit_url with transforms > file_url
-            let sigUrl: string | null = null;
-
-            // Try to get optimized variant first (has background removal)
-            if (userSignature.variants) {
-              const variants = typeof userSignature.variants === "string"
-                ? JSON.parse(userSignature.variants)
-                : userSignature.variants;
-              if (variants?.optimized) {
-                sigUrl = variants.optimized;
-                console.log(
-                  "  ✅ Using optimized variant (bg removed):",
-                  sigUrl,
-                );
-              }
-            }
-
-            // Fallback to imagekit_url with transforms
-            if (!sigUrl && userSignature.imagekit_url) {
-              sigUrl = applySignatureTransformations(
-                userSignature.imagekit_url,
-              );
-              console.log("  ✅ Using imagekit_url with transforms");
-            }
-
-            // Final fallback to file_url
-            if (!sigUrl && userSignature.file_url) {
-              sigUrl = userSignature.file_url;
-              console.log("  ✅ Using file_url fallback");
-            }
-
-            if (sigUrl) {
-              // Prioritize signature_name from lab_user_signatures (has full credentials like "Dr Anand - MD (Pathology)")
-              // Only fall back to verifierName if signature_name is not set
-              signatoryInfo = {
-                signatoryName: userSignature.signature_name || verifierName ||
-                  "Authorized Signatory",
-                signatoryDesignation: "", // Don't show role like "Admin" - signature_name already has credentials
-                signatoryImageUrl: sigUrl,
-              };
-              console.log(
-                "  ✅ Using verifier signature:",
-                signatoryInfo.signatoryName,
-              );
+        let labDefaultUrl: string | null = null;
+        if (labDefaultSig) {
+          if (labDefaultSig.variants) {
+            const v = typeof labDefaultSig.variants === "string"
+              ? JSON.parse(labDefaultSig.variants)
+              : labDefaultSig.variants;
+            if (v?.optimized) labDefaultUrl = v.optimized;
+          }
+          if (!labDefaultUrl && labDefaultSig.imagekit_url) {
+            labDefaultUrl = applySignatureTransformations(labDefaultSig.imagekit_url);
+          }
+          if (!labDefaultUrl && labDefaultSig.file_url) {
+            labDefaultUrl = labDefaultSig.file_url;
+          }
+          if (labDefaultUrl) {
+            signatoryInfo.signatoryImageUrl = labDefaultUrl;
+            // Comma convention: "Dr Madhu Choudhary, MD Pathologist" → name + designation on separate lines
+            const rawSigName = labDefaultSig.signature_name || "Authorized Signatory";
+            const commaIdx = rawSigName.indexOf(",");
+            if (commaIdx > 0) {
+              signatoryInfo.signatoryName = rawSigName.slice(0, commaIdx).trim();
+              signatoryInfo.signatoryDesignation = rawSigName.slice(commaIdx + 1).trim();
             } else {
-              // Verifier exists but has no signature - use their name but get lab default signature
-              console.log(
-                "  → Verifier has no signature, using name with lab default signature",
-              );
-              signatoryInfo.signatoryName = verifierName ||
-                "Authorized Signatory";
-              signatoryInfo.signatoryDesignation = verifierRole ||
-                verifierDepartment || "";
+              signatoryInfo.signatoryName = rawSigName;
             }
-          } else {
-            // Verifier exists but has no signature entry
+            console.log("  ✅ Using lab default signature:", signatoryInfo.signatoryName);
+          }
+        }
+
+        // If we have a verifier, use their name; only use their own signature image
+        // if the lab has not designated a default.
+        if (verifierUserId) {
+          if (labDefaultUrl) {
+            // Lab default is authoritative for both image and name — do not override with verifier
             console.log(
-              "  → No signature entry for verifier, using name with lab default signature",
+              "  → Lab default signature takes full precedence:",
+              signatoryInfo.signatoryName,
             );
-            signatoryInfo.signatoryName = verifierName ||
-              "Authorized Signatory";
-            signatoryInfo.signatoryDesignation = verifierRole ||
-              verifierDepartment || "";
+          } else {
+            // No lab default — fall back to verifier's own signature (original behaviour)
+            const { data: userSignature } = await supabaseClient
+              .from("lab_user_signatures")
+              .select(
+                "imagekit_url, file_url, signature_name, is_default, variants",
+              )
+              .eq("user_id", verifierUserId)
+              .eq("lab_id", job.lab_id)
+              .eq("is_active", true)
+              .order("is_default", { ascending: false })
+              .limit(1)
+              .maybeSingle();
+
+            if (userSignature) {
+              let sigUrl: string | null = null;
+
+              if (userSignature.variants) {
+                const variants = typeof userSignature.variants === "string"
+                  ? JSON.parse(userSignature.variants)
+                  : userSignature.variants;
+                if (variants?.optimized) {
+                  sigUrl = variants.optimized;
+                  console.log("  ✅ Using optimized variant (bg removed):", sigUrl);
+                }
+              }
+
+              if (!sigUrl && userSignature.imagekit_url) {
+                sigUrl = applySignatureTransformations(userSignature.imagekit_url);
+                console.log("  ✅ Using imagekit_url with transforms");
+              }
+
+              if (!sigUrl && userSignature.file_url) {
+                sigUrl = userSignature.file_url;
+                console.log("  ✅ Using file_url fallback");
+              }
+
+              if (sigUrl) {
+                const rawName = userSignature.signature_name || verifierName || "Authorized Signatory";
+                const ci = rawName.indexOf(",");
+                signatoryInfo = {
+                  signatoryName: ci > 0 ? rawName.slice(0, ci).trim() : rawName,
+                  signatoryDesignation: ci > 0 ? rawName.slice(ci + 1).trim() : "",
+                  signatoryImageUrl: sigUrl,
+                };
+                console.log("  ✅ Using verifier signature:", signatoryInfo.signatoryName);
+              } else {
+                signatoryInfo.signatoryName = verifierName || "Authorized Signatory";
+                signatoryInfo.signatoryDesignation = verifierRole || verifierDepartment || "";
+              }
+            } else {
+              signatoryInfo.signatoryName = verifierName || "Authorized Signatory";
+              signatoryInfo.signatoryDesignation = verifierRole || verifierDepartment || "";
+            }
           }
         }
 
@@ -7322,6 +7478,93 @@ serve(async (req) => {
         designation: signatoryInfo.signatoryDesignation,
         hasImage: !!signatoryInfo.signatoryImageUrl,
       });
+
+      // ========================================
+      // Step 5c: Fetch technician info for dual-signatory footer
+      // ========================================
+      interface TechnicianEntry { imageUrl: string; name: string }
+      interface TechnicianInfo { names: string; signatures: TechnicianEntry[] }
+
+      const showDualSignatory = !!(labSettings?.show_dual_signatory);
+      let technicianInfo: TechnicianInfo | null = null;
+
+      if (showDualSignatory) {
+        console.log("\n👷 Step 5c: Fetching technician info for dual-signatory...");
+        try {
+          const { data: resultRows } = await supabaseClient
+            .from("results")
+            .select(`
+              technician_id,
+              users!results_technician_id_fkey(id, name)
+            `)
+            .eq("order_id", orderId)
+            .not("technician_id", "is", null);
+
+          if (resultRows && resultRows.length > 0) {
+            // Deduplicate by technician_id (preserve first-appearance order)
+            const seen = new Set<string>();
+            const uniqueTechs: Array<{ id: string; name: string }> = [];
+            for (const row of resultRows) {
+              if (row.technician_id && !seen.has(row.technician_id)) {
+                seen.add(row.technician_id);
+                uniqueTechs.push({
+                  id: row.technician_id,
+                  name: (row.users as any)?.name || "Technician",
+                });
+              }
+            }
+
+            // Fetch each technician's signature from lab_user_signatures
+            const techSigs: TechnicianEntry[] = [];
+            for (const tech of uniqueTechs) {
+              const { data: sig } = await supabaseClient
+                .from("lab_user_signatures")
+                .select("imagekit_url, file_url, signature_name, variants")
+                .eq("user_id", tech.id)
+                .eq("lab_id", job.lab_id)
+                .eq("is_active", true)
+                .order("is_default", { ascending: false })
+                .limit(1)
+                .maybeSingle();
+
+              let imageUrl = "";
+              if (sig) {
+                if (sig.variants) {
+                  const v = typeof sig.variants === "string"
+                    ? JSON.parse(sig.variants)
+                    : sig.variants;
+                  if (v?.optimized) imageUrl = v.optimized;
+                }
+                if (!imageUrl && sig.imagekit_url) {
+                  imageUrl = applySignatureTransformations(sig.imagekit_url);
+                }
+                if (!imageUrl && sig.file_url) imageUrl = sig.file_url;
+              }
+              techSigs.push({ imageUrl, name: sig?.signature_name || tech.name });
+            }
+
+            technicianInfo = {
+              names: uniqueTechs.map((t) => t.name).join(", "),
+              signatures: techSigs,
+            };
+            console.log(
+              "  ✅ Technicians found:",
+              technicianInfo.names,
+              "| Signatures with image:",
+              techSigs.filter((s) => s.imageUrl).length,
+            );
+          } else {
+            console.log("  → No technician_id found on results for this order");
+          }
+        } catch (techErr) {
+          console.error("  ❌ Error fetching technician info:", techErr);
+        }
+      }
+
+      // Attach dual-signatory data onto signatoryInfo so templates can read it
+      // without requiring signature changes to every template function call.
+      (signatoryInfo as any).showDualSignatory = showDualSignatory;
+      (signatoryInfo as any).technicianInfo = technicianInfo;
 
       await updateProgress(
         supabaseClient,
@@ -7871,14 +8114,21 @@ serve(async (req) => {
         const testGroupId = ctx.testGroupIds?.[0];
         if (!testGroupId) return null;
 
-        // If this test group has a forced style override, skip custom template entirely
+        const groupStyle = testGroupStyles.get(testGroupId);
+
+        // 'cke' means: explicitly use the linked CKEditor template for this test group
+        if (groupStyle === 'cke') {
+          console.log(`🖊️ Test group ${testGroupId} set to CKEditor template — looking for linked custom template`);
+          return layoutTemplatesWithHtml.find((t: any) => t.test_group_id === testGroupId) || null;
+        }
+
+        // Any other built-in style override → skip custom template, use built-in generator
         if (testGroupStyles.has(testGroupId)) {
-          console.log(`🎨 Test group ${testGroupId} has style override '${testGroupStyles.get(testGroupId)}' — skipping custom template`);
+          console.log(`🎨 Test group ${testGroupId} has style override '${groupStyle}' — skipping custom template`);
           return null;
         }
 
-        // Strict match only: if no exact template for this test group,
-        // caller must use built-in default template (beautiful/classic).
+        // No style override → try to find custom template (existing behaviour)
         return layoutTemplatesWithHtml.find((t: any) => t.test_group_id === testGroupId) || null;
       };
 
@@ -7907,7 +8157,7 @@ serve(async (req) => {
         // This follows "User Request" to look for {{signatoryName}} and inject there.
         if (sigUrl && sigName) {
           const imgHtml =
-            `<img src="${sigUrl}" alt="Signature" style="display:block; max-height:40px; margin-bottom:2px; margin-top:2px;" />`;
+            `<img src="${sigUrl}" alt="Signature" style="display:block; max-height:40px; margin-bottom:2px; margin-top:2px;" onerror="this.style.display='none'" />`;
           // Wrap name in span to separate it from block image, though block image forces break.
           sigName = `${imgHtml}<span>${sigName}</span>`;
         }
@@ -8060,8 +8310,12 @@ serve(async (req) => {
         let interpretationCss = "";
 
         if (!template) {
-          // No custom template found - use default template
-          const resolvedStyle = (singleGroupId && testGroupStyles.get(singleGroupId)) || labSettings?.default_template_style || 'beautiful';
+          // No custom template found - use default template.
+          // 'cke' is not a built-in style — fall back to lab default or 'beautiful'.
+          const rawStyle = singleGroupId ? testGroupStyles.get(singleGroupId) : undefined;
+          const resolvedStyle = (rawStyle && rawStyle !== 'cke' ? rawStyle : null)
+            || labSettings?.default_template_style
+            || 'beautiful';
           console.log(
             `⚠️ No custom template found for lab, using default template (style: ${resolvedStyle})`,
           );
@@ -8081,6 +8335,7 @@ serve(async (req) => {
             singleGroupId,
             testGroupInterpretations,
             (fullContext as any)?.sectionLabels,
+            (fullContext as any)?.sectionFontSizes,
           );
           renderedHtml = renderTemplate(renderedHtml, fullContext); // Process placeholders
 
@@ -8271,10 +8526,12 @@ serve(async (req) => {
           let groupTemplate = null;
           let useGenericTemplate = false;
 
-          if (testGroupStyles.has(testGroupId)) {
-            console.log(`🎨 Test group ${testGroupId} has style override '${testGroupStyles.get(testGroupId)}' — skipping custom template`);
+          const _groupStyle = testGroupStyles.get(testGroupId);
+          if (testGroupStyles.has(testGroupId) && _groupStyle !== 'cke') {
+            console.log(`🎨 Test group ${testGroupId} has style override '${_groupStyle}' — skipping custom template`);
             useGenericTemplate = true;
           } else {
+            // 'cke' or no override → look for linked CKEditor template
             groupTemplate = templatesWithHtml.find((t: { test_group_id?: string; is_interpretation_only?: boolean; [key: string]: unknown }) =>
               t.test_group_id === testGroupId
             ) || null;
@@ -8370,6 +8627,10 @@ serve(async (req) => {
               ? { ..._mergedGroupOpts, _isCompact: true }
               : (Object.keys(_mergedGroupOpts).length > 0 ? _mergedGroupOpts : undefined);
 
+            const _rawGroupStyle = testGroupStyles.get(testGroupId);
+            const _resolvedGroupStyle = (_rawGroupStyle && _rawGroupStyle !== 'cke' ? _rawGroupStyle : null)
+              || labSettings?.default_template_style
+              || 'beautiful';
             renderedHtml = generateDefaultTemplateHtml(
               groupContext,
               testGroupNames,
@@ -8377,7 +8638,7 @@ serve(async (req) => {
               signatoryInfo,
               groupSectionContentForRender,
               groupSectionContentForRender != null && Object.keys(groupSectionContentForRender).length > 0,
-              testGroupStyles.get(testGroupId) || labSettings?.default_template_style || 'beautiful',
+              _resolvedGroupStyle,
               labSettings?.show_methodology ?? true,
               labSettings?.show_interpretation ?? false,
               labSettings?.report_patient_info_config,
@@ -8386,6 +8647,7 @@ serve(async (req) => {
               testGroupId,
               testGroupInterpretations,
               (groupFullContext as any)?.sectionLabels,
+              (groupFullContext as any)?.sectionFontSizes,
             );
             renderedHtml = renderTemplate(renderedHtml, groupFullContext);
 
@@ -8481,6 +8743,7 @@ serve(async (req) => {
             undefined,
             testGroupInterpretations,
             (fullContext as any)?.sectionLabels,
+            (fullContext as any)?.sectionFontSizes,
           );
           let renderedDefaultHtml = renderTemplate(defaultHtml, fullContext);
 
@@ -8715,6 +8978,7 @@ serve(async (req) => {
             undefined,
             testGroupInterpretations,
             (fullContext as any)?.sectionLabels,
+            (fullContext as any)?.sectionFontSizes,
           );
           compactRenderedHtml = renderTemplate(
             compactRenderedHtml,
@@ -8862,6 +9126,7 @@ serve(async (req) => {
               printSingleGroupId,
               testGroupInterpretations,
               (fullContext as any)?.sectionLabels,
+              (fullContext as any)?.sectionFontSizes,
             );
             printRenderedHtml = renderTemplate(
               printRenderedHtml,
