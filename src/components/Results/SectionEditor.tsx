@@ -461,6 +461,7 @@ interface SectionEditorProps {
   testGroupId: string;
   onSave?: (sections: SectionContent[]) => void;
   readOnly?: boolean;
+  canEdit?: boolean;
   className?: string;
   editorRole?: 'doctor' | 'technician';
   showAIAssistant?: boolean;
@@ -495,6 +496,7 @@ const SectionEditor = forwardRef<SectionEditorRef, SectionEditorProps>(({
   testGroupId,
   onSave,
   readOnly = false,
+  canEdit = true,
   className = '',
   editorRole = 'doctor',
   showAIAssistant = true,
@@ -513,6 +515,10 @@ const SectionEditor = forwardRef<SectionEditorRef, SectionEditorProps>(({
   const [aiGenerating, setAIGenerating] = useState(false);
   const [aiResult, setAIResult] = useState<SectionGeneratorResponse | null>(null);
   const [aiError, setAIError] = useState<string | null>(null);
+  const effectiveReadOnly = readOnly || !canEdit;
+  const isEditorAllowedForSection = useCallback((section: TemplateSection) => (
+    editorRole === 'doctor' || !!section.allow_technician_entry
+  ), [editorRole]);
 
   const getOptimizedImageUrl = (url?: string | null) => {
     if (!url) return '';
@@ -599,7 +605,7 @@ const SectionEditor = forwardRef<SectionEditorRef, SectionEditorProps>(({
   // Global keyboard shortcut: press 'a','b','c'... to toggle predefined options
   // Only fires when not typing in an input/textarea and a section with options is expanded
   useEffect(() => {
-    if (readOnly) return;
+    if (effectiveReadOnly) return;
     const handleKeyDown = (e: KeyboardEvent) => {
       const target = e.target as HTMLElement;
       if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable) return;
@@ -615,7 +621,7 @@ const SectionEditor = forwardRef<SectionEditorRef, SectionEditorProps>(({
         if (!section.predefined_options || section.predefined_options.length <= optionIndex) continue;
         const content = contents.get(section.id);
         if (content?.is_finalized) continue;
-        const roleAllowed = editorRole === 'doctor' || section.allow_technician_entry;
+        const roleAllowed = isEditorAllowedForSection(section);
         if (!roleAllowed) continue;
         e.preventDefault();
         toggleOption(section.id, optionIndex);
@@ -624,7 +630,7 @@ const SectionEditor = forwardRef<SectionEditorRef, SectionEditorProps>(({
     };
     document.addEventListener('keydown', handleKeyDown);
     return () => document.removeEventListener('keydown', handleKeyDown);
-  }, [readOnly, sections, expandedSections, contents, editorRole]);
+  }, [effectiveReadOnly, sections, expandedSections, contents, isEditorAllowedForSection]);
 
   // Toggle predefined option selection
   const toggleOption = (sectionId: string, optionIndex: number) => {
@@ -720,7 +726,7 @@ const SectionEditor = forwardRef<SectionEditorRef, SectionEditorProps>(({
     if (!files || files.length === 0) return;
 
     const content = contents.get(sectionId);
-    if (content?.is_finalized || readOnly) return;
+    if (content?.is_finalized || effectiveReadOnly) return;
 
     setUploadingForSection(sectionId, true);
     setError(null);
@@ -1010,7 +1016,7 @@ const SectionEditor = forwardRef<SectionEditorRef, SectionEditorProps>(({
           <FileText className="h-5 w-5 mr-2 text-blue-600" />
           Report Sections
         </h3>
-        {!readOnly && (
+        {!effectiveReadOnly && (
           <button
             onClick={saveAll}
             disabled={saving}
@@ -1038,10 +1044,10 @@ const SectionEditor = forwardRef<SectionEditorRef, SectionEditorProps>(({
         {sections.map(section => {
           const content = contents.get(section.id);
           const isExpanded = expandedSections.has(section.id);
-          const roleAllowed = editorRole === 'doctor' || section.allow_technician_entry;
-          const canEdit = roleAllowed && !readOnly && !content?.is_finalized;
-          const isLocked = !canEdit;
-          const canEditText = canEdit && section.is_editable;
+            const roleAllowed = isEditorAllowedForSection(section);
+            const sectionCanEdit = roleAllowed && !effectiveReadOnly && !content?.is_finalized;
+            const isLocked = !sectionCanEdit;
+            const canEditText = sectionCanEdit && section.is_editable;
           const isUploading = uploadingSections[section.id];
 
           return (
@@ -1237,7 +1243,7 @@ const SectionEditor = forwardRef<SectionEditorRef, SectionEditorProps>(({
                                 alt="Section attachment"
                                 className="w-full h-32 object-cover"
                               />
-                              {canEdit && (
+                              {sectionCanEdit && (
                                 <button
                                   type="button"
                                   onClick={() => removeSectionImage(section.id, url)}
@@ -1254,7 +1260,7 @@ const SectionEditor = forwardRef<SectionEditorRef, SectionEditorProps>(({
                   )}
 
                   {/* AI Assistant Button & Panel */}
-                  {showAIAssistant && canEdit && section.is_editable && (
+                    {showAIAssistant && sectionCanEdit && section.is_editable && (
                     <div className="border-t border-gray-100 pt-4">
                       {showAIPanel === section.id ? (
                         <div className="bg-gradient-to-br from-purple-50 to-blue-50 border border-purple-200 rounded-lg p-4 space-y-4">
@@ -1431,7 +1437,7 @@ const SectionEditor = forwardRef<SectionEditorRef, SectionEditorProps>(({
         })}
       </div>
 
-      {!readOnly && (
+        {!effectiveReadOnly && (
         <div className="flex justify-end pt-2">
           <button
             onClick={saveAll}

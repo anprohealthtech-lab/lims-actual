@@ -1,6 +1,6 @@
 import React, { useState, useEffect, KeyboardEvent } from 'react';
 import { X, User, Phone, Save, Loader, Sparkles } from 'lucide-react';
-import { database } from '../../utils/supabase';
+import { database, supabase } from '../../utils/supabase';
 
 interface CreateBookingModalProps {
     onClose: () => void;
@@ -8,6 +8,20 @@ interface CreateBookingModalProps {
 }
 
 const SALUTATIONS = ['Mr.', 'Mrs.', 'Ms.', 'Dr.', 'Master', 'Baby', 'Prof.', 'Shri.', 'Smt.', 'Ku.'];
+
+interface CatalogTest {
+    id: string;
+    name: string;
+    type: 'test_group' | 'package';
+    price: number;
+}
+
+interface SelectedTest {
+    id?: string;
+    name: string;
+    type: 'test_group' | 'package' | 'note';
+    price?: number;
+}
 
 // Returns 'Male' | 'Female' | '' based on salutation and name keywords
 function detectGender(sal: string, first: string, last: string): 'Male' | 'Female' | '' {
@@ -55,18 +69,115 @@ const CreateBookingModal: React.FC<CreateBookingModalProps> = ({ onClose, onSucc
     });
 
     // Tests as chips
-    const [tests, setTests] = useState<string[]>([]);
+    const [tests, setTests] = useState<SelectedTest[]>([]);
     const [testInput, setTestInput] = useState('');
+    const [catalogTests, setCatalogTests] = useState<CatalogTest[]>([]);
+
+    useEffect(() => {
+        const loadCatalogTests = async () => {
+            try {
+                const labId = await database.getCurrentUserLabId();
+                const [testGroupsRes, packagesRes] = await Promise.all([
+                    supabase
+                        .from('test_groups')
+                        .select('id, name, price')
+                        .eq('lab_id', labId)
+                        .eq('is_active', true)
+                        .order('name'),
+                    supabase
+                        .from('packages')
+                        .select('id, name, price')
+                        .eq('lab_id', labId)
+                        .eq('is_active', true)
+                        .order('name')
+                ]);
+
+                const testGroups: CatalogTest[] = (testGroupsRes.data || []).map((item: any) => ({
+                    id: item.id,
+                    name: item.name,
+                    price: Number(item.price || 0),
+                    type: 'test_group'
+                }));
+                const packages: CatalogTest[] = (packagesRes.data || []).map((item: any) => ({
+                    id: item.id,
+                    name: item.name,
+                    price: Number(item.price || 0),
+                    type: 'package'
+                }));
+
+                setCatalogTests([...testGroups, ...packages].sort((a, b) => a.name.localeCompare(b.name)));
+            } catch (err) {
+                console.error('Failed to load booking test catalog:', err);
+            }
+        };
+
+        loadCatalogTests();
+    }, []);
 
     const getFullName = () =>
         [salutation, firstName.trim(), middleName.trim(), lastName.trim()]
             .filter(Boolean)
             .join(' ');
 
+    const getSearchKey = (value: string) => value.toLowerCase().replace(/[^a-z0-9]/g, '');
+
+    const getInitials = (value: string) =>
+        value
+            .replace(/[^a-zA-Z0-9\s]/g, ' ')
+            .split(/\s+/)
+            .filter(Boolean)
+            .map(part => part[0])
+            .join('')
+            .toLowerCase();
+
+    const matchingTests = testInput.trim()
+        ? catalogTests
+            .filter(item => {
+                const query = getSearchKey(testInput);
+                const nameKey = getSearchKey(item.name);
+                const initials = getInitials(item.name);
+                return nameKey.includes(query) || initials.includes(query);
+            })
+            .filter(item => !tests.some(selected => selected.id === item.id && selected.type === item.type))
+            .slice(0, 8)
+        : [];
+
+    const getTestsWithPendingInput = () => {
+        const val = testInput.trim();
+        if (!val) return tests;
+
+        const exactMatch = matchingTests.find(item => getSearchKey(item.name) === getSearchKey(val));
+        const selected = exactMatch || matchingTests[0] || { name: val, type: 'note' as const };
+        return [...tests, selected].filter((test, index, arr) =>
+            arr.findIndex(item =>
+                (item.id && test.id && item.id === test.id && item.type === test.type) ||
+                item.name.toLowerCase() === test.name.toLowerCase()
+            ) === index
+        );
+    };
+
+    const estimatedTotal = getTestsWithPendingInput().reduce((sum, test) => sum + Number(test.price || 0), 0);
+
+    const addCatalogTest = (item: CatalogTest) => {
+        if (!tests.some(test => test.id === item.id && test.type === item.type)) {
+            setTests(prev => [...prev, item]);
+        }
+        setTestInput('');
+    };
+
     const addTest = () => {
         const val = testInput.trim();
-        if (val && !tests.includes(val)) {
-            setTests(prev => [...prev, val]);
+        if (!val) return;
+
+        const exactMatch = matchingTests.find(item => getSearchKey(item.name) === getSearchKey(val));
+        const selected = exactMatch || matchingTests[0];
+        if (selected) {
+            addCatalogTest(selected);
+            return;
+        }
+
+        if (!tests.some(test => test.name.toLowerCase() === val.toLowerCase())) {
+            setTests(prev => [...prev, { name: val, type: 'note' }]);
         }
         setTestInput('');
     };
@@ -89,9 +200,8 @@ const CreateBookingModal: React.FC<CreateBookingModalProps> = ({ onClose, onSucc
         setLoading(true);
 
         // Commit any pending test input on submit
-        const finalTests = testInput.trim()
-            ? [...tests, testInput.trim()].filter((t, i, arr) => arr.indexOf(t) === i)
-            : tests;
+        const finalTests = getTestsWithPendingInput();
+        const quotationAmount = finalTests.reduce((sum, test) => sum + Number(test.price || 0), 0);
 
         try {
             const payload = {
@@ -107,7 +217,13 @@ const CreateBookingModal: React.FC<CreateBookingModalProps> = ({ onClose, onSucc
                 home_collection_address: formData.type === 'home_collection'
                     ? { address: formData.address }
                     : null,
-                test_details: finalTests.map(t => ({ name: t, type: 'note' as const }))
+                test_details: finalTests.map(t => ({
+                    id: t.id,
+                    name: t.name,
+                    type: t.type,
+                    price: t.price
+                })),
+                quotation_amount: quotationAmount
             };
 
             const { error } = await database.bookings.create(payload);
@@ -304,7 +420,12 @@ const CreateBookingModal: React.FC<CreateBookingModalProps> = ({ onClose, onSucc
                                     className="inline-flex items-center gap-1 bg-blue-50 text-blue-700 text-xs font-medium
                                                px-2 py-0.5 rounded-full border border-blue-200 shrink-0"
                                 >
-                                    {test}
+	                                    {test.name}
+	                                    {test.type !== 'note' && (
+	                                        <span className="text-[9px] uppercase text-blue-500">
+	                                            {test.type === 'package' ? 'Pkg' : 'Test'}
+	                                        </span>
+	                                    )}
                                     <button
                                         type="button"
                                         onClick={() => setTests(prev => prev.filter((_, idx) => idx !== i))}
@@ -324,9 +445,36 @@ const CreateBookingModal: React.FC<CreateBookingModalProps> = ({ onClose, onSucc
                                 className="flex-1 min-w-[140px] text-sm outline-none bg-transparent py-0.5 placeholder-gray-400"
                             />
                         </div>
+	                        {matchingTests.length > 0 && (
+	                            <div className="mt-1 max-h-36 overflow-y-auto rounded-lg border border-blue-100 bg-white shadow-sm">
+	                                {matchingTests.map(item => (
+	                                    <button
+	                                        key={`${item.type}-${item.id}`}
+	                                        type="button"
+	                                        onMouseDown={e => {
+	                                            e.preventDefault();
+	                                            addCatalogTest(item);
+	                                        }}
+	                                        className="w-full px-3 py-2 text-left text-xs hover:bg-blue-50 flex items-center justify-between gap-3"
+	                                    >
+	                                        <span className="font-medium text-gray-800">{item.name}</span>
+	                                        <span className="flex items-center gap-2 text-gray-500">
+	                                            <span>{item.type === 'package' ? 'Package' : 'Test'}</span>
+	                                            <span>Rs. {item.price.toLocaleString('en-IN')}</span>
+	                                        </span>
+	                                    </button>
+	                                ))}
+	                            </div>
+	                        )}
                         <p className="mt-0.5 text-[10px] text-gray-400">
-                            Press Enter or comma to add · Backspace to remove last
+                            Type to search catalog - Enter adds first match - comma adds note - Backspace removes last
                         </p>
+                        {estimatedTotal > 0 && (
+                            <div className="mt-2 flex items-center justify-between rounded-lg border border-blue-100 bg-blue-50 px-3 py-2 text-sm">
+                                <span className="font-medium text-blue-800">Estimated total</span>
+                                <span className="font-bold text-blue-900">Rs. {estimatedTotal.toLocaleString('en-IN')}</span>
+                            </div>
+                        )}
                     </div>
 
                     {/* Actions */}

@@ -32,15 +32,18 @@ interface TestGroup {
     id: string;
     name: string;
     price: number;
+    type: 'test' | 'billing_item';
 }
 
 interface TestSharing {
     id?: string;
     doctor_id: string;
-    test_group_id: string;
+    test_group_id?: string;
+    billing_item_type_id?: string;
     sharing_percent: number;
     test_name?: string;
     test_price?: number;
+    item_type?: 'test' | 'billing_item';
 }
 
 /**
@@ -61,6 +64,8 @@ const DoctorSharingSettings: React.FC = () => {
     const [showVoiceInput, setShowVoiceInput] = useState(false);
     const [labId, setLabId] = useState<string | null>(null);
     const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+    const testsOnly = allTests.filter(item => item.type === 'test');
+    const billingItemsOnly = allTests.filter(item => item.type === 'billing_item');
 
     // Load doctors on mount
     useEffect(() => {
@@ -105,14 +110,31 @@ const DoctorSharingSettings: React.FC = () => {
     const loadAllTests = async () => {
         try {
             const labId = await database.getCurrentUserLabId();
-            const { data, error } = await supabase
-                .from('test_groups')
-                .select('id, name, price')
-                .eq('lab_id', labId)
-                .eq('is_active', true)
-                .order('name');
-            if (error) throw error;
-            setAllTests(data || []);
+            const [testsRes, billingRes] = await Promise.all([
+                supabase
+                    .from('test_groups')
+                    .select('id, name, price')
+                    .eq('lab_id', labId)
+                    .eq('is_active', true)
+                    .order('name'),
+                supabase
+                    .from('lab_billing_item_types')
+                    .select('id, name, default_amount')
+                    .eq('lab_id', labId)
+                    .eq('is_active', true)
+                    .eq('is_shareable_with_doctor', true)
+                    .order('name')
+            ]);
+            if (testsRes.error) throw testsRes.error;
+            if (billingRes.error) throw billingRes.error;
+
+            const tests: TestGroup[] = (testsRes.data || []).map((t: any) => ({
+                id: t.id, name: t.name, price: t.price, type: 'test' as const
+            }));
+            const billingItems: TestGroup[] = (billingRes.data || []).map((b: any) => ({
+                id: b.id, name: b.name, price: b.default_amount, type: 'billing_item' as const
+            }));
+            setAllTests([...tests, ...billingItems].sort((a, b) => a.name.localeCompare(b.name)));
         } catch (err) {
             console.error('Error loading tests:', err);
         }
@@ -147,22 +169,42 @@ const DoctorSharingSettings: React.FC = () => {
             }
 
             // Load test-wise sharings
-            const { data: testData, error: testError } = await supabase
-                .from('doctor_test_sharing')
-                .select('*, test_groups(name, price)')
-                .eq('doctor_id', doctorId)
-                .eq('is_active', true);
+            const [testRes, billingShareRes] = await Promise.all([
+                supabase
+                    .from('doctor_test_sharing')
+                    .select('*, test_groups(name, price)')
+                    .eq('doctor_id', doctorId)
+                    .eq('is_active', true),
+                supabase
+                    .from('doctor_billing_item_sharing')
+                    .select('*, lab_billing_item_types(name, default_amount)')
+                    .eq('doctor_id', doctorId)
+                    .eq('is_active', true)
+            ]);
 
-            if (testError) throw testError;
+            if (testRes.error) throw testRes.error;
+            if (billingShareRes.error) throw billingShareRes.error;
 
-            const mappedTestSharings = (testData || []).map((ts: any) => ({
-                id: ts.id,
-                doctor_id: ts.doctor_id,
-                test_group_id: ts.test_group_id,
-                sharing_percent: ts.sharing_percent,
-                test_name: ts.test_groups?.name,
-                test_price: ts.test_groups?.price
-            }));
+            const mappedTestSharings: TestSharing[] = [
+                ...(testRes.data || []).map((ts: any) => ({
+                    id: ts.id,
+                    doctor_id: ts.doctor_id,
+                    test_group_id: ts.test_group_id,
+                    sharing_percent: ts.sharing_percent,
+                    test_name: ts.test_groups?.name,
+                    test_price: ts.test_groups?.price,
+                    item_type: 'test' as const
+                })),
+                ...(billingShareRes.data || []).map((bs: any) => ({
+                    id: bs.id,
+                    doctor_id: bs.doctor_id,
+                    billing_item_type_id: bs.billing_item_type_id,
+                    sharing_percent: bs.sharing_percent,
+                    test_name: bs.lab_billing_item_types?.name,
+                    test_price: bs.lab_billing_item_types?.default_amount,
+                    item_type: 'billing_item' as const
+                }))
+            ];
 
             setTestSharings(mappedTestSharings);
         } catch (err) {
@@ -195,17 +237,29 @@ const DoctorSharingSettings: React.FC = () => {
             // Save test-wise sharings
             for (const ts of testSharings) {
                 if (ts.sharing_percent > 0) {
-                    const { error } = await supabase
-                        .from('doctor_test_sharing')
-                        .upsert({
-                            lab_id: labId,
-                            doctor_id: selectedDoctorId,
-                            test_group_id: ts.test_group_id,
-                            sharing_percent: ts.sharing_percent,
-                            is_active: true
-                        }, { onConflict: 'doctor_id,test_group_id' });
-                    
-                    if (error) throw error;
+                    if (ts.item_type === 'billing_item' && ts.billing_item_type_id) {
+                        const { error } = await supabase
+                            .from('doctor_billing_item_sharing')
+                            .upsert({
+                                lab_id: labId,
+                                doctor_id: selectedDoctorId,
+                                billing_item_type_id: ts.billing_item_type_id,
+                                sharing_percent: ts.sharing_percent,
+                                is_active: true
+                            }, { onConflict: 'doctor_id,billing_item_type_id' });
+                        if (error) throw error;
+                    } else if (ts.test_group_id) {
+                        const { error } = await supabase
+                            .from('doctor_test_sharing')
+                            .upsert({
+                                lab_id: labId,
+                                doctor_id: selectedDoctorId,
+                                test_group_id: ts.test_group_id,
+                                sharing_percent: ts.sharing_percent,
+                                is_active: true
+                            }, { onConflict: 'doctor_id,test_group_id' });
+                        if (error) throw error;
+                    }
                 }
             }
 
@@ -221,26 +275,85 @@ const DoctorSharingSettings: React.FC = () => {
         }
     };
 
-    const handleTestSharingChange = (testGroupId: string, percent: number) => {
+    const handleTestSharingChange = (itemId: string, percent: number) => {
         setTestSharings(prev => {
-            const existing = prev.find(ts => ts.test_group_id === testGroupId);
+            const item = allTests.find(t => t.id === itemId);
+            const isTest = item?.type !== 'billing_item';
+            const existing = prev.find(ts =>
+                isTest ? ts.test_group_id === itemId : ts.billing_item_type_id === itemId
+            );
             if (existing) {
-                return prev.map(ts => 
-                    ts.test_group_id === testGroupId 
+                return prev.map(ts =>
+                    (isTest ? ts.test_group_id === itemId : ts.billing_item_type_id === itemId)
                         ? { ...ts, sharing_percent: percent }
                         : ts
                 );
             } else {
-                const test = allTests.find(t => t.id === testGroupId);
                 return [...prev, {
                     doctor_id: selectedDoctorId!,
-                    test_group_id: testGroupId,
+                    ...(isTest ? { test_group_id: itemId } : { billing_item_type_id: itemId }),
                     sharing_percent: percent,
-                    test_name: test?.name,
-                    test_price: test?.price
+                    test_name: item?.name,
+                    test_price: item?.price,
+                    item_type: item?.type
                 }];
             }
         });
+    };
+
+    const renderSharingTable = (items: TestGroup[], emptyLabel: string) => {
+        if (items.length === 0) {
+            return (
+                <div className="px-4 py-6 text-sm text-center text-gray-500">
+                    {emptyLabel}
+                </div>
+            );
+        }
+
+        return (
+            <div className="max-h-[260px] overflow-y-auto border border-gray-200 rounded-lg">
+                <table className="w-full">
+                    <thead className="bg-gray-50 sticky top-0">
+                        <tr>
+                            <th className="px-4 py-3 text-left text-sm font-medium text-gray-700">Name</th>
+                            <th className="px-4 py-3 text-right text-sm font-medium text-gray-700">Price</th>
+                            <th className="px-4 py-3 text-right text-sm font-medium text-gray-700 w-32">Sharing %</th>
+                        </tr>
+                    </thead>
+                    <tbody className="divide-y divide-gray-100">
+                        {items.map((item) => {
+                            const existingSharing = testSharings.find(ts =>
+                                item.type === 'billing_item'
+                                    ? ts.billing_item_type_id === item.id
+                                    : ts.test_group_id === item.id
+                            );
+
+                            return (
+                                <tr key={item.id} className="hover:bg-gray-50">
+                                    <td className="px-4 py-3 text-sm text-gray-900">{item.name}</td>
+                                    <td className="px-4 py-3 text-sm text-gray-600 text-right">₹{item.price}</td>
+                                    <td className="px-4 py-3">
+                                        <input
+                                            type="number"
+                                            min="0"
+                                            max="100"
+                                            step="0.5"
+                                            value={existingSharing?.sharing_percent || ''}
+                                            onChange={(e) => handleTestSharingChange(
+                                                item.id,
+                                                parseFloat(e.target.value) || 0
+                                            )}
+                                            placeholder={`${settings?.default_sharing_percent ?? 0}%`}
+                                            className="w-full px-2 py-1 text-sm border border-gray-200 rounded focus:ring-2 focus:ring-emerald-500 text-right"
+                                        />
+                                    </td>
+                                </tr>
+                            );
+                        })}
+                    </tbody>
+                </table>
+            </div>
+        );
     };
 
     // Handle voice input results
@@ -675,23 +788,33 @@ const DoctorSharingSettings: React.FC = () => {
                                 {showTestGrid && (
                                     <div className="px-6 pb-6 border-t border-gray-100">
                                         <p className="text-sm text-gray-600 py-4">
-                                            Override the default sharing percentage for specific tests. Leave blank or 0 to use default.
+                                            Override the default sharing percentage separately for tests and billing items. Leave blank or 0 to use default.
                                         </p>
-                                        <div className="max-h-[400px] overflow-y-auto border border-gray-200 rounded-lg">
+                                        <div className="space-y-6">
+                                            <div className="hidden">
                                             <table className="w-full">
                                                 <thead className="bg-gray-50 sticky top-0">
                                                     <tr>
-                                                        <th className="px-4 py-3 text-left text-sm font-medium text-gray-700">Test Name</th>
+                                                        <th className="px-4 py-3 text-left text-sm font-medium text-gray-700">Name</th>
                                                         <th className="px-4 py-3 text-right text-sm font-medium text-gray-700">Price</th>
                                                         <th className="px-4 py-3 text-right text-sm font-medium text-gray-700 w-32">Sharing %</th>
                                                     </tr>
                                                 </thead>
                                                 <tbody className="divide-y divide-gray-100">
                                                     {allTests.map((test) => {
-                                                        const existingSharing = testSharings.find(ts => ts.test_group_id === test.id);
+                                                        const existingSharing = testSharings.find(ts =>
+                                                            test.type === 'billing_item'
+                                                                ? ts.billing_item_type_id === test.id
+                                                                : ts.test_group_id === test.id
+                                                        );
                                                         return (
                                                             <tr key={test.id} className="hover:bg-gray-50">
-                                                                <td className="px-4 py-3 text-sm text-gray-900">{test.name}</td>
+                                                                <td className="px-4 py-3 text-sm text-gray-900">
+                                                                    <span>{test.name}</span>
+                                                                    {test.type === 'billing_item' && (
+                                                                        <span className="ml-2 px-1.5 py-0.5 text-xs bg-blue-100 text-blue-700 rounded">Billing</span>
+                                                                    )}
+                                                                </td>
                                                                 <td className="px-4 py-3 text-sm text-gray-600 text-right">₹{test.price}</td>
                                                                 <td className="px-4 py-3">
                                                                     <input
@@ -713,6 +836,25 @@ const DoctorSharingSettings: React.FC = () => {
                                                     })}
                                                 </tbody>
                                             </table>
+                                            </div>
+                                            <div>
+                                                <div className="mb-3 flex items-center justify-between">
+                                                    <h4 className="text-sm font-semibold text-gray-900">Tests</h4>
+                                                    <span className="text-xs text-gray-500">
+                                                        {testsOnly.filter(item => testSharings.some(ts => ts.test_group_id === item.id && ts.sharing_percent > 0)).length} configured
+                                                    </span>
+                                                </div>
+                                                {renderSharingTable(testsOnly, 'No active tests found.')}
+                                            </div>
+                                            <div>
+                                                <div className="mb-3 flex items-center justify-between">
+                                                    <h4 className="text-sm font-semibold text-gray-900">Billing Items</h4>
+                                                    <span className="text-xs text-gray-500">
+                                                        {billingItemsOnly.filter(item => testSharings.some(ts => ts.billing_item_type_id === item.id && ts.sharing_percent > 0)).length} configured
+                                                    </span>
+                                                </div>
+                                                {renderSharingTable(billingItemsOnly, 'No shareable billing items found.')}
+                                            </div>
                                         </div>
                                     </div>
                                 )}

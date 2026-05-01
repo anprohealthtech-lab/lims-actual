@@ -45,6 +45,13 @@ export interface BuildBasicPreviewParams {
   printOptions?: Record<string, unknown>;
 }
 
+function formatIndianNumber(val: string | number): string {
+  const str = String(val).replace(/,/g, "").trim();
+  const num = parseFloat(str);
+  if (!Number.isFinite(num) || Math.abs(num) < 1000) return str || String(val);
+  return new Intl.NumberFormat("en-IN").format(num);
+}
+
 function normalizeFlag(flag?: string | null): string {
   const raw = String(flag || "")
     .trim()
@@ -74,6 +81,86 @@ function getFlagSymbolText(canonical: string): string {
   if (canonical === "critical_low") return "L*";
   if (canonical === "abnormal") return "A";
   return "";
+}
+
+function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+function stripLooseMarkdown(value: string): string {
+  return value
+    .replace(/\*\*([^*]+)\*\*/g, "$1")
+    .replace(/^(\*\*+)\s*/gm, "")
+    .replace(/\s*(\*\*+)$/gm, "")
+    .trim();
+}
+
+function formatNarrativeHtml(rawContent: string): string {
+  const trimmed = rawContent.trim();
+  if (!trimmed) return "";
+  if (/<[a-z][\s\S]*>/i.test(trimmed)) {
+    return trimmed.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+  }
+
+  const lines = trimmed
+    .replace(/\r\n/g, "\n")
+    .split("\n")
+    .map((line) => stripLooseMarkdown(line))
+    .filter(Boolean);
+
+  const parts: string[] = [];
+  let listItems: string[] = [];
+  const flushList = () => {
+    if (!listItems.length) return;
+    parts.push(`<ul>${listItems.join("")}</ul>`);
+    listItems = [];
+  };
+
+  for (const line of lines) {
+    if (/^[-*•]\s+/.test(line)) {
+      listItems.push(`<li>${escapeHtml(line.replace(/^[-*•]\s+/, "").trim())}</li>`);
+      continue;
+    }
+
+    flushList();
+
+    const colonIdx = line.indexOf(":");
+    if (colonIdx > 0 && colonIdx < 40) {
+      parts.push(`
+        <div class="narrative-kv-row">
+          <div class="narrative-kv-label">${escapeHtml(line.slice(0, colonIdx).trim())}</div>
+          <div class="narrative-kv-value">${escapeHtml(line.slice(colonIdx + 1).trim())}</div>
+        </div>`);
+      continue;
+    }
+
+    parts.push(`<p>${escapeHtml(line)}</p>`);
+  }
+
+  flushList();
+  return parts.join("");
+}
+
+function isNarrativeGroup(analytes: PreviewAnalyte[]): boolean {
+  if (!analytes.length) return false;
+  const narrativeRows = analytes.filter((analyte) => {
+    const unit = String(analyte.unit || "").trim().toLowerCase();
+    const ref = String(analyte.reference_range || "").trim();
+    // Count any row that has no unit and no numeric reference range as narrative.
+    // This includes section header rows and plain-text paragraph rows (empty value)
+    // which the old check incorrectly excluded.
+    return (
+      (!unit || ["n/a", "na", "-", "none", "not applicable"].includes(unit)) &&
+      !/\d/.test(ref)
+    );
+  }).length;
+
+  return narrativeRows > 0 && narrativeRows / analytes.length >= 0.7;
 }
 
 export function buildBasicPreviewHtml(params: BuildBasicPreviewParams): string {
@@ -106,6 +193,8 @@ export function buildBasicPreviewHtml(params: BuildBasicPreviewParams): string {
   const calcMarker = (printOptions.calcMarker as string) ?? "asterisk";
   const flagAsterisk = (printOptions.flagAsterisk as boolean) ?? false;
   const flagAsteriskCritical = (printOptions.flagAsteriskCritical as boolean) ?? false;
+  const testGroupTitlePosition = (printOptions.testGroupTitlePosition as string) ?? "below_headers";
+  const qrHorizontalOffset = Math.max(0, Math.min(80, Number(printOptions.qrHorizontalOffset ?? 0)));
   const colCount = flagSymbol === "before" ? 5 : 4;
   const resultColors = printOptions.resultColors as Record<string, unknown> | undefined;
   const colorsEnabled = resultColors?.enabled !== false;
@@ -183,6 +272,11 @@ ${
   text-align: center; font-weight: 700; text-decoration: underline;
   font-size: ${basePx + 2}px; margin: 8px 0 0;
   text-transform: uppercase; line-height: 1.2; color: #000;
+}
+.center-title.left {
+  text-align: left;
+  text-decoration: none;
+  margin: 0 0 6px;
 }
 .sub-section-header td {
   font-weight: 700 !important;
@@ -268,7 +362,40 @@ ${
 .report-sections { margin-top: 14px; border-top: 1px solid #000; padding-top: 6px; }
 .report-sections .section-block { margin-top: 8px; font-size: ${basePx}px; }
 .report-sections .section-label { font-weight: 700; margin-bottom: 2px; }
+.narrative-panel {
+  margin: 0 0 14px;
+  border-top: 1.5px solid #000;
+  border-bottom: 1px solid #d1d5db;
+  padding: 8px 0 10px;
+}
+.narrative-panel .center-title { margin-top: 0; }
+.narrative-body {
+  margin-top: 8px;
+  font-size: ${basePx}px;
+  line-height: 1.55;
+  color: #111;
+}
+.narrative-kv-row {
+  display: grid;
+  grid-template-columns: minmax(140px, 220px) 1fr;
+  gap: 10px;
+  padding: 6px 0;
+  border-bottom: 0.5px dotted #d1d5db;
+}
+.narrative-kv-label { font-weight: 700; color: #111; }
+.narrative-kv-value { color: #111; }
+.narrative-body p { margin: 0 0 8px; }
+.narrative-body ul { margin: 0; padding-left: 18px; }
+.narrative-body li { margin-bottom: 4px; }
+.narrative-section-heading {
+  font-weight: 700; text-transform: uppercase;
+  font-size: ${basePx + 1}px; padding: 10px 0 4px;
+  border-bottom: 0.5px solid #bbb; margin-top: 8px;
+  letter-spacing: 0.02em; color: #000;
+}
+.narrative-para { margin: 3px 0 6px; line-height: 1.55; }
 .report-footer { margin-top: 20px; padding-top: 8px; display: flex; justify-content: space-between; align-items: flex-end; }
+.report-footer .qr-verify { margin-left: ${qrHorizontalOffset}px; }
 .auth-text { font-size: ${smallPx}px; color: #444; font-style: italic; }
 .signatory-box { text-align: right; }
 .signatory-name { font-weight: 700; font-size: ${basePx + 1}px; }
@@ -307,10 +434,57 @@ ${
   for (const group of testGroups) {
     if (!group.analytes || group.analytes.length === 0) continue;
 
+    if (isNarrativeGroup(group.analytes)) {
+      const titleClass = testGroupTitlePosition === "above_headers_left" ? "center-title left" : "center-title";
+      const rowsHtml = group.analytes.map((analyte) => {
+        const rawParam = (analyte.parameter || "").trim();
+        const rawValue = (analyte.value || analyte.reference_range || "").trim();
+
+        // Clean ** bold markers from both sides
+        const param = stripLooseMarkdown(rawParam);
+        const value = stripLooseMarkdown(rawValue.replace(/^\*\*\s*/, "").replace(/\s*\*\*$/, ""));
+
+        if (!param && !value) return "";
+
+        // Section header: parameter starts with ** and value is empty or just **
+        const isSectionHeader =
+          /^\*\*/.test(rawParam) &&
+          (!rawValue || /^\*\*\s*$/.test(rawValue));
+
+        if (isSectionHeader) {
+          return `<div class="narrative-section-heading">${escapeHtml(param)}</div>`;
+        }
+
+        // Free-text paragraph: no ** prefix on parameter and no value
+        if (!/^\*\*/.test(rawParam) && !value) {
+          return `<p class="narrative-para">${escapeHtml(param)}</p>`;
+        }
+
+        // Key-value pair
+        return `
+        <div class="narrative-kv-row">
+          <div class="narrative-kv-label">${escapeHtml(param)}</div>
+          <div class="narrative-kv-value">${formatNarrativeHtml(value)}</div>
+        </div>`;
+      }).join("");
+
+      testResultsHtml += `
+      <section class="narrative-panel">
+        <div class="${titleClass}">${group.testGroupName}</div>
+        <div class="narrative-body">${rowsHtml}</div>
+        ${group.groupInterpretation ? `<div class="group-interpretation-block">${group.groupInterpretation}</div>` : ""}
+      </section>`;
+      continue;
+    }
+
     let hasCalcInGroup = false;
+
+    const groupTitleBelowHeaders = testGroupTitlePosition === "below_headers";
+    const groupTitleClass = testGroupTitlePosition === "above_headers_left" ? "center-title left" : "center-title";
 
     testResultsHtml += `
   <figure style="margin: 0 0 14px;">
+    ${!groupTitleBelowHeaders ? `<div class="${groupTitleClass}">${group.testGroupName}</div>` : ""}
     <table class="tbl-results">
       <thead>
         <tr>
@@ -322,11 +496,12 @@ ${
         </tr>
       </thead>
       <tbody>
+        ${groupTitleBelowHeaders ? `
         <tr class="main-group-row">
           <td colspan="${colCount}">
             <div class="center-title">${group.testGroupName}</div>
           </td>
-        </tr>`;
+        </tr>` : ""}`;
 
     // Group analytes by section_heading — stable, first-appearance order so that
     // same-section analytes are always together even if sort_order values leave gaps.
@@ -400,10 +575,11 @@ ${
         }
 
         const sym = flagSymbol !== "none" ? getFlagSymbolText(canonical) : "";
+        const formattedValue = formatIndianNumber(rawValue);
         const displayValue =
           flagSymbol === "after" && sym
-            ? `${rawValue + asteriskSuffix} <span style="font-weight:700;">${sym}</span>`
-            : rawValue + asteriskSuffix;
+            ? `${formattedValue + asteriskSuffix} <span style="font-weight:700;">${sym}</span>`
+            : formattedValue + asteriskSuffix;
 
         const valClass = canonical ? `val ${canonical}` : "val";
 
@@ -448,7 +624,7 @@ ${
       sectionsHtml += `
       <div class="section-block">
         <div class="section-label">${sec.sectionName}</div>
-        <div>${sec.content}</div>
+        <div>${formatNarrativeHtml(sec.content)}</div>
       </div>`;
     }
     sectionsHtml += `</div>`;

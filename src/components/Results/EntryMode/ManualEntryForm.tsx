@@ -1,10 +1,12 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { Save, CheckCircle, AlertTriangle, PackageX } from 'lucide-react';
 import { database, supabase } from '../../../utils/supabase';
 import { useAuth } from '../../../contexts/AuthContext';
 import { calculateFlagsForResults } from '../../../utils/flagCalculation';
 import { toast } from 'react-hot-toast';
 import SectionEditor from '../SectionEditor';
+import { usePermissions } from '../../../hooks/usePermissions';
+import { getResultEntryPermissionForDepartment, getSectionEditPermissionForDepartment } from '../../../utils/resultPermissions';
 
 interface ManualEntryFormProps {
   order: {
@@ -31,10 +33,19 @@ interface AnalyteData {
   existingId?: string;
 }
 
+const formatIndianNumber = (value: string): string => {
+  const cleaned = value.replace(/,/g, '').trim();
+  const num = parseFloat(cleaned);
+  if (!Number.isFinite(num) || Math.abs(num) < 1000) return cleaned || value.trim();
+  return new Intl.NumberFormat('en-IN').format(num);
+};
+
 const ManualEntryForm: React.FC<ManualEntryFormProps> = ({ order, testGroup, onSubmit }) => {
   const { user } = useAuth();
+  const { loading: permissionsLoading, hasPermission } = usePermissions();
   const [analytes, setAnalytes] = useState<any[]>([]);
   const [formData, setFormData] = useState<Record<string, AnalyteData>>({});
+  const valueInputRefs = useRef<(HTMLInputElement | HTMLSelectElement | null)[]>([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [sectionResultId, setSectionResultId] = useState<string | null>(null);
@@ -48,6 +59,10 @@ const ManualEntryForm: React.FC<ManualEntryFormProps> = ({ order, testGroup, onS
     unit: string;
     status: 'out_of_stock' | 'low_stock';
   }>>([]);
+  const entryPermissionCode = getResultEntryPermissionForDepartment(testGroup.department);
+  const sectionPermissionCode = getSectionEditPermissionForDepartment(testGroup.department, 'technician');
+  const canEnterResults = hasPermission(entryPermissionCode);
+  const canEditSections = hasPermission(sectionPermissionCode);
 
   // Helper to determine if analyte expects categorical values — uses DB config first
   const getCategoricalOptions = (analyte: any): string[] | null => {
@@ -286,14 +301,37 @@ const ManualEntryForm: React.FC<ManualEntryFormProps> = ({ order, testGroup, onS
     }));
   };
 
-  const renderValueInput = (analyte: any, currentValue: AnalyteData, isApproved: boolean) => {
+  const focusNext = useCallback((idx: number) => {
+    const next = valueInputRefs.current[idx + 1];
+    if (next) next.focus();
+  }, []);
+
+  const focusPrev = useCallback((idx: number) => {
+    const prev = valueInputRefs.current[idx - 1];
+    if (prev) prev.focus();
+  }, []);
+
+  const handleKeyDown = useCallback((e: React.KeyboardEvent, idx: number) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      focusNext(idx);
+    }
+    if (e.key === 'Tab' && e.shiftKey) {
+      e.preventDefault();
+      focusPrev(idx);
+    }
+  }, [focusNext, focusPrev]);
+
+  const renderValueInput = (analyte: any, currentValue: AnalyteData, isApproved: boolean, analyteIdx: number) => {
     const categoricalOptions = getCategoricalOptions(analyte);
     
     if (categoricalOptions && !isApproved) {
       return (
         <select
+          ref={el => { valueInputRefs.current[analyteIdx] = el; }}
           value={currentValue.value || ''}
           onChange={(e) => handleAnalyteChange(analyte.id, { value: e.target.value })}
+          onKeyDown={(e) => handleKeyDown(e, analyteIdx)}
           className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500"
         >
           <option value="">Select...</option>
@@ -303,17 +341,23 @@ const ManualEntryForm: React.FC<ManualEntryFormProps> = ({ order, testGroup, onS
         </select>
       );
     }
-    
+
     return (
       <input
+        ref={el => { valueInputRefs.current[analyteIdx] = el; }}
         type="text"
         value={currentValue.value || ''}
-        onChange={(e) => handleAnalyteChange(analyte.id, { value: e.target.value })}
+        onChange={(e) => handleAnalyteChange(analyte.id, { value: e.target.value.replace(/,/g, '') })}
+        onBlur={(e) => {
+          const formatted = formatIndianNumber(e.target.value);
+          if (formatted !== e.target.value) handleAnalyteChange(analyte.id, { value: formatted });
+        }}
+        onKeyDown={(e) => handleKeyDown(e, analyteIdx)}
         placeholder="Enter value"
         disabled={isApproved}
         className={`w-full px-3 py-2 border rounded-md ${
-          isApproved 
-            ? 'bg-gray-100 text-gray-600 cursor-not-allowed' 
+          isApproved
+            ? 'bg-gray-100 text-gray-600 cursor-not-allowed'
             : 'border-gray-300 focus:ring-2 focus:ring-blue-500'
         }`}
       />
@@ -321,6 +365,11 @@ const ManualEntryForm: React.FC<ManualEntryFormProps> = ({ order, testGroup, onS
   };
 
   const handleSubmit = async () => {
+    if (!canEnterResults) {
+      alert('You do not have permission to enter results for this department.');
+      return;
+    }
+
     setSaving(true);
     
     try {
@@ -333,7 +382,7 @@ const ManualEntryForm: React.FC<ManualEntryFormProps> = ({ order, testGroup, onS
             analyte_id: analyteId,
             lab_analyte_id: analyte?.lab_analyte_id || null,
             parameter: analyte?.name || '',
-            value: data.value,
+            value: data.value.replace(/,/g, ''),
             unit: data.unit,
             reference_range: data.referenceRange,
             flag: data.flag
@@ -433,6 +482,14 @@ const ManualEntryForm: React.FC<ManualEntryFormProps> = ({ order, testGroup, onS
     );
   }
 
+  if (permissionsLoading) {
+    return (
+      <div className="flex items-center justify-center p-8">
+        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div>
+      </div>
+    );
+  }
+
   const hasEditableResults = Object.values(formData).some(data => !data.isApproved);
 
   return (
@@ -442,6 +499,11 @@ const ManualEntryForm: React.FC<ManualEntryFormProps> = ({ order, testGroup, onS
         <p className="text-sm text-blue-700">
           Enter results for {analytes.length} parameters
         </p>
+        {!canEnterResults && (
+          <p className="text-sm text-red-700 mt-2">
+            Result entry is disabled because your account is missing `{entryPermissionCode}`.
+          </p>
+        )}
       </div>
 
       {/* Stock warnings for mapped inventory items */}
@@ -473,10 +535,10 @@ const ManualEntryForm: React.FC<ManualEntryFormProps> = ({ order, testGroup, onS
       )}
 
       <div className="space-y-4">
-        {analytes.map(analyte => {
+        {analytes.map((analyte, analyteIdx) => {
           const currentValue = formData[analyte.id] || {};
           const isApproved = currentValue.isApproved;
-          
+
           return (
             <div key={analyte.id} className="grid grid-cols-5 gap-4 items-start p-4 border rounded-lg hover:bg-gray-50">
               <div className="col-span-1">
@@ -490,9 +552,9 @@ const ManualEntryForm: React.FC<ManualEntryFormProps> = ({ order, testGroup, onS
                   )}
                 </label>
               </div>
-              
+
               <div>
-                {renderValueInput(analyte, currentValue, isApproved)}
+                {renderValueInput(analyte, currentValue, isApproved, analyteIdx)}
               </div>
               
               <div>
@@ -557,20 +619,22 @@ const ManualEntryForm: React.FC<ManualEntryFormProps> = ({ order, testGroup, onS
       {hasTechnicianSections && sectionResultId && (
         <div className="mt-6">
           <SectionEditor
-            resultId={sectionResultId}
-            testGroupId={testGroup.id}
-            editorRole="technician"
-          />
-        </div>
-      )}
+              resultId={sectionResultId}
+              testGroupId={testGroup.id}
+              editorRole="technician"
+              readOnly={!canEditSections}
+              canEdit={canEditSections}
+            />
+          </div>
+        )}
 
       {hasEditableResults && (
         <div className="flex justify-end space-x-3">
           <button
             onClick={handleSubmit}
-            disabled={saving}
-            className="flex items-center px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:opacity-50"
-          >
+              disabled={saving || !canEnterResults}
+              className="flex items-center px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:opacity-50"
+            >
             <Save className="h-4 w-4 mr-2" />
             {saving ? 'Saving...' : 'Save Results'}
           </button>

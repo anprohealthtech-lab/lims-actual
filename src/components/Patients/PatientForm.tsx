@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { X, User, Phone, Mail, MapPin, Calendar, Upload, FileText, Brain, Zap, Plus, Minus, TestTube, CheckCircle, AlertTriangle, RotateCcw, UserCheck, Heart, Droplets, ClipboardList } from 'lucide-react';
 import { QRCodeSVG } from 'qrcode.react';
-import { supabase, uploadFile, generateFilePath, database, LabPatientFieldConfig } from '../../utils/supabase';
+import { supabase, uploadFile, generateFilePath, database, LabPatientFieldConfig, DEFAULT_PATIENT_FORM_SETTINGS, type LabPatientFormSettings } from '../../utils/supabase';
 import { useAuth } from '../../contexts/AuthContext';
 
 interface Patient {
@@ -73,6 +73,7 @@ const PatientForm: React.FC<PatientFormProps> = ({
     lastName: lastName,
     age: patient?.age?.toString() || '',
     age_unit: (patient?.age_unit as 'years' | 'months' | 'days') || 'years',
+    dob: (patient as any)?.dob || (patient as any)?.date_of_birth || '',
     gender: patient?.gender || '',
     phone: patient?.phone || '',
     email: patient?.email || '',
@@ -114,6 +115,9 @@ const PatientForm: React.FC<PatientFormProps> = ({
   // Custom patient fields
   const [customFieldConfigs, setCustomFieldConfigs] = useState<LabPatientFieldConfig[]>([]);
   const [customFieldValues, setCustomFieldValues] = useState<Record<string, any>>({});
+
+  // Patient form settings
+  const [formSettings, setFormSettings] = useState<LabPatientFormSettings>(DEFAULT_PATIENT_FORM_SETTINGS);
 
   // Active section for navigation
   const [activeSection, setActiveSection] = useState<'personal' | 'contact' | 'medical' | 'tests'>('personal');
@@ -214,7 +218,13 @@ const PatientForm: React.FC<PatientFormProps> = ({
     fetchTestData();
   }, []);
 
-  // Load custom patient field configs
+  // Load custom patient field configs and form settings
+  React.useEffect(() => {
+    database.patientFormSettings.get().then(({ data }) => {
+      if (data) setFormSettings(s => ({ ...s, ...data }));
+    }).catch(() => {});
+  }, []);
+
   React.useEffect(() => {
     const loadCustomFieldConfigs = async () => {
       const { data } = await database.labPatientFieldConfigs.getAll();
@@ -279,6 +289,15 @@ const PatientForm: React.FC<PatientFormProps> = ({
       setFilteredSuggestions([]);
     }
   }, [newTestName, testGroups, packages, requestedTests]);
+
+  const calcAgeFromDob = (dob: string): { age: string; age_unit: 'years' | 'months' | 'days' } => {
+    const birth = new Date(dob);
+    const today = new Date();
+    const diffDays = Math.floor((today.getTime() - birth.getTime()) / 86400000);
+    if (diffDays < 30) return { age: String(diffDays), age_unit: 'days' };
+    if (diffDays < 365) return { age: String(Math.floor(diffDays / 30.44)), age_unit: 'months' };
+    return { age: String(Math.floor(diffDays / 365.25)), age_unit: 'years' };
+  };
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -552,83 +571,136 @@ const PatientForm: React.FC<PatientFormProps> = ({
             {/* Personal Information Section */}
             {activeSection === 'personal' && (
               <div className="space-y-6">
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
-                  <div className="space-y-2">
-                    <label className="text-sm font-medium text-gray-700">First Name *</label>
-                    <input
-                      type="text"
-                      name="firstName"
-                      required
-                      value={formData.firstName}
-                      onChange={handleChange}
-                      className="w-full px-4 py-3 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all bg-gray-50 hover:bg-white"
-                      placeholder="Enter first name"
-                    />
-                  </div>
-                  <div className="space-y-2">
-                    <label className="text-sm font-medium text-gray-700">Last Name *</label>
-                    <input
-                      type="text"
-                      name="lastName"
-                      required
-                      value={formData.lastName}
-                      onChange={handleChange}
-                      className="w-full px-4 py-3 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all bg-gray-50 hover:bg-white"
-                      placeholder="Enter last name"
-                    />
+                {/* Name row: salutation (optional) + first + last */}
+                <div className="space-y-3">
+                  {formSettings.show_salutation && (
+                    <div className="space-y-2">
+                      <label className="text-sm font-medium text-gray-700">Salutation</label>
+                      <select
+                        name="salutation"
+                        value={(formData as any).salutation || ''}
+                        onChange={handleChange}
+                        className="w-36 px-4 py-3 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all bg-gray-50 hover:bg-white"
+                      >
+                        <option value="">Select…</option>
+                        {formSettings.salutation_options.map(s => <option key={s} value={s}>{s}</option>)}
+                      </select>
+                    </div>
+                  )}
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+                    <div className="space-y-2">
+                      <label className="text-sm font-medium text-gray-700">First Name *</label>
+                      <input
+                        type="text"
+                        name="firstName"
+                        required
+                        value={formData.firstName}
+                        onChange={handleChange}
+                        className="w-full px-4 py-3 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all bg-gray-50 hover:bg-white"
+                        placeholder="Enter first name"
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <label className="text-sm font-medium text-gray-700">Last Name *</label>
+                      <input
+                        type="text"
+                        name="lastName"
+                        required
+                        value={formData.lastName}
+                        onChange={handleChange}
+                        className="w-full px-4 py-3 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all bg-gray-50 hover:bg-white"
+                        placeholder="Enter last name"
+                      />
+                    </div>
                   </div>
                 </div>
 
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
-                  <div className="space-y-2">
-                    <label className="text-sm font-medium text-gray-700">Age *</label>
-                    <div className="flex gap-2">
+                  {/* DOB field */}
+                  {(formSettings.age_mode === 'dob' || formSettings.age_mode === 'both') && (
+                    <div className="space-y-2">
+                      <label className="text-sm font-medium text-gray-700 flex items-center gap-2">
+                        <Calendar className="h-4 w-4 text-gray-500" />
+                        Date of Birth{formSettings.age_mode === 'dob' ? ' *' : ''}
+                      </label>
                       <input
-                        type="number"
-                        name="age"
-                        required
-                        min={0}
-                        value={formData.age}
-                        onChange={handleChange}
-                        className="flex-1 px-4 py-3 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all bg-gray-50 hover:bg-white"
-                        placeholder="Age"
+                        type="date"
+                        name="dob"
+                        required={formSettings.age_mode === 'dob'}
+                        max={new Date().toISOString().split('T')[0]}
+                        value={formData.dob}
+                        onChange={(e) => {
+                          const dob = e.target.value;
+                          if (dob) {
+                            const calc = calcAgeFromDob(dob);
+                            setFormData(prev => ({ ...prev, dob, age: calc.age, age_unit: calc.age_unit }));
+                          } else {
+                            setFormData(prev => ({ ...prev, dob: '' }));
+                          }
+                        }}
+                        className="w-full px-4 py-3 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all bg-gray-50 hover:bg-white"
                       />
-                      <select
-                        name="age_unit"
-                        value={formData.age_unit}
-                        onChange={handleChange}
-                        className="w-28 px-3 py-3 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all bg-gray-50 hover:bg-white font-medium"
-                      >
-                        <option value="years">Years</option>
-                        <option value="months">Months</option>
-                        <option value="days">Days</option>
-                      </select>
                     </div>
-                    <p className="text-xs text-gray-500">For infants, use days or months for accurate reference ranges</p>
-                  </div>
-                  <div className="space-y-2">
-                    <label className="text-sm font-medium text-gray-700">Gender *</label>
-                    <div className="grid grid-cols-3 gap-2">
-                      {['Male', 'Female', 'Other'].map((g) => (
-                        <button
-                          key={g}
-                          type="button"
-                          onClick={() => setFormData(prev => ({ ...prev, gender: g }))}
-                          className={`px-4 py-3 rounded-xl border-2 font-medium transition-all ${
-                            formData.gender === g
-                              ? 'border-blue-500 bg-blue-50 text-blue-700'
-                              : 'border-gray-200 bg-gray-50 text-gray-600 hover:border-gray-300 hover:bg-white'
-                          }`}
+                  )}
+
+                  {/* Age field */}
+                  {(formSettings.age_mode === 'age' || formSettings.age_mode === 'both') && (
+                    <div className="space-y-2">
+                      <label className="text-sm font-medium text-gray-700">
+                        Age *{formData.dob && formSettings.age_mode === 'both' && <span className="ml-1 text-xs text-blue-500 font-normal">(auto-calculated)</span>}
+                      </label>
+                      <div className="flex gap-2">
+                        <input
+                          type="number"
+                          name="age"
+                          required
+                          min={0}
+                          value={formData.age}
+                          onChange={handleChange}
+                          className="flex-1 px-4 py-3 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all bg-gray-50 hover:bg-white"
+                          placeholder="Age"
+                        />
+                        <select
+                          name="age_unit"
+                          value={formData.age_unit}
+                          onChange={handleChange}
+                          className="w-28 px-3 py-3 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all bg-gray-50 hover:bg-white font-medium"
                         >
-                          {g}
-                        </button>
-                      ))}
+                          <option value="years">Years</option>
+                          <option value="months">Months</option>
+                          <option value="days">Days</option>
+                        </select>
+                      </div>
+                      <p className="text-xs text-gray-500">For infants, use days or months for accurate reference ranges</p>
                     </div>
-                  </div>
+                  )}
+
+                  {/* Gender */}
+                  {formSettings.show_gender && (
+                    <div className="space-y-2">
+                      <label className="text-sm font-medium text-gray-700">Gender *</label>
+                      <div className={`grid gap-2`} style={{ gridTemplateColumns: `repeat(${formSettings.gender_options.length}, 1fr)` }}>
+                        {formSettings.gender_options.map((g) => (
+                          <button
+                            key={g}
+                            type="button"
+                            onClick={() => setFormData(prev => ({ ...prev, gender: g }))}
+                            className={`px-4 py-3 rounded-xl border-2 font-medium transition-all ${
+                              formData.gender === g
+                                ? 'border-blue-500 bg-blue-50 text-blue-700'
+                                : 'border-gray-200 bg-gray-50 text-gray-600 hover:border-gray-300 hover:bg-white'
+                            }`}
+                          >
+                            {g}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
                 </div>
 
                 {/* Referring Doctor - Only for new patients */}
-                {!patient && (
+                {!patient && formSettings.show_referring_doctor && (
                   <div className="space-y-2">
                     <label className="text-sm font-medium text-gray-700 flex items-center gap-2">
                       <UserCheck className="h-4 w-4 text-gray-500" />
@@ -662,174 +734,197 @@ const PatientForm: React.FC<PatientFormProps> = ({
                   <div className="space-y-2">
                     <label className="text-sm font-medium text-gray-700 flex items-center gap-2">
                       <Phone className="h-4 w-4 text-gray-500" />
-                      Phone Number *
+                      Phone Number{formSettings.phone_required ? ' *' : ''}
                     </label>
                     <input
                       type="tel"
                       name="phone"
-                      required
+                      required={formSettings.phone_required}
                       value={formData.phone}
                       onChange={handleChange}
                       className="w-full px-4 py-3 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all bg-gray-50 hover:bg-white"
                       placeholder="Enter phone number"
                     />
                   </div>
+                  {formSettings.show_email && (
+                    <div className="space-y-2">
+                      <label className="text-sm font-medium text-gray-700 flex items-center gap-2">
+                        <Mail className="h-4 w-4 text-gray-500" />
+                        Email{formSettings.email_required ? ' *' : ''}
+                      </label>
+                      <input
+                        type="email"
+                        name="email"
+                        required={formSettings.email_required}
+                        value={formData.email}
+                        onChange={handleChange}
+                        className="w-full px-4 py-3 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all bg-gray-50 hover:bg-white"
+                        placeholder="Enter email address"
+                      />
+                    </div>
+                  )}
+                </div>
+
+                {formSettings.show_address && (
                   <div className="space-y-2">
                     <label className="text-sm font-medium text-gray-700 flex items-center gap-2">
-                      <Mail className="h-4 w-4 text-gray-500" />
-                      Email
+                      <MapPin className="h-4 w-4 text-gray-500" />
+                      Address
                     </label>
-                    <input
-                      type="email"
-                      name="email"
-                      value={formData.email}
+                    <textarea
+                      name="address"
+                      rows={2}
+                      value={formData.address}
                       onChange={handleChange}
-                      className="w-full px-4 py-3 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all bg-gray-50 hover:bg-white"
-                      placeholder="Enter email address"
+                      className="w-full px-4 py-3 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all bg-gray-50 hover:bg-white resize-none"
+                      placeholder="Enter street address"
                     />
                   </div>
-                </div>
+                )}
 
-                <div className="space-y-2">
-                  <label className="text-sm font-medium text-gray-700 flex items-center gap-2">
-                    <MapPin className="h-4 w-4 text-gray-500" />
-                    Address
-                  </label>
-                  <textarea
-                    name="address"
-                    rows={2}
-                    value={formData.address}
-                    onChange={handleChange}
-                    className="w-full px-4 py-3 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all bg-gray-50 hover:bg-white resize-none"
-                    placeholder="Enter street address"
-                  />
-                </div>
+                {(formSettings.show_city || formSettings.show_state || formSettings.show_pincode) && (
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
+                    {formSettings.show_city && (
+                      <div className="space-y-2">
+                        <label className="text-sm font-medium text-gray-700">City</label>
+                        <input
+                          type="text"
+                          name="city"
+                          value={formData.city}
+                          onChange={handleChange}
+                          className="w-full px-4 py-3 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all bg-gray-50 hover:bg-white"
+                          placeholder="City"
+                        />
+                      </div>
+                    )}
+                    {formSettings.show_state && (
+                      <div className="space-y-2">
+                        <label className="text-sm font-medium text-gray-700">State</label>
+                        <input
+                          type="text"
+                          name="state"
+                          value={formData.state}
+                          onChange={handleChange}
+                          className="w-full px-4 py-3 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all bg-gray-50 hover:bg-white"
+                          placeholder="State"
+                        />
+                      </div>
+                    )}
+                    {formSettings.show_pincode && (
+                      <div className="space-y-2">
+                        <label className="text-sm font-medium text-gray-700">PIN Code</label>
+                        <input
+                          type="text"
+                          name="pincode"
+                          value={formData.pincode}
+                          onChange={handleChange}
+                          className="w-full px-4 py-3 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all bg-gray-50 hover:bg-white"
+                          placeholder="PIN Code"
+                        />
+                      </div>
+                    )}
+                  </div>
+                )}
 
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
-                  <div className="space-y-2">
-                    <label className="text-sm font-medium text-gray-700">City</label>
-                    <input
-                      type="text"
-                      name="city"
-                      value={formData.city}
-                      onChange={handleChange}
-                      className="w-full px-4 py-3 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all bg-gray-50 hover:bg-white"
-                      placeholder="City"
-                    />
-                  </div>
-                  <div className="space-y-2">
-                    <label className="text-sm font-medium text-gray-700">State</label>
-                    <input
-                      type="text"
-                      name="state"
-                      value={formData.state}
-                      onChange={handleChange}
-                      className="w-full px-4 py-3 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all bg-gray-50 hover:bg-white"
-                      placeholder="State"
-                    />
-                  </div>
-                  <div className="space-y-2">
-                    <label className="text-sm font-medium text-gray-700">PIN Code</label>
-                    <input
-                      type="text"
-                      name="pincode"
-                      value={formData.pincode}
-                      onChange={handleChange}
-                      className="w-full px-4 py-3 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all bg-gray-50 hover:bg-white"
-                      placeholder="PIN Code"
-                    />
-                  </div>
-                </div>
-
-                <div className="border-t border-gray-200 pt-5">
-                  <h4 className="text-sm font-semibold text-gray-900 mb-4 flex items-center gap-2">
-                    <AlertTriangle className="h-4 w-4 text-orange-500" />
-                    Emergency Contact
-                  </h4>
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
-                    <div className="space-y-2">
-                      <label className="text-sm font-medium text-gray-700">Contact Name</label>
-                      <input
-                        type="text"
-                        name="emergencyContact"
-                        value={formData.emergencyContact}
-                        onChange={handleChange}
-                        className="w-full px-4 py-3 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all bg-gray-50 hover:bg-white"
-                        placeholder="Emergency contact name"
-                      />
-                    </div>
-                    <div className="space-y-2">
-                      <label className="text-sm font-medium text-gray-700">Contact Phone</label>
-                      <input
-                        type="tel"
-                        name="emergencyPhone"
-                        value={formData.emergencyPhone}
-                        onChange={handleChange}
-                        className="w-full px-4 py-3 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all bg-gray-50 hover:bg-white"
-                        placeholder="Emergency phone number"
-                      />
+                {formSettings.show_emergency_contact && (
+                  <div className="border-t border-gray-200 pt-5">
+                    <h4 className="text-sm font-semibold text-gray-900 mb-4 flex items-center gap-2">
+                      <AlertTriangle className="h-4 w-4 text-orange-500" />
+                      Emergency Contact
+                    </h4>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+                      <div className="space-y-2">
+                        <label className="text-sm font-medium text-gray-700">Contact Name</label>
+                        <input
+                          type="text"
+                          name="emergencyContact"
+                          value={formData.emergencyContact}
+                          onChange={handleChange}
+                          className="w-full px-4 py-3 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all bg-gray-50 hover:bg-white"
+                          placeholder="Emergency contact name"
+                        />
+                      </div>
+                      <div className="space-y-2">
+                        <label className="text-sm font-medium text-gray-700">Contact Phone</label>
+                        <input
+                          type="tel"
+                          name="emergencyPhone"
+                          value={formData.emergencyPhone}
+                          onChange={handleChange}
+                          className="w-full px-4 py-3 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all bg-gray-50 hover:bg-white"
+                          placeholder="Emergency phone number"
+                        />
+                      </div>
                     </div>
                   </div>
-                </div>
+                )}
               </div>
             )}
 
             {/* Medical Information Section */}
             {activeSection === 'medical' && (
               <div className="space-y-6">
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
-                  <div className="space-y-2">
-                    <label className="text-sm font-medium text-gray-700 flex items-center gap-2">
-                      <Droplets className="h-4 w-4 text-red-500" />
-                      Blood Group
-                    </label>
-                    <div className="grid grid-cols-4 gap-2">
-                      {['A+', 'A-', 'B+', 'B-', 'AB+', 'AB-', 'O+', 'O-'].map((bg) => (
-                        <button
-                          key={bg}
-                          type="button"
-                          onClick={() => setFormData(prev => ({ ...prev, bloodGroup: bg }))}
-                          className={`px-3 py-2 rounded-lg border-2 text-sm font-medium transition-all ${
-                            formData.bloodGroup === bg
-                              ? 'border-red-500 bg-red-50 text-red-700'
-                              : 'border-gray-200 bg-gray-50 text-gray-600 hover:border-gray-300 hover:bg-white'
-                          }`}
-                        >
-                          {bg}
-                        </button>
-                      ))}
-                    </div>
+                {(formSettings.show_blood_group || formSettings.show_allergies) && (
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+                    {formSettings.show_blood_group && (
+                      <div className="space-y-2">
+                        <label className="text-sm font-medium text-gray-700 flex items-center gap-2">
+                          <Droplets className="h-4 w-4 text-red-500" />
+                          Blood Group
+                        </label>
+                        <div className="grid grid-cols-4 gap-2">
+                          {['A+', 'A-', 'B+', 'B-', 'AB+', 'AB-', 'O+', 'O-'].map((bg) => (
+                            <button
+                              key={bg}
+                              type="button"
+                              onClick={() => setFormData(prev => ({ ...prev, bloodGroup: bg }))}
+                              className={`px-3 py-2 rounded-lg border-2 text-sm font-medium transition-all ${
+                                formData.bloodGroup === bg
+                                  ? 'border-red-500 bg-red-50 text-red-700'
+                                  : 'border-gray-200 bg-gray-50 text-gray-600 hover:border-gray-300 hover:bg-white'
+                              }`}
+                            >
+                              {bg}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                    {formSettings.show_allergies && (
+                      <div className="space-y-2">
+                        <label className="text-sm font-medium text-gray-700 flex items-center gap-2">
+                          <AlertTriangle className="h-4 w-4 text-yellow-500" />
+                          Known Allergies
+                        </label>
+                        <input
+                          type="text"
+                          name="allergies"
+                          value={formData.allergies}
+                          onChange={handleChange}
+                          className="w-full px-4 py-3 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all bg-gray-50 hover:bg-white"
+                          placeholder="e.g., Penicillin, Shellfish"
+                        />
+                      </div>
+                    )}
                   </div>
+                )}
+
+                {formSettings.show_medical_history && (
                   <div className="space-y-2">
                     <label className="text-sm font-medium text-gray-700 flex items-center gap-2">
-                      <AlertTriangle className="h-4 w-4 text-yellow-500" />
-                      Known Allergies
+                      <ClipboardList className="h-4 w-4 text-gray-500" />
+                      Medical History
                     </label>
-                    <input
-                      type="text"
-                      name="allergies"
-                      value={formData.allergies}
+                    <textarea
+                      name="medicalHistory"
+                      rows={4}
+                      value={formData.medicalHistory}
                       onChange={handleChange}
-                      className="w-full px-4 py-3 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all bg-gray-50 hover:bg-white"
-                      placeholder="e.g., Penicillin, Shellfish"
+                      className="w-full px-4 py-3 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all bg-gray-50 hover:bg-white resize-none"
+                      placeholder="Brief medical history, current medications, chronic conditions, etc."
                     />
                   </div>
-                </div>
-
-                <div className="space-y-2">
-                  <label className="text-sm font-medium text-gray-700 flex items-center gap-2">
-                    <ClipboardList className="h-4 w-4 text-gray-500" />
-                    Medical History
-                  </label>
-                  <textarea
-                    name="medicalHistory"
-                    rows={4}
-                    value={formData.medicalHistory}
-                    onChange={handleChange}
-                    className="w-full px-4 py-3 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all bg-gray-50 hover:bg-white resize-none"
-                    placeholder="Brief medical history, current medications, chronic conditions, etc."
-                  />
-                </div>
+                )}
 
                 {/* Custom patient fields */}
                 {customFieldConfigs.length > 0 && (

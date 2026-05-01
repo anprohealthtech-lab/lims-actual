@@ -488,15 +488,16 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
       }
 
       // Save lab-specific analyte_dependencies if source analytes were selected
-      if (analyteData.isCalculated && analyteData.sourceDependencies?.length > 0) {
-        const depsLabId = await database.getCurrentUserLabId();
-        const { error: depError } = await database.analyteDependencies.setDependencies(
-          data.id,
-          analyteData.sourceDependencies,
-          depsLabId ?? undefined
-        );
-        if (depError) {
-          console.error('Error creating dependencies:', depError);
+	      if (analyteData.isCalculated && analyteData.sourceDependencies?.length > 0) {
+	        const depsLabId = await database.getCurrentUserLabId();
+	        const { error: depError } = await database.analyteDependencies.setDependencies(
+	          data.id,
+	          analyteData.sourceDependencies,
+	          depsLabId ?? undefined,
+	          data.lab_analyte_id || null,
+	        );
+	        if (depError) {
+	          console.error('Error creating dependencies:', depError);
         }
       }
 
@@ -541,6 +542,7 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
     'Toxicology',
     'Endocrinology',
     'Cardiology',
+    'Radiology',
     'General',
   ];
 
@@ -554,6 +556,11 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
     'Sputum',
     'Swab',
     'Tissue',
+    'X-Ray',
+    'CT Scan',
+    'USG',
+    'Ultrasound',
+    'Sonography',
     'Other',
   ];
 
@@ -2090,13 +2097,12 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
               methodology: formData.methodology,
               sampleType: formData.sampleType,
             }}
-            existingAnalytes={analytes
-              .filter(a => formData.selectedAnalytes.includes(a.id))
-              .map(a => ({
+            existingAnalytes={analytes.map(a => ({
                 id: a.id,
                 lab_analyte_id: a.lab_analyte_id ?? a.id,
                 name: a.name,
                 code: a.code ?? '',
+                category: a.category ?? 'General',
                 unit: a.unit ?? '',
                 reference_range: a.reference_range ?? '',
                 reference_range_male: a.reference_range_male ?? null,
@@ -2107,6 +2113,7 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
               sort_order: meta.sort_order,
               section_heading: meta.section_heading,
             }))}
+            defaultAnalyteCategory={formData.category || 'General'}
             onClose={() => setShowImportWizard(false)}
             onApplied={() => {
               setShowImportWizard(false);

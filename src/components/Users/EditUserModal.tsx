@@ -18,6 +18,7 @@ interface User {
   clinic_keywords?: string;
   lab_id?: string;
   status?: string;
+  permissions?: string[];
 }
 
 interface Role {
@@ -47,9 +48,12 @@ const EditUserModal: React.FC<EditUserModalProps> = ({ user, onClose, onSuccess,
   const [availableRoles, setAvailableRoles] = useState<Role[]>([]);
   const [departments, setDepartments] = useState<Department[]>([]);
   const [rolePermissions, setRolePermissions] = useState<any[]>([]);
+  const [permissions, setPermissions] = useState<any[]>([]);
+  const [groupedPermissions, setGroupedPermissions] = useState<Record<string, any[]>>({});
   const [locations, setLocations] = useState<any[]>([]);
   const [selectedPrimaryLocation, setSelectedPrimaryLocation] = useState<string>('');
   const [selectedLocations, setSelectedLocations] = useState<string[]>([]);
+  const [extraPermissions, setExtraPermissions] = useState<string[]>(user.permissions || []);
   
   const [formData, setFormData] = useState({
     name: user.name || '',
@@ -70,10 +74,11 @@ const EditUserModal: React.FC<EditUserModalProps> = ({ user, onClose, onSuccess,
     hasGender: !!user.gender
   });
 
-  useEffect(() => {
-    loadRolesAndDepartments();
-    loadLocations();
-  }, []);
+	  useEffect(() => {
+	    loadRolesAndDepartments();
+	    loadLocations();
+      loadPermissionsCatalog();
+	  }, []);
 
   useEffect(() => {
     if (formData.role_id) {
@@ -81,7 +86,7 @@ const EditUserModal: React.FC<EditUserModalProps> = ({ user, onClose, onSuccess,
     }
   }, [formData.role_id]);
 
-  const loadRolePermissions = async (roleId: string) => {
+	  const loadRolePermissions = async (roleId: string) => {
     try {
       const { data, error } = await supabase
         .from('role_permissions')
@@ -92,6 +97,35 @@ const EditUserModal: React.FC<EditUserModalProps> = ({ user, onClose, onSuccess,
       setRolePermissions(data?.map((rp: any) => rp.permissions).filter(Boolean) || []);
     } catch (err) {
       console.error('Error loading role permissions:', err);
+    }
+	  };
+
+  const loadPermissionsCatalog = async () => {
+    try {
+      const { data, error } = await supabase
+        .from('permissions')
+        .select('id, permission_code, permission_name, description, category')
+        .eq('is_active', true)
+        .order('category', { ascending: true })
+        .order('permission_name', { ascending: true });
+
+      if (error) throw error;
+
+      const permissionList = data || [];
+      setPermissions(permissionList);
+
+      const grouped = permissionList.reduce((acc: Record<string, any[]>, permission: any) => {
+        const category = permission.category || 'Other';
+        if (!acc[category]) {
+          acc[category] = [];
+        }
+        acc[category].push(permission);
+        return acc;
+      }, {});
+
+      setGroupedPermissions(grouped);
+    } catch (err) {
+      console.error('Error loading permissions catalog:', err);
     }
   };
 
@@ -180,6 +214,7 @@ const EditUserModal: React.FC<EditUserModalProps> = ({ user, onClose, onSuccess,
         department_id: formData.department_id || null,
         is_phlebotomist: formData.is_phlebotomist,
         clinic_keywords: formData.clinic_keywords || null,
+        permissions: extraPermissions,
         updated_at: new Date().toISOString(),
       };
 
@@ -222,6 +257,7 @@ const EditUserModal: React.FC<EditUserModalProps> = ({ user, onClose, onSuccess,
   };
 
   const selectedRole = availableRoles.find(r => r.id === formData.role_id);
+  const rolePermissionCodes = rolePermissions.map((permission: any) => permission.permission_code);
 
   const handleLocationToggle = (locationId: string) => {
     setSelectedLocations(prev => 
@@ -234,6 +270,18 @@ const EditUserModal: React.FC<EditUserModalProps> = ({ user, onClose, onSuccess,
     if (selectedPrimaryLocation === locationId && selectedLocations.includes(locationId)) {
       setSelectedPrimaryLocation('');
     }
+  };
+
+  const toggleExtraPermission = (permissionCode: string) => {
+    if (rolePermissionCodes.includes(permissionCode)) {
+      return;
+    }
+
+    setExtraPermissions((prev) =>
+      prev.includes(permissionCode)
+        ? prev.filter((code) => code !== permissionCode)
+        : [...prev, permissionCode],
+    );
   };
 
   return (
@@ -403,8 +451,8 @@ const EditUserModal: React.FC<EditUserModalProps> = ({ user, onClose, onSuccess,
           </div>
 
             {/* Role Permissions Display */}
-            {rolePermissions.length > 0 && (
-              <div className="mt-6 p-4 bg-blue-50 border border-blue-200 rounded-lg">
+	            {rolePermissions.length > 0 && (
+	              <div className="mt-6 p-4 bg-blue-50 border border-blue-200 rounded-lg">
                 <h4 className="text-sm font-semibold text-blue-900 mb-3">
                   🔒 Permissions for {selectedRole?.role_name} ({rolePermissions.length} total)
                 </h4>
@@ -428,8 +476,61 @@ const EditUserModal: React.FC<EditUserModalProps> = ({ user, onClose, onSuccess,
                     </div>
                   ))}
                 </div>
-              </div>
-            )}
+	              </div>
+	            )}
+
+              {permissions.length > 0 && (
+                <div className="mt-6 p-4 bg-slate-50 border border-slate-200 rounded-lg">
+                  <h4 className="text-sm font-semibold text-slate-900 mb-2">
+                    Custom User Permissions
+                  </h4>
+                  <p className="text-xs text-slate-600 mb-4">
+                    Role permissions stay locked. Use the checkboxes below only for extra rights on this specific user.
+                  </p>
+                  <div className="space-y-4">
+                    {Object.entries(groupedPermissions).map(([category, categoryPermissions]) => (
+                      <div key={category}>
+                        <div className="text-xs font-semibold uppercase tracking-wide text-slate-500 mb-2">
+                          {category}
+                        </div>
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                          {categoryPermissions.map((permission) => {
+                            const fromRole = rolePermissionCodes.includes(permission.permission_code);
+                            const fromExtra = extraPermissions.includes(permission.permission_code);
+                            const checked = fromRole || fromExtra;
+
+                            return (
+                              <label
+                                key={permission.id}
+                                className={`flex items-start gap-3 rounded-lg border p-3 ${
+                                  fromRole ? 'bg-emerald-50 border-emerald-200' : checked ? 'bg-blue-50 border-blue-200' : 'bg-white border-slate-200'
+                                } ${fromRole ? 'cursor-not-allowed' : 'cursor-pointer hover:border-slate-300'}`}
+                              >
+                                <input
+                                  type="checkbox"
+                                  checked={checked}
+                                  disabled={fromRole}
+                                  onChange={() => toggleExtraPermission(permission.permission_code)}
+                                  className="mt-1 h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                                />
+                                <div className="min-w-0">
+                                  <div className="text-sm font-medium text-slate-900">{permission.permission_name}</div>
+                                  {permission.description && (
+                                    <div className="text-xs text-slate-500 mt-1">{permission.description}</div>
+                                  )}
+                                  <div className="text-[11px] mt-1 font-medium">
+                                    {fromRole ? 'Inherited from role' : fromExtra ? 'Granted directly to user' : 'Not granted'}
+                                  </div>
+                                </div>
+                              </label>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
 
           {/* Special Roles */}
           <div>

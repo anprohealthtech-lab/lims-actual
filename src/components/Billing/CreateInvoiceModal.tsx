@@ -230,6 +230,23 @@ const CreateInvoiceModal: React.FC<CreateInvoiceModalProps> = ({ orderId, onClos
     // Account Fixed Prices (B2B)
     const accountPricesMap = new Map<string, number>();
     if (ord.account_id) {
+      const { data: account } = await supabase
+        .from('accounts')
+        .select('price_master_id')
+        .eq('id', ord.account_id)
+        .maybeSingle();
+
+      if (account?.price_master_id) {
+        const { data: planPrices } = await supabase
+          .from('price_master_items')
+          .select('test_group_id, price')
+          .eq('price_master_id', account.price_master_id);
+
+        if (planPrices) {
+          planPrices.forEach((ap: any) => accountPricesMap.set(ap.test_group_id, parseFloat(ap.price)));
+        }
+      }
+
       const { data: prices } = await supabase
         .from('account_prices')
         .select('test_group_id, price')

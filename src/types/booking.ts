@@ -15,7 +15,7 @@ export interface Booking {
     id?: string;
     name: string;
     price?: number;
-    type?: 'test' | 'profile' | 'package';
+    type?: 'test' | 'profile' | 'test_group' | 'package' | 'note';
   }>;
   scheduled_at?: string;
   collection_type?: 'home_collection' | 'walk_in' | 'lab_pickup';

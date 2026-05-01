@@ -1,5 +1,6 @@
 import React from 'react';
 import { X, Layers, TestTube, DollarSign, Clock, Settings, Edit, Beaker } from 'lucide-react';
+import { SampleTypeIndicator } from '../Common/SampleTypeIndicator';
 
 interface TestGroup {
   id: string;
@@ -41,6 +42,7 @@ const TestGroupDetailModal: React.FC<TestGroupDetailModalProps> = ({ testGroup, 
       'Microbiology': 'bg-purple-100 text-purple-800',
       'Immunology': 'bg-orange-100 text-orange-800',
       'Clinical Pathology': 'bg-yellow-100 text-yellow-800',
+      'Radiology': 'bg-sky-100 text-sky-800',
     };
     return colors[category as keyof typeof colors] || 'bg-gray-100 text-gray-800';
   };
@@ -104,7 +106,10 @@ const TestGroupDetailModal: React.FC<TestGroupDetailModalProps> = ({ testGroup, 
               <div className="space-y-3">
                 <div>
                   <div className="text-sm text-gray-600">Sample Type</div>
-                  <div className="font-medium text-gray-900">{testGroup.sampleType}</div>
+                  <div className="font-medium text-gray-900 flex items-center gap-2">
+                    <SampleTypeIndicator sampleType={testGroup.sampleType || 'Other'} size="sm" />
+                    <span>{testGroup.sampleType || 'N/A'}</span>
+                  </div>
                 </div>
                 {testGroup.methodology && (
                   <div>

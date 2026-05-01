@@ -6,6 +6,7 @@ import { Booking } from '../../types';
 import { format } from 'date-fns';
 import CreateBookingModal from './CreateBookingModal';
 import { WhatsAppAPI } from '../../utils/whatsappAPI';
+import { jsPDF } from 'jspdf';
 
 interface BookingQueueProps {
     onProcessBooking?: (booking: Booking) => void;
@@ -34,7 +35,7 @@ const BookingQueue: React.FC<BookingQueueProps> = ({ onProcessBooking, onViewAll
     const [phleboAssigned, setPhleboAssigned] = useState(false);
 
     // WhatsApp state
-    const [sendingWA, setSendingWA] = useState<'patient' | 'phlebo' | null>(null);
+    const [sendingWA, setSendingWA] = useState<'patient' | 'phlebo' | 'estimate' | null>(null);
     const [waSentTo, setWaSentTo] = useState<Set<string>>(new Set());
 
     useEffect(() => {
@@ -123,6 +124,142 @@ const BookingQueue: React.FC<BookingQueueProps> = ({ onProcessBooking, onViewAll
         msg += `\n\nTests: ${tests}`;
         msg += `\n\nKindly be available at the time of collection. Thank you!`;
         return msg;
+    };
+
+    const formatCurrency = (amount?: number | null) => `Rs. ${Number(amount || 0).toLocaleString('en-IN')}`;
+
+    const getEstimateAmount = (booking: Booking) => {
+        const detailTotal = booking.test_details?.reduce((sum, test) => sum + Number(test.price || 0), 0) || 0;
+        return Number(booking.quotation_amount || detailTotal || 0);
+    };
+
+    const getTestTypeLabel = (type?: string) => {
+        if (type === 'package') return 'Package';
+        if (type === 'note') return 'Note';
+        return 'Test';
+    };
+
+    const buildEstimateMessage = (booking: Booking) => {
+        const patientName = booking.patient_info?.name || 'Patient';
+        const tests = booking.test_details || [];
+        const lines = tests.length
+            ? tests.map((test, index) => `${index + 1}. ${test.name}${test.price ? ` - ${formatCurrency(test.price)}` : ''}`).join('\n')
+            : 'Tests will be confirmed by the lab.';
+
+        return `Hello ${patientName},\n\nYour estimated amount is ${formatCurrency(getEstimateAmount(booking))}.\n\nRequested tests:\n${lines}\n\nThis is an estimate. Final billing may change after confirmation.\n\nThank you!`;
+    };
+
+    const createEstimatePdf = (booking: Booking) => {
+        const doc = new jsPDF({ unit: 'pt', format: 'a4' });
+        const margin = 44;
+        let y = 52;
+        const patientName = booking.patient_info?.name || 'Patient';
+        const estimateAmount = getEstimateAmount(booking);
+
+        doc.setFont('helvetica', 'bold');
+        doc.setFontSize(18);
+        doc.text('Booking Estimate', margin, y);
+
+        y += 24;
+        doc.setFont('helvetica', 'normal');
+        doc.setFontSize(10);
+        doc.text(`Date: ${format(new Date(), 'dd MMM yyyy, hh:mm a')}`, margin, y);
+        y += 18;
+        doc.text(`Patient: ${patientName}`, margin, y);
+        y += 16;
+        doc.text(`Phone: ${booking.patient_info?.phone || 'N/A'}`, margin, y);
+        y += 16;
+        if (booking.scheduled_at) {
+            doc.text(`Scheduled: ${format(new Date(booking.scheduled_at), 'dd MMM yyyy, hh:mm a')}`, margin, y);
+            y += 16;
+        }
+        doc.text(`Collection: ${(booking.collection_type || 'walk_in').replace('_', ' ')}`, margin, y);
+
+        y += 28;
+        doc.setFont('helvetica', 'bold');
+        doc.text('Item', margin, y);
+        doc.text('Type', 330, y);
+        doc.text('Amount', 455, y);
+        y += 8;
+        doc.line(margin, y, 552, y);
+        y += 18;
+
+        doc.setFont('helvetica', 'normal');
+        (booking.test_details || []).forEach((test) => {
+            const wrappedName = doc.splitTextToSize(test.name, 260);
+            doc.text(wrappedName, margin, y);
+            doc.text(getTestTypeLabel(test.type), 330, y);
+            doc.text(test.price ? formatCurrency(test.price) : '-', 455, y);
+            y += Math.max(18, wrappedName.length * 14);
+        });
+
+        if (!booking.test_details?.length) {
+            doc.text('No tests selected', margin, y);
+            y += 18;
+        }
+
+        y += 12;
+        doc.line(margin, y, 552, y);
+        y += 24;
+        doc.setFont('helvetica', 'bold');
+        doc.setFontSize(14);
+        doc.text('Estimated Total', 330, y);
+        doc.text(formatCurrency(estimateAmount), 455, y);
+
+        y += 36;
+        doc.setFont('helvetica', 'normal');
+        doc.setFontSize(9);
+        doc.text('Note: This is an estimate. Final billing may change after confirmation.', margin, y);
+
+        return doc;
+    };
+
+    const getEstimateFileName = (booking: Booking) => {
+        const safeName = (booking.patient_info?.name || 'Patient').replace(/[^a-z0-9]+/gi, '_').replace(/^_|_$/g, '');
+        return `Estimate_${safeName || 'Patient'}.pdf`;
+    };
+
+    const handleDownloadEstimatePdf = (booking: Booking) => {
+        createEstimatePdf(booking).save(getEstimateFileName(booking));
+    };
+
+    const handleSendEstimatePdf = async () => {
+        if (!selectedBooking) return;
+        const phone = selectedBooking.patient_info?.phone;
+        if (!phone) {
+            alert('Patient phone number not available');
+            return;
+        }
+
+        try {
+            setSendingWA('estimate');
+            const pdfBlob = createEstimatePdf(selectedBooking).output('blob');
+            const pdfFile = new File([pdfBlob], getEstimateFileName(selectedBooking), { type: 'application/pdf' });
+            const caption = buildEstimateMessage(selectedBooking);
+            const result = await WhatsAppAPI.sendDocument(phone, pdfFile, {
+                caption,
+                patientName: selectedBooking.patient_info?.name || 'Patient',
+                testName: 'Booking Estimate'
+            });
+
+            if (result.success) {
+                setWaSentTo(prev => new Set([...prev, 'estimate']));
+                return;
+            }
+
+            const textResult = await WhatsAppAPI.sendTextMessage(phone, caption);
+            if (textResult.success) {
+                setWaSentTo(prev => new Set([...prev, 'estimate']));
+                alert('PDF send failed, so the estimate was sent as WhatsApp text.');
+            } else {
+                alert(`Failed to send estimate: ${result.message || textResult.message || 'Unknown error'}`);
+            }
+        } catch (err) {
+            console.error('Estimate send error:', err);
+            alert('Failed to send estimate');
+        } finally {
+            setSendingWA(null);
+        }
     };
 
     const buildPhleboMessage = (booking: Booking, phleboName?: string) => {
@@ -312,6 +449,11 @@ const BookingQueue: React.FC<BookingQueueProps> = ({ onProcessBooking, onViewAll
                                 <div className="flex items-center justify-between">
                                     <div className="text-xs text-gray-500">
                                         <span className="font-medium text-gray-700">{booking.test_details?.length || 0}</span> tests requested
+                                        {getEstimateAmount(booking) > 0 && (
+                                            <span className="ml-2 text-blue-600 font-semibold">
+                                                Estimate {formatCurrency(getEstimateAmount(booking))}
+                                            </span>
+                                        )}
                                         {booking.assigned_phlebo_name && (
                                             <span className="ml-2 text-green-600 font-medium flex items-center gap-1 inline-flex">
                                                 <UserCheck className="w-3 h-3" />
@@ -432,14 +574,45 @@ const BookingQueue: React.FC<BookingQueueProps> = ({ onProcessBooking, onViewAll
                             {/* Tests */}
                             {selectedBooking.test_details && selectedBooking.test_details.length > 0 && (
                                 <div>
-                                    <h4 className="text-xs font-semibold text-gray-500 uppercase mb-2">Requested Tests</h4>
-                                    <div className="bg-gray-50 rounded-lg p-3 space-y-1">
+                                    <div className="flex items-center justify-between mb-2">
+                                        <h4 className="text-xs font-semibold text-gray-500 uppercase">Requested Tests / Estimate</h4>
+                                        {getEstimateAmount(selectedBooking) > 0 && (
+                                            <span className="text-sm font-bold text-blue-700">{formatCurrency(getEstimateAmount(selectedBooking))}</span>
+                                        )}
+                                    </div>
+                                    <div className="bg-gray-50 rounded-lg p-3 space-y-2">
                                         {selectedBooking.test_details.map((test, i) => (
-                                            <div key={i} className="flex justify-between text-sm">
-                                                <span>{test.name}</span>
-                                                {test.price && <span className="text-gray-500">₹{test.price}</span>}
+                                            <div key={i} className="flex items-center justify-between gap-3 text-sm">
+                                                <span className="min-w-0">
+                                                    <span className="font-medium text-gray-800">{test.name}</span>
+                                                    <span className="ml-2 rounded-full bg-white px-1.5 py-0.5 text-[10px] uppercase text-gray-500">
+                                                        {getTestTypeLabel(test.type)}
+                                                    </span>
+                                                </span>
+                                                <span className="shrink-0 text-gray-600">{test.price ? formatCurrency(test.price) : '-'}</span>
                                             </div>
                                         ))}
+                                    </div>
+                                    <div className="mt-2 flex gap-2">
+                                        <button
+                                            type="button"
+                                            onClick={() => handleDownloadEstimatePdf(selectedBooking)}
+                                            className="flex-1 px-3 py-2 text-xs font-medium text-blue-700 bg-blue-50 hover:bg-blue-100 rounded-lg border border-blue-100"
+                                        >
+                                            Estimate PDF
+                                        </button>
+                                        <button
+                                            type="button"
+                                            onClick={handleSendEstimatePdf}
+                                            disabled={!canSendPatientWA || sendingWA === 'estimate'}
+                                            className={`flex-1 px-3 py-2 text-xs font-medium rounded-lg border disabled:opacity-50 disabled:cursor-not-allowed ${
+                                                waSentTo.has('estimate')
+                                                    ? 'bg-green-50 border-green-300 text-green-700'
+                                                    : 'bg-white border-gray-200 text-gray-700 hover:bg-green-50 hover:border-green-300'
+                                            }`}
+                                        >
+                                            {sendingWA === 'estimate' ? 'Sending...' : waSentTo.has('estimate') ? 'Estimate Sent' : 'Send Estimate'}
+                                        </button>
                                     </div>
                                 </div>
                             )}

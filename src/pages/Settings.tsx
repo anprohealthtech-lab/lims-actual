@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import { useQZTray } from '../contexts/QZTrayContext';
 import { database, supabase, type LabPatientFieldConfig } from '../utils/supabase';
-import { isAdminOrManager } from '../utils/permissions';
+import { usePermissions } from '../hooks/usePermissions';
 import EditUserModal from '../components/Users/EditUserModal';
 import { NotificationSettings } from '../components/Settings/NotificationSettings';
 import { NotificationTriggerSettings } from '../components/Settings/NotificationTriggerSettings';
@@ -13,6 +13,7 @@ import AnalyzerAPIKeys from '../components/Settings/AnalyzerAPIKeys';
 import AnalyzerConnectionsManager from '../components/Settings/AnalyzerConnectionsManager';
 import AnalyteInterfaceConfig from '../components/Settings/AnalyteInterfaceConfig';
 import PatientPortalSettings from '../components/Settings/PatientPortalSettings';
+import PatientFormSettings from '../components/Settings/PatientFormSettings';
 import LabBillingItemSettings from '../components/Settings/LabBillingItemSettings';
 import PriceMasterSettings from '../components/Settings/PriceMasterSettings';
 import {
@@ -521,10 +522,9 @@ const UserFormComponent: React.FC<{
 
 const Settings: React.FC = () => {
   const { user: authUser } = useAuth();
+  const { loading: permissionsLoading, hasPermission } = usePermissions();
   const { status: qzStatus, connect: qzConnect, disconnect: qzDisconnect } = useQZTray();
-  const [hasAccess, setHasAccess] = useState<boolean | null>(null);
-  const [checkingAccess, setCheckingAccess] = useState(true);
-  const [activeTab, setActiveTab] = useState<'team' | 'permissions' | 'usage' | 'lab' | 'notifications' | 'invoices' | 'analyzer' | 'patient_portal' | 'billing_items' | 'price_masters'>('team');
+  const [activeTab, setActiveTab] = useState<'team' | 'permissions' | 'usage' | 'lab' | 'notifications' | 'invoices' | 'analyzer' | 'patient_portal' | 'billing_items' | 'price_masters' | 'patient_form'>('team');
   const [showUserForm, setShowUserForm] = useState(false);
   const [showEditUserModal, setShowEditUserModal] = useState(false);
   const [selectedUser, setSelectedUser] = useState<User | null>(null);
@@ -814,6 +814,7 @@ const Settings: React.FC = () => {
     { id: 'invoices', name: 'Invoice Templates', icon: FileText },
     ...(labInterfaceEnabled ? [{ id: 'analyzer', name: 'Analyzer Interface', icon: Activity }] : []),
     { id: 'patient_portal', name: 'Patient Portal', icon: Smartphone },
+    { id: 'patient_form', name: 'Patient Form', icon: UserCheck },
     { id: 'billing_items', name: 'Billing Items', icon: FileText },
     { id: 'price_masters', name: 'Price Masters', icon: Tag },
   ];
@@ -1045,23 +1046,9 @@ const Settings: React.FC = () => {
     }
   };
 
-  useEffect(() => {
-    const checkAccess = async () => {
-      if (!authUser?.id) { setCheckingAccess(false); setHasAccess(false); return; }
-      setCheckingAccess(true);
-      try {
-        const canAccess = await isAdminOrManager(authUser.id, authUser.email);
-        setHasAccess(canAccess);
-      } catch {
-        setHasAccess(false);
-      } finally {
-        setCheckingAccess(false);
-      }
-    };
-    checkAccess();
-  }, [authUser?.id, authUser?.email]);
+  const canViewSettings = hasPermission('settings.view') || hasPermission('settings.edit_lab');
 
-  if (checkingAccess) {
+  if (permissionsLoading) {
     return (
       <div className="flex items-center justify-center min-h-[400px]">
         <Loader2 className="h-8 w-8 animate-spin text-blue-600" />
@@ -1069,7 +1056,7 @@ const Settings: React.FC = () => {
     );
   }
 
-  if (!hasAccess) {
+  if (!canViewSettings) {
     return (
       <div className="flex items-center justify-center min-h-[400px]">
         <div className="text-center max-w-md">
@@ -1079,7 +1066,7 @@ const Settings: React.FC = () => {
           <h2 className="text-xl font-semibold text-gray-900 mb-2">Access Denied</h2>
           <p className="text-gray-600">
             You don't have permission to access Settings.
-            This page is only available to administrators and lab managers.
+            Ask an administrator to grant `settings.view`.
           </p>
         </div>
       </div>
@@ -3016,6 +3003,13 @@ const Settings: React.FC = () => {
         {activeTab === 'patient_portal' && labId && (
           <div className="p-6">
             <PatientPortalSettings labId={labId} />
+          </div>
+        )}
+
+        {/* Patient Form Tab */}
+        {activeTab === 'patient_form' && labId && (
+          <div className="p-6">
+            <PatientFormSettings labId={labId} />
           </div>
         )}
 

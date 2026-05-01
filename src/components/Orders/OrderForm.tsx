@@ -23,7 +23,7 @@ import {
   Truck,
   ChevronDown
 } from 'lucide-react';
-import { database, supabase, formatAge, LabPatientFieldConfig } from '../../utils/supabase';
+import { database, supabase, formatAge, LabPatientFieldConfig, DEFAULT_PATIENT_FORM_SETTINGS, type LabPatientFormSettings } from '../../utils/supabase';
 import { notificationTriggerService, formatName } from '../../utils/notificationTriggerService';
 import { useQZTray } from '../../contexts/QZTrayContext';
 import { SampleTypeIndicator } from '../Common/SampleTypeIndicator';
@@ -207,6 +207,7 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
   // Admin features
   const [isAdmin, setIsAdmin] = useState<boolean>(false);
   const [customOrderDate, setCustomOrderDate] = useState<string>('');
+  const [customReportDate, setCustomReportDate] = useState<string>('');
   const [showPatientDropdown, setShowPatientDropdown] = useState<boolean>(false);
   const [showDoctorDropdown, setShowDoctorDropdown] = useState<boolean>(false);
   const [showLocationDropdown, setShowLocationDropdown] = useState<boolean>(false);
@@ -512,6 +513,9 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
     name: string;
   } | null>(null);
 
+  // Patient form settings (lab-configurable)
+  const [patientFormSettings, setPatientFormSettings] = useState<LabPatientFormSettings>(DEFAULT_PATIENT_FORM_SETTINGS);
+
   // New patient modal
   const [showNewPatientModal, setShowNewPatientModal] = useState<boolean>(false);
   const [creatingPatient, setCreatingPatient] = useState<boolean>(false);
@@ -528,7 +532,7 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
   }>({ name: '', age: '', age_unit: 'years', gender: 'Male', phone: '', email: '', dob: '' });
 
   // Split name fields for Add Patient form
-  const NP_SALUTATIONS = ['Mr.', 'Mrs.', 'Ms.', 'Dr.', 'Master', 'Baby', 'Prof.', 'Shri.', 'Smt.', 'Ku.'];
+  const NP_SALUTATIONS = patientFormSettings.salutation_options;
   const [npSalutation, setNpSalutation] = useState('');
   const [npFirstName, setNpFirstName] = useState('');
   const [npMiddleName, setNpMiddleName] = useState('');
@@ -579,7 +583,7 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
     return { age: String(Math.floor(diffDays / 365.25)), age_unit: 'years' };
   };
 
-  // Load name case format and workflow settings from lab
+  // Load name case format, workflow settings, and patient form settings from lab
   useEffect(() => {
     database.getCurrentUserLabId().then(async labId => {
       if (!labId) return;
@@ -588,6 +592,10 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
       });
       const { data: labData } = await supabase.from('labs').select('auto_collect_on_registration').eq('id', labId).single();
       if (labData?.auto_collect_on_registration) setAutoCollectOnRegistration(true);
+    }).catch(() => {});
+
+    database.patientFormSettings.get().then(({ data }) => {
+      if (data) setPatientFormSettings(s => ({ ...s, ...data }));
     }).catch(() => {});
   }, []);
 
@@ -878,32 +886,27 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
   }, [selectedAccount, selectedLocation, paymentType, accounts, locations]);
 
   // Fetch account prices when bill-to account changes
-  useEffect(() => {
-    const fetchAccountPrices = async () => {
-      if (!selectedAccount) {
-        setAccountPrices({});
-        return;
-      }
+    useEffect(() => {
+      const fetchAccountPrices = async () => {
+        if (!selectedAccount) {
+          setAccountPrices({});
+          return;
+        }
 
-      try {
-        const { data, error } = await supabase
-          .from('account_prices')
-          .select('test_group_id, price')
-          .eq('account_id', selectedAccount);
-
-        if (error) throw error;
+        try {
+        const { testPrices } = await (database as any).pricingHelper.getPriceMatrix({
+          accountId: selectedAccount,
+        });
 
         const priceMap: Record<string, number> = {};
-        if (data) {
-          data.forEach((item: any) => {
-            priceMap[item.test_group_id] = item.price;
-          });
-        }
+        Object.entries(testPrices || {}).forEach(([testGroupId, value]: [string, any]) => {
+          priceMap[testGroupId] = Number(value.price || 0);
+        });
         setAccountPrices(priceMap);
-      } catch (err) {
-        console.error('Error fetching account prices:', err);
-      }
-    };
+        } catch (err) {
+          console.error('Error fetching account prices:', err);
+        }
+      };
 
     fetchAccountPrices();
   }, [selectedAccount]);
@@ -1352,6 +1355,9 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
         ...(isAdmin && customOrderDate ? {
           created_at: new Date(customOrderDate).toISOString(),
           order_date: new Date(customOrderDate).toISOString().split('T')[0]
+        } : {}),
+        ...(isAdmin && customReportDate ? {
+          report_date: customReportDate
         } : {}),
         // AI Patient Context
         patient_context: {
@@ -2875,6 +2881,23 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
                     </div>
                   )}
 
+                  {/* Admin: Report Date Override */}
+                  {isAdmin && customOrderDate && (
+                    <div>
+                      <label className="block text-sm font-medium text-purple-700 mb-1 flex items-center gap-1">
+                        <ClockIcon className="w-3.5 h-3.5" />
+                        Report Date (Admin)
+                      </label>
+                      <input
+                        type="date"
+                        value={customReportDate}
+                        onChange={(e) => setCustomReportDate(e.target.value)}
+                        className="w-full px-3 py-2 border border-purple-300 bg-purple-50 rounded-md focus:outline-none focus:ring-2 focus:ring-purple-500 text-sm"
+                      />
+                      <p className="text-[10px] text-purple-600 mt-0.5">Leave empty to use report generation date</p>
+                    </div>
+                  )}
+
                   {/* Expected Date */}
                   <div className="md:col-span-2">
                     <label className="block text-sm font-medium text-gray-700 mb-1">
@@ -3373,16 +3396,18 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
                 <div className="md:col-span-2 space-y-2">
                   <label className="block text-sm font-medium text-gray-700">Patient Name *</label>
 
-                  {/* Row 1: Salutation + First Name */}
+                  {/* Row 1: Salutation (optional) + First Name */}
                   <div className="flex gap-2">
-                    <select
-                      value={npSalutation}
-                      onChange={e => setNpSalutation(e.target.value)}
-                      className="w-[96px] shrink-0 px-2 py-2 text-sm border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white"
-                    >
-                      <option value="">Salute</option>
-                      {NP_SALUTATIONS.map(s => <option key={s} value={s}>{s}</option>)}
-                    </select>
+                    {patientFormSettings.show_salutation && (
+                      <select
+                        value={npSalutation}
+                        onChange={e => setNpSalutation(e.target.value)}
+                        className="w-[96px] shrink-0 px-2 py-2 text-sm border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white"
+                      >
+                        <option value="">Salute</option>
+                        {NP_SALUTATIONS.map(s => <option key={s} value={s}>{s}</option>)}
+                      </select>
+                    )}
                     <input
                       type="text"
                       required
@@ -3393,15 +3418,17 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
                     />
                   </div>
 
-                  {/* Row 2: Middle + Last Name */}
+                  {/* Row 2: Middle (optional) + Last Name */}
                   <div className="flex gap-2">
-                    <input
-                      type="text"
-                      placeholder="Middle Name"
-                      value={npMiddleName}
-                      onChange={e => setNpMiddleName(e.target.value)}
-                      className="flex-1 px-3 py-2 text-sm border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                    />
+                    {patientFormSettings.show_middle_name && (
+                      <input
+                        type="text"
+                        placeholder="Middle Name"
+                        value={npMiddleName}
+                        onChange={e => setNpMiddleName(e.target.value)}
+                        className="flex-1 px-3 py-2 text-sm border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                      />
+                    )}
                     <input
                       type="text"
                       placeholder="Last Name"
@@ -3418,96 +3445,118 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
                     </p>
                   )}
                 </div>
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">Date of Birth</label>
-                  <input
-                    type="date"
-                    max={new Date().toISOString().split('T')[0]}
-                    value={newPatient.dob}
-                    onChange={(e) => {
-                      const dob = e.target.value;
-                      if (dob) {
-                        const calc = calcAgeFromDob(dob);
-                        setNewPatient((p) => ({ ...p, dob, age: calc.age, age_unit: calc.age_unit }));
-                      } else {
-                        setNewPatient((p) => ({ ...p, dob: '' }));
-                      }
-                    }}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm"
-                  />
-                </div>
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">
-                    Age *{newPatient.dob && <span className="ml-1 text-xs text-blue-500 font-normal">(auto-calculated)</span>}
-                  </label>
-                  <div className="flex gap-2">
+
+                {/* ── Date of Birth ── */}
+                {(patientFormSettings.age_mode === 'dob' || patientFormSettings.age_mode === 'both') && (
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">Date of Birth{patientFormSettings.age_mode === 'dob' ? ' *' : ''}</label>
                     <input
-                      type="number"
-                      min={0}
-                      required
-                      value={newPatient.age}
-                      onChange={(e) => setNewPatient((p) => ({ ...p, age: e.target.value }))}
-                      className="flex-1 px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm"
-                      placeholder="Age"
+                      type="date"
+                      required={patientFormSettings.age_mode === 'dob'}
+                      max={new Date().toISOString().split('T')[0]}
+                      value={newPatient.dob}
+                      onChange={(e) => {
+                        const dob = e.target.value;
+                        if (dob) {
+                          const calc = calcAgeFromDob(dob);
+                          setNewPatient((p) => ({ ...p, dob, age: calc.age, age_unit: calc.age_unit }));
+                        } else {
+                          setNewPatient((p) => ({ ...p, dob: '' }));
+                        }
+                      }}
+                      className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm"
                     />
-                    <select
-                      value={newPatient.age_unit}
-                      onChange={(e) => setNewPatient((p) => ({ ...p, age_unit: e.target.value as 'years' | 'months' | 'days' }))}
-                      className="w-24 px-2 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm bg-gray-50"
-                    >
-                      <option value="years">Years</option>
-                      <option value="months">Months</option>
-                      <option value="days">Days</option>
-                    </select>
                   </div>
-                </div>
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-2">Gender *</label>
-                  <div className="flex items-center gap-2 flex-wrap">
-                    {(['Male', 'Female', 'Other'] as const).map(g => (
-                      <button
-                        key={g}
-                        type="button"
-                        onClick={() => { setNewPatient(p => ({ ...p, gender: g })); setNpGenderAutoDetected(false); setNpGenderManuallySet(true); }}
-                        className={`px-3 py-1.5 text-sm font-medium rounded-full border transition-all ${
-                          newPatient.gender === g
-                            ? g === 'Male'
-                              ? 'bg-blue-50 border-blue-400 text-blue-700'
-                              : g === 'Female'
-                                ? 'bg-pink-50 border-pink-400 text-pink-700'
-                                : 'bg-purple-50 border-purple-400 text-purple-700'
-                            : 'border-gray-300 text-gray-500 hover:border-gray-400'
-                        }`}
+                )}
+
+                {/* ── Age ── */}
+                {(patientFormSettings.age_mode === 'age' || patientFormSettings.age_mode === 'both') && (
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">
+                      Age *{newPatient.dob && patientFormSettings.age_mode === 'both' && <span className="ml-1 text-xs text-blue-500 font-normal">(auto-calculated)</span>}
+                    </label>
+                    <div className="flex gap-2">
+                      <input
+                        type="number"
+                        min={0}
+                        required
+                        value={newPatient.age}
+                        onChange={(e) => setNewPatient((p) => ({ ...p, age: e.target.value }))}
+                        className="flex-1 px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm"
+                        placeholder="Age"
+                      />
+                      <select
+                        value={newPatient.age_unit}
+                        onChange={(e) => setNewPatient((p) => ({ ...p, age_unit: e.target.value as 'years' | 'months' | 'days' }))}
+                        className="w-24 px-2 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm bg-gray-50"
                       >
-                        {g}
-                      </button>
-                    ))}
-                    {npGenderAutoDetected && newPatient.gender && (
-                      <span className="flex items-center gap-0.5 text-[11px] text-amber-600 font-medium">
-                        <Sparkles className="w-3 h-3" /> Auto
-                      </span>
-                    )}
+                        <option value="years">Years</option>
+                        <option value="months">Months</option>
+                        <option value="days">Days</option>
+                      </select>
+                    </div>
                   </div>
-                </div>
+                )}
+
+                {/* ── Gender ── */}
+                {patientFormSettings.show_gender && (
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-2">Gender *</label>
+                    <div className="flex items-center gap-2 flex-wrap">
+                      {patientFormSettings.gender_options.map(g => (
+                        <button
+                          key={g}
+                          type="button"
+                          onClick={() => { setNewPatient(p => ({ ...p, gender: g })); setNpGenderAutoDetected(false); setNpGenderManuallySet(true); }}
+                          className={`px-3 py-1.5 text-sm font-medium rounded-full border transition-all ${
+                            newPatient.gender === g
+                              ? g === 'Male'
+                                ? 'bg-blue-50 border-blue-400 text-blue-700'
+                                : g === 'Female'
+                                  ? 'bg-pink-50 border-pink-400 text-pink-700'
+                                  : 'bg-purple-50 border-purple-400 text-purple-700'
+                              : 'border-gray-300 text-gray-500 hover:border-gray-400'
+                          }`}
+                        >
+                          {g}
+                        </button>
+                      ))}
+                      {npGenderAutoDetected && newPatient.gender && (
+                        <span className="flex items-center gap-0.5 text-[11px] text-amber-600 font-medium">
+                          <Sparkles className="w-3 h-3" /> Auto
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                )}
+
+                {/* ── Phone ── */}
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">Phone *</label>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Phone{patientFormSettings.phone_required ? ' *' : ''}</label>
                   <input
                     type="tel"
-                    required
+                    required={patientFormSettings.phone_required}
                     value={newPatient.phone}
                     onChange={(e) => setNewPatient((p) => ({ ...p, phone: e.target.value }))}
                     className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm"
                   />
                 </div>
-                <div className="md:col-span-2">
-                  <label className="block text-sm font-medium text-gray-700 mb-1">Email</label>
-                  <input
-                    type="email"
-                    value={newPatient.email}
-                    onChange={(e) => setNewPatient((p) => ({ ...p, email: e.target.value }))}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm"
-                  />
-                </div>
+
+                {/* ── Email ── */}
+                {patientFormSettings.show_email && (
+                  <div className="md:col-span-2">
+                    <label className="block text-sm font-medium text-gray-700 mb-1">Email{patientFormSettings.email_required ? ' *' : ''}</label>
+                    <input
+                      type="email"
+                      required={patientFormSettings.email_required}
+                      value={newPatient.email}
+                      onChange={(e) => setNewPatient((p) => ({ ...p, email: e.target.value }))}
+                      className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm"
+                    />
+                  </div>
+                )}
+
+                {/* ── Custom Fields ── */}
                 {allPatientFieldConfigs.map((field) => (
                   <div key={field.field_key} className={field.field_type === 'text' || field.field_type === 'textarea' ? 'md:col-span-2' : ''}>
                     <label className="block text-sm font-medium text-gray-700 mb-1">
@@ -3556,7 +3605,10 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
                 <button
                   type="submit"
                   disabled={
-                    creatingPatient || !npFirstName.trim() || !newPatient.age || !newPatient.phone
+                    creatingPatient ||
+                    !npFirstName.trim() ||
+                    (patientFormSettings.age_mode !== 'dob' && !newPatient.age) ||
+                    (patientFormSettings.phone_required && !newPatient.phone)
                   }
                   className="px-5 py-2 text-sm bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:bg-gray-300 disabled:cursor-not-allowed"
                 >

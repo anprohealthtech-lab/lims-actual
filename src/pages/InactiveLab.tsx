@@ -80,14 +80,14 @@ const InactiveLab: React.FC = () => {
                                 className="flex items-center justify-center gap-2 text-blue-600 hover:text-blue-800 transition-colors"
                             >
                                 <Phone className="w-4 h-4" />
-                                <span>+91 98765 43210</span>
+                                <span>+91 78630 57036</span>
                             </a>
                             <a
-                                href="mailto:support@limsapp.in"
+                                href="mailto:anprohealthtech@gmail.com"
                                 className="flex items-center justify-center gap-2 text-blue-600 hover:text-blue-800 transition-colors"
                             >
                                 <Mail className="w-4 h-4" />
-                                <span>support@limsapp.in</span>
+                                <span>anprohealthtech@gmail.com</span>
                             </a>
                         </div>
                     </div>

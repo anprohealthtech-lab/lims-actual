@@ -20,7 +20,7 @@ import {
   Upload,
   X,
 } from 'lucide-react';
-import { supabase } from '../../utils/supabase';
+import { database, supabase } from '../../utils/supabase';
 
 const IMPORT_FUNCTION_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/ai-report-import`;
 
@@ -45,6 +45,8 @@ interface AnalyteChange {
   matched_name: string;
   matched_code: string;
   match_confidence: number;
+  is_currently_attached?: boolean;
+  needs_attachment?: boolean;
   lab_analyte_updates: LabAnalyteUpdates;
   tga_updates: TgaUpdates;
   current_values: {
@@ -63,6 +65,9 @@ interface UnmatchedAnalyte {
   extracted_name: string;
   unit: string;
   reference_range?: string;
+  reference_range_male?: string;
+  reference_range_female?: string;
+  reference_range_pediatric?: string;
   section_header?: string;
   position: number;
 }
@@ -81,6 +86,7 @@ interface ExistingAnalyte {
   lab_analyte_id: string;
   name: string;
   code: string;
+  category?: string;
   unit: string;
   reference_range: string;
   reference_range_male?: string | null;
@@ -98,6 +104,7 @@ interface Props {
   testGroup: { methodology?: string; sampleType?: string; sample_type?: string };
   existingAnalytes: ExistingAnalyte[];
   existingTga: ExistingTGA[];
+  defaultAnalyteCategory?: string;
   onClose: () => void;
   onApplied: () => void; // reload form data after apply
 }
@@ -144,6 +151,7 @@ const ReportImportWizard: React.FC<Props> = ({
   testGroup,
   existingAnalytes,
   existingTga,
+  defaultAnalyteCategory,
   onClose,
   onApplied,
 }) => {
@@ -157,9 +165,12 @@ const ReportImportWizard: React.FC<Props> = ({
   // Selection state — track which items user wants to apply
   const [applyTestGroup, setApplyTestGroup] = useState(true);
   const [selectedChanges, setSelectedChanges] = useState<Set<string>>(new Set()); // keyed by analyte_id
+  const [selectedNewAnalytes, setSelectedNewAnalytes] = useState<Set<string>>(new Set());
   const [showUnmatched, setShowUnmatched] = useState(false);
 
   const [applyLog, setApplyLog] = useState<string[]>([]);
+
+  const getUnmatchedKey = (u: UnmatchedAnalyte) => `${u.position}:${u.extracted_name}:${u.unit}`;
 
   // ── File handling ──────────────────────────────────────────────────────────
 
@@ -236,11 +247,12 @@ const ReportImportWizard: React.FC<Props> = ({
     // Pre-select all changes that have actual differences
     const initial = new Set<string>();
     for (const c of importResult.analyte_changes ?? []) {
-      if (c.has_lab_analyte_changes || c.has_tga_changes) {
+      if (c.has_lab_analyte_changes || c.has_tga_changes || c.needs_attachment) {
         initial.add(c.analyte_id);
       }
     }
     setSelectedChanges(initial);
+    setSelectedNewAnalytes(new Set((importResult.unmatched_analytes ?? []).map(getUnmatchedKey)));
     setApplyTestGroup(importResult.has_test_group_changes);
     setStage('review');
   }, [testGroup, existingAnalytes, existingTga]);
@@ -299,20 +311,80 @@ const ReportImportWizard: React.FC<Props> = ({
       }
 
       // 2b. test_group_analytes update
-      if (change.has_tga_changes && Object.keys(change.tga_updates).length > 0) {
+      if (change.needs_attachment || (change.has_tga_changes && Object.keys(change.tga_updates).length > 0)) {
+        const tgaPayload = {
+          test_group_id: testGroupId,
+          analyte_id: change.analyte_id,
+          lab_analyte_id: change.lab_analyte_id,
+          sort_order: change.tga_updates.sort_order ?? change.current_values.sort_order ?? 0,
+          section_heading: change.tga_updates.section_heading ?? change.current_values.section_heading ?? null,
+          is_visible: true,
+        };
         const { error: tgaErr } = await supabase
           .from('test_group_analytes')
-          .update(change.tga_updates)
-          .eq('test_group_id', testGroupId)
-          .eq('analyte_id', change.analyte_id);
+          .upsert(tgaPayload, { onConflict: 'test_group_id,analyte_id' });
         if (tgaErr) {
-          log.push(`✗ ${change.matched_name} — sort/section update failed: ${tgaErr.message}`);
+          log.push(`✗ ${change.matched_name} — test group attach/update failed: ${tgaErr.message}`);
           fail++;
         } else {
-          log.push(`✓ ${change.matched_name} — sort order/section heading updated`);
+          log.push(
+            change.needs_attachment
+              ? `✓ ${change.matched_name} — attached to test group with report order/section`
+              : `✓ ${change.matched_name} — sort order/section heading updated`
+          );
           ok++;
         }
       }
+    }
+
+    // 3. Create new analytes and attach them to this test group
+    for (const unmatched of result.unmatched_analytes ?? []) {
+      if (!selectedNewAnalytes.has(getUnmatchedKey(unmatched))) continue;
+
+      const createPayload: Record<string, any> = {
+        name: unmatched.extracted_name,
+        unit: unmatched.unit || '',
+        reference_range: unmatched.reference_range || '',
+        reference_range_male: unmatched.reference_range_male || undefined,
+        reference_range_female: unmatched.reference_range_female || undefined,
+        category: defaultAnalyteCategory || 'General',
+        is_active: true,
+        is_global: false,
+      };
+
+      if (unmatched.reference_range_pediatric) {
+        createPayload.ref_range_knowledge = {
+          imported_from_report_ai: true,
+          pediatric_reference_range: unmatched.reference_range_pediatric,
+        };
+      }
+
+      const { data: createdAnalyte, error: createErr } = await database.analytes.create(createPayload);
+      if (createErr || !createdAnalyte?.id || !createdAnalyte?.lab_analyte_id) {
+        log.push(`✗ ${unmatched.extracted_name} — analyte creation failed: ${createErr?.message || 'Unknown error'}`);
+        fail++;
+        continue;
+      }
+
+      const { error: attachErr } = await supabase
+        .from('test_group_analytes')
+        .upsert({
+          test_group_id: testGroupId,
+          analyte_id: createdAnalyte.id,
+          lab_analyte_id: createdAnalyte.lab_analyte_id,
+          sort_order: unmatched.position || 0,
+          section_heading: unmatched.section_header || null,
+          is_visible: true,
+        }, { onConflict: 'test_group_id,analyte_id' });
+
+      if (attachErr) {
+        log.push(`✗ ${unmatched.extracted_name} — created but failed to attach: ${attachErr.message}`);
+        fail++;
+        continue;
+      }
+
+      log.push(`✓ ${unmatched.extracted_name} — created and attached to test group`);
+      ok++;
     }
 
     log.unshift(`Applied ${ok} change${ok !== 1 ? 's' : ''}, ${fail} error${fail !== 1 ? 's' : ''}.`);
@@ -513,6 +585,11 @@ const ReportImportWizard: React.FC<Props> = ({
                                   {change.matched_name}
                                 </span>
                                 <span className="text-xs text-gray-400">({change.matched_code})</span>
+                                {change.needs_attachment && (
+                                  <span className="text-xs bg-blue-100 text-blue-700 px-2 py-0.5 rounded-full">
+                                    Will attach to this group
+                                  </span>
+                                )}
                                 {change.extracted_name !== change.matched_name && (
                                   <span className="text-xs text-gray-400 italic">
                                     extracted as "{change.extracted_name}"
@@ -556,7 +633,7 @@ const ReportImportWizard: React.FC<Props> = ({
                 </div>
               )}
 
-              {/* Unmatched analytes (informational) */}
+              {/* New analytes to create */}
               {result.unmatched_analytes.length > 0 && (
                 <div className="border border-amber-200 rounded-lg overflow-hidden">
                   <button
@@ -566,18 +643,32 @@ const ReportImportWizard: React.FC<Props> = ({
                   >
                     <span>
                       <FileText className="inline h-4 w-4 mr-1" />
-                      {result.unmatched_analytes.length} analyte{result.unmatched_analytes.length !== 1 ? 's' : ''} not found in your lab
-                      <span className="text-xs font-normal ml-1">(informational only)</span>
+                      {result.unmatched_analytes.length} new analyte{result.unmatched_analytes.length !== 1 ? 's' : ''} not found in your lab
+                      <span className="text-xs font-normal ml-1">(can be created and attached)</span>
                     </span>
                     {showUnmatched ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
                   </button>
                   {showUnmatched && (
                     <div className="divide-y divide-amber-100 max-h-40 overflow-y-auto">
                       {result.unmatched_analytes.map((u, i) => (
-                        <div key={i} className="px-4 py-2 text-xs text-gray-600 flex items-center gap-3">
+                        <div key={getUnmatchedKey(u)} className="px-4 py-2 text-xs text-gray-600 flex items-center gap-3">
+                          <input
+                            type="checkbox"
+                            checked={selectedNewAnalytes.has(getUnmatchedKey(u))}
+                            onChange={(e) => {
+                              const next = new Set(selectedNewAnalytes);
+                              if (e.target.checked) next.add(getUnmatchedKey(u));
+                              else next.delete(getUnmatchedKey(u));
+                              setSelectedNewAnalytes(next);
+                            }}
+                            className="h-4 w-4 rounded text-purple-600 shrink-0"
+                          />
                           <span className="font-medium">{u.extracted_name}</span>
-                          <span className="text-gray-400">{u.unit}</span>
+                          <span className="text-gray-400">{u.unit || 'No unit'}</span>
                           {u.reference_range && <span className="text-gray-400">{u.reference_range}</span>}
+                          {u.reference_range_male && <span className="text-gray-400">M: {u.reference_range_male}</span>}
+                          {u.reference_range_female && <span className="text-gray-400">F: {u.reference_range_female}</span>}
+                          {u.reference_range_pediatric && <span className="text-gray-400">P: {u.reference_range_pediatric}</span>}
                           {u.section_header && <span className="text-gray-400 italic">{u.section_header}</span>}
                         </div>
                       ))}
@@ -630,12 +721,17 @@ const ReportImportWizard: React.FC<Props> = ({
             <div className="flex items-center gap-3">
               <span className="text-xs text-gray-500">
                 {selectedChanges.size} analyte change{selectedChanges.size !== 1 ? 's' : ''} selected
+                {selectedNewAnalytes.size > 0 ? ` + ${selectedNewAnalytes.size} new analyte${selectedNewAnalytes.size !== 1 ? 's' : ''}` : ''}
                 {applyTestGroup && result.has_test_group_changes ? ' + test group fields' : ''}
               </span>
               <button
                 type="button"
                 onClick={applyChanges}
-                disabled={selectedChanges.size === 0 && (!applyTestGroup || !result.has_test_group_changes)}
+                disabled={
+                  selectedChanges.size === 0 &&
+                  selectedNewAnalytes.size === 0 &&
+                  (!applyTestGroup || !result.has_test_group_changes)
+                }
                 className="px-5 py-2 bg-purple-600 text-white text-sm font-medium rounded-lg hover:bg-purple-700 disabled:bg-gray-300 disabled:cursor-not-allowed transition-colors"
               >
                 Apply Selected Changes

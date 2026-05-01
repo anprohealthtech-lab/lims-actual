@@ -201,8 +201,14 @@ export const SimpleAnalyteEditor: React.FC<SimpleAnalyteEditorProps> = ({
       'glucose': 'GLU', 'calcium': 'CA', 'sodium': 'NA', 'potassium': 'K',
     };
     const lowerName = name.toLowerCase();
+    // Use prefix + word-boundary matching to avoid compound names like
+    // "HbA1c (Glycosylated Hemoglobin)" incorrectly matching "hemoglobin" → HGB.
+    const startsWithWord = (str: string, prefix: string): boolean => {
+      if (!str.startsWith(prefix)) return false;
+      return str.length === prefix.length || /[\s,(]/.test(str[prefix.length]);
+    };
     for (const [full, abbrev] of Object.entries(abbreviations)) {
-      if (lowerName.includes(full)) return abbrev;
+      if (startsWithWord(lowerName, full)) return abbrev;
     }
     const words = name.replace(/[^a-zA-Z0-9\s]/g, '').split(/\s+/);
     if (words.length === 1) return words[0].substring(0, 4).toUpperCase();
@@ -247,8 +253,11 @@ export const SimpleAnalyteEditor: React.FC<SimpleAnalyteEditorProps> = ({
       }
 
       if (analyte.formula_variables && analyte.formula_variables.length > 0 && availableAnalytes.length > 0) {
+        const localInGroupSet = new Set(testGroupAnalyteIds);
         const sources = analyte.formula_variables.map((varName: string) => {
-          const matched = availableAnalytes.find(a => generateVariableSlug(a.name) === varName);
+          const allMatches = availableAnalytes.filter(a => generateVariableSlug(a.name) === varName);
+          // Prefer in-group analytes to break ties when multiple analytes share the same slug
+          const matched = allMatches.find(a => localInGroupSet.has(a.id)) || allMatches[0];
           return matched
             ? { ...matched, variableName: varName }
             : { id: `_manual_${varName}`, name: varName, unit: '', variableName: varName };

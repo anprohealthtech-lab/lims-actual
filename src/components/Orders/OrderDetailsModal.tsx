@@ -81,6 +81,9 @@ interface StatusAction {
   primary?: boolean;
 }
 
+const hasMeaningfulTextValue = (value: unknown): value is string =>
+  typeof value === "string" && value.trim() !== "";
+
 interface ExtractedValue {
   parameter: string;
   value: string;
@@ -734,8 +737,15 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
       const hasRerunRequest = (result: any) =>
         result?.verify_note && result.verify_note.toUpperCase().includes("RE-RUN");
 
+      const hasExistingValue = (result: any) =>
+        hasMeaningfulTextValue(result?.value);
+
       const seed = orderAnalytes
-        .filter((a: any) => !a.existing_result || hasRerunRequest(a.existing_result))
+        .filter((a: any) =>
+          !a.existing_result ||
+          !hasExistingValue(a.existing_result) ||
+          hasRerunRequest(a.existing_result)
+        )
         .map((analyte: any) => {
           const existingResult = analyte.existing_result;
           const isRerun = hasRerunRequest(existingResult);
@@ -2938,6 +2948,102 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
     });
   }, [testGroups, calcDeps, order, getPreferredDepsForCalculated]);
 
+  const getCalculatedDebugInfo = React.useCallback((value: ExtractedValue) => {
+    if (!value.is_calculated) return null;
+
+    const toVariableSlug = (name: string): string => {
+      const abbrevMap: Record<string, string> = {
+        'total cholesterol': 'TC', 'hdl cholesterol': 'HDL', 'ldl cholesterol': 'LDL',
+        'triglycerides': 'TG', 'hemoglobin': 'HGB', 'hematocrit': 'HCT',
+        'red blood cell': 'RBC', 'white blood cell': 'WBC', 'platelet': 'PLT',
+        'mean corpuscular volume': 'MCV', 'mean corpuscular hemoglobin': 'MCH',
+        'albumin': 'ALB', 'globulin': 'GLOB', 'total protein': 'TP',
+        'creatinine': 'CREAT', 'blood urea nitrogen': 'BUN', 'urea': 'UREA',
+        'glucose': 'GLU', 'calcium': 'CA', 'sodium': 'NA', 'potassium': 'K',
+      };
+      const lower = name.toLowerCase();
+      for (const [full, abbrev] of Object.entries(abbrevMap)) {
+        if (lower.includes(full)) return abbrev.toLowerCase();
+      }
+      const words = name.replace(/[^a-zA-Z0-9\s]/g, '').split(/\s+/).filter(Boolean);
+      if (words.length === 0) return "";
+      if (words.length === 1) return words[0].substring(0, 4).toLowerCase();
+      return words.map(w => w.substring(0, 3)).join('').toLowerCase().substring(0, 6);
+    };
+
+    const toNumberLocal = (raw: string | number | null | undefined): number | null => {
+      if (raw === null || raw === undefined || raw === "") return null;
+      const parsed = Number(String(raw).replace(/,/g, "").trim());
+      return Number.isFinite(parsed) ? parsed : null;
+    };
+
+    const analyteObj = testGroups.flatMap(tg => tg.analytes).find((a: any) => a.id === value.analyte_id || a.name === value.parameter);
+    if (!analyteObj?.formula) return null;
+
+    const lookup = new Map<string, number>();
+    for (const tg of testGroups) {
+      for (const a of tg.analytes) {
+        if (a.is_calculated) continue;
+        const num = toNumberLocal(a.existing_result?.value);
+        if (num !== null) {
+          if (a.id) lookup.set(a.id, num);
+          if ((a as any).lab_analyte_id) lookup.set((a as any).lab_analyte_id, num);
+          if (a.name) {
+            lookup.set(a.name.toLowerCase(), num);
+            const slug = toVariableSlug(a.name);
+            if (slug) lookup.set(slug, num);
+          }
+        }
+      }
+    }
+    for (const mv of manualValues) {
+      if (mv.is_calculated) continue;
+      const num = toNumberLocal(mv.value);
+      if (num !== null) {
+        if (mv.analyte_id) lookup.set(mv.analyte_id, num);
+        if (mv.lab_analyte_id) lookup.set(mv.lab_analyte_id, num);
+        if (mv.parameter) {
+          lookup.set(mv.parameter.toLowerCase(), num);
+          const slug = toVariableSlug(mv.parameter);
+          if (slug) lookup.set(slug, num);
+        }
+      }
+    }
+
+    const deps = getPreferredDepsForCalculated(calcDeps, value.analyte_id, value.lab_analyte_id);
+    const dependencies = deps.map((dep) => {
+      const sourceAnalyte = testGroups
+        .flatMap(tg => tg.analytes)
+        .find((a: any) =>
+          (dep.source_lab_analyte_id && (a as any).lab_analyte_id === dep.source_lab_analyte_id) ||
+          a.id === dep.source_analyte_id
+        );
+      let resolvedValue =
+        (dep.source_lab_analyte_id ? lookup.get(dep.source_lab_analyte_id) : undefined) ??
+        lookup.get(dep.source_analyte_id);
+      if (resolvedValue === undefined && sourceAnalyte?.name) {
+        resolvedValue = lookup.get(sourceAnalyte.name.toLowerCase());
+        if (resolvedValue === undefined) {
+          const slug = toVariableSlug(sourceAnalyte.name);
+          if (slug) resolvedValue = lookup.get(slug);
+        }
+      }
+      return {
+        variable: dep.variable_name,
+        sourceName: sourceAnalyte?.name || dep.source_analyte_id?.slice(0, 8) || dep.variable_name,
+        value: resolvedValue,
+      };
+    });
+
+    const missing = dependencies.filter((dep) => dep.value === undefined).map((dep) => dep.variable);
+    return {
+      formula: analyteObj.formula,
+      dependencies,
+      missing,
+      hasDependencies: dependencies.length > 0,
+    };
+  }, [manualValues, testGroups, calcDeps, getPreferredDepsForCalculated]);
+
   const handleManualValueChange = React.useCallback((index: number, field: keyof ExtractedValue, value: string) => {
     setManualValues((prev) => {
       const updated = prev.map((item, i) => {
@@ -3494,7 +3600,8 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
               flag: manual?.flag,
               is_calculated: true,
             };
-          });
+          })
+          .filter((row) => hasMeaningfulTextValue(row.value));
 
         const rowsToPersist = [...testGroupResults, ...calculatedRowsForGroup].reduce<ExtractedValue[]>((acc, row) => {
           if (!acc.some((r) => r.analyte_id === row.analyte_id || r.parameter === row.parameter)) {
@@ -3540,6 +3647,19 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
 
         // Skip groups whose result is already approved/verified — do not overwrite locked results
         if (existingResultStatusByGroupKey.get(groupKey) === 'LOCKED') continue;
+
+        const calculatedAnalyteIdsForGroup = testGroup.analytes
+          .filter((a) => !!a.is_calculated && !!a.id)
+          .map((a) => a.id);
+        if (calculatedAnalyteIdsForGroup.length > 0) {
+          const { error: cleanupNullCalcError } = await supabase
+            .from("result_values")
+            .delete()
+            .eq("result_id", resultRowId)
+            .in("analyte_id", calculatedAnalyteIdsForGroup)
+            .is("value", null);
+          if (cleanupNullCalcError) throw cleanupNullCalcError;
+        }
 
         // Upsert result_values for only the analytes we are saving now:
         // Use analyte_id (UUID) for the delete filter — analyte names may contain characters like "(%)"
@@ -4089,32 +4209,27 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
                         </div>
                       )}
                       {value.is_calculated && (() => {
-                        const analyteObj = testGroup.analytes.find((a: any) => a.id === value.analyte_id);
-                        const deps = getPreferredDepsForCalculated(calcDeps, value.analyte_id, value.lab_analyte_id);
-                        if (!analyteObj?.formula) return null;
+                        const debugInfo = getCalculatedDebugInfo(value);
+                        if (!debugInfo?.formula) return null;
                         return (
                           <div className="mt-1.5 text-xs bg-blue-50 border border-blue-100 rounded p-1.5 space-y-0.5">
-                            <div className="font-mono text-blue-700 mb-1 truncate" title={analyteObj.formula}>
-                              f: {analyteObj.formula}
+                            <div className="font-mono text-blue-700 mb-1 truncate" title={debugInfo.formula}>
+                              f: {debugInfo.formula}
                             </div>
-                            {deps.length === 0 ? (
+                            {debugInfo.hasDependencies && debugInfo.missing.length > 0 && (
+                              <div className="text-red-700 font-medium">Missing: {debugInfo.missing.join(", ")}</div>
+                            )}
+                            {!debugInfo.hasDependencies ? (
                               <div className="text-amber-600 font-medium">No dependencies saved — open Dependency Manager</div>
                             ) : (
-                              deps.map(dep => {
-                                const sourceManual = manualValues.find(mv =>
-                                  (dep.source_lab_analyte_id && mv.lab_analyte_id === dep.source_lab_analyte_id) ||
-                                  mv.analyte_id === dep.source_analyte_id
-                                );
-                                const sourceName =
-                                  orderAnalytes.find((a: any) =>
-                                    (dep.source_lab_analyte_id && a.lab_analyte_id === dep.source_lab_analyte_id) ||
-                                    a.id === dep.source_analyte_id
-                                  )?.name || dep.source_analyte_id.slice(0, 8);
-                                const hasValue = sourceManual?.value && String(sourceManual.value).trim();
+                              debugInfo.dependencies.map(dep => {
+                                const hasValue = dep.value !== undefined;
+                                const sourceName = dep.sourceName;
+                                const sourceManual = { value: dep.value };
                                 return (
-                                  <div key={dep.variable_name} className={`flex items-center gap-1 ${hasValue ? 'text-green-700' : 'text-red-600'}`}>
+                                  <div key={dep.variable} className={`flex items-center gap-1 ${hasValue ? 'text-green-700' : 'text-red-600'}`}>
                                     <span>{hasValue ? '✓' : '✗'}</span>
-                                    <span className="font-mono font-medium">{dep.variable_name}</span>
+                                    <span className="font-mono font-medium">{dep.variable}</span>
                                     <span className="text-gray-500">→ {sourceName}</span>
                                     {hasValue && <span className="font-semibold">= {sourceManual?.value}</span>}
                                     {!hasValue && <span className="italic">(no value yet)</span>}

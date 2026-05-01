@@ -208,11 +208,43 @@ export const calculationEngine = {
       if (patientData.height_cm) valueMap['HEIGHT'] = patientData.height_cm;
     }
 
-    // 3. Compute each calculated analyte
-    const results: CalculationResult[] = [];
-
+    // 3. Pre-fetch dependencies for all calculated analytes and build a dependency graph
+    const depsMap = new Map<string, AnalyteDependency[]>();
     for (const analyte of calculatedAnalytes) {
       const deps = await this.getDependencies(analyte.id, labId, analyte.lab_analyte_id);
+      depsMap.set(analyte.id, deps);
+    }
+
+    // 4. Topological sort: calculated params that depend on other calculated params
+    //    must be evaluated AFTER their dependencies (e.g., Globulin before A/G Ratio)
+    const calculatedIdSet = new Set(calculatedAnalytes.map(a => a.id));
+    const sorted: typeof calculatedAnalytes = [];
+    const visited = new Set<string>();
+    const visiting = new Set<string>();
+    const analyteById = new Map(calculatedAnalytes.map(a => [a.id, a]));
+
+    const visit = (analyte: (typeof calculatedAnalytes)[0]) => {
+      if (visited.has(analyte.id)) return;
+      if (visiting.has(analyte.id)) return; // cycle guard
+      visiting.add(analyte.id);
+      const deps = depsMap.get(analyte.id) || [];
+      for (const dep of deps) {
+        if (calculatedIdSet.has(dep.source_analyte_id)) {
+          const srcAnalyte = analyteById.get(dep.source_analyte_id);
+          if (srcAnalyte) visit(srcAnalyte);
+        }
+      }
+      visiting.delete(analyte.id);
+      visited.add(analyte.id);
+      sorted.push(analyte);
+    };
+    for (const analyte of calculatedAnalytes) visit(analyte);
+
+    // 5. Compute each calculated analyte in dependency order
+    const results: CalculationResult[] = [];
+
+    for (const analyte of sorted) {
+      const deps = depsMap.get(analyte.id) || [];
       
       // Check if all required variables are present
       const scope: Record<string, number> = {};
@@ -266,7 +298,7 @@ export const calculationEngine = {
         continue;
       }
 
-      // 4. Evaluate formula using mathjs
+      // 6. Evaluate formula using mathjs
       try {
         // Normalize formula: replace x^y with pow(x,y) to avoid
         // mathjs operator precedence issues with negative/fractional exponents.
@@ -294,6 +326,12 @@ export const calculationEngine = {
           formula_used: analyte.formula,
           success: true
         });
+
+        // Feed result back into valueMap so downstream calculated params can use it
+        valueMap[analyte.name.toUpperCase()] = roundedResult;
+        valueMap[analyte.name] = roundedResult;
+        valueMap[analyte.id] = roundedResult;
+        if (analyte.lab_analyte_id) valueMap[analyte.lab_analyte_id] = roundedResult;
       } catch (err: any) {
         results.push({
           analyte_id: analyte.id,

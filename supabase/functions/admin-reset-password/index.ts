@@ -37,6 +37,25 @@ const getSupabaseForUser = (req: Request) => {
   });
 };
 
+const getEffectivePermissions = async (
+  supabaseAdmin: ReturnType<typeof createClient>,
+  roleId: string | null,
+  extraPermissions: string[] | null | undefined,
+) => {
+  const { data: rolePermissions } = roleId
+    ? await supabaseAdmin
+        .from("role_permissions")
+        .select("permissions(permission_code)")
+        .eq("role_id", roleId)
+    : { data: [] as any[] };
+
+  const roleCodes = (rolePermissions || [])
+    .map((entry: any) => entry.permissions?.permission_code)
+    .filter(Boolean);
+
+  return new Set([...(extraPermissions || []), ...roleCodes]);
+};
+
 Deno.serve(async (req: Request) => {
   if (req.method === "OPTIONS") {
     return new Response(null, {
@@ -72,14 +91,20 @@ Deno.serve(async (req: Request) => {
     // Look up caller's lab and role
     const { data: caller, error: callerError } = await supabaseAdmin
       .from("users")
-      .select("id, lab_id, role:user_roles(role_code)")
-      .eq("id", callerAuth.id)
-      .single();
+      .select("id, lab_id, role_id, permissions, role:user_roles(role_code)")
+      .or(`id.eq.${callerAuth.id},auth_user_id.eq.${callerAuth.id}`)
+      .maybeSingle();
 
     if (callerError || !caller) return bad("Caller user not found", 403);
 
     const callerRole = (caller.role as any)?.role_code;
-    if (!["admin", "owner", "lab_manager"].includes(callerRole)) {
+    const callerPermissions = await getEffectivePermissions(
+      supabaseAdmin,
+      (caller as any).role_id || null,
+      (caller as any).permissions || [],
+    );
+
+    if (!["admin", "owner", "lab_manager"].includes(callerRole) && !callerPermissions.has("users.reset_password")) {
       return bad("Only admins and lab managers can reset passwords", 403);
     }
 

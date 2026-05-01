@@ -385,13 +385,47 @@ export async function imageUrlToBase64(
 }
 
 /**
+ * Prefer an optimized direct ImageKit URL for PDF.co header/footer images.
+ * Native PDF.co header/footer rendering is happier with normal URLs than very large data URIs.
+ */
+export function optimizeHeaderFooterImageUrl(
+  url: string,
+  type: 'header' | 'footer',
+  heightPx: number
+): string {
+  if (!url || !url.includes('ik.imagekit.io')) {
+    return url;
+  }
+
+  try {
+    const safeHeight = Math.max(120, Math.min(480, Math.round(heightPx * 3)));
+    const width = type === 'header' ? 2480 : 2200;
+    const transform = `tr:w-${width},h-${safeHeight},c-at_max,f-png`;
+
+    if (url.includes('/tr:')) {
+      return url.replace(/\/tr:[^/]+/, `/${transform}`);
+    }
+
+    return url.replace(/(ik\.imagekit\.io\/[^/]+)/, `$1/${transform}`);
+  } catch (error) {
+    console.warn(`[HEADER_FOOTER] Failed to optimize ${type} image URL:`, error);
+    return url;
+  }
+}
+
+/**
  * Build header HTML for PDF.co native header section
  * Uses base64 data URI or falls back to direct URL
  */
-export function buildHeaderHtml(imageUrl: string, height: number = 90): string {
+export function buildHeaderHtml(
+  imageUrl: string,
+  height: number = 90,
+  sideMargins: { left: number; right: number } = { left: 20, right: 20 }
+): string {
   if (!imageUrl) return '';
-  return `<div style="width: 100%; height: ${height}px; margin: 0; padding: 0; text-align: center;">
-    <img src="${imageUrl}" style="width: 100%; height: ${height}px; object-fit: contain; margin: 0; padding: 0;" />
+  const bleedWidth = sideMargins.left + sideMargins.right;
+  return `<div style="width: calc(100% + ${bleedWidth}px); height: ${height}px; margin: 0 0 0 -${sideMargins.left}px; padding: 0; overflow: hidden; background: #ffffff;">
+    <img src="${imageUrl}" style="display: block; width: 100%; height: ${height}px; object-fit: cover; object-position: center top; margin: 0; padding: 0; border: 0;" />
   </div>`;
 }
 
@@ -399,10 +433,15 @@ export function buildHeaderHtml(imageUrl: string, height: number = 90): string {
  * Build footer HTML for PDF.co native footer section
  * Uses base64 data URI or falls back to direct URL
  */
-export function buildFooterHtml(imageUrl: string, height: number = 80): string {
+export function buildFooterHtml(
+  imageUrl: string,
+  height: number = 80,
+  sideMargins: { left: number; right: number } = { left: 20, right: 20 }
+): string {
   if (!imageUrl) return '';
-  return `<div style="width: 100%; height: ${height}px; margin: 0; padding: 0; text-align: center;">
-    <img src="${imageUrl}" style="width: 100%; height: ${height}px; object-fit: contain; margin: 0; padding: 0;" />
+  const bleedWidth = sideMargins.left + sideMargins.right;
+  return `<div style="width: calc(100% + ${bleedWidth}px); height: ${height}px; margin: 0 0 0 -${sideMargins.left}px; padding: 0; overflow: hidden; background: #ffffff;">
+    <img src="${imageUrl}" style="display: block; width: 100%; height: ${height}px; object-fit: cover; object-position: center bottom; margin: 0; padding: 0; border: 0;" />
   </div>`;
 }
 

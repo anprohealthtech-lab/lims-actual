@@ -4,12 +4,15 @@ import {
   Brain,
   TestTube,
   Activity,
-  RefreshCw
+  RefreshCw,
+  Loader2,
+  Lock
 } from 'lucide-react';
 import { Result, initializeStorage } from '../utils/localStorage';
 import { database, supabase, formatAge } from '../utils/supabase';
 import { useAuth } from '../contexts/AuthContext';
 import { hasAbnormalFlags } from '../utils/flagCalculation';
+import { usePermissions } from '../hooks/usePermissions';
 
 // Import Entry Mode Components
 // import OrderSelector from '../components/Results/EntryMode/OrderSelector';
@@ -84,6 +87,7 @@ type EntryMethod = 'ai-upload' | 'manual' | 'workflow';
 
 const Results: React.FC = () => {
   useAuth();
+  const { loading: permissionsLoading, hasPermission } = usePermissions();
   const [results, setResults] = useState<Result[]>([]);
   // const [verificationStats, setVerificationStats] = useState<VerificationStats | null>(null);
   const [searchTerm, setSearchTerm] = useState('');
@@ -1165,6 +1169,33 @@ const Results: React.FC = () => {
 
   // Note: Filtered results logic would go here for advanced filtering
   // Currently using the main results array with basic filtering in components
+
+  if (permissionsLoading) {
+    return (
+      <div className="flex items-center justify-center min-h-[400px]">
+        <div className="text-center">
+          <Loader2 className="h-8 w-8 animate-spin text-blue-600 mx-auto mb-4" />
+          <p className="text-gray-600">Checking permissions...</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (!hasPermission('results.view')) {
+    return (
+      <div className="flex items-center justify-center min-h-[400px]">
+        <div className="text-center max-w-md">
+          <div className="w-16 h-16 bg-red-100 rounded-full flex items-center justify-center mx-auto mb-4">
+            <Lock className="h-8 w-8 text-red-600" />
+          </div>
+          <h2 className="text-xl font-semibold text-gray-900 mb-2">Access Denied</h2>
+          <p className="text-gray-600">
+            You don't have permission to open the result workbench.
+          </p>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-6">

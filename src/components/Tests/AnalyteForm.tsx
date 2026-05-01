@@ -4,6 +4,7 @@ import { generateAnalyteConfiguration, AnalyteConfigurationResponse } from '../.
 
 interface SourceAnalyte {
   id: string;
+  lab_analyte_id?: string | null;
   name: string;
   unit: string;
   category?: string;
@@ -153,9 +154,15 @@ const AnalyteForm: React.FC<AnalyteFormProps> = ({ onClose, onSubmit, analyte, a
 
     const lowerName = name.toLowerCase();
 
-    // Check for common abbreviations
+    // Check for common abbreviations using prefix + word-boundary matching.
+    // Using .includes() would wrongly match compound names like
+    // "HbA1c (Glycosylated Hemoglobin)" as HGB because it contains "hemoglobin".
+    const startsWithWord = (str: string, prefix: string): boolean => {
+      if (!str.startsWith(prefix)) return false;
+      return str.length === prefix.length || /[\s,(]/.test(str[prefix.length]);
+    };
     for (const [fullName, abbrev] of Object.entries(abbreviations)) {
-      if (lowerName.includes(fullName)) {
+      if (startsWithWord(lowerName, fullName)) {
         return abbrev;
       }
     }
@@ -355,6 +362,7 @@ const AnalyteForm: React.FC<AnalyteFormProps> = ({ onClose, onSubmit, analyte, a
     const sourceDependencies = selectedSources.length > 0
       ? selectedSources.map(s => ({
           source_analyte_id: s.id,
+          source_lab_analyte_id: s.lab_analyte_id || null,
           variable_name: s.variableName
         }))
       : [];
