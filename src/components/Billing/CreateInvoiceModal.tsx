@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { X, Info, Briefcase, ChevronDown, ChevronRight } from 'lucide-react';
 import { database, supabase } from '../../utils/supabase';
+import { useEscapeModalClose } from '../../hooks/useEscapeModalClose';
 
 interface CreateInvoiceModalProps {
   orderId: string;
@@ -30,6 +31,7 @@ interface DiscountInfo {
 }
 
 const CreateInvoiceModal: React.FC<CreateInvoiceModalProps> = ({ orderId, onClose, onSuccess }) => {
+  useEscapeModalClose(onClose);
   const [loading, setLoading] = useState(true);
   const [order, setOrder] = useState<any>(null);
   const [tests, setTests] = useState<OrderTest[]>([]);
@@ -38,6 +40,12 @@ const CreateInvoiceModal: React.FC<CreateInvoiceModalProps> = ({ orderId, onClos
   const [globalDiscount] = useState<DiscountInfo | null>(null);
   const [notes, setNotes] = useState('');
   const [creating, setCreating] = useState(false);
+
+  // Pay-now at invoice creation
+  const [payNow, setPayNow] = useState(false);
+  const [paymentAmount, setPaymentAmount] = useState<number>(0);
+  const [paymentMethod, setPaymentMethod] = useState<'cash' | 'card' | 'upi' | 'online'>('cash');
+  const [paymentReference, setPaymentReference] = useState('');
 
   // NEW: Dual invoice system state
   const [invoiceType, setInvoiceType] = useState<'patient' | 'account'>('patient');
@@ -374,7 +382,9 @@ const CreateInvoiceModal: React.FC<CreateInvoiceModalProps> = ({ orderId, onClos
         discount: totals.totalDiscount,
         tax: 0,
         total: totals.total,
-        status: invoiceType === 'account' ? 'Sent' : 'Unpaid', // Account invoices auto-sent for credit
+        status: invoiceType === 'account' ? 'Sent'
+          : (payNow && paymentAmount >= totals.total ? 'Paid'
+          : (payNow && paymentAmount > 0 ? 'Partial' : 'Unpaid')),
         invoice_date: new Date().toISOString(),
         due_date: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString(),
         payment_type: order.payment_type || 'self',
@@ -508,6 +518,19 @@ const CreateInvoiceModal: React.FC<CreateInvoiceModalProps> = ({ orderId, onClos
       const remainingUnbilled = billableTests.length - rows.length;
       const billingStatus = remainingUnbilled === 0 ? 'billed' : 'partial';
       await database.orders.update(orderId, { billing_status: billingStatus, is_billed: billingStatus === 'billed' });
+
+      // Record payment if pay-now was selected
+      if (invoiceType === 'patient' && payNow && paymentAmount > 0) {
+        await supabase.from('payments').insert({
+          lab_id,
+          invoice_id: invoice.id,
+          amount: paymentAmount,
+          payment_method: paymentMethod,
+          payment_reference: paymentReference || `PAY-${Date.now()}`,
+          payment_date: new Date().toISOString(),
+          location_id: order.location_id || null,
+        });
+      }
 
       // Credit posting:
       // If the order is credit/corporate/insurance, post a credit transaction
@@ -942,6 +965,77 @@ const CreateInvoiceModal: React.FC<CreateInvoiceModalProps> = ({ orderId, onClos
             placeholder="Add any notes for this invoice..."
           />
         </div>
+
+        {/* Pay Now */}
+        {invoiceType === 'patient' && (
+          <div className="mt-6 border rounded-lg overflow-hidden">
+            <label className="flex items-center gap-3 px-4 py-3 bg-green-50 border-b border-green-200 cursor-pointer select-none">
+              <input
+                type="checkbox"
+                checked={payNow}
+                onChange={(e) => {
+                  setPayNow(e.target.checked);
+                  if (e.target.checked) setPaymentAmount(calcTotals().total);
+                }}
+                className="rounded"
+              />
+              <span className="font-medium text-green-800">Record Payment Now</span>
+              <span className="text-sm text-green-600">(optional — can pay later)</span>
+            </label>
+            {payNow && (
+              <div className="p-4 space-y-3">
+                <div className="grid grid-cols-3 gap-3">
+                  <div>
+                    <label className="block text-xs font-medium text-gray-600 mb-1">Amount</label>
+                    <input
+                      type="number"
+                      min="0"
+                      max={totals.total}
+                      step="0.01"
+                      value={paymentAmount}
+                      onChange={(e) => setPaymentAmount(parseFloat(e.target.value) || 0)}
+                      className="w-full px-3 py-2 border rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-green-500"
+                    />
+                    <div className="text-xs text-gray-500 mt-1">Invoice total: ₹{money(totals.total)}</div>
+                  </div>
+                  <div>
+                    <label className="block text-xs font-medium text-gray-600 mb-1">Payment Method</label>
+                    <select
+                      value={paymentMethod}
+                      onChange={(e) => setPaymentMethod(e.target.value as 'cash' | 'card' | 'upi' | 'online')}
+                      className="w-full px-3 py-2 border rounded-md text-sm"
+                    >
+                      <option value="cash">Cash</option>
+                      <option value="card">Card</option>
+                      <option value="upi">UPI</option>
+                      <option value="online">Online</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-xs font-medium text-gray-600 mb-1">Reference (optional)</label>
+                    <input
+                      type="text"
+                      value={paymentReference}
+                      onChange={(e) => setPaymentReference(e.target.value)}
+                      className="w-full px-3 py-2 border rounded-md text-sm"
+                      placeholder="Txn / cheque no."
+                    />
+                  </div>
+                </div>
+                {paymentAmount > 0 && paymentAmount < totals.total && (
+                  <div className="text-sm text-amber-700 bg-amber-50 border border-amber-200 rounded p-2">
+                    Part payment — balance ₹{money(totals.total - paymentAmount)} will remain due
+                  </div>
+                )}
+                {paymentAmount >= totals.total && totals.total > 0 && (
+                  <div className="text-sm text-green-700 bg-green-50 border border-green-200 rounded p-2">
+                    Full payment — invoice will be marked Paid
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        )}
 
         {/* Actions */}
         <div className="flex justify-end gap-3 mt-6 pt-4 border-t">

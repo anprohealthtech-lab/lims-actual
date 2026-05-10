@@ -137,9 +137,11 @@ interface LabSettings {
   loyalty_point_value?: number;
   block_send_on_due?: boolean;
   report_patient_info_config?: {
+    visible?: boolean;
     layout: 'table' | 'inline';
     fields: string[];
   } | null;
+  show_signature_block?: boolean;
   print_options?: {
     tableBorders?: boolean;
     flagColumn?: boolean;
@@ -632,6 +634,7 @@ const Settings: React.FC = () => {
             loyalty_point_value: (labData as any).loyalty_point_value ?? 1.0,
             block_send_on_due: (labData as any).block_send_on_due ?? false,
             report_patient_info_config: (labData as any).report_patient_info_config ?? null,
+            show_signature_block: (labData as any).pdf_layout_settings?.showSignatureBlock ?? true,
             print_options: (labData as any).pdf_layout_settings?.printOptions ?? null,
             result_colors: (labData as any).pdf_layout_settings?.resultColors ?? null,
             _pdf_layout_settings_raw: (labData as any).pdf_layout_settings ?? null,
@@ -956,6 +959,7 @@ const Settings: React.FC = () => {
         loyalty_point_value: labSettings.loyalty_point_value ?? 1.0,
         block_send_on_due: labSettings.block_send_on_due ?? false,
         report_patient_info_config: labSettings.report_patient_info_config ?? null,
+        show_signature_block: labSettings.show_signature_block ?? true,
         barcode_printer_name: labSettings.barcode_printer_name || null,
         report_printer_name: labSettings.report_printer_name || null,
         auto_collect_on_registration: labSettings.auto_collect_on_registration ?? false,
@@ -963,6 +967,7 @@ const Settings: React.FC = () => {
         auto_print_report_on_approval: labSettings.auto_print_report_on_approval ?? false,
         pdf_layout_settings: {
           ...(labSettings._pdf_layout_settings_raw || {}),
+          showSignatureBlock: labSettings.show_signature_block ?? true,
           printOptions: labSettings.print_options ?? undefined,
           ...(labSettings.result_colors ? { resultColors: labSettings.result_colors } : {}),
         },
@@ -2161,7 +2166,7 @@ const Settings: React.FC = () => {
                               checked={(labSettings.report_patient_info_config?.layout || (labSettings.default_template_style === 'classic' ? 'table' : 'inline')) === layout}
                               onChange={() => {
                                 const current = labSettings.report_patient_info_config;
-                                setLabSettings(prev => prev ? { ...prev, report_patient_info_config: { layout, fields: current?.fields || ['patientName','patientId','age','gender','collectionDate','sampleId','referringDoctorName','approvedAt'] } } : prev);
+                                setLabSettings(prev => prev ? { ...prev, report_patient_info_config: { visible: true, layout, fields: current?.fields || ['patientName','patientId','age','gender','collectionDate','sampleId','referringDoctorName','approvedAt'] } } : prev);
                               }}
                               className="sr-only"
                             />
@@ -2208,7 +2213,7 @@ const Settings: React.FC = () => {
                                     ? [...currentFields, field.key]
                                     : currentFields.filter(f => f !== field.key);
                                   const currentLayout = labSettings.report_patient_info_config?.layout || (labSettings.default_template_style === 'classic' ? 'table' : 'inline');
-                                  setLabSettings(prev => prev ? { ...prev, report_patient_info_config: { layout: currentLayout, fields: newFields } } : prev);
+                                  setLabSettings(prev => prev ? { ...prev, report_patient_info_config: { visible: true, layout: currentLayout, fields: newFields } } : prev);
                                 }}
                                 className="h-3.5 w-3.5 text-indigo-600 focus:ring-indigo-500 border-gray-300 rounded"
                               />
@@ -2217,6 +2222,7 @@ const Settings: React.FC = () => {
                           );
                         })}
                       </div>
+
                     </div>
                   </div>
 

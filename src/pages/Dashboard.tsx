@@ -67,6 +67,7 @@ type Priority = "Normal" | "Urgent" | "STAT";
 
 type ProgressRow = {
   order_id: string;
+  order_test_id: string;
   test_group_id: string | null;
   test_group_name: string | null;
   expected_analytes: number;
@@ -133,6 +134,10 @@ type Panel = {
   sample_type?: string;
   sample_color?: string;
   order_color?: string;
+  order_test_id?: string;
+  test_group_id?: string;
+  reportSectionSaved?: boolean;
+  reportSubmitted?: boolean;
 };
 
 // Update CardOrder type
@@ -167,6 +172,8 @@ type CardOrder = {
   paid_amount?: number;
   due_amount?: number;
   payment_status?: "unpaid" | "partial" | "paid" | null;
+  total_refunded_amount?: number;
+  refund_status?: "not_requested" | "pending" | "partially_refunded" | "fully_refunded" | null;
 
   patient?:
   | {
@@ -194,6 +201,8 @@ type CardOrder = {
   panels: Panel[];
   expectedTotal: number;
   enteredTotal: number;
+  reportOnlyPanelTotal: number;
+  completedReportOnlyPanels: number;
 
   // 3-bucket model
   pendingAnalytes: number; // not started OR partial/in-progress
@@ -228,6 +237,99 @@ type CardOrder = {
   collected_at_location_id?: string | null;
   collected_by?: string | null;
   tatStarted?: boolean;
+};
+
+const getPanelChipState = (panel: Panel) => {
+  const isReportOnly = panel.expected === 0;
+  const hasReportOverlay = isReportOnly && (panel.reportSectionSaved || panel.reportSubmitted);
+  const isGreen = panel.verified || hasReportOverlay;
+
+  return {
+    isGreen,
+    chipColor: isGreen
+      ? "border-green-200 bg-green-50 text-green-800"
+      : panel.entered > 0
+        ? "border-amber-200 bg-amber-50 text-amber-800"
+        : "border-gray-200 bg-gray-50 text-gray-600",
+    cardColor: isGreen
+      ? "border-green-200 bg-green-50"
+      : panel.entered > 0
+        ? "border-amber-200 bg-amber-50"
+        : "border-gray-200 bg-white",
+    statusText: hasReportOverlay
+      ? panel.reportSubmitted
+        ? "Report submitted"
+        : "Report saved"
+      : `${panel.entered}/${panel.expected}${panel.verified ? " ✓" : ""}`,
+  };
+};
+
+const getPanelProgressLabel = (panel: Panel, chipState?: ReturnType<typeof getPanelChipState>) => {
+  const state = chipState ?? getPanelChipState(panel);
+  if (panel.expected === 0) {
+    return state.statusText || "Report pending";
+  }
+
+  return `${panel.entered}/${panel.expected}${panel.verified ? " ✓" : ""}`;
+};
+
+const isCompletedReportOnlyPanel = (panel: Panel) =>
+  panel.expected === 0 && !!(panel.reportSectionSaved || panel.reportSubmitted);
+
+const getOrderProgressSummary = (order: CardOrder) => {
+  const isReportOnlyOrder = order.expectedTotal === 0 && order.reportOnlyPanelTotal > 0;
+
+  if (isReportOnlyOrder) {
+    return {
+      progressLabel: `${order.completedReportOnlyPanels}/${order.reportOnlyPanelTotal} reports ready`,
+      pendingLabel: "Pending reports",
+      pendingValue: Math.max(order.reportOnlyPanelTotal - order.completedReportOnlyPanels, 0),
+      approvalLabel: "Saved reports",
+      approvalValue: 0,
+      approvedLabel: "Ready reports",
+      approvedValue: order.completedReportOnlyPanels,
+      totalLabel: `Total reports: ${order.reportOnlyPanelTotal}`,
+      progressPercent:
+        order.reportOnlyPanelTotal > 0
+          ? Math.round((order.completedReportOnlyPanels / order.reportOnlyPanelTotal) * 100)
+          : 0,
+      approvedPercent:
+        order.reportOnlyPanelTotal > 0
+          ? (order.completedReportOnlyPanels / order.reportOnlyPanelTotal) * 100
+          : 0,
+    };
+  }
+
+  return {
+    progressLabel: `${order.enteredTotal}/${order.expectedTotal} analytes`,
+    pendingLabel: "Pending",
+    pendingValue: order.pendingAnalytes,
+    approvalLabel: "Approval",
+    approvalValue: order.forApprovalAnalytes,
+    approvedLabel: "Approved",
+    approvedValue: order.approvedAnalytes,
+    totalLabel: `Total: ${order.expectedTotal}`,
+    progressPercent:
+      order.expectedTotal > 0 ? Math.round((order.enteredTotal / order.expectedTotal) * 100) : 0,
+    approvedPercent:
+      order.expectedTotal > 0 ? (order.approvedAnalytes / order.expectedTotal) * 100 : 0,
+  };
+};
+
+const isOrderFullyDone = (order: CardOrder) =>
+  order.status === "Completed" ||
+  order.status === "Delivered" ||
+  (order.expectedTotal > 0 && order.approvedAnalytes >= order.expectedTotal) ||
+  (order.expectedTotal === 0 &&
+    order.reportOnlyPanelTotal > 0 &&
+    order.completedReportOnlyPanels >= order.reportOnlyPanelTotal);
+
+const isOrderMostlyDone = (order: CardOrder) => {
+  if (order.expectedTotal === 0 && order.reportOnlyPanelTotal > 0) {
+    return order.completedReportOnlyPanels > 0;
+  }
+
+  return order.enteredTotal > 0 && order.enteredTotal >= order.expectedTotal * 0.75;
 };
 
 
@@ -293,6 +395,21 @@ const Dashboard: React.FC = () => {
     fetchOrders();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [dateFrom, dateTo, allDates]);
+
+  // Ctrl+C shortcut to open new order form (only when no input focused and no text selected)
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (!e.ctrlKey || e.key !== "c") return;
+      const tag = (e.target as HTMLElement).tagName;
+      const isEditable = tag === "INPUT" || tag === "TEXTAREA" || (e.target as HTMLElement).isContentEditable;
+      const hasSelection = window.getSelection()?.toString().length ?? 0;
+      if (isEditable || hasSelection) return;
+      e.preventDefault();
+      setShowOrderForm(true);
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, []);
 
   // Read daily sequence (prefer order_number; fallback to tail of sample_id)
   const getDailySeq = (o: CardOrder) => {
@@ -374,11 +491,67 @@ id, patient_id, patient_name, status, priority, order_date, expected_date, total
       byOrder.set((r as any).order_id, arr);
     });
 
+    const reportOnlyPanelState = new Map<string, { reportSectionSaved: boolean; reportSubmitted: boolean }>();
+    const { data: resultRows, error: resultErr } = await supabase
+      .from("results")
+      .select(`
+        order_id,
+        order_test_id,
+        test_group_id,
+        status,
+        result_section_content(
+          final_content,
+          custom_text,
+          selected_options,
+          image_urls
+        )
+      `)
+      .in("order_id", orderIds);
+
+    if (resultErr) {
+      console.error("results/report sections load error", resultErr);
+    }
+
+    (resultRows || []).forEach((row: any) => {
+      const sections = Array.isArray(row.result_section_content) ? row.result_section_content : [];
+      const reportSectionSaved = sections.some((section: any) => {
+        const hasText = typeof section?.final_content === "string" && section.final_content.trim().length > 0;
+        const hasCustomText = typeof section?.custom_text === "string" && section.custom_text.trim().length > 0;
+        const hasSelectedOptions = Array.isArray(section?.selected_options) && section.selected_options.length > 0;
+        const hasImages = Array.isArray(section?.image_urls) && section.image_urls.length > 0;
+        return hasText || hasCustomText || hasSelectedOptions || hasImages;
+      });
+      const reportSubmitted = typeof row.status === "string" && row.status.trim().length > 0;
+      const state = { reportSectionSaved, reportSubmitted };
+      const keys = [
+        row.order_test_id ? `test:${row.order_test_id}` : null,
+        row.order_id && row.test_group_id ? `group:${row.order_id}:${row.test_group_id}` : null,
+      ].filter(Boolean) as string[];
+
+      keys.forEach((key) => {
+        const existing = reportOnlyPanelState.get(key);
+        reportOnlyPanelState.set(key, {
+          reportSectionSaved: (existing?.reportSectionSaved || false) || reportSectionSaved,
+          reportSubmitted: (existing?.reportSubmitted || false) || reportSubmitted,
+        });
+      });
+    });
+
     // 3) Fetch ALL invoices and payments for each order (supports multiple invoices when tests are added)
     const invoicePromises = orderIds.map(async (orderId) => {
       const { data: invoices } = await database.invoices.getAllByOrderId(orderId);
       if (!invoices || invoices.length === 0) {
-        return { orderId, invoices: [], primaryInvoice: null, totalInvoiced: 0, totalSubtotal: 0, totalRefunded: 0, paidAmount: 0, deliveryStatus: {} };
+        return {
+          orderId,
+          invoices: [],
+          primaryInvoice: null,
+          totalInvoiced: 0,
+          totalSubtotal: 0,
+          totalRefunded: 0,
+          paidAmount: 0,
+          refundPending: false,
+          deliveryStatus: {},
+        };
       }
 
       // Aggregate totals across all invoices
@@ -409,6 +582,7 @@ id, patient_id, patient_name, status, priority, order_date, expected_date, total
         totalSubtotal,
         totalRefunded,
         paidAmount: totalPaid,
+        refundPending: invoices.some((inv: any) => inv.refund_status === "pending"),
         deliveryStatus: deliveryStatus || {}
       };
     });
@@ -489,19 +663,33 @@ id, patient_id, patient_name, status, priority, order_date, expected_date, total
       // TAT is considered started if view has tat_start_time (tat_hours configured) OR sample was collected
       const tatStarted = hasTatStartTime || !!o.sample_collected_at;
 
-      const panels: Panel[] = rows.map((r) => ({
-        name: r.test_group_name || "Test",
-        expected: r.expected_analytes || 0,
-        entered: r.entered_analytes || 0,
-        verified: !!r.is_verified,
-        status: r.panel_status,
-        sample_type: r.sample_type,
-        sample_color: r.sample_color,
-        order_color: r.color_code,
-      }));
+      const panels: Panel[] = rows.map((r) => {
+        const reportState =
+          reportOnlyPanelState.get(`test:${r.order_test_id}`) ||
+          (r.test_group_id ? reportOnlyPanelState.get(`group:${o.id}:${r.test_group_id}`) : undefined);
+        const reportOnlyCompleted =
+          (r.expected_analytes || 0) === 0 && !!(reportState?.reportSectionSaved || reportState?.reportSubmitted);
 
-      const expectedTotal = panels.reduce((sum, p) => sum + p.expected, 0);
-      const enteredTotal = panels.reduce((sum, p) => sum + Math.min(p.entered, p.expected), 0);
+        return {
+          name: r.test_group_name || "Test",
+          expected: r.expected_analytes || 0,
+          entered: r.entered_analytes || 0,
+          verified: !!r.is_verified || reportOnlyCompleted,
+          status: r.panel_status,
+          sample_type: r.sample_type,
+          sample_color: r.sample_color,
+          order_color: r.color_code,
+          order_test_id: r.order_test_id,
+          test_group_id: r.test_group_id || undefined,
+          reportSectionSaved: reportState?.reportSectionSaved || false,
+          reportSubmitted: reportState?.reportSubmitted || false,
+        };
+      });
+
+	      const expectedTotal = panels.reduce((sum, p) => sum + p.expected, 0);
+	      const enteredTotal = panels.reduce((sum, p) => sum + Math.min(p.entered, p.expected), 0);
+	      const reportOnlyPanelTotal = panels.filter((p) => p.expected === 0).length;
+	      const completedReportOnlyPanels = panels.filter(isCompletedReportOnlyPanel).length;
 
       const approvedAnalytes = panels.reduce((sum, p) => {
         if (p.verified || p.status === "Verified") return sum + Math.min(p.entered, p.expected);
@@ -517,6 +705,20 @@ id, patient_id, patient_name, status, priority, order_date, expected_date, total
 
       // Extra uninvoiced charges for this order (not yet on any invoice)
       const uninvoicedCharges = uninvoicedChargesMap.get(o.id) || 0;
+      const baseOrderAmount = o.final_amount || o.total_amount || 0;
+      const orderAmount = baseOrderAmount + uninvoicedCharges;
+      const invoicedAmount = invoiceInfo?.totalInvoiced || 0;
+      const paidAmount = invoiceInfo?.paidAmount || 0;
+      const refundedAmount = invoiceInfo?.totalRefunded || 0;
+      const effectiveTotal = invoicedAmount > 0
+        ? invoicedAmount + uninvoicedCharges
+        : orderAmount;
+      const refundStatus = (() => {
+        if ((invoiceInfo as any)?.refundPending) return "pending";
+        if (refundedAmount <= 0) return "not_requested";
+        if (refundedAmount >= (effectiveTotal - 1)) return "fully_refunded";
+        return "partially_refunded";
+      })();
 
       return {
         id: o.id,
@@ -529,11 +731,11 @@ id, patient_id, patient_name, status, priority, order_date, expected_date, total
         expected_date: dynamicExpectedDate,
         tatStarted,
         // Include uninvoiced charges in displayed total
-        total_amount: (o.final_amount || o.total_amount || 0) + uninvoicedCharges,
+        total_amount: orderAmount,
         // Use totalInvoiced from aggregated invoices, fallback to order amount + uninvoiced charges
         final_amount: invoiceInfo?.totalInvoiced
-          ? Math.max(invoiceInfo.totalInvoiced, (o.final_amount || o.total_amount || 0) + uninvoicedCharges)
-          : ((o.final_amount || o.total_amount || 0) + uninvoicedCharges),
+          ? Math.max(invoiceInfo.totalInvoiced, orderAmount)
+          : orderAmount,
         doctor: o.doctor,
         doctor_phone,
         doctor_email,
@@ -549,7 +751,6 @@ id, patient_id, patient_name, status, priority, order_date, expected_date, total
         // Use totalSubtotal (pre-discount) so a discount doesn't falsely mark the order as partially billed
         billing_status: (() => {
           if (!invoiceInfo?.invoices?.length) return o.billing_status;
-          const orderAmount = (o.final_amount || o.total_amount || 0) + uninvoicedCharges;
           const invoicedSubtotal = invoiceInfo.totalSubtotal || 0;
           return (orderAmount - invoicedSubtotal) > 1 ? 'partial' : o.billing_status;
         })(),
@@ -557,34 +758,13 @@ id, patient_id, patient_name, status, priority, order_date, expected_date, total
         // Use primary invoice ID for actions (most recent)
         invoice_id: invoiceInfo?.primaryInvoice?.id || null,
         // Aggregated paid amount across all invoices
-        paid_amount: invoiceInfo?.paidAmount || 0,
+        paid_amount: paidAmount,
+        total_refunded_amount: refundedAmount,
+        refund_status: refundStatus,
         // Due amount = effective total (order + uninvoiced charges) - paid - refunded
-        due_amount: (() => {
-          const baseOrderAmount = o.final_amount || o.total_amount || 0;
-          // Add uninvoiced charges on top of order amount
-          const orderAmount = baseOrderAmount + uninvoicedCharges;
-          const invoicedAmount = invoiceInfo?.totalInvoiced || 0;
-          const paidAmount = invoiceInfo?.paidAmount || 0;
-          const refundedAmount = invoiceInfo?.totalRefunded || 0;
-
-          // When invoice exists, use invoiced total (already reflects discounts) + any uninvoiced extras.
-          // Do NOT take max with orderAmount — that would ignore discounts applied on the invoice.
-          const effectiveTotal = invoicedAmount > 0
-            ? invoicedAmount + uninvoicedCharges
-            : orderAmount;
-          return Math.max(0, effectiveTotal - paidAmount - refundedAmount);
-        })(),
+        due_amount: Math.max(0, effectiveTotal - paidAmount - refundedAmount),
         // Payment status based on aggregated amounts
         payment_status: (() => {
-          const baseOrderAmount = o.final_amount || o.total_amount || 0;
-          const orderAmount = baseOrderAmount + uninvoicedCharges;
-          const invoicedAmount = invoiceInfo?.totalInvoiced || 0;
-          const paidAmount = invoiceInfo?.paidAmount || 0;
-          const refundedAmount = invoiceInfo?.totalRefunded || 0;
-
-          const effectiveTotal = invoicedAmount > 0
-            ? invoicedAmount + uninvoicedCharges
-            : orderAmount;
           const netOwed = Math.max(0, effectiveTotal - refundedAmount);
 
           if (!netOwed) return "unpaid";
@@ -618,12 +798,14 @@ id, patient_id, patient_name, status, priority, order_date, expected_date, total
         account_name: o.accounts?.name || null,
         account_billing_mode: o.accounts?.billing_mode || null,
 
-        panels,
-        expectedTotal,
-        enteredTotal,
-        pendingAnalytes,
-        forApprovalAnalytes,
-        approvedAnalytes,
+	        panels,
+	        expectedTotal,
+	        enteredTotal,
+	        reportOnlyPanelTotal,
+	        completedReportOnlyPanels,
+	        pendingAnalytes,
+	        forApprovalAnalytes,
+	        approvedAnalytes,
 
         report_url: reportInfo?.pdf_url,
         report_print_url: reportInfo?.print_pdf_url ?? null,
@@ -662,16 +844,14 @@ id, patient_id, patient_name, status, priority, order_date, expected_date, total
       return nB - nA;
     });
 
-    const s = sorted.reduce(
-      (acc, o) => {
-        // All Done: explicit Completed/Delivered status OR all expected analytes are approved/verified
-        if (o.status === "Completed" || o.status === "Delivered" ||
-            (o.expectedTotal > 0 && o.approvedAnalytes >= o.expectedTotal)) acc.allDone++;
-        else if (o.status === "Pending Approval") acc.awaitingApproval++;
-        else if (o.enteredTotal > 0 && o.enteredTotal >= o.expectedTotal * 0.75) acc.mostlyDone++;
-        else acc.pending++;
-        return acc;
-      },
+	    const s = sorted.reduce(
+	      (acc, o) => {
+	        if (isOrderFullyDone(o)) acc.allDone++;
+	        else if (o.status === "Pending Approval") acc.awaitingApproval++;
+	        else if (isOrderMostlyDone(o)) acc.mostlyDone++;
+	        else acc.pending++;
+	        return acc;
+	      },
       { allDone: 0, mostlyDone: 0, pending: 0, awaitingApproval: 0 }
     );
 
@@ -1258,7 +1438,9 @@ id,
       const totalPaid = invoices.reduce((sum, inv) => sum + (inv.paid_amount || 0), 0);
       const totalBalance = totalInvoiced - totalPaid;
 
-      // Generate PDFs for all invoices that don't have one
+      // Generate PDF for the primary invoice only.
+      // generateInvoicePDF already consolidates all sibling invoice items into one PDF,
+      // so a single PDF covers the full order regardless of how many invoice records exist.
       const { data: templates } = await database.invoiceTemplates.getAll();
       const defaultTemplate = templates?.find((t: any) => t.is_default) || templates?.[0];
 
@@ -1268,20 +1450,17 @@ id,
         return;
       }
 
-      // Ensure all invoices have PDFs
-      const pdfUrls: string[] = [];
-      for (const invoice of invoices) {
-        let pdfUrl = invoice.pdf_url;
-        if (!pdfUrl) {
-          pdfUrl = await generateInvoicePDF(invoice.id, defaultTemplate.id);
-          if (!pdfUrl) {
-            alert(`Failed to generate PDF for invoice ${invoice.invoice_number || invoice.id.slice(0, 8)}`);
-            setIsSendingInvoice(null);
-            return;
-          }
+      const primaryInvoice = invoices[0];
+      let primaryPdfUrl = primaryInvoice.pdf_url;
+      if (!primaryPdfUrl) {
+        primaryPdfUrl = await generateInvoicePDF(primaryInvoice.id, defaultTemplate.id);
+        if (!primaryPdfUrl) {
+          alert(`Failed to generate PDF for invoice ${primaryInvoice.invoice_number || primaryInvoice.id.slice(0, 8)}`);
+          setIsSendingInvoice(null);
+          return;
         }
-        pdfUrls.push(pdfUrl);
       }
+      const pdfUrls: string[] = [primaryPdfUrl];
 
       let phone = order.patient_phone || "";
       if (!phone && order.patient_id) {
@@ -1954,8 +2133,9 @@ id,
 
                   {isCollapsedView ? (
                     <div className="space-y-2">
-                      {g.orders.map((o) => {
-                        const pct = o.expectedTotal > 0 ? Math.round((o.enteredTotal / o.expectedTotal) * 100) : 0;
+	                      {g.orders.map((o) => {
+	                        const progressSummary = getOrderProgressSummary(o);
+	                        const pct = progressSummary.progressPercent;
                         const visiblePanels = mobile.isMobile ? o.panels.slice(0, 2) : o.panels;
                         const hiddenPanelCount = Math.max(0, o.panels.length - visiblePanels.length);
                         const fallbackTests = o.tests.filter((t) => !t.test_name?.startsWith("📦"));
@@ -1997,9 +2177,9 @@ id,
                             </div>
 
                             <div className="flex items-center space-x-3 flex-shrink-0">
-                              <div className="text-xs text-gray-600">
-                                {pct}% ({o.enteredTotal}/{o.expectedTotal})
-                              </div>
+	                              <div className="text-xs text-gray-600">
+	                                {pct}% ({progressSummary.progressLabel})
+	                              </div>
 
                               <OrderStatusDisplay order={o} compact={true} />
 
@@ -2058,10 +2238,40 @@ id,
                                 <span className="px-2 py-1 text-xs font-semibold rounded-full bg-yellow-100 text-yellow-800 border border-yellow-300">Not Billed</span>
                               )}
 
-                              <div className="flex flex-col items-end">
+                              {o.refund_status && o.refund_status !== "not_requested" && (
+                                <span
+                                  className={`px-2 py-1 text-xs font-semibold rounded-full border ${
+                                    o.refund_status === "fully_refunded"
+                                      ? "bg-orange-100 text-orange-800 border-orange-300"
+                                      : o.refund_status === "partially_refunded"
+                                        ? "bg-yellow-100 text-yellow-800 border-yellow-300"
+                                        : "bg-gray-100 text-gray-700 border-gray-300"
+                                  }`}
+                                >
+                                  {o.refund_status === "fully_refunded"
+                                    ? "Refunded"
+                                    : o.refund_status === "partially_refunded"
+                                      ? "Partial Refund"
+                                      : "Refund Pending"}
+                                </span>
+                              )}
+
+                              <div className="flex flex-col items-end gap-1">
                                 <span className="text-base font-bold text-gray-900">₹{Number(o.total_amount || 0).toLocaleString()}</span>
+                                {(o.paid_amount || 0) > 0 && (
+                                  <span className="inline-flex items-center rounded-full bg-green-50 px-2 py-0.5 text-sm font-semibold text-green-700">
+                                    Paid: {"\u20B9"}{Number(o.paid_amount || 0).toLocaleString()}
+                                  </span>
+                                )}
+                                {(o.total_refunded_amount || 0) > 0 && (
+                                  <span className="inline-flex items-center rounded-full bg-orange-50 px-2 py-0.5 text-sm font-semibold text-orange-700">
+                                    Refund: {"\u20B9"}{Number(o.total_refunded_amount || 0).toLocaleString()}
+                                  </span>
+                                )}
                                 {o.payment_status !== "paid" && (o.due_amount || 0) > 0 && !o.account_name && (
-                                  <span className="text-xs font-semibold text-red-600">Due: ₹{Number(o.due_amount || 0).toLocaleString()}</span>
+                                  <span className="inline-flex items-center rounded-full bg-red-50 px-2 py-0.5 text-sm font-semibold text-red-700">
+                                    Due: {"\u20B9"}{Number(o.due_amount || 0).toLocaleString()}
+                                  </span>
                                 )}
                               </div>
 
@@ -2077,20 +2287,15 @@ id,
                               <div className="flex flex-wrap gap-1.5 pl-10 pb-0.5">
                                 {o.panels.length > 0
                                   ? o.panels.map((p, i) => {
-                                    const progress = p.expected > 0 ? (p.entered / p.expected) * 100 : 0;
-                                    const chipColor = p.verified
-                                      ? "border-green-200 bg-green-50 text-green-800"
-                                      : p.entered > 0
-                                        ? "border-amber-200 bg-amber-50 text-amber-800"
-                                        : "border-gray-200 bg-gray-50 text-gray-600";
+                                    const chipState = getPanelChipState(p);
                                     return (
                                       <span
                                         key={`chip-${i}`}
-                                        className={`inline-flex items-center gap-1 px-2 py-0.5 rounded border text-[10px] font-semibold ${chipColor}`}
-                                        title={`${p.name}: ${p.entered}/${p.expected}`}
+                                        className={`inline-flex items-center gap-1 px-2 py-0.5 rounded border text-[10px] font-semibold ${chipState.chipColor}`}
+                                        title={`${p.name}: ${chipState.statusText}`}
                                       >
                                         {p.name}
-                                        <span className="opacity-70">{p.entered}/{p.expected}{p.verified ? " ✓" : ""}</span>
+                                        <span className="opacity-70">{getPanelProgressLabel(p, chipState)}</span>
                                       </span>
                                     );
                                   })
@@ -2108,9 +2313,10 @@ id,
                     </div>
                   ) : (
                     // Expanded
-                    <div className="space-y-4">
-                      {g.orders.map((o) => {
-                        const pct = o.expectedTotal > 0 ? Math.round((o.enteredTotal / o.expectedTotal) * 100) : 0;
+	                    <div className="space-y-4">
+	                      {g.orders.map((o) => {
+	                        const progressSummary = getOrderProgressSummary(o);
+	                        const pct = progressSummary.progressPercent;
                         const visiblePanels = mobile.isMobile ? o.panels.slice(0, 2) : o.panels;
                         const hiddenPanelCount = Math.max(0, o.panels.length - visiblePanels.length);
                         const fallbackTests = o.tests.filter((t) => !t.test_name?.startsWith("📦"));
@@ -2227,10 +2433,26 @@ id,
                                   <div className="text-2xl font-bold text-gray-900">₹{Number(o.final_amount ?? o.total_amount ?? 0).toLocaleString()}</div>
                                   {getBillingBadge(o)}
                                 </div>
+                                <div className="mt-1 flex flex-col items-end gap-1">
+                                  {(o.paid_amount || 0) > 0 && (
+                                    <div className="inline-flex items-center rounded-full bg-green-50 px-2 py-0.5 text-sm font-semibold text-green-700">
+                                      Paid: {"\u20B9"}{Number(o.paid_amount || 0).toLocaleString()}
+                                    </div>
+                                  )}
+                                  {(o.total_refunded_amount || 0) > 0 && (
+                                    <div className="inline-flex items-center rounded-full bg-orange-50 px-2 py-0.5 text-sm font-semibold text-orange-700">
+                                      Refund: {"\u20B9"}{Number(o.total_refunded_amount || 0).toLocaleString()}
+                                    </div>
+                                  )}
+                                </div>
                                 {(o.due_amount || 0) > 0 ? (
-                                  <span className="text-xs font-semibold text-red-600 mt-1">Due: ₹{Number(o.due_amount || 0).toLocaleString()}</span>
+                                  <span className="inline-flex items-center rounded-full bg-red-50 px-2 py-0.5 text-sm font-semibold text-red-700 mt-1">
+                                    Due: {"\u20B9"}{Number(o.due_amount || 0).toLocaleString()}
+                                  </span>
                                 ) : (
-                                  <span className="text-xs font-semibold text-green-600 mt-1">Due: ₹0</span>
+                                  <span className="inline-flex items-center rounded-full bg-green-50 px-2 py-0.5 text-sm font-semibold text-green-700 mt-1">
+                                    Due: {"\u20B9"}0
+                                  </span>
                                 )}
                               </div>
                             </div>
@@ -2309,17 +2531,17 @@ id,
                                           <div className="flex flex-wrap gap-2">
                                             {o.panels.length > 0
                                               ? visiblePanels.map((p, i) => {
-                                                const progress = p.expected > 0 ? (p.entered / p.expected) * 100 : 0;
+                                                const chipState = getPanelChipState(p);
+                                                const progress = chipState.isGreen
+                                                  ? 100
+                                                  : p.expected > 0
+                                                    ? (p.entered / p.expected) * 100
+                                                    : 0;
 
                                                 return (
                                                   <div
                                                     key={`${p.name}-${i}`}
-                                                    className={`flex items-center gap-2 border rounded-lg px-3 py-1.5 shadow-sm transition-all duration-300 max-w-[170px] ${p.verified
-                                                      ? "border-green-200 bg-green-50"
-                                                      : p.entered > 0
-                                                        ? "border-amber-200 bg-amber-50"
-                                                        : "border-gray-200 bg-white"
-                                                      }`}
+                                                    className={`flex items-center gap-2 border rounded-lg px-3 py-1.5 shadow-sm transition-all duration-300 max-w-[170px] ${chipState.cardColor}`}
                                                   >
                                                     <SampleTypeIndicator
                                                       sampleType={p.sample_type || "Blood"}
@@ -2329,7 +2551,7 @@ id,
                                                     <div className="min-w-0">
                                                       <div className="font-bold text-gray-900 text-xs truncate" title={p.name}>{p.name}</div>
                                                       <div className="text-[10px] text-gray-500 font-medium">
-                                                        {p.entered}/{p.expected} {progress === 100 && "✓"}
+                                                        {getPanelProgressLabel(p, chipState)}
                                                       </div>
                                                     </div>
                                                   </div>
@@ -2370,9 +2592,8 @@ id,
                                         );
                                       }
 
-                                      const completedStatuses = ['Report Ready', 'Completed', 'Delivered'];
-                                      const isCompleted = completedStatuses.includes(o.status) ||
-                                        (o.expectedTotal > 0 && o.approvedAnalytes >= o.expectedTotal);
+	                                      const completedStatuses = ['Report Ready', 'Completed', 'Delivered'];
+	                                      const isCompleted = completedStatuses.includes(o.status) || isOrderFullyDone(o);
 
                                       // If no valid expected date (no tat_hours configured), show collection time
                                       if (!o.expected_date || isNaN(new Date(o.expected_date).getTime())) {
@@ -2609,9 +2830,9 @@ id,
                               <div className="mt-3 bg-gradient-to-r from-blue-50 to-indigo-50 rounded-lg p-3 border border-blue-200">
                                 <div className="flex items-center justify-between text-xs mb-1">
                                   <span className="text-blue-800 font-medium flex items-center">📊 Overall Progress</span>
-                                  <span className="text-blue-800 font-bold">
-                                    {o.enteredTotal}/{o.expectedTotal} analytes
-                                  </span>
+	                                  <span className="text-blue-800 font-bold">
+	                                    {getOrderProgressSummary(o).progressLabel}
+	                                  </span>
                                 </div>
 
                                 <div className="relative w-full bg-gray-200 rounded-full h-2.5 overflow-hidden border">
@@ -2637,7 +2858,7 @@ id,
 
                                   <div
                                     className="absolute left-0 top-0 h-4 bg-green-600 transition-all duration-500 rounded-full opacity-80"
-                                    style={{ width: `${o.expectedTotal > 0 ? (o.approvedAnalytes / o.expectedTotal) * 100 : 0}% ` }}
+	                                    style={{ width: `${getOrderProgressSummary(o).approvedPercent}% ` }}
                                   />
 
                                   <div className="absolute top-0 w-0.5 h-4 bg-white shadow-lg" style={{ left: `${pct}% ` }} />
@@ -2655,19 +2876,19 @@ id,
                                   <div className="inline-flex items-center bg-white rounded px-1.5 py-0.5 border border-gray-200">
                                     <span className="inline-block w-2 h-2 bg-red-400 rounded-full mr-1" />
                                     <span className="text-gray-600">
-                                      Pending: <strong>{o.pendingAnalytes}</strong>
+	                                      {getOrderProgressSummary(o).pendingLabel}: <strong>{getOrderProgressSummary(o).pendingValue}</strong>
                                     </span>
                                   </div>
                                   <div className="inline-flex items-center bg-white rounded px-1.5 py-0.5 border border-amber-200">
                                     <span className="inline-block w-2 h-2 bg-amber-500 rounded-full mr-1" />
                                     <span className="text-amber-700">
-                                      Approval: <strong>{o.forApprovalAnalytes}</strong>
+	                                      {getOrderProgressSummary(o).approvalLabel}: <strong>{getOrderProgressSummary(o).approvalValue}</strong>
                                     </span>
                                   </div>
                                   <div className="inline-flex items-center bg-white rounded px-1.5 py-0.5 border border-green-200">
                                     <span className="inline-block w-2 h-2 bg-green-500 rounded-full mr-1" />
                                     <span className="text-green-700">
-                                      Approved: <strong>{o.approvedAnalytes}</strong>
+	                                      {getOrderProgressSummary(o).approvedLabel}: <strong>{getOrderProgressSummary(o).approvedValue}</strong>
                                     </span>
                                   </div>
                                   <div className="hidden sm:inline-flex items-center bg-white rounded px-1.5 py-0.5 border border-blue-200 justify-end">
@@ -2675,7 +2896,7 @@ id,
                                       className={`font - bold text - xs ${pct < 25 ? "text-red-600" : pct < 50 ? "text-orange-600" : pct < 75 ? "text-yellow-600" : pct < 100 ? "text-lime-600" : "text-green-600"
                                         } `}
                                     >
-                                      {pct < 25 ? "🔴" : pct < 50 ? "🟠" : pct < 75 ? "🟡" : pct < 100 ? "🟢" : "✅"} Total: {o.expectedTotal}
+                                      {getOrderProgressSummary(o).totalLabel}
                                     </span>
                                   </div>
                                 </div>
@@ -2712,8 +2933,7 @@ id,
             <div className="flex items-center">
               <AlertTriangle className="h-4 w-4 text-red-600 mr-1" />
               <span className="text-red-900 font-medium">Overdue: {orders.filter((o) => {
-                const done = ['Report Ready', 'Completed', 'Delivered'].includes(o.status) ||
-                  (o.expectedTotal > 0 && o.approvedAnalytes >= o.expectedTotal);
+	                const done = ['Report Ready', 'Completed', 'Delivered'].includes(o.status) || isOrderFullyDone(o);
                 return !done && o.tatStarted && new Date(o.expected_date) < new Date();
               }).length}</span>
             </div>

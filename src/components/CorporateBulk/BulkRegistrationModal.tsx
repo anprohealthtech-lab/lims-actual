@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { AlertCircle, Building2, CheckCircle2, ChevronRight, Loader2, Pencil, Plus, Search, Trash2, Upload, Users, X } from 'lucide-react';
 import { supabase, database } from '../../utils/supabase';
 import ExcelImportPanel, { ImportedPatient } from './ExcelImportPanel';
+import { useEscapeModalClose } from '../../hooks/useEscapeModalClose';
 
 interface Account { id: string; name: string; type: string; default_discount_percent: number | null; }
 interface Package { id: string; name: string; price: number; description: string; lab_id?: string | null; package_test_groups?: { test_group_id: string }[]; }
@@ -27,6 +28,7 @@ const dedupeByName = <T extends { id: string; name: string; lab_id?: string | nu
 const makeEmptyRow = (): PatientRow => ({ id: crypto.randomUUID(), salutation: 'Mr.', name: '', age: '', age_unit: 'years', gender: 'Male', phone: '', email: '', sample_id: '', corporate_employee_id: '' });
 
 const BulkRegistrationModal: React.FC<BulkRegistrationModalProps> = ({ onClose, onSuccess }) => {
+  useEscapeModalClose(onClose);
   const [step, setStep] = useState(0);
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [packages, setPackages] = useState<Package[]>([]);

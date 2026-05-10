@@ -5,6 +5,7 @@ import {
   AlertTriangle, Clock, User, Calendar, Paperclip, Eye
 } from 'lucide-react';
 import { format } from 'date-fns';
+import { useEscapeModalClose } from '../../hooks/useEscapeModalClose';
 
 interface TestResult {
   id: string;
@@ -81,6 +82,7 @@ export default function DetailedApprovalModal({
   onReject,
   onRequestClarification
 }: DetailedApprovalModalProps) {
+  useEscapeModalClose(onClose, isOpen);
   const [activeTab, setActiveTab] = useState<'results' | 'attachments' | 'history' | 'patient'>('results');
   const [verificationNotes, setVerificationNotes] = useState('');
   const [attachments, setAttachments] = useState<any[]>([]);

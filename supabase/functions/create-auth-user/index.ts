@@ -20,15 +20,20 @@ type CreateAuthUserPayload = {
   role_id?: string;
 };
 
+const corsHeaders = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Methods": "POST, OPTIONS",
+  "Access-Control-Allow-Headers":
+    "authorization, x-client-info, apikey, content-type",
+};
+
 const json = (data: unknown, status = 200) =>
   new Response(JSON.stringify(data), {
     status,
     headers: { 
       "Content-Type": "application/json",
       "Cache-Control": "no-store",
-      "Access-Control-Allow-Origin": "*",
-      "Access-Control-Allow-Methods": "POST, OPTIONS",
-      "Access-Control-Allow-Headers": "Content-Type, Authorization",
+      ...corsHeaders,
     },
   });
 
@@ -105,13 +110,10 @@ async function assertCallerIsAdminOfLab(
 Deno.serve(async (req: Request) => {
   // Handle CORS preflight request
   if (req.method === "OPTIONS") {
+    console.log("[CREATE-AUTH-USER] CORS preflight received");
     return new Response(null, {
       status: 204,
-      headers: {
-        "Access-Control-Allow-Origin": "*",
-        "Access-Control-Allow-Methods": "POST, OPTIONS",
-        "Access-Control-Allow-Headers": "Content-Type, Authorization",
-      },
+      headers: corsHeaders,
     });
   }
 

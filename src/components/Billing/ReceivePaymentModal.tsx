@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { X, Check, Save } from 'lucide-react';
 import { database } from '../../utils/supabase';
+import { useEscapeModalClose } from '../../hooks/useEscapeModalClose';
 
 interface ReceivePaymentModalProps {
     accountId: string;
@@ -19,6 +20,7 @@ const ReceivePaymentModal: React.FC<ReceivePaymentModalProps> = ({
     onClose,
     onSuccess
 }) => {
+    useEscapeModalClose(onClose);
     const [amount, setAmount] = useState<string>('');
     const [paymentDate, setPaymentDate] = useState(new Date().toISOString().split('T')[0]);
     const [paymentMethod, setPaymentMethod] = useState('neft');

@@ -23,6 +23,7 @@ import {
   XCircle,
 } from 'lucide-react';
 import clsx from 'clsx';
+import { useEscapeModalClose } from '../../hooks/useEscapeModalClose';
 
 // ─── Types ─────────────────────────────────────────────────────────────────────
 
@@ -180,6 +181,7 @@ const CompletenessModal: React.FC<CompletenessModalProps> = ({
   templateName = 'Template',
   onInsert,
 }) => {
+  useEscapeModalClose(onClose, open);
   const [coverage, setCoverage] = useState<CoverageResult | null>(null);
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
   const [aiLoading, setAiLoading] = useState(false);

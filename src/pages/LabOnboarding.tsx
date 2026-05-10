@@ -60,6 +60,10 @@ const LabOnboarding: React.FC = () => {
             setError('City is required');
             return false;
         }
+        if (!formData.phone.trim()) {
+            setError('Phone number is required');
+            return false;
+        }
         return true;
     };
 
@@ -120,7 +124,7 @@ const LabOnboarding: React.FC = () => {
                     state: formData.state || null,
                     pincode: formData.pincode || null,
                     country_code: formData.country_code,
-                    phone: formData.phone || null,
+                    phone: formData.phone.trim(),
                     email: formData.email || formData.admin_email,
                     gstin: formData.gstin || null,
                     admin_name: formData.admin_name,
@@ -324,7 +328,7 @@ const LabOnboarding: React.FC = () => {
 
                                 <div>
                                     <label className="block text-sm font-medium text-gray-700 mb-1">
-                                        Phone
+                                        Phone <span className="text-red-500">*</span>
                                     </label>
                                     <div className="relative">
                                         <Phone className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-400" />
@@ -335,6 +339,7 @@ const LabOnboarding: React.FC = () => {
                                             onChange={handleChange}
                                             placeholder="98765 43210"
                                             className="w-full pl-10 pr-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                                            required
                                         />
                                     </div>
                                     <p className="text-sm text-gray-500 mt-1">Enter number without country code</p>

@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { X, User, Mail, Phone, Lock, Eye, EyeOff, Building, MapPin, AlertCircle } from 'lucide-react';
 import { supabase, database } from '../../utils/supabase';
+import { useEscapeModalClose } from '../../hooks/useEscapeModalClose';
 
 interface AddUserModalProps {
   onClose: () => void;
@@ -30,6 +31,7 @@ interface Location {
 }
 
 const AddUserModal: React.FC<AddUserModalProps> = ({ onClose, onSuccess, editUser }) => {
+  useEscapeModalClose(onClose);
   const [activeTab, setActiveTab] = useState<'basic' | 'role' | 'permissions'>('basic');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
@@ -165,13 +167,13 @@ const AddUserModal: React.FC<AddUserModalProps> = ({ onClose, onSuccess, editUse
   };
 
   const validateForm = (): string | null => {
-    if (!formData.name.trim()) return 'Name is required';
-    if (!formData.email.trim()) return 'Email is required';
-    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(formData.email)) return 'Invalid email format';
-    if (!editUser && !formData.password) return 'Password is required';
-    if (!editUser && formData.password !== formData.confirmPassword) return 'Passwords do not match';
-    if (!editUser && formData.password.length < 6) return 'Password must be at least 6 characters';
-    if (!formData.role_id) return 'Please select a role';
+    if (!formData.name.trim()) { setActiveTab('basic'); return 'Name is required'; }
+    if (!formData.email.trim()) { setActiveTab('basic'); return 'Email is required'; }
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(formData.email)) { setActiveTab('basic'); return 'Invalid email format'; }
+    if (!editUser && !formData.password) { setActiveTab('basic'); return 'Password is required'; }
+    if (!editUser && formData.password !== formData.confirmPassword) { setActiveTab('basic'); return 'Passwords do not match'; }
+    if (!editUser && formData.password.length < 6) { setActiveTab('basic'); return 'Password must be at least 6 characters'; }
+    if (!formData.role_id) { setActiveTab('role'); return 'Please select a role in the "Role & Centers" tab'; }
     return null;
   };
 
@@ -295,7 +297,26 @@ const AddUserModal: React.FC<AddUserModalProps> = ({ onClose, onSuccess, editUse
       onClose();
     } catch (err: any) {
       console.error('Error saving user:', err);
-      setError(err.message || 'Failed to save user');
+
+      let errorMessage = 'Failed to save user';
+
+      // FunctionsHttpError: edge function returned a non-2xx — real message is in the response body
+      if (err.context && typeof err.context.json === 'function') {
+        try {
+          const body = await err.context.json();
+          errorMessage = body?.error || body?.message || err.message || errorMessage;
+        } catch {
+          errorMessage = err.message || errorMessage;
+        }
+      } else if (err.message) {
+        if (err.message.includes('Failed to send a request to the Edge Function')) {
+          errorMessage = 'Could not reach the server — the user-creation service may be unavailable. Check your connection or contact support if this persists.';
+        } else {
+          errorMessage = err.message;
+        }
+      }
+
+      setError(errorMessage);
     } finally {
       setLoading(false);
     }
@@ -356,9 +377,20 @@ const AddUserModal: React.FC<AddUserModalProps> = ({ onClose, onSuccess, editUse
           <div className="p-6 space-y-6">
             {/* Error Message */}
             {error && (
-              <div className="bg-red-50 border border-red-200 rounded-md p-3 flex items-center gap-2">
-                <AlertCircle className="w-5 h-5 text-red-600" />
-                <span className="text-sm text-red-700">{error}</span>
+              <div className="bg-red-50 border border-red-200 rounded-md p-3 flex items-start gap-2">
+                <AlertCircle className="w-5 h-5 text-red-600 shrink-0 mt-0.5" />
+                <div className="flex-1">
+                  <span className="text-sm text-red-700">{error}</span>
+                  {error.includes('Role & Centers') && activeTab !== 'role' && (
+                    <button
+                      type="button"
+                      onClick={() => setActiveTab('role')}
+                      className="block mt-1 text-xs text-red-600 underline hover:text-red-800"
+                    >
+                      Go to Role & Centers tab →
+                    </button>
+                  )}
+                </div>
               </div>
             )}
 

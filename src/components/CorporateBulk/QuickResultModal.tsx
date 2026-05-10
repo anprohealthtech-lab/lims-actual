@@ -2,6 +2,7 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { X, Loader2, AlertCircle } from 'lucide-react';
 import { supabase } from '../../utils/supabase';
 import { ResultIntake } from '../Orders/ResultIntake';
+import { useEscapeModalClose } from '../../hooks/useEscapeModalClose';
 
 interface TestGroup {
   test_group_id: string;
@@ -32,6 +33,7 @@ interface QuickResultModalProps {
 }
 
 const QuickResultModal: React.FC<QuickResultModalProps> = ({ orderId, onClose, onSaved }) => {
+  useEscapeModalClose(onClose);
   const [order, setOrder] = useState<OrderData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);

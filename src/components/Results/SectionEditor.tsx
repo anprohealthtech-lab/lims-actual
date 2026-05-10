@@ -5,7 +5,7 @@
  * that require findings, impressions, recommendations, etc.
  */
 
-import React, { useState, useEffect, useCallback, useImperativeHandle, forwardRef } from 'react';
+import React, { useState, useEffect, useCallback, useImperativeHandle, forwardRef, useRef } from 'react';
 import {
   FileText,
   CheckSquare,
@@ -19,7 +19,12 @@ import {
   X,
   Wand2,
   ImagePlus,
-  Trash2
+  Trash2,
+  Bold,
+  Italic,
+  Underline,
+  List,
+  ListOrdered
 } from 'lucide-react';
 import { attachments, database } from '../../utils/supabase';
 import { generateSectionContent, getQuickPromptsForSection, SectionGeneratorResponse } from '../../utils/aiSectionService';
@@ -170,6 +175,214 @@ function buildMatrixHtml(config: MatrixConfig | undefined, selections: Record<st
 
   return `<table style="width:100%;border-collapse:collapse;font-size:13px;"><thead><tr><th style="border:1px solid #9ca3af;padding:8px;background:#f8fafc;"></th>${headerHtml}</tr></thead><tbody>${bodyHtml}</tbody></table>${notesHtml}`;
 }
+
+function plainTextToHtml(text: string): string {
+  const normalized = (text || '').trim();
+  if (!normalized) return '';
+
+  return normalized
+    .split(/\n\n+/)
+    .map(block => block.trim())
+    .filter(Boolean)
+    .map(block => {
+      const lines = block.split(/\n/).map(line => line.trim()).filter(Boolean);
+      const isBulletList = lines.length > 1 && lines.every(line => /^[-•]\s+/.test(line));
+      if (isBulletList) {
+        return `<ul>${lines.map(line => `<li>${line.replace(/^[-•]\s+/, '')}</li>`).join('')}</ul>`;
+      }
+      return `<p>${block.replace(/\n/g, '<br>')}</p>`;
+    })
+    .join('');
+}
+
+function sanitizeRichTextHtml(input: string): string {
+  if (typeof window === 'undefined' || !input) {
+    return input?.trim() || '';
+  }
+
+  const parser = new DOMParser();
+  const doc = parser.parseFromString(`<div>${input}</div>`, 'text/html');
+  const root = doc.body.firstElementChild as HTMLElement | null;
+  if (!root) return '';
+
+  const sanitizeNode = (node: Node, ownerDoc: Document): Node[] => {
+    if (node.nodeType === Node.TEXT_NODE) {
+      return [ownerDoc.createTextNode(node.textContent || '')];
+    }
+
+    if (node.nodeType !== Node.ELEMENT_NODE) {
+      return [];
+    }
+
+    const element = node as HTMLElement;
+    const tag = element.tagName.toLowerCase();
+    if (['script', 'style', 'meta', 'link', 'iframe', 'object'].includes(tag)) {
+      return [];
+    }
+
+    if (tag === 'br') {
+      return [ownerDoc.createElement('br')];
+    }
+
+    const childNodes = Array.from(element.childNodes).flatMap(child => sanitizeNode(child, ownerDoc));
+    const style = (element.getAttribute('style') || '').toLowerCase();
+    const isBold = ['strong', 'b'].includes(tag) || /font-weight\s*:\s*(bold|[6-9]00)/.test(style);
+    const isItalic = ['em', 'i'].includes(tag) || /font-style\s*:\s*italic/.test(style);
+    const isUnderline = tag === 'u' || /text-decoration[^;]*underline/.test(style);
+    const isSub = tag === 'sub';
+    const isSup = tag === 'sup';
+
+    let container: Node;
+    if (['p', 'ul', 'ol', 'li', 'sub', 'sup'].includes(tag)) {
+      container = ownerDoc.createElement(tag === 'div' ? 'p' : tag);
+    } else if (tag === 'div') {
+      container = ownerDoc.createElement('p');
+    } else {
+      container = ownerDoc.createDocumentFragment();
+    }
+
+    childNodes.forEach(child => container.appendChild(child));
+
+    let wrapped = container;
+    const wrapTag = (inner: Node, wrapperTag: 'strong' | 'em' | 'u' | 'sub' | 'sup') => {
+      const wrapper = ownerDoc.createElement(wrapperTag);
+      wrapper.appendChild(inner);
+      return wrapper;
+    };
+
+    if (isBold) wrapped = wrapTag(wrapped, 'strong');
+    if (isItalic) wrapped = wrapTag(wrapped, 'em');
+    if (isUnderline) wrapped = wrapTag(wrapped, 'u');
+    if (isSub) wrapped = wrapTag(wrapped, 'sub');
+    if (isSup) wrapped = wrapTag(wrapped, 'sup');
+
+    return [wrapped];
+  };
+
+  const outputDoc = document.implementation.createHTMLDocument('');
+  const fragment = outputDoc.createDocumentFragment();
+  Array.from(root.childNodes).flatMap(child => sanitizeNode(child, outputDoc)).forEach(child => fragment.appendChild(child));
+
+  const wrapper = outputDoc.createElement('div');
+  wrapper.appendChild(fragment);
+
+  return wrapper.innerHTML
+    .replace(/<p>\s*<\/p>/g, '')
+    .replace(/<(strong|em|u|sub|sup)>\s*<\/\1>/g, '')
+    .trim();
+}
+
+function normalizeEditorHtml(value: string): string {
+  const trimmed = (value || '').trim();
+  if (!trimmed) return '';
+  return sanitizeRichTextHtml(/<[^>]+>/.test(trimmed) ? trimmed : plainTextToHtml(trimmed));
+}
+
+function joinHtmlSegments(...segments: Array<string | null | undefined>): string {
+  const cleaned = segments
+    .map(segment => normalizeEditorHtml(segment || ''))
+    .filter(Boolean);
+  return cleaned.join('');
+}
+
+interface RichTextInputProps {
+  value: string;
+  onChange: (value: string) => void;
+  disabled?: boolean;
+  placeholder?: string;
+  minHeightClass?: string;
+}
+
+const RichTextInput: React.FC<RichTextInputProps> = ({
+  value,
+  onChange,
+  disabled = false,
+  placeholder = 'Enter content...',
+  minHeightClass = 'min-h-[120px]',
+}) => {
+  const editorRef = useRef<HTMLDivElement | null>(null);
+  const [isEmpty, setIsEmpty] = useState(!value.trim());
+
+  useEffect(() => {
+    const nextHtml = normalizeEditorHtml(value);
+    const editor = editorRef.current;
+    if (!editor) return;
+    if (editor.innerHTML !== nextHtml) {
+      editor.innerHTML = nextHtml;
+    }
+    setIsEmpty(!nextHtml.replace(/<br\s*\/?>/gi, '').replace(/&nbsp;/g, ' ').trim());
+  }, [value]);
+
+  const emitChange = useCallback(() => {
+    const editor = editorRef.current;
+    if (!editor) return;
+    const sanitized = sanitizeRichTextHtml(editor.innerHTML);
+    if (editor.innerHTML !== sanitized) {
+      editor.innerHTML = sanitized;
+    }
+    setIsEmpty(!sanitized.replace(/<br\s*\/?>/gi, '').replace(/&nbsp;/g, ' ').trim());
+    onChange(sanitized);
+  }, [onChange]);
+
+  const runCommand = (command: string) => {
+    if (disabled) return;
+    editorRef.current?.focus();
+    document.execCommand(command, false);
+    emitChange();
+  };
+
+  const insertSanitizedHtml = (html: string) => {
+    const sanitized = sanitizeRichTextHtml(html);
+    if (!sanitized) return;
+    editorRef.current?.focus();
+    document.execCommand('insertHTML', false, sanitized);
+    emitChange();
+  };
+
+  return (
+    <div className={`border rounded-lg overflow-hidden ${disabled ? 'bg-gray-100 opacity-80' : 'bg-white'}`}>
+      <div className="flex items-center gap-1 px-2 py-2 border-b bg-gray-50">
+        <button type="button" onClick={() => runCommand('bold')} disabled={disabled} className="p-1.5 rounded hover:bg-gray-200 disabled:opacity-50" title="Bold">
+          <Bold className="w-4 h-4" />
+        </button>
+        <button type="button" onClick={() => runCommand('italic')} disabled={disabled} className="p-1.5 rounded hover:bg-gray-200 disabled:opacity-50" title="Italic">
+          <Italic className="w-4 h-4" />
+        </button>
+        <button type="button" onClick={() => runCommand('underline')} disabled={disabled} className="p-1.5 rounded hover:bg-gray-200 disabled:opacity-50" title="Underline">
+          <Underline className="w-4 h-4" />
+        </button>
+        <div className="w-px h-5 bg-gray-300 mx-1" />
+        <button type="button" onClick={() => runCommand('insertUnorderedList')} disabled={disabled} className="p-1.5 rounded hover:bg-gray-200 disabled:opacity-50" title="Bullet List">
+          <List className="w-4 h-4" />
+        </button>
+        <button type="button" onClick={() => runCommand('insertOrderedList')} disabled={disabled} className="p-1.5 rounded hover:bg-gray-200 disabled:opacity-50" title="Numbered List">
+          <ListOrdered className="w-4 h-4" />
+        </button>
+      </div>
+      <div className="relative">
+        {isEmpty && (
+          <div className="absolute left-3 top-3 text-sm text-gray-400 pointer-events-none">
+            {placeholder}
+          </div>
+        )}
+        <div
+          ref={editorRef}
+          contentEditable={!disabled}
+          suppressContentEditableWarning
+          onInput={emitChange}
+          onBlur={emitChange}
+          onPaste={(e) => {
+            e.preventDefault();
+            const html = e.clipboardData.getData('text/html');
+            const text = e.clipboardData.getData('text/plain');
+            insertSanitizedHtml(html || plainTextToHtml(text));
+          }}
+          className={`px-3 py-3 text-sm text-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-400 ${minHeightClass}`}
+        />
+      </div>
+    </div>
+  );
+};
 
 // ── CascadeSelector component ──────────────────────────────────────────────
 
@@ -435,6 +648,7 @@ interface TemplateSection {
   section_type: string;
   section_name: string;
   display_order: number;
+  font_size?: number;
   default_content: string | null;
   predefined_options: string[];
   is_required: boolean;
@@ -456,10 +670,18 @@ interface SectionContent {
   cascading_selections?: Record<string, any>; // levelId → optionId[] or matrix cell payloads
 }
 
+export interface SectionPreviewItem {
+  id: string;
+  section_name: string;
+  font_size: number;
+  final_content: string;
+}
+
 interface SectionEditorProps {
   resultId: string;
   testGroupId: string;
   onSave?: (sections: SectionContent[]) => void;
+  onContentChange?: (preview: SectionPreviewItem[]) => void;
   readOnly?: boolean;
   canEdit?: boolean;
   className?: string;
@@ -491,10 +713,40 @@ export interface SectionEditorRef {
   save: () => Promise<void>;
 }
 
+function buildSectionFinalContent(
+  section: TemplateSection | undefined,
+  content: SectionContent,
+  overrides?: Partial<SectionContent>,
+): string {
+  const nextContent = { ...content, ...overrides };
+  if (!section) return normalizeEditorHtml(nextContent.final_content || '');
+
+  if (section.section_config?.mode === 'matrix') {
+    return buildMatrixHtml(
+      section.section_config.matrix,
+      nextContent.cascading_selections || {},
+      nextContent.custom_text || '',
+    );
+  }
+
+  const selectedTexts = (nextContent.selected_options || [])
+    .slice()
+    .sort((a, b) => a - b)
+    .map(i => section.predefined_options?.[i])
+    .filter(Boolean) as string[];
+
+  const baseHtml = section.section_config?.mode === 'cascading' && section.section_config.cascade_levels.length > 0
+    ? normalizeEditorHtml(buildCascadeContent(section.section_config.cascade_levels, nextContent.cascading_selections || {}))
+    : joinHtmlSegments(...selectedTexts.map(text => plainTextToHtml(text)));
+
+  return joinHtmlSegments(baseHtml, nextContent.custom_text || '');
+}
+
 const SectionEditor = forwardRef<SectionEditorRef, SectionEditorProps>(({
   resultId,
   testGroupId,
   onSave,
+  onContentChange,
   readOnly = false,
   canEdit = true,
   className = '',
@@ -564,27 +816,27 @@ const SectionEditor = forwardRef<SectionEditorRef, SectionEditorProps>(({
       const contentMap = new Map<string, SectionContent>();
       for (const section of filteredSections) {
         const existing = existingContent?.find((c: any) => c.section_id === section.id);
-        if (existing) {
-          contentMap.set(section.id, {
-            id: existing.id,
-            section_id: existing.section_id,
-            selected_options: existing.selected_options || [],
-            custom_text: existing.custom_text || '',
-            final_content: existing.final_content || '',
-            image_urls: existing.image_urls || [],
-            is_finalized: existing.is_finalized || false,
-            cascading_selections: existing.cascading_selections || {},
-          });
-        } else {
+	        if (existing) {
+	          contentMap.set(section.id, {
+	            id: existing.id,
+	            section_id: existing.section_id,
+	            selected_options: existing.selected_options || [],
+	            custom_text: normalizeEditorHtml(existing.custom_text || ''),
+	            final_content: normalizeEditorHtml(existing.final_content || ''),
+	            image_urls: existing.image_urls || [],
+	            is_finalized: existing.is_finalized || false,
+	            cascading_selections: existing.cascading_selections || {},
+	          });
+	        } else {
           // Initialize with defaults
-          contentMap.set(section.id, {
-            section_id: section.id,
-            selected_options: [],
-            custom_text: '',
-            final_content: section.default_content || '',
-            image_urls: [],
-            is_finalized: false,
-          });
+	          contentMap.set(section.id, {
+	            section_id: section.id,
+	            selected_options: [],
+	            custom_text: '',
+	            final_content: normalizeEditorHtml(section.default_content || ''),
+	            image_urls: [],
+	            is_finalized: false,
+	          });
         }
       }
       setContents(contentMap);
@@ -601,6 +853,17 @@ const SectionEditor = forwardRef<SectionEditorRef, SectionEditorProps>(({
       loadData();
     }
   }, [resultId, testGroupId, loadData]);
+
+  useEffect(() => {
+    if (!onContentChange || sections.length === 0) return;
+    const preview: SectionPreviewItem[] = sections.map(s => ({
+      id: s.id,
+      section_name: s.section_name,
+      font_size: s.font_size ?? 13,
+      final_content: contents.get(s.id)?.final_content ?? '',
+    }));
+    onContentChange(preview);
+  }, [contents, sections, onContentChange]);
 
   // Global keyboard shortcut: press 'a','b','c'... to toggle predefined options
   // Only fires when not typing in an input/textarea and a section with options is expanded
@@ -647,21 +910,15 @@ const SectionEditor = forwardRef<SectionEditorRef, SectionEditorProps>(({
         selectedOptions.push(optionIndex);
       }
 
-      // Rebuild final content
-      const section = sections.find(s => s.id === sectionId);
-      const selectedTexts = selectedOptions
-        .sort((a, b) => a - b)
-        .map(i => section?.predefined_options[i])
-        .filter(Boolean);
-      
-      const finalContent = [
-        ...selectedTexts,
-        content.custom_text.trim(),
-      ].filter(Boolean).join('\n\n');
+	      // Rebuild final content
+	      const section = sections.find(s => s.id === sectionId);
+	      const finalContent = buildSectionFinalContent(section, content, {
+	        selected_options: selectedOptions,
+	      });
 
-      newMap.set(sectionId, {
-        ...content,
-        selected_options: selectedOptions,
+	      newMap.set(sectionId, {
+	        ...content,
+	        selected_options: selectedOptions,
         final_content: finalContent,
       });
       return newMap;
@@ -674,7 +931,7 @@ const SectionEditor = forwardRef<SectionEditorRef, SectionEditorProps>(({
       const newMap = new Map(prev);
       const content = newMap.get(sectionId);
       if (!content || content.is_finalized) return prev;
-      newMap.set(sectionId, { ...content, final_content: text });
+      newMap.set(sectionId, { ...content, final_content: sanitizeRichTextHtml(text) });
       return newMap;
     });
   };
@@ -687,31 +944,16 @@ const SectionEditor = forwardRef<SectionEditorRef, SectionEditorProps>(({
       if (!content || content.is_finalized) return prev;
 
       const section = sections.find(s => s.id === sectionId);
-
-      let baseContent: string;
-      if (section?.section_config?.mode === 'cascading' && section.section_config.cascade_levels.length > 0) {
-        baseContent = buildCascadeContent(section.section_config.cascade_levels, content.cascading_selections || {});
-      } else if (section?.section_config?.mode === 'matrix') {
-        baseContent = buildMatrixHtml(section.section_config.matrix, content.cascading_selections || {}, text);
-        newMap.set(sectionId, {
-          ...content,
-          custom_text: text,
-          final_content: baseContent,
-        });
-        return newMap;
-      } else {
-        const selectedTexts = content.selected_options
-          .sort((a, b) => a - b)
-          .map(i => section?.predefined_options[i])
-          .filter(Boolean) as string[];
-        baseContent = selectedTexts.join('\n\n');
-      }
-
-      const finalContent = [baseContent, text.trim()].filter(Boolean).join('\n\n');
+      const sanitizedText = section?.section_config?.mode === 'matrix'
+        ? text
+        : sanitizeRichTextHtml(text);
+      const finalContent = buildSectionFinalContent(section, content, {
+        custom_text: sanitizedText,
+      });
 
       newMap.set(sectionId, {
         ...content,
-        custom_text: text,
+        custom_text: sanitizedText,
         final_content: finalContent,
       });
       return newMap;
@@ -920,27 +1162,19 @@ const SectionEditor = forwardRef<SectionEditorRef, SectionEditorProps>(({
 
     setContents(prev => {
       const newMap = new Map(prev);
-      const content = newMap.get(sectionId);
-      if (!content || content.is_finalized) return prev;
+	      const content = newMap.get(sectionId);
+	      if (!content || content.is_finalized) return prev;
 
-      const section = sections.find(s => s.id === sectionId);
-      // Append AI content to custom text
-      const newCustomText = content.custom_text
-        ? `${content.custom_text}\n\n${aiResult.generatedContent}`
-        : aiResult.generatedContent;
+	      const section = sections.find(s => s.id === sectionId);
+	      // Append AI content to custom text
+	      const aiHtml = plainTextToHtml(aiResult.generatedContent);
+	      const newCustomText = joinHtmlSegments(content.custom_text, aiHtml);
+	      const finalContent = buildSectionFinalContent(section, content, {
+	        custom_text: newCustomText,
+	      });
 
-      const finalContent = section?.section_config?.mode === 'matrix'
-        ? buildMatrixHtml(section.section_config.matrix, content.cascading_selections || {}, newCustomText)
-        : [
-          ...content.selected_options
-            .sort((a, b) => a - b)
-            .map(i => section?.predefined_options[i])
-            .filter(Boolean),
-          newCustomText.trim(),
-        ].filter(Boolean).join('\n\n');
-
-      newMap.set(sectionId, {
-        ...content,
+	      newMap.set(sectionId, {
+	        ...content,
         custom_text: newCustomText,
         final_content: finalContent,
       });
@@ -963,18 +1197,25 @@ const SectionEditor = forwardRef<SectionEditorRef, SectionEditorProps>(({
 
       const savePromises: Promise<any>[] = [];
 
-      for (const [sectionId, content] of contents.entries()) {
-        savePromises.push(
-          database.resultSectionContent.upsert({
-            result_id: resultId,
-            section_id: sectionId,
-            selected_options: content.selected_options,
-            custom_text: content.custom_text,
-            final_content: content.final_content,
-            image_urls: content.image_urls || [],
-            cascading_selections: content.cascading_selections || {},
-          }, currentUser.user.id)
-        );
+	      for (const [sectionId, content] of contents.entries()) {
+	        const section = sections.find(s => s.id === sectionId);
+	        const customTextToSave = section?.section_config?.mode === 'matrix'
+	          ? content.custom_text
+	          : sanitizeRichTextHtml(content.custom_text);
+	        const finalContentToSave = section?.section_config?.mode === 'matrix'
+	          ? content.final_content
+	          : sanitizeRichTextHtml(content.final_content);
+	        savePromises.push(
+	          database.resultSectionContent.upsert({
+	            result_id: resultId,
+	            section_id: sectionId,
+	            selected_options: content.selected_options,
+	            custom_text: customTextToSave,
+	            final_content: finalContentToSave,
+	            image_urls: content.image_urls || [],
+	            cascading_selections: content.cascading_selections || {},
+	          }, currentUser.user.id)
+	        );
       }
 
       await Promise.all(savePromises);
@@ -1183,27 +1424,37 @@ const SectionEditor = forwardRef<SectionEditorRef, SectionEditorProps>(({
                   )}
 
                   {/* Custom Text */}
-                  {section.is_editable && (
-                    <div>
-                      <label className="block text-sm font-medium text-gray-700 mb-2">
-                        {section.section_config?.mode === 'matrix'
-                          ? 'Add notes below table (optional):'
-                          : section.predefined_options?.length > 0
-                            ? 'Add custom text (optional):'
-                            : 'Enter content:'}
-                      </label>
-                      <textarea
-                        value={content?.custom_text || ''}
-                        onChange={(e) => canEditText && updateCustomText(section.id, e.target.value)}
-                        disabled={!canEditText}
-                        rows={4}
-                        placeholder={section.default_content || 'Enter your findings, observations, or notes...'}
-                        className={`w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent ${
-                          !canEditText ? 'bg-gray-100 cursor-not-allowed' : 'bg-white'
-                        }`}
-                      />
-                    </div>
-                  )}
+	                  {section.is_editable && (
+	                    <div>
+	                      <label className="block text-sm font-medium text-gray-700 mb-2">
+	                        {section.section_config?.mode === 'matrix'
+	                          ? 'Add notes below table (optional):'
+	                          : section.predefined_options?.length > 0
+	                            ? 'Add custom text (optional):'
+	                            : 'Enter content:'}
+	                      </label>
+	                      {section.section_config?.mode === 'matrix' ? (
+	                        <textarea
+	                          value={content?.custom_text || ''}
+	                          onChange={(e) => canEditText && updateCustomText(section.id, e.target.value)}
+	                          disabled={!canEditText}
+	                          rows={4}
+	                          placeholder={section.default_content || 'Enter your findings, observations, or notes...'}
+	                          className={`w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent ${
+	                            !canEditText ? 'bg-gray-100 cursor-not-allowed' : 'bg-white'
+	                          }`}
+	                        />
+	                      ) : (
+	                        <RichTextInput
+	                          value={content?.custom_text || ''}
+	                          onChange={(value) => canEditText && updateCustomText(section.id, value)}
+	                          disabled={!canEditText}
+	                          placeholder={section.default_content || 'Paste from Word or type your findings here...'}
+	                          minHeightClass="min-h-[110px]"
+	                        />
+	                      )}
+	                    </div>
+	                  )}
 
                   {/* Section Attachments */}
                   {section.allow_images && (
@@ -1404,15 +1655,15 @@ const SectionEditor = forwardRef<SectionEditorRef, SectionEditorProps>(({
 	                              />
 	                            </div>
 	                          ) : (
-	                            <textarea
-	                              value={content.final_content}
-	                              onChange={(e) => !isLocked && updateFinalContent(section.id, e.target.value)}
-	                              disabled={isLocked}
-	                              rows={6}
-	                              className={`w-full px-4 py-3 text-sm text-gray-800 bg-transparent border-0 focus:ring-2 focus:ring-blue-400 focus:outline-none resize-y ${
-	                                isLocked ? 'cursor-not-allowed text-gray-500' : ''
-	                              }`}
-	                            />
+	                            <div className="p-3">
+	                              <RichTextInput
+	                                value={content.final_content}
+	                                onChange={(value) => !isLocked && updateFinalContent(section.id, value)}
+	                                disabled={isLocked}
+	                                placeholder="Final report content will appear here..."
+	                                minHeightClass="min-h-[140px]"
+	                              />
+	                            </div>
 	                          )
 	                        )}
 	                        {content?.image_urls && content.image_urls.length > 0 && (

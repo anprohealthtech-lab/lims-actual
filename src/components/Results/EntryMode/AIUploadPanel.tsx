@@ -3,6 +3,7 @@ import { Brain, Upload, File, AlertCircle, CheckCircle, Loader, Play } from 'luc
 import { supabase, attachments, database } from '../../../utils/supabase';
 import { useAuth } from '../../../contexts/AuthContext';
 import { toast } from 'react-hot-toast';
+import { calculationEngine, type CalculatedAnalyte } from '../../../utils/calculationEngine';
 import AIProcessingProgress, { AIStep } from '../../Orders/AIProcessingProgress';
 
 interface Order {
@@ -496,6 +497,85 @@ const AIUploadPanel: React.FC<AIUploadPanelProps> = ({ order, testGroup, onUploa
           .insert(resultValues);
 
         if (error) throw error;
+
+        const { data: calcAnalytes } = await supabase
+          .from('test_group_analytes')
+          .select(`
+            analyte_id,
+            lab_analyte_id,
+            analytes!inner(id, name, formula, formula_variables),
+            lab_analytes(id, name, unit, formula, formula_variables, is_calculated, reference_range, lab_specific_reference_range, value_type)
+          `)
+          .eq('test_group_id', testGroupId);
+
+        const calculatedDefs: CalculatedAnalyte[] = (calcAnalytes || [])
+          .map((item: any) => {
+            const analyte = item.analytes;
+            const labAnalyte = item.lab_analyte_id ? item.lab_analytes : null;
+            const formula = labAnalyte?.formula ?? analyte?.formula;
+            const isCalculated = labAnalyte?.is_calculated ?? !!formula;
+            if (!isCalculated || !formula) return null;
+            return {
+              id: analyte.id,
+              lab_analyte_id: item.lab_analyte_id || labAnalyte?.id || null,
+              name: labAnalyte?.name || analyte.name,
+              formula,
+              formula_variables: labAnalyte?.formula_variables ?? analyte?.formula_variables ?? [],
+              unit: labAnalyte?.unit || '',
+              reference_range: labAnalyte?.lab_specific_reference_range ?? labAnalyte?.reference_range ?? '',
+              value_type: labAnalyte?.value_type,
+            };
+          })
+          .filter(Boolean) as CalculatedAnalyte[];
+
+        if (calculatedDefs.length > 0) {
+          const deps = await calculationEngine.getDependenciesForCalculatedAnalytes(calculatedDefs, order.lab_id);
+          const calculations = calculationEngine.computeCalculatedValuesFromDefinitions(
+            resultValues.map((value) => ({
+              analyte_id: value.analyte_id || undefined,
+              lab_analyte_id: value.lab_analyte_id || null,
+              parameter: value.parameter,
+              value: String(value.value || ''),
+              unit: value.unit,
+              reference_range: value.reference_range,
+              flag: value.flag || undefined,
+            })),
+            calculatedDefs,
+            deps,
+          );
+
+          const calcRows = calculations
+            .filter((calculation) => calculation.success && calculation.value !== '')
+            .map((calculation) => ({
+              result_id: resultId,
+              analyte_id: calculation.analyte_id,
+              lab_analyte_id: calculation.lab_analyte_id || null,
+              analyte_name: calculation.parameter,
+              parameter: calculation.parameter,
+              value: calculation.value,
+              unit: calculation.unit || '',
+              reference_range: calculation.reference_range || '',
+              flag: null,
+              order_id: order.id,
+              test_group_id: testGroupId,
+              lab_id: order.lab_id,
+              is_auto_calculated: true,
+            }));
+
+          if (calcRows.length > 0) {
+            await supabase
+              .from('result_values')
+              .delete()
+              .eq('result_id', resultId)
+              .in('analyte_id', calcRows.map((row) => row.analyte_id));
+
+            const { error: calcInsertError } = await supabase
+              .from('result_values')
+              .insert(calcRows);
+
+            if (calcInsertError) throw calcInsertError;
+          }
+        }
 
         // Auto-consume inventory for non-outsourced tests (non-blocking)
         const { data: orderTest } = await supabase

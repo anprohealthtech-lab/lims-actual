@@ -5,6 +5,7 @@ import {
   getOrderAssignedColor,
 } from "./colorAssignment";
 import { notificationTriggerService } from "./notificationTriggerService";
+import { getBlockedApprovalCandidates } from "./resultApprovalGuard";
 
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
 const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
@@ -70,6 +71,9 @@ export interface ReportTemplateAnalyteRow {
   expected_normal_values?: string[];
   is_auto_calculated?: boolean;
   is_calculated?: boolean;
+  group_interpretation?: string | null;
+  show_group_interpretation_in_report?: boolean;
+  print_options?: Record<string, unknown> | null;
 }
 
 export interface ReportTemplateContext {
@@ -1027,6 +1031,7 @@ export const database = {
       preferred_language?: string;
       method_options?: string[];
       pdf_letterhead_mode?: "background" | "header_footer";
+      show_dual_signatory?: boolean;
       loyalty_enabled?: boolean;
       loyalty_conversion_rate?: number;
       loyalty_min_redeem_points?: number;
@@ -4319,6 +4324,43 @@ export const database = {
       note?: string,
     ): Promise<{ data: any; error: any }> => {
       try {
+        if (status === "approved" && resultValueIds.length > 0) {
+          let validationRows: any[] | null = null;
+
+          const withCalc = await supabase
+            .from("result_values")
+            .select("id, parameter, value, is_auto_calculated")
+            .in("id", resultValueIds);
+
+          if (!withCalc.error) {
+            validationRows = withCalc.data || [];
+          } else if (String(withCalc.error.message || "").includes("is_auto_calculated")) {
+            const fallback = await supabase
+              .from("result_values")
+              .select("id, parameter, value")
+              .in("id", resultValueIds);
+
+            if (fallback.error) {
+              throw fallback.error;
+            }
+            validationRows = fallback.data || [];
+          } else {
+            throw withCalc.error;
+          }
+
+          const blocked = getBlockedApprovalCandidates(validationRows || []);
+          if (blocked.length > 0) {
+            throw new Error(
+              `Cannot approve blank or placeholder result values: ${
+                blocked
+                  .slice(0, 6)
+                  .map((row: any) => row.parameter || row.id)
+                  .join(", ")
+              }${blocked.length > 6 ? ` and ${blocked.length - 6} more` : ""}`,
+            );
+          }
+        }
+
         // Get current user
         const { data: currentUser } = await database.auth.getCurrentUser();
         if (!currentUser?.user) {
@@ -7818,6 +7860,7 @@ export const database = {
       section_type: string;
       section_name: string;
       display_order?: number;
+      font_size?: number;
       default_content?: string;
       predefined_options?: string[];
       is_required?: boolean;
@@ -7847,6 +7890,7 @@ export const database = {
         section_type: string;
         section_name: string;
         display_order: number;
+        font_size: number;
         default_content: string;
         predefined_options: string[];
         is_required: boolean;
@@ -7906,6 +7950,7 @@ export const database = {
             allow_technician_entry,
             placeholder_key,
             display_order,
+            font_size,
             section_config
           )
         `)
@@ -11045,6 +11090,44 @@ const brandingSignatureAPI = {
         p_user_id: userId,
         p_lab_id: labId,
       });
+
+      return { data, error };
+    },
+
+    setLabDefault: async (
+      signatureId: string,
+      labIdOverride?: string,
+    ) => {
+      const labId = labIdOverride || await database.getCurrentUserLabId();
+      if (!labId) {
+        return {
+          data: null,
+          error: new Error("No lab_id found for current user"),
+        };
+      }
+
+      const { error: clearError } = await supabase
+        .from("lab_user_signatures")
+        .update({
+          is_default: false,
+          updated_at: new Date().toISOString(),
+        })
+        .eq("lab_id", labId);
+
+      if (clearError) {
+        return { data: null, error: clearError };
+      }
+
+      const { data, error } = await supabase
+        .from("lab_user_signatures")
+        .update({
+          is_default: true,
+          updated_at: new Date().toISOString(),
+        })
+        .eq("id", signatureId)
+        .eq("lab_id", labId)
+        .select()
+        .single();
 
       return { data, error };
     },

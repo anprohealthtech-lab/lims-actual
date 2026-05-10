@@ -105,6 +105,9 @@ interface TestGroup {
   required_patient_inputs?: string[];
   ref_range_ai_config?: any;
   collection_charge?: number | null;
+  gender?: string | null;
+  onlyMale?: boolean | null;
+  onlyFemale?: boolean | null;
 }
 
 
@@ -540,15 +543,19 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
   const [npGenderAutoDetected, setNpGenderAutoDetected] = useState(false);
   const [npGenderManuallySet, setNpGenderManuallySet] = useState(false);
 
-  const npDetectGender = (sal: string, first: string, last: string): 'Male' | 'Female' | '' => {
-    const s = sal.toLowerCase().replace('.', '');
-    if (['mr', 'master', 'shri', 'shriman'].includes(s)) return 'Male';
-    if (['mrs', 'ms', 'miss', 'smt', 'shrimati', 'ku', 'kumari', 'baby'].includes(s)) return 'Female';
-    const words = `${first} ${last}`.toLowerCase().split(/\s+/);
+  const npDetectGender = (sal: string, first: string, middle: string, last: string): 'Male' | 'Female' | '' => {
+    const s = sal.toLowerCase().replace(/\./g, '').trim();
+    if (['mr', 'master', 'shri', 'shriman', 'bhai'].includes(s)) return 'Male';
+    if (['mrs', 'ms', 'miss', 'smt', 'shrimati', 'ku', 'kumari', 'baby', 'ben', 'bhen', 'bai'].includes(s)) return 'Female';
+    const words = [first, middle, last]
+      .join(' ')
+      .toLowerCase()
+      .split(/[^a-z0-9]+/)
+      .filter(Boolean);
     const female = ['ben', 'bhen', 'bai', 'devi', 'kumari', 'shrimati', 'smt', 'sister', 'mata', 'amma', 'didi'];
     const male = ['bhai', 'bro', 'shriman', 'lal', 'singh', 'ram', 'kumar'];
-    if (words.some(w => female.includes(w))) return 'Female';
-    if (words.some(w => male.includes(w))) return 'Male';
+    if (words.some(w => female.includes(w) || w.endsWith('ben') || w.endsWith('bhen'))) return 'Female';
+    if (words.some(w => male.includes(w) || w.endsWith('bhai'))) return 'Male';
     return '';
   };
 
@@ -560,19 +567,41 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
     setNpGenderAutoDetected(false); setNpGenderManuallySet(false);
   };
 
+  const openNewPatientModal = () => {
+    npResetNameFields();
+    setNewPatient({ name: '', age: '', age_unit: 'years', gender: 'Male', phone: '', email: '', dob: '' });
+    setNewPatientCustomFields({});
+    setShowNewPatientModal(true);
+  };
+
   // Auto-detect gender when split name fields change (skipped if user manually picked)
   useEffect(() => {
     if (!npGenderManuallySet) {
-      const detected = npDetectGender(npSalutation, npFirstName, npLastName);
+      const detected = npDetectGender(npSalutation, npFirstName, npMiddleName, npLastName);
       if (detected) {
         setNewPatient(p => ({ ...p, gender: detected }));
         setNpGenderAutoDetected(true);
+      } else {
+        setNpGenderAutoDetected(false);
       }
     }
     // Always sync composed name
     const full = npGetFullName();
     if (full) setNewPatient(p => ({ ...p, name: full }));
-  }, [npSalutation, npFirstName, npMiddleName, npLastName]);
+  }, [npSalutation, npFirstName, npMiddleName, npLastName, npGenderManuallySet]);
+
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (!(e.altKey && (e.key === 'p' || e.key === 'P'))) return;
+      if (showNewPatientModal || selectedPatient) return;
+
+      e.preventDefault();
+      openNewPatientModal();
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [showNewPatientModal, selectedPatient]);
 
   const calcAgeFromDob = (dob: string): { age: string; age_unit: 'years' | 'months' | 'days' } => {
     const birth = new Date(dob);
@@ -1817,8 +1846,11 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
   }, [selectedTests.join(',')]);
 
   // Calculate discount
+  // % discount applies only to test charges (not collection charge or billing items)
   const discountAmount = discountValue > 0
-    ? (discountType === 'percentage' ? ((totalAmount + collectionCharge + extraChargesTotal) * discountValue) / 100 : Math.min(discountValue, totalAmount + collectionCharge + extraChargesTotal))
+    ? (discountType === 'percentage'
+        ? (totalAmount * discountValue) / 100
+        : Math.min(discountValue, totalAmount + collectionCharge + extraChargesTotal))
     : 0;
   const loyaltyDiscountAmount = loyaltyRedeemEnabled && loyaltyPointsToRedeem > 0
     ? loyaltyPointsToRedeem * loyaltyPointValue
@@ -2097,11 +2129,13 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
                     {!selectedPatient && (
                       <button
                         type="button"
-                        onClick={() => { npResetNameFields(); setNewPatient({ name: '', age: '', age_unit: 'years', gender: 'Male', phone: '', email: '', dob: '' }); setShowNewPatientModal(true); }}
+                        onClick={openNewPatientModal}
+                        title="Add Patient (Alt+P)"
                         className="px-3 py-2 text-sm bg-blue-50 text-blue-700 rounded-md hover:bg-blue-100 whitespace-nowrap"
                       >
                         <span className="inline-flex items-center gap-1">
                           <Plus className="h-4 w-4" /> Add Patient
+                          <span className="hidden md:inline text-xs text-blue-500">(Alt+P)</span>
                         </span>
                       </button>
                     )}
@@ -2219,6 +2253,13 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
                     ) : (
                       testGroups
                         .filter((t) => {
+                          // Gender restriction: hide male-only tests for female patients and vice versa
+                          const patientGender = selectedPatient?.gender;
+                          if (patientGender === 'Female') {
+                            if (t.onlyMale || t.gender === 'Male') return false;
+                          } else if (patientGender === 'Male') {
+                            if (t.onlyFemale || t.gender === 'Female') return false;
+                          }
                           if (!testSearch) return true;
                           const search = testSearch.toLowerCase();
                           return (

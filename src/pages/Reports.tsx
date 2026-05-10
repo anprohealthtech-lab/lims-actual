@@ -5,7 +5,6 @@ import { MobileFAB } from '../components/ui/MobileFAB';
 import {
   FileText,
   Download,
-  Eye,
   Search,
   RefreshCw,
   Filter,
@@ -45,9 +44,15 @@ import {
   createReportDataFromContext,
   selectTemplateForContext,
 } from '../utils/pdfService';
+import {
+  autoAssignCompactPages,
+  buildCompactGroupDefinitions,
+  getCompactPlannerSuggestion,
+} from '../utils/compactPrintPdf';
 import { convertToCustomDomain } from '../utils/storageUrlBuilder';
 import { quickViewPDF } from '../utils/pdfViewerService';
 import type { LabTemplateRecord, ReportData, LabBrandingHtmlDefaults } from '../utils/pdfService';
+import type { ReportTemplateContext } from '../utils/supabase';
 import PDFProgressModal from '../components/PDFProgressModal';
 import { usePDFGeneration, isOrderReportReady } from '../hooks/usePDFGeneration';
 import QuickSendReport from '../components/WhatsApp/QuickSendReport';
@@ -57,9 +62,7 @@ import PDFSettingsModal, {
   loadSavedPDFSettings,
   PDF_PRESETS
 } from '../components/PDF/PDFSettingsModal';
-import ReportDesignStudio from '../components/ReportStudio/ReportDesignStudio';
 import { SendReportModal } from '../components/Dashboard/SendReportModal';
-import { ReportPreviewModal } from '../components/Reports/ReportPreviewModal';
 
 // Helper function to safely format dates
 const safeFormatDate = (dateValue: string | null | undefined, formatString: string = 'MMM d, yyyy'): string => {
@@ -136,6 +139,8 @@ interface OrderReportSettings {
   groupOrderOverrideEnabled?: boolean;
   groupOrder?: string[];
   printLayoutMode?: 'standard' | 'compact';
+  compactPageAssignments?: Record<string, number>;
+  compactMaxClubbedAnalytes?: number;
 }
 
 interface OrderSettingsGroupItem {
@@ -143,6 +148,8 @@ interface OrderSettingsGroupItem {
   testName: string;
   reportPriority: number | null;
   printOrder: number;
+  analyteCount: number;
+  pageNumber: number;
   createdAt?: string | null;
 }
 
@@ -174,24 +181,27 @@ const Reports: React.FC = () => {
   const [orderSettingsOrderId, setOrderSettingsOrderId] = useState<string | null>(null);
   const [orderSettingsGroups, setOrderSettingsGroups] = useState<OrderSettingsGroupItem[]>([]);
   const [orderSettingsLayoutMode, setOrderSettingsLayoutMode] = useState<'standard' | 'compact'>('compact');
+  const [orderSettingsMaxClubbedAnalytes, setOrderSettingsMaxClubbedAnalytes] = useState(5);
   const [orderSettingsLoading, setOrderSettingsLoading] = useState(false);
   const [orderSettingsSaving, setOrderSettingsSaving] = useState(false);
   const [smartReportLoadingId, setSmartReportLoadingId] = useState<string | null>(null);
   const [generatingOrderId, setGeneratingOrderId] = useState<string | null>(null);
 
   // Report Studio & Send Report
-  const [reportStudioOrderId, setReportStudioOrderId] = useState<string | null>(null);
-  const [viewingOrder, setViewingOrder] = useState<OrderGroup | null>(null);
   const [sendReportModalData, setSendReportModalData] = useState<{ orderId: string, patientName: string, doctorName: string, doctorPhone: string, clinicalSummary?: string, includeClinicalSummary?: boolean, reportUrl: string } | null>(null);
+
+  const getSendableReportUrl = useCallback((result?: ApprovedResult | null) => {
+    const rawUrl = result?.final_report?.pdf_url || result?.draft_report?.pdf_url;
+    return rawUrl ? (convertToCustomDomain(rawUrl) || rawUrl) : '';
+  }, []);
 
   const handleOpenSendDoctor = async (group: OrderGroup) => {
     try {
-      // Find report URL
-      const finalReport = (group.results[0] as ApprovedResult)?.final_report;
-      const reportUrl = finalReport?.pdf_url;
+      const primaryResult = group.results[0] as ApprovedResult | undefined;
+      const reportUrl = getSendableReportUrl(primaryResult);
 
       if (!reportUrl) {
-        alert('Please generate a final report before sending to doctor.');
+        alert('Please generate a draft or final report before sending to doctor.');
         return;
       }
 
@@ -222,7 +232,7 @@ const Reports: React.FC = () => {
         doctorPhone,
         clinicalSummary: orderData.ai_clinical_summary,
         includeClinicalSummary: orderData.send_clinical_summary_to_doctor || false,  // Use send_to_doctor flag for WhatsApp
-        reportUrl: convertToCustomDomain(reportUrl) || reportUrl
+        reportUrl
       };
 
       console.log('[Reports handleOpenSendDoctor] Modal data being set:', {
@@ -726,16 +736,6 @@ const Reports: React.FC = () => {
     return { totalOrders, readyForGeneration, pendingVerification, completed };
   }, [orderGroups]);
 
-  // Handlers
-  const handleView = async (orderId: string) => {
-    const group = orderGroups.find(g => g.order_id === orderId);
-    if (!group) {
-      alert('Order not found');
-      return;
-    }
-    setViewingOrder(group);
-  };
-
   const isTempPdfUrl = (url?: string | null): boolean =>
     !!url && url.includes('pdf-temp-files.s3.amazonaws.com');
 
@@ -976,15 +976,105 @@ const Reports: React.FC = () => {
     });
   }, []);
 
+  const setOrderSettingsGroupPage = useCallback((testGroupId: string, pageNumber: number) => {
+    setOrderSettingsGroups((prev) =>
+      prev.map((group) =>
+        group.testGroupId === testGroupId
+          ? { ...group, pageNumber: Math.max(1, pageNumber) }
+          : group,
+      ),
+    );
+  }, []);
+
+  const setOrderSettingsGroupOwnPage = useCallback((testGroupId: string) => {
+    setOrderSettingsGroups((prev) => {
+      const currentMax = prev.reduce((max, group) => Math.max(max, group.pageNumber), 1);
+      return prev.map((group) =>
+        group.testGroupId === testGroupId
+          ? { ...group, pageNumber: currentMax + 1 }
+          : group,
+      );
+    });
+  }, []);
+
+  const setOrderSettingsGroupClubPrevious = useCallback((testGroupId: string) => {
+    setOrderSettingsGroups((prev) => {
+      const index = prev.findIndex((group) => group.testGroupId === testGroupId);
+      if (index <= 0) return prev;
+      const previousPage = prev[index - 1].pageNumber;
+      return prev.map((group) =>
+        group.testGroupId === testGroupId
+          ? { ...group, pageNumber: previousPage }
+          : group,
+      );
+    });
+  }, []);
+
+  const autoArrangeCompactPages = useCallback(() => {
+    setOrderSettingsGroups((prev) => {
+      const assignments = autoAssignCompactPages(prev, orderSettingsMaxClubbedAnalytes);
+      return prev.map((group) => ({
+        ...group,
+        pageNumber: assignments[group.testGroupId] || 1,
+      }));
+    });
+  }, [orderSettingsMaxClubbedAnalytes]);
+
+  const handleLocalCompactPrint = useCallback(async (
+    orderId: string,
+    overrideGroups?: OrderSettingsGroupItem[],
+    overrideMaxClubbedAnalytes?: number,
+  ) => {
+    const { data: authData } = await supabase.auth.getSession();
+    if (!authData?.session) {
+      throw new Error('Not authenticated');
+    }
+
+    const triggeredByUserId = authData.session.user?.id;
+    const compactPageAssignments = overrideGroups && overrideGroups.length > 0
+      ? Object.fromEntries(overrideGroups.map((group) => [group.testGroupId, group.pageNumber]))
+      : undefined;
+    const orderedGroupIds = overrideGroups && overrideGroups.length > 0
+      ? overrideGroups.map((group) => group.testGroupId)
+      : undefined;
+
+    const { data, error } = await supabase.functions.invoke('generate-pdf-letterhead', {
+      body: {
+        orderId,
+        triggeredByUserId,
+        printLayoutMode: 'compact',
+        ...(orderedGroupIds ? { compactGroupOrder: orderedGroupIds } : {}),
+        ...(compactPageAssignments ? { compactPageAssignments } : {}),
+        ...(overrideMaxClubbedAnalytes ? { compactMaxClubbedAnalytes: overrideMaxClubbedAnalytes } : {}),
+      }
+    });
+
+    if (error) {
+      throw error;
+    }
+
+    const generatedUrl = data?.printPdfUrl || data?.pdfUrl;
+    if (!generatedUrl) {
+      throw new Error('Compact print generated but no URL returned.');
+    }
+
+    window.open(generatedUrl, '_blank');
+    await loadApprovedResults();
+    return generatedUrl;
+  }, [loadApprovedResults]);
+
   const saveOrderReportSettings = useCallback(async (
     orderId: string,
     groups: OrderSettingsGroupItem[],
-    printLayoutMode: 'standard' | 'compact'
+    printLayoutMode: 'standard' | 'compact',
+    compactMaxClubbedAnalytes: number,
   ) => {
     const reportSettings: OrderReportSettings = {
       groupOrderOverrideEnabled: groups.length > 0,
       groupOrder: groups.map(group => group.testGroupId),
       printLayoutMode,
+      compactPageAssignments: Object.fromEntries(groups.map((group) => [group.testGroupId, group.pageNumber])),
+      compactMaxClubbedAnalytes,
     };
 
     const { error: orderError } = await supabase
@@ -1036,7 +1126,7 @@ const Reports: React.FC = () => {
         ? 'standard'
         : 'compact';
 
-      const [{ data: orderData, error: orderError }, { data: otgData, error: otgError }, { data: otData, error: otError }] = await Promise.all([
+      const [{ data: orderData, error: orderError }, { data: otgData, error: otgError }, { data: otData, error: otError }, { data: context, error: contextError }] = await Promise.all([
         supabase.from('orders').select('report_settings').eq('id', orderId).maybeSingle(),
         supabase
           .from('order_test_groups')
@@ -1047,11 +1137,13 @@ const Reports: React.FC = () => {
           .select('test_group_id, test_name, print_order, created_at, test_groups(report_priority)')
           .eq('order_id', orderId)
           .neq('is_canceled', true),
+        database.reports.getTemplateContext(orderId),
       ]);
 
       if (orderError) throw orderError;
       if (otgError) throw otgError;
       if (otError) throw otError;
+      if (contextError) throw contextError;
 
       const reportSettings = (orderData as { report_settings?: OrderReportSettings | null } | null)?.report_settings || {};
       const descriptorMap = new Map<string, OrderSettingsGroupItem>();
@@ -1064,6 +1156,8 @@ const Reports: React.FC = () => {
             ? Number(row.test_groups.report_priority)
             : null,
           printOrder: Number(row?.print_order ?? 0),
+          analyteCount: 0,
+          pageNumber: 1,
           createdAt: row?.created_at || null,
         });
       };
@@ -1080,6 +1174,8 @@ const Reports: React.FC = () => {
             testName: result.test_name,
             reportPriority: null,
             printOrder: index + 1,
+            analyteCount: 0,
+            pageNumber: 1,
             createdAt: null,
           });
         });
@@ -1098,7 +1194,18 @@ const Reports: React.FC = () => {
         return a.testName.localeCompare(b.testName);
       });
 
-      setOrderSettingsGroups(resolvedGroups);
+      const compactDefinitions = context
+        ? buildCompactGroupDefinitions(context, reportSettings.groupOrder)
+        : [];
+      const definitionMap = new Map(compactDefinitions.map((group) => [group.testGroupId, group]));
+      const autoAssignments = autoAssignCompactPages(compactDefinitions, reportSettings.compactMaxClubbedAnalytes || 5);
+
+      setOrderSettingsMaxClubbedAnalytes(reportSettings.compactMaxClubbedAnalytes || 5);
+      setOrderSettingsGroups(resolvedGroups.map((group) => ({
+        ...group,
+        analyteCount: definitionMap.get(group.testGroupId)?.analyteCount || 0,
+        pageNumber: reportSettings.compactPageAssignments?.[group.testGroupId] || autoAssignments[group.testGroupId] || 1,
+      })));
       setOrderSettingsLayoutMode(reportSettings.printLayoutMode === 'standard' ? 'standard' : currentLayoutMode);
     } catch (error) {
       console.error('Failed to load order report settings:', error);
@@ -1135,7 +1242,12 @@ const Reports: React.FC = () => {
     if (!orderSettingsOrderId) return;
     setOrderSettingsSaving(true);
     try {
-      await saveOrderReportSettings(orderSettingsOrderId, orderSettingsGroups, orderSettingsLayoutMode);
+      await saveOrderReportSettings(
+        orderSettingsOrderId,
+        orderSettingsGroups,
+        orderSettingsLayoutMode,
+        orderSettingsMaxClubbedAnalytes,
+      );
       await loadApprovedResults();
       alert('Order report settings saved.');
     } catch (error) {
@@ -1144,21 +1256,34 @@ const Reports: React.FC = () => {
     } finally {
       setOrderSettingsSaving(false);
     }
-  }, [loadApprovedResults, orderSettingsGroups, orderSettingsLayoutMode, orderSettingsOrderId, saveOrderReportSettings]);
+  }, [loadApprovedResults, orderSettingsGroups, orderSettingsLayoutMode, orderSettingsMaxClubbedAnalytes, orderSettingsOrderId, saveOrderReportSettings]);
 
   const handleRegenerateFromOrderSettings = useCallback(async () => {
     if (!orderSettingsOrderId) return;
     setOrderSettingsSaving(true);
     try {
-      await saveOrderReportSettings(orderSettingsOrderId, orderSettingsGroups, orderSettingsLayoutMode);
-      await handleLetterheadGeneration(orderSettingsOrderId, orderSettingsLayoutMode);
+      await saveOrderReportSettings(
+        orderSettingsOrderId,
+        orderSettingsGroups,
+        orderSettingsLayoutMode,
+        orderSettingsMaxClubbedAnalytes,
+      );
+      if (orderSettingsLayoutMode === 'compact') {
+        await handleLocalCompactPrint(
+          orderSettingsOrderId,
+          orderSettingsGroups,
+          orderSettingsMaxClubbedAnalytes,
+        );
+      } else {
+        await handleLetterheadGeneration(orderSettingsOrderId, orderSettingsLayoutMode);
+      }
     } catch (error) {
       console.error('Failed to regenerate print from order settings:', error);
       alert('Failed to regenerate print PDF.');
     } finally {
       setOrderSettingsSaving(false);
     }
-  }, [handleLetterheadGeneration, orderSettingsGroups, orderSettingsLayoutMode, orderSettingsOrderId, saveOrderReportSettings]);
+  }, [handleLetterheadGeneration, handleLocalCompactPrint, orderSettingsGroups, orderSettingsLayoutMode, orderSettingsMaxClubbedAnalytes, orderSettingsOrderId, saveOrderReportSettings]);
 
   const prepareReportData = async (group: OrderGroup): Promise<PreparedReport> => {
     const { data: context, error } = await database.reports.getTemplateContext(group.order_id);
@@ -2121,27 +2246,6 @@ const Reports: React.FC = () => {
 
                       {/* Action Buttons Row */}
                       <div className="mt-2 ml-12 flex flex-wrap items-center gap-1.5">
-                        {/* View & Design */}
-                        <button
-                          className="flex items-center space-x-1 px-2 py-1 text-xs bg-blue-600 text-white rounded hover:bg-blue-700 transition-colors"
-                          onClick={() => handleView(group.order_id)}
-                          title="Quick preview"
-                        >
-                          <Eye className="w-3.5 h-3.5" />
-                          <span>View</span>
-                        </button>
-
-                        <button
-                          className="flex items-center space-x-1 px-2.5 py-1.5 text-xs bg-indigo-600 text-white rounded-md hover:bg-indigo-700 transition-colors shadow-sm"
-                          onClick={() => setReportStudioOrderId(group.order_id)}
-                          title="Design Report Layout"
-                        >
-                          <Sparkles className="w-3.5 h-3.5" />
-                          <span>Design</span>
-                        </button>
-
-                        <span className="w-px h-4 bg-gray-300" />
-
                         {(group.is_report_ready || (group.results[0] as ApprovedResult)?.has_final_report || (group.results[0] as ApprovedResult)?.has_draft_report) ? (
                           <>
                             {!(group.results[0] as ApprovedResult)?.has_final_report ? (
@@ -2204,12 +2308,37 @@ const Reports: React.FC = () => {
                                   );
                                 })()}
                                 <button
-                                  className="flex items-center px-1.5 py-1 text-xs bg-gray-200 text-gray-700 rounded hover:bg-gray-300 transition-colors"
+                                  className="flex items-center gap-1 px-2 py-1 text-xs bg-gray-200 text-gray-700 rounded hover:bg-gray-300 transition-colors"
                                   onClick={() => handleOpenPDFSettings(group.order_id)}
-                                  title="PDF Settings"
+                                  title="Print Settings"
                                 >
                                   <Settings className="w-3.5 h-3.5" />
+                                  <span>Print Settings</span>
                                 </button>
+                                {(() => {
+                                  const result = group.results[0] as ApprovedResult;
+                                  const reportUrl = getSendableReportUrl(result);
+                                  if (!reportUrl) return null;
+                                  return (
+                                    <>
+                                      <QuickSendReport
+                                        reportUrl={reportUrl}
+                                        reportName={`${group.patient_full_name} - ${(group.test_names || []).join(', ')}`}
+                                        patientName={group.patient_full_name}
+                                        patientPhone={result?.phone}
+                                        testName={(group.test_names || []).join(', ')}
+                                        onSent={(sendResult) => alert(sendResult.success ? 'Report sent via WhatsApp!' : 'Failed: ' + sendResult.message)}
+                                      />
+                                      <button
+                                        onClick={() => handleOpenSendDoctor(group)}
+                                        className="flex items-center px-1.5 py-1 text-xs bg-green-100 text-green-700 rounded hover:bg-green-200 transition-colors"
+                                        title="Send to Doctor"
+                                      >
+                                        <User className="w-3.5 h-3.5" />
+                                      </button>
+                                    </>
+                                  );
+                                })()}
                               </>
                             ) : (
                               /* Already generated */
@@ -2229,31 +2358,25 @@ const Reports: React.FC = () => {
 
                                 <button
                                   className={`flex items-center px-1.5 py-1 text-xs rounded transition-colors ${(group.results[0] as ApprovedResult)?.final_report?.print_pdf_url ? 'bg-emerald-600 text-white hover:bg-emerald-700' : 'bg-gray-200 text-gray-700 hover:bg-gray-300'}`}
-                                  onClick={() => {
-                                    const printUrl = (group.results[0] as ApprovedResult)?.final_report?.print_pdf_url;
-                                    if (printUrl) {
-                                      window.open(printUrl, '_blank');
-                                      return;
-                                    }
-                                    void handleLetterheadGeneration(group.order_id, 'compact');
-                                  }}
+                                  onClick={() => { void handleLocalCompactPrint(group.order_id); }}
                                   onContextMenu={(event) => {
                                     event.preventDefault();
-                                    if (window.confirm('Regenerate the compact print PDF for this order?')) {
-                                      void handleLetterheadGeneration(group.order_id, 'compact');
+                                    if (window.confirm('Open compact print settings for this order?')) {
+                                      void handleOpenPDFSettings(group.order_id);
                                     }
                                   }}
-                                  title={(group.results[0] as ApprovedResult)?.final_report?.print_pdf_url ? 'Open compact print PDF. Right-click to regenerate.' : 'Generate compact print PDF'}
+                                  title="Quick compact print PDF"
                                 >
                                   <Printer className="w-3.5 h-3.5" />
                                 </button>
 
                                 <button
-                                  className="flex items-center px-1.5 py-1 text-xs bg-gray-200 text-gray-700 rounded hover:bg-gray-300 transition-colors"
+                                  className="flex items-center gap-1 px-2 py-1 text-xs bg-gray-200 text-gray-700 rounded hover:bg-gray-300 transition-colors"
                                   onClick={() => handleOpenPDFSettings(group.order_id)}
-                                  title="Settings"
+                                  title="Print Settings"
                                 >
                                   <Settings className="w-3.5 h-3.5" />
+                                  <span>Print Settings</span>
                                 </button>
 
                                 <span className="w-px h-4 bg-gray-300" />
@@ -2437,14 +2560,6 @@ const Reports: React.FC = () => {
                         )}
 
                         <div className="flex space-x-2 mt-4 pt-4 border-t border-gray-200">
-                          <button
-                            className="flex-1 flex items-center justify-center space-x-1 px-3 py-2 text-sm bg-blue-600 text-white rounded-md hover:bg-blue-700 transition-colors"
-                            onClick={() => handleView(group.order_id)}
-                          >
-                            <Eye className="w-4 h-4" />
-                            <span>View</span>
-                          </button>
-
                           {(group.is_report_ready || (group.results[0] as ApprovedResult)?.has_final_report || (group.results[0] as ApprovedResult)?.has_draft_report) ? (
                             <>
                               {!(group.results[0] as ApprovedResult)?.has_final_report ? (
@@ -2554,6 +2669,38 @@ const Reports: React.FC = () => {
                                   >
                                     <Settings className="w-4 h-4" />
                                   </button>
+                                  {(() => {
+                                    const result = group.results[0] as ApprovedResult;
+                                    const reportUrl = getSendableReportUrl(result);
+                                    if (!reportUrl) return null;
+                                    return (
+                                      <>
+                                        <div className="flex-1">
+                                          <QuickSendReport
+                                            reportUrl={reportUrl}
+                                            reportName={`${group.patient_full_name} - ${(group.test_names || []).join(', ')}`}
+                                            patientName={group.patient_full_name}
+                                            patientPhone={result?.phone}
+                                            testName={(group.test_names || []).join(', ')}
+                                            onSent={(sendResult) => {
+                                              if (sendResult.success) {
+                                                alert('Report sent successfully via WhatsApp!');
+                                              } else {
+                                                alert('Failed to send report: ' + sendResult.message);
+                                              }
+                                            }}
+                                          />
+                                        </div>
+                                        <button
+                                          onClick={() => handleOpenSendDoctor(group)}
+                                          className="flex items-center justify-center px-3 py-2 text-sm bg-green-100 text-green-700 rounded-md hover:bg-green-200 transition-colors"
+                                          title="Send to Doctor"
+                                        >
+                                          <User className="w-4 h-4" />
+                                        </button>
+                                      </>
+                                    );
+                                  })()}
                                 </>
                               ) : (
                                 <>
@@ -2646,33 +2793,26 @@ const Reports: React.FC = () => {
                                   })()}
 
                                   <button
-                                    className="flex items-center justify-center px-3 py-2 text-sm bg-gray-600 text-white rounded-md hover:bg-gray-700 transition-colors"
+                                    className="flex items-center justify-center gap-1 px-3 py-2 text-sm bg-gray-600 text-white rounded-md hover:bg-gray-700 transition-colors"
                                     onClick={() => handleOpenPDFSettings(group.order_id)}
-                                    title="PDF Settings"
+                                    title="Print Settings"
                                   >
                                     <Settings className="w-4 h-4" />
+                                    <span className="hidden sm:inline">Print Settings</span>
                                   </button>
                                   <button
                                     className={`flex-1 flex items-center justify-center space-x-1 px-3 py-2 text-sm rounded-md transition-colors ${(group.results[0] as ApprovedResult)?.final_report?.print_pdf_url
                                       ? 'bg-emerald-600 text-white hover:bg-emerald-700'
                                       : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
                                       }`}
-                                    onClick={() => {
-                                      const finalReport = (group.results[0] as ApprovedResult)?.final_report;
-                                      const printUrl = finalReport?.print_pdf_url;
-                                      if (printUrl) {
-                                        window.open(printUrl, '_blank');
-                                        return;
-                                      }
-                                      void handleLetterheadGeneration(group.order_id, 'compact');
-                                    }}
+                                    onClick={() => { void handleLocalCompactPrint(group.order_id); }}
                                     onContextMenu={(event) => {
                                       event.preventDefault();
-                                      if (window.confirm('Regenerate the compact print PDF for this order?')) {
-                                        void handleLetterheadGeneration(group.order_id, 'compact');
+                                      if (window.confirm('Open compact print settings for this order?')) {
+                                        void handleOpenPDFSettings(group.order_id);
                                       }
                                     }}
-                                    title={(group.results[0] as ApprovedResult)?.final_report?.print_pdf_url ? 'Open compact print PDF. Right-click to regenerate.' : 'Generate compact print PDF'}
+                                    title="Quick compact print PDF"
                                   >
                                     <Printer className="w-4 h-4" />
                                     <span>Print</span>
@@ -2869,6 +3009,9 @@ const Reports: React.FC = () => {
                     Compact
                   </button>
                 </div>
+                  <p className="mt-2 text-xs text-gray-500">
+                    `Compact` now uses the same server-side letterhead/template print pipeline, but applies your compact page planner for paper-saving output.
+                  </p>
               </div>
 
               <div>
@@ -2916,6 +3059,130 @@ const Reports: React.FC = () => {
                   </div>
                 )}
               </div>
+
+              {orderSettingsLayoutMode === 'compact' && (
+                <div className="space-y-4 rounded-xl border border-emerald-200 bg-emerald-50/50 p-4">
+                  <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-1">Compact Page Planner</label>
+                      <p className="text-xs text-gray-500">
+                        Choose which tests share a page. Larger tests like CBC or Lipid can stay alone, while 1-2 small tests can be clubbed.
+                      </p>
+                    </div>
+                    <div className="flex items-end gap-2">
+                      <div>
+                        <label className="block text-xs font-medium text-gray-600 mb-1">Auto-club limit</label>
+                        <input
+                          type="number"
+                          min={1}
+                          max={20}
+                          value={orderSettingsMaxClubbedAnalytes}
+                          onChange={(event) => setOrderSettingsMaxClubbedAnalytes(Math.max(1, Number(event.target.value) || 5))}
+                          className="w-24 rounded-md border border-gray-300 px-3 py-2 text-sm"
+                          disabled={orderSettingsSaving}
+                        />
+                      </div>
+                      <button
+                        type="button"
+                        className="rounded-md border border-emerald-300 bg-white px-3 py-2 text-sm text-emerald-700 hover:bg-emerald-100 disabled:opacity-50"
+                        onClick={autoArrangeCompactPages}
+                        disabled={orderSettingsSaving || orderSettingsLoading || orderSettingsGroups.length === 0}
+                      >
+                        Auto Arrange
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="space-y-2">
+                    <div className="grid gap-2 sm:grid-cols-2">
+                      {Array.from(new Set(orderSettingsGroups.map((group) => group.pageNumber))).sort((a, b) => a - b).map((pageNumber) => {
+                        const pageGroups = orderSettingsGroups.filter((group) => group.pageNumber === pageNumber);
+                        const totalAnalytes = pageGroups.reduce((sum, group) => sum + (group.analyteCount || 0), 0);
+                        return (
+                          <div key={`summary-${pageNumber}`} className="rounded-lg border border-emerald-100 bg-white px-3 py-3">
+                            <div className="flex items-center justify-between">
+                              <div className="text-sm font-semibold text-gray-900">Page {pageNumber}</div>
+                              <div className="text-[11px] font-medium text-emerald-700">
+                                {totalAnalytes} analyte{totalAnalytes === 1 ? '' : 's'}
+                              </div>
+                            </div>
+                            <div className="mt-2 text-xs text-gray-600">
+                              {pageGroups.map((group) => group.testName).join(', ')}
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+
+                    {orderSettingsGroups.map((group) => {
+                      const pageOptions = Array.from({ length: Math.max(6, orderSettingsGroups.length) }, (_, index) => index + 1);
+                      const suggestion = getCompactPlannerSuggestion(
+                        orderSettingsGroups,
+                        group.testGroupId,
+                        Object.fromEntries(orderSettingsGroups.map((item) => [item.testGroupId, item.pageNumber])),
+                        orderSettingsMaxClubbedAnalytes,
+                      );
+                      const suggestionTone =
+                        suggestion.kind === 'standalone-large'
+                          ? 'bg-amber-100 text-amber-800'
+                          : suggestion.kind === 'clubbed'
+                            ? 'bg-emerald-100 text-emerald-800'
+                            : suggestion.kind === 'manual-shared'
+                              ? 'bg-violet-100 text-violet-800'
+                              : 'bg-sky-100 text-sky-800';
+                      return (
+                        <div key={`${group.testGroupId}-page`} className="flex flex-col gap-2 rounded-lg border border-emerald-100 bg-white px-3 py-3 sm:flex-row sm:items-center sm:justify-between">
+                          <div>
+                            <div className="flex flex-wrap items-center gap-2">
+                              <div className="text-sm font-medium text-gray-900">{group.testName}</div>
+                              <span className={`rounded-full px-2 py-0.5 text-[11px] font-semibold ${suggestionTone}`}>
+                                {suggestion.label}
+                              </span>
+                            </div>
+                            <div className="text-xs text-gray-500 mt-1">
+                              {group.analyteCount} analyte{group.analyteCount === 1 ? '' : 's'}
+                            </div>
+                            <div className="text-[11px] text-gray-500 mt-1">
+                              {suggestion.description}
+                            </div>
+                          </div>
+                          <div className="flex flex-wrap items-center gap-2">
+                            <button
+                              type="button"
+                              className="rounded-md border border-gray-300 px-2.5 py-2 text-xs text-gray-700 hover:bg-gray-100 disabled:opacity-50"
+                              onClick={() => setOrderSettingsGroupOwnPage(group.testGroupId)}
+                              disabled={orderSettingsSaving}
+                            >
+                              Own Page
+                            </button>
+                            <button
+                              type="button"
+                              className="rounded-md border border-gray-300 px-2.5 py-2 text-xs text-gray-700 hover:bg-gray-100 disabled:opacity-50"
+                              onClick={() => setOrderSettingsGroupClubPrevious(group.testGroupId)}
+                              disabled={orderSettingsSaving || orderSettingsGroups[0]?.testGroupId === group.testGroupId}
+                            >
+                              Club Previous
+                            </button>
+                            <span className="text-xs font-medium text-gray-600">Print on page</span>
+                            <select
+                              value={group.pageNumber}
+                              onChange={(event) => setOrderSettingsGroupPage(group.testGroupId, Number(event.target.value))}
+                              className="rounded-md border border-gray-300 px-3 py-2 text-sm"
+                              disabled={orderSettingsSaving}
+                            >
+                              {pageOptions.map((pageNo) => (
+                                <option key={pageNo} value={pageNo}>
+                                  Page {pageNo}
+                                </option>
+                              ))}
+                            </select>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
             </div>
 
             <div className="flex items-center justify-between gap-3 px-6 py-4 border-t bg-gray-50">
@@ -2958,7 +3225,7 @@ const Reports: React.FC = () => {
                   onClick={handleRegenerateFromOrderSettings}
                   disabled={orderSettingsLoading || orderSettingsSaving || !orderSettingsOrderId}
                 >
-                  {orderSettingsSaving ? 'Working...' : `Regenerate ${orderSettingsLayoutMode === 'compact' ? 'Compact' : 'Standard'} Print`}
+                  {orderSettingsSaving ? 'Working...' : orderSettingsLayoutMode === 'compact' ? 'Open Quick Compact Print' : 'Regenerate Standard Print'}
                 </button>
               </div>
             </div>
@@ -2975,37 +3242,11 @@ const Reports: React.FC = () => {
         labId={userLabId ?? undefined}
       />
 
-      {/* Report Design Studio */}
-      {reportStudioOrderId && (
-        <ReportDesignStudio
-          orderId={reportStudioOrderId}
-          onClose={() => setReportStudioOrderId(null)}
-          onSuccess={(url) => {
-            alert('Report Generated Successfully!');
-            loadApprovedResults(); // Refresh list to show new report
-            if (url) window.open(url, '_blank'); // Open the generated PDF
-          }}
-        />
-      )}
-
       {/* Send Report Modal */}
       {sendReportModalData && (
         <SendReportModal
           {...sendReportModalData}
           onClose={() => setSendReportModalData(null)}
-        />
-      )}
-
-      {/* Report Preview Modal */}
-      {viewingOrder && (
-        <ReportPreviewModal
-          isOpen={!!viewingOrder}
-          onClose={() => setViewingOrder(null)}
-          orderId={viewingOrder.order_id}
-          patientName={viewingOrder.patient_full_name}
-          patientPhone={viewingOrder.results[0]?.phone}
-          testNames={Array.isArray(viewingOrder.test_names) ? viewingOrder.test_names : []}
-          doctorName={viewingOrder.results[0]?.doctor}
         />
       )}
 

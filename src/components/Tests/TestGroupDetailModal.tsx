@@ -1,6 +1,7 @@
 import React from 'react';
 import { X, Layers, TestTube, DollarSign, Clock, Settings, Edit, Beaker } from 'lucide-react';
 import { SampleTypeIndicator } from '../Common/SampleTypeIndicator';
+import { useEscapeModalClose } from '../../hooks/useEscapeModalClose';
 
 interface TestGroup {
   id: string;
@@ -34,6 +35,7 @@ interface TestGroupDetailModalProps {
 }
 
 const TestGroupDetailModal: React.FC<TestGroupDetailModalProps> = ({ testGroup, analytes, onClose, onEdit }) => {
+  useEscapeModalClose(onClose);
   const getCategoryColor = (category: string) => {
     const colors = {
       'Hematology': 'bg-red-100 text-red-800',

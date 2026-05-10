@@ -66,6 +66,8 @@ interface TestGroup {
     headerBackground?: string;
     alternateRows?: boolean;
     baseFontSize?: number;
+    groupInterpretationFontSize?: number;
+    showGroupInterpretation?: boolean;
   } | null;
   group_interpretation?: string | null;
   global_test_catalog_id?: string | null;
@@ -145,6 +147,8 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
   const [interpTab, setInterpTab] = useState<'visual' | 'html'>('visual');
   const [showInterpEditor, setShowInterpEditor] = useState(!!testGroup?.group_interpretation);
   const interpEditorRef = useRef<HTMLDivElement>(null);
+  const interpretationShownInReport = (formData.print_options as any)?.showGroupInterpretation !== false;
+  const groupInterpretationFontSize = (formData.print_options as any)?.groupInterpretationFontSize;
 
   // Load analytes and outsourced labs
   useEffect(() => {
@@ -200,12 +204,25 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
           setFormData(prev => ({ ...prev, group_interpretation: editor.getData() }));
         });
         const el = editor.ui.view.editable.element;
-        if (el) { el.style.minHeight = '140px'; el.style.maxHeight = '320px'; el.style.overflowY = 'auto'; }
+        if (el) {
+          el.style.minHeight = '140px';
+          el.style.maxHeight = '320px';
+          el.style.overflowY = 'auto';
+          el.style.fontSize = `${typeof groupInterpretationFontSize === 'number' ? groupInterpretationFontSize : ((formData.print_options as any)?.baseFontSize || 13)}px`;
+          el.style.lineHeight = '1.7';
+        }
         setInterpEditorInstance(editor);
       } catch (e) { console.error('CKEditor init error', e); }
     };
     init();
-  }, [interpCkLoaded, interpTab]);
+  }, [interpCkLoaded, interpTab, groupInterpretationFontSize, formData.print_options]);
+
+  useEffect(() => {
+    const el = interpEditorInstance?.ui?.view?.editable?.element as HTMLElement | undefined;
+    if (!el) return;
+    el.style.fontSize = `${typeof groupInterpretationFontSize === 'number' ? groupInterpretationFontSize : ((formData.print_options as any)?.baseFontSize || 13)}px`;
+    el.style.lineHeight = '1.7';
+  }, [interpEditorInstance, groupInterpretationFontSize, formData.print_options]);
 
   const loadData = async () => {
     try {
@@ -1204,9 +1221,14 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
                   <option value="beautiful">Beautiful (3-Column Color Matrix)</option>
                   <option value="classic">Classic (Plain Table)</option>
                   <option value="basic">Basic (Old School - No Color)</option>
+                  <option value="cke">Custom CKEditor Template</option>
                 </select>
                 <p className="text-xs text-gray-500 mt-1">
-                  Forces this layout for this test group, overriding both the lab default and any linked custom template.
+                  {formData.default_template_style === 'cke'
+                    ? 'Uses the custom CKEditor template linked to this test group in Template Studio. Falls back to lab default if no template is linked.'
+                    : formData.default_template_style
+                      ? 'Forces this built-in layout for this test group, overriding the lab default and any linked custom template.'
+                      : 'Uses the lab default style. If a custom CKEditor template is linked in Template Studio, it will be used automatically.'}
                 </p>
 
                 {/* Preview toggle */}
@@ -1286,16 +1308,17 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
                   <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-amber-500 text-white text-xs">On/Off</span> = override for this test group only
                 </p>
                 <div className="border border-amber-200 rounded-lg p-3 bg-amber-50 space-y-2.5">
-                  {([
-                    { key: 'tableBorders', label: 'Table Borders' },
-                    { key: 'flagColumn', label: 'Flag Column (Classic)' },
-                    { key: 'flagAsterisk', label: 'Flag Asterisk * on H/L' },
-                    { key: 'flagAsteriskCritical', label: 'Critical Double **', disabledWhen: !(formData.print_options as any)?.flagAsterisk },
-                    { key: 'boldAllValues', label: 'Bold All Values' },
-                    { key: 'boldAbnormalValues', label: 'Bold Abnormal Values' },
-                    { key: 'alternateRows', label: 'Alternate Row Shading' },
-                    { key: 'showSampleType', label: 'Show Sample Type on Report' },
-                  ] as { key: string; label: string; disabledWhen?: boolean }[]).map(({ key, label, disabledWhen }) => {
+	                  {([
+	                    { key: 'tableBorders', label: 'Table Borders' },
+	                    { key: 'flagColumn', label: 'Flag Column (Classic)' },
+	                    { key: 'flagAsterisk', label: 'Flag Asterisk * on H/L' },
+	                    { key: 'flagAsteriskCritical', label: 'Critical Double **', disabledWhen: !(formData.print_options as any)?.flagAsterisk },
+	                    { key: 'boldAllValues', label: 'Bold All Values' },
+	                    { key: 'boldAbnormalValues', label: 'Bold Abnormal Values' },
+	                    { key: 'alternateRows', label: 'Alternate Row Shading' },
+	                    { key: 'showSampleType', label: 'Show Sample Type on Report' },
+	                    { key: 'showGroupInterpretation', label: 'Show Group Interpretation in Report' },
+	                  ] as { key: string; label: string; disabledWhen?: boolean }[]).map(({ key, label, disabledWhen }) => {
                     const opts = (formData.print_options || {}) as Record<string, unknown>;
                     const isSet = key in opts && opts[key] !== undefined;
                     const val = opts[key];
@@ -1375,38 +1398,100 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
             </div>
 
             {/* Group Interpretation */}
-            <div className="bg-purple-50 border border-purple-200 rounded-lg p-4">
-              <div className="flex items-center justify-between mb-2">
-                <div className="flex items-center gap-2">
-                  <FileText className="h-4 w-4 text-purple-600" />
-                  <span className="text-sm font-medium text-purple-900">Group Interpretation</span>
-                  <span className="text-xs text-purple-500 bg-purple-100 px-1.5 py-0.5 rounded">Shown in report after results</span>
-                </div>
-                {!showInterpEditor ? (
-                  <button
-                    type="button"
-                    onClick={() => setShowInterpEditor(true)}
+	            <div className="bg-purple-50 border border-purple-200 rounded-lg p-4">
+	              <div className="flex items-center justify-between mb-2">
+	                <div className="flex items-center gap-2">
+	                  <FileText className="h-4 w-4 text-purple-600" />
+	                  <span className="text-sm font-medium text-purple-900">Group Interpretation</span>
+	                  <span className={`text-xs px-1.5 py-0.5 rounded ${interpretationShownInReport ? 'text-purple-500 bg-purple-100' : 'text-amber-700 bg-amber-100'}`}>
+	                    {interpretationShownInReport ? 'Shown in report after results' : 'Saved, but hidden from report'}
+	                  </span>
+	                </div>
+	                {!showInterpEditor ? (
+	                  <button
+	                    type="button"
+	                    onClick={() => setShowInterpEditor(true)}
                     className="flex items-center gap-1 px-2 py-1 text-xs bg-purple-600 text-white rounded hover:bg-purple-700"
                   >
                     <Plus className="h-3 w-3" /> Add Interpretation
-                  </button>
-                ) : (
-                  <button
-                    type="button"
-                    onClick={() => { setShowInterpEditor(false); setFormData(prev => ({ ...prev, group_interpretation: '' })); }}
-                    className="text-xs text-red-500 hover:text-red-700"
-                  >
-                    Remove
-                  </button>
-                )}
-              </div>
-              {showInterpEditor && (
-                <div className="mt-2">
-                  <p className="text-xs text-purple-600 mb-2">
-                    Rich text rendered after this test group's result table in all report styles. Font size inherits the test group's base font size setting.
-                  </p>
-                  {/* Tab bar */}
-                  <div className="flex gap-1 mb-2">
+	                  </button>
+	                ) : (
+	                  <div className="flex items-center gap-2">
+	                    <button
+	                      type="button"
+	                      onClick={() => setFormData(prev => ({
+	                        ...prev,
+	                        print_options: {
+	                          ...(prev.print_options || {}),
+	                          showGroupInterpretation: !((prev.print_options as any)?.showGroupInterpretation !== false),
+	                        },
+	                      }))}
+	                      className={`inline-flex items-center gap-1 px-2 py-1 text-xs rounded border ${interpretationShownInReport ? 'bg-white text-amber-700 border-amber-300 hover:bg-amber-50' : 'bg-white text-emerald-700 border-emerald-300 hover:bg-emerald-50'}`}
+	                    >
+	                      {interpretationShownInReport ? <EyeOff className="h-3 w-3" /> : <Eye className="h-3 w-3" />}
+	                      {interpretationShownInReport ? 'Hide From Report' : 'Show In Report'}
+	                    </button>
+	                    <button
+	                      type="button"
+	                      onClick={() => setShowInterpEditor(false)}
+	                      className="text-xs text-gray-500 hover:text-gray-700"
+	                    >
+	                      Hide Editor
+	                    </button>
+	                    {!!formData.group_interpretation?.trim() && (
+	                      <button
+	                        type="button"
+	                        onClick={() => {
+	                          if (!window.confirm('Clear the saved group interpretation content? This cannot be undone.')) return;
+	                          setFormData(prev => ({ ...prev, group_interpretation: '' }));
+	                        }}
+	                        className="text-xs text-red-500 hover:text-red-700"
+	                      >
+	                        Clear Content
+	                      </button>
+	                    )}
+	                  </div>
+	                )}
+	              </div>
+		              {showInterpEditor && (
+		                <div className="mt-2">
+		                  <p className="text-xs text-purple-600 mb-2">
+		                    Rich text rendered after this test group's result table when report visibility is enabled. You can set a dedicated font size below, or leave it blank to inherit the test group's base font size.
+		                  </p>
+                  <div className="mb-3 flex flex-wrap items-center gap-3 rounded-lg border border-purple-200 bg-white px-3 py-2">
+                    <label className="text-xs font-medium text-purple-900">Interpretation Font Size</label>
+                    <input
+                      type="number"
+                      min={8}
+                      max={24}
+                      value={groupInterpretationFontSize ?? ''}
+                      placeholder={`${(formData.print_options as any)?.baseFontSize ?? 13}`}
+                      onChange={(e) => setFormData(prev => ({
+                        ...prev,
+                        print_options: {
+                          ...(prev.print_options || {}),
+                          groupInterpretationFontSize: e.target.value ? parseInt(e.target.value) : undefined,
+                        },
+                      }))}
+                      className="w-20 rounded border border-gray-300 px-2 py-1 text-sm"
+                    />
+                    <span className="text-xs text-gray-500">px</span>
+                    {groupInterpretationFontSize !== undefined && (
+                      <button
+                        type="button"
+                        onClick={() => setFormData(prev => {
+                          const next = { ...((prev.print_options || {}) as Record<string, unknown>) };
+                          delete next.groupInterpretationFontSize;
+                          return { ...prev, print_options: Object.keys(next).length ? next as typeof prev.print_options : null };
+                        })}
+                        className="text-xs rounded border border-gray-300 bg-white px-2 py-1 text-gray-600 hover:border-purple-400"
+                      >
+                        ↩ Inherit Base
+                      </button>
+                    )}
+                  </div>
+	                  {/* Tab bar */}
+	                  <div className="flex gap-1 mb-2">
                     <button
                       type="button"
                       onClick={() => setInterpTab('visual')}
@@ -1431,9 +1516,9 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
                   </div>
                   {/* HTML tab */}
                   {interpTab === 'html' && (
-                    <textarea
-                      rows={8}
-                      value={formData.group_interpretation || ''}
+	                    <textarea
+	                      rows={8}
+	                      value={formData.group_interpretation || ''}
                       onChange={(e) => {
                         const html = e.target.value;
                         setFormData(prev => ({ ...prev, group_interpretation: html }));
@@ -1441,12 +1526,16 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
                         if (interpEditorInstance) {
                           try { interpEditorInstance.setData(html); } catch (_) {}
                         }
-                      }}
-                      placeholder="<p>Paste or type HTML here...</p>"
-                      className="w-full px-3 py-2 border border-purple-200 rounded bg-white text-xs font-mono focus:outline-none focus:ring-2 focus:ring-purple-400"
-                    />
-                  )}
-                </div>
+	                      }}
+	                      placeholder="<p>Paste or type HTML here...</p>"
+	                      className="w-full px-3 py-2 border border-purple-200 rounded bg-white text-xs font-mono focus:outline-none focus:ring-2 focus:ring-purple-400"
+                        style={{
+                          fontSize: `${typeof groupInterpretationFontSize === 'number' ? groupInterpretationFontSize : ((formData.print_options as any)?.baseFontSize || 13)}px`,
+                          lineHeight: 1.7,
+                        }}
+	                    />
+	                  )}
+	                </div>
               )}
             </div>
 

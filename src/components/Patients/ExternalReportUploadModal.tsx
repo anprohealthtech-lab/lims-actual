@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { Upload, X, FileText, Check, AlertCircle, Loader2, ArrowRight } from 'lucide-react';
 import { supabase } from '../../utils/supabase';
+import { useEscapeModalClose } from '../../hooks/useEscapeModalClose';
 
 interface ExternalReportUploadModalProps {
     patientId: string;
@@ -18,6 +19,7 @@ interface ExtractedValue {
 }
 
 const ExternalReportUploadModal: React.FC<ExternalReportUploadModalProps> = ({ patientId, onClose, onSuccess }) => {
+    useEscapeModalClose(onClose);
     const [file, setFile] = useState<File | null>(null);
     const [uploading, setUploading] = useState(false);
     const [processing, setProcessing] = useState(false);

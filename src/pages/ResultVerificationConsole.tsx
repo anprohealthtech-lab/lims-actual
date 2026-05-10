@@ -53,6 +53,7 @@ import {
   getSectionVerificationPermissionForDepartment,
   getVerificationPermissionForDepartment,
 } from "../utils/resultPermissions";
+import { buildBlockedApprovalMessage, getBlockedApprovalCandidates } from "../utils/resultApprovalGuard";
 
 /* =========================================
    Types
@@ -895,7 +896,75 @@ const ResultVerificationConsole: React.FC = () => {
   /* ----------------- Mutations ----------------- */
   const setBusyFor = (key: string, v: boolean) => setBusy((s) => ({ ...s, [key]: v }));
 
+  const reopenResultForCorrection = async (
+    resultId: string,
+    orderId: string | null,
+    testGroupId: string | null,
+    testGroupName: string | null,
+    reason: string,
+  ) => {
+    const now = new Date().toISOString();
+    const { data: { user } } = await supabase.auth.getUser();
+
+    const { error: resError } = await supabase
+      .from("results")
+      .update({
+        verification_status: "pending_verification",
+        verified_at: null,
+        verified_by: null,
+        manually_verified: false,
+        report_extras: null,
+        is_locked: false,
+        locked_reason: null,
+        locked_at: null,
+        locked_by: null,
+      })
+      .eq("id", resultId);
+    if (resError) throw resError;
+
+    if (orderId) {
+      await supabase
+        .from("reports")
+        .update({ pdf_url: null, print_pdf_url: null, status: "Draft" })
+        .eq("order_id", orderId);
+
+      await supabase
+        .from("orders")
+        .update({
+          status: "Pending Approval",
+          status_updated_at: now,
+          status_updated_by: "Admin (Correction)",
+        })
+        .eq("id", orderId)
+        .eq("status", "Completed");
+    }
+
+    await supabase.from("result_verification_audit").insert({
+      result_id: resultId,
+      action: "reopened_for_correction",
+      performed_by: user?.id || null,
+      performed_at: now,
+      previous_status: "approved",
+      new_status: "pending_verification",
+      comment: reason,
+      metadata: {
+        order_id: orderId,
+        test_group_name: testGroupName,
+        test_group_id: testGroupId,
+      },
+    });
+  };
+
   const approveAnalyte = async (rv_id: string) => {
+    const analyte = Object.values(rowsByResult).flat().find((row) => row.id === rv_id);
+    if (analyte) {
+      const blocked = getBlockedApprovalCandidates([analyte]);
+      if (blocked.length) {
+        alert(buildBlockedApprovalMessage("this analyte", blocked));
+        return;
+      }
+    }
+
     setBusyFor(rv_id, true);
     const { error } = await supabase
       .from("result_values")
@@ -919,6 +988,51 @@ const ResultVerificationConsole: React.FC = () => {
   const unapproveAnalyte = async (rv_id: string, result_id: string) => {
     if (!window.confirm("Revert this analyte back to pending? This will allow re-verification and re-entry of results.")) return;
     setBusyFor(rv_id, true);
+    try {
+      const panel = panels.find((p) => p.result_id === result_id);
+      const note = "Unapproved – sent back for re-verification";
+      const { error } = await supabase
+        .from("result_values")
+        .update({
+          verify_status: "pending",
+          verify_note: note,
+          verified_at: null,
+          verified_by: null,
+        })
+        .eq("id", rv_id);
+
+      if (error) {
+        throw error;
+      }
+
+      await reopenResultForCorrection(
+        result_id,
+        panel?.order_id || null,
+        panel?.test_group_id || null,
+        panel?.test_group_name || null,
+        note,
+      );
+
+      setRowsByResult((s) => {
+        const next = { ...s };
+        for (const rid in next) {
+          next[rid] = next[rid].map((a) =>
+            a.id === rv_id
+              ? { ...a, verify_status: "pending", verify_note: note, verified_at: null, verified_by: null }
+              : a
+          );
+        }
+        return next;
+      });
+      await loadPanels(true);
+      return;
+    } catch (error) {
+      console.error("Failed to unapprove analyte for correction", error);
+      alert("Failed to reopen analyte for correction");
+      return;
+    } finally {
+      setBusyFor(rv_id, false);
+    }
     const { error } = await supabase
       .from("result_values")
       .update({
@@ -1127,10 +1241,16 @@ const ResultVerificationConsole: React.FC = () => {
       return;
     }
 
-    const list = rowsByResult[row.result_id] || [];
-    if (!list.length) return;
-    const ids = list.map((a) => a.id);
-    setBusyFor(row.result_id, true);
+	    const list = rowsByResult[row.result_id] || [];
+	    if (!list.length) return;
+      const blocked = getBlockedApprovalCandidates(list);
+      if (blocked.length) {
+        alert(buildBlockedApprovalMessage(`panel "${row.test_group_name || "Unknown"}"`, blocked));
+        return;
+      }
+
+	    const ids = list.map((a) => a.id);
+	    setBusyFor(row.result_id, true);
     setSavingReportExtras(prev => ({ ...prev, [row.order_id]: true }));
 
     try {
@@ -1221,6 +1341,47 @@ const ResultVerificationConsole: React.FC = () => {
     if (!window.confirm(`Revert ${approvedIds.length} approved analyte(s) back to pending?`)) return;
 
     setBusyFor(row.result_id, true);
+    try {
+      const note = "Unapproved – sent back for re-verification";
+      const { error } = await supabase
+        .from("result_values")
+        .update({
+          verify_status: "pending",
+          verify_note: note,
+          verified_at: null,
+          verified_by: null,
+        })
+        .in("id", approvedIds);
+
+      if (error) {
+        throw error;
+      }
+
+      await reopenResultForCorrection(
+        row.result_id,
+        row.order_id,
+        row.test_group_id,
+        row.test_group_name,
+        note,
+      );
+
+      setRowsByResult((s) => ({
+        ...s,
+        [row.result_id]: (s[row.result_id] || []).map((a) =>
+          a.verify_status === "approved"
+            ? { ...a, verify_status: "pending", verify_note: note, verified_at: null, verified_by: null }
+            : a
+        ),
+      }));
+      await loadPanels(true);
+      return;
+    } catch (error) {
+      console.error("Failed to reopen panel for correction", error);
+      alert("Failed to reopen panel for correction");
+      return;
+    } finally {
+      setBusyFor(row.result_id, false);
+    }
     const { error } = await supabase
       .from("result_values")
       .update({
@@ -1253,21 +1414,105 @@ const ResultVerificationConsole: React.FC = () => {
 
   /* Recalculate all auto-calculated analytes in a panel from saved source values */
   const recalculatePanel = async (row: PanelRow) => {
-    const allRows = rowsByResult[row.result_id] || [];
-    const calcRows = allRows.filter(a => a.is_auto_calculated && a.analyte_id);
-    const srcRows  = allRows.filter(a => !a.is_auto_calculated && a.value !== null && a.value !== '');
-    if (calcRows.length === 0) {
-      alert('No calculated parameters found in this panel.');
-      return;
-    }
-
     setRecalculating(prev => ({ ...prev, [row.result_id]: true }));
     setCalcDebugHints(prev => ({ ...prev, [row.result_id]: {} }));
     try {
+      let allRows = rowsByResult[row.result_id] || [];
+      const labId = currentLabId || await database.getCurrentUserLabId();
+
+      if (row.test_group_id && labId) {
+        const existingAnalyteIds = new Set(allRows.map((item) => item.analyte_id).filter(Boolean));
+        const { data: tgaRows } = await supabase
+          .from("test_group_analytes")
+          .select("analyte_id, lab_analyte_id")
+          .eq("test_group_id", row.test_group_id);
+
+        const withLabAnalyte = (tgaRows || []).filter((item: any) => item.lab_analyte_id);
+        const withoutLabAnalyte = (tgaRows || []).filter((item: any) => !item.lab_analyte_id);
+        const labAnalyteIds = withLabAnalyte.map((item: any) => item.lab_analyte_id);
+        const fallbackAnalyteIds = withoutLabAnalyte.map((item: any) => item.analyte_id).filter(Boolean);
+
+        const LA_SELECT = `
+          id, analyte_id, name, unit, reference_range, lab_specific_reference_range,
+          is_calculated, formula, formula_variables,
+          analytes!inner(id, name, unit, reference_range, is_calculated, formula, formula_variables)
+        `;
+
+        const [directRes, fallbackRes] = await Promise.all([
+          labAnalyteIds.length > 0
+            ? supabase.from("lab_analytes").select(LA_SELECT).in("id", labAnalyteIds)
+            : Promise.resolve({ data: [] as any[] }),
+          fallbackAnalyteIds.length > 0
+            ? supabase.from("lab_analytes").select(LA_SELECT).eq("lab_id", labId).in("analyte_id", fallbackAnalyteIds)
+            : Promise.resolve({ data: [] as any[] }),
+        ]);
+
+        const seenAnalyteIds = new Set<string>();
+        const linkedCalculated = [...((directRes.data || []) as any[]), ...((fallbackRes.data || []) as any[])]
+          .filter((la: any) => {
+            const analyteId = la?.analyte_id;
+            if (!analyteId || seenAnalyteIds.has(analyteId)) return false;
+            seenAnalyteIds.add(analyteId);
+            const global = Array.isArray(la.analytes) ? la.analytes[0] : la.analytes;
+            return !!((la.is_calculated ?? global?.is_calculated) && (la.formula ?? global?.formula));
+          })
+          .map((la: any) => {
+            const global = Array.isArray(la.analytes) ? la.analytes[0] : la.analytes;
+            return {
+              analyte_id: la.analyte_id as string,
+              lab_analyte_id: la.id as string,
+              parameter: la.name || global?.name || "Calculated Parameter",
+              unit: la.unit || global?.unit || "",
+              reference_range: la.lab_specific_reference_range ?? la.reference_range ?? global?.reference_range ?? "",
+            };
+          })
+          .filter((item) => !existingAnalyteIds.has(item.analyte_id));
+
+        if (linkedCalculated.length > 0) {
+          const missingRows = linkedCalculated.map((item) => ({
+            result_id: row.result_id,
+            analyte_id: item.analyte_id,
+            lab_analyte_id: item.lab_analyte_id,
+            analyte_name: item.parameter,
+            parameter: item.parameter,
+            value: null,
+            unit: item.unit,
+            reference_range: item.reference_range,
+            flag: null,
+            is_auto_calculated: true,
+            order_id: row.order_id,
+            test_group_id: row.test_group_id,
+            lab_id: labId,
+          }));
+
+          const { error: insertMissingError } = await supabase.from("result_values").insert(missingRows);
+          if (insertMissingError) {
+            console.error("Failed to insert missing calculated rows:", insertMissingError);
+          } else {
+            const { data: refreshedRows } = await supabase
+              .from("result_values")
+              .select("id,result_id,analyte_id,lab_analyte_id,parameter,value,unit,reference_range,flag,verify_status,verify_note,verified_by,verified_at,is_auto_calculated,calculation_inputs,calculated_at")
+              .eq("result_id", row.result_id)
+              .order("parameter", { ascending: true });
+
+            if (refreshedRows) {
+              allRows = refreshedRows as unknown as Analyte[];
+              setRowsByResult((prev) => ({ ...prev, [row.result_id]: allRows }));
+            }
+          }
+        }
+      }
+
+      const calcRows = allRows.filter(a => a.is_auto_calculated && a.analyte_id);
+      const srcRows  = allRows.filter(a => !a.is_auto_calculated && a.value !== null && a.value !== '');
+      if (calcRows.length === 0) {
+        alert('No calculated parameters found in this panel.');
+        return;
+      }
+
       const calcIds = calcRows.map(a => a.analyte_id);
       const srcIds  = srcRows.map(a => a.analyte_id).filter(Boolean) as string[];
 
-      const labId = currentLabId || await database.getCurrentUserLabId();
       const [{ data: labFormulas }, { data: rawDeps }, { data: srcAnalytesData }, { data: srcLabAnalytesData }] = await Promise.all([
         // Prefer lab_analytes formula over global analytes formula
         supabase.from('lab_analytes')

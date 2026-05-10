@@ -38,6 +38,7 @@ import { database, supabase, formatAge } from "../../utils/supabase";
 import { SampleTypeIndicator } from "../Common/SampleTypeIndicator";
 import { generateAndDownloadReport, getLabTemplate, type ReportData } from "../../utils/pdfGenerator";
 import { generateInvoicePDF } from "../../utils/invoicePdfService";
+import { formatCurrency } from "../../utils/currencyFormatter";
 import { useAuth } from "../../contexts/AuthContext";
 import { useOrderStatusCentral } from "../../hooks/useOrderStatusCentral";
 import QuickStatusButtons from "../Orders/QuickStatusButtons";
@@ -89,6 +90,8 @@ export interface DashboardOrder {
   paid_amount?: number;
   due_amount?: number;
   payment_status?: 'unpaid' | 'partial' | 'paid' | null;
+  total_refunded_amount?: number;
+  refund_status?: 'not_requested' | 'pending' | 'partially_refunded' | 'fully_refunded' | null;
   discount_amount?: number;
   discount_source?: 'manual' | 'doctor' | 'location' | 'account' | null;
 
@@ -199,6 +202,7 @@ const DashboardOrderModal: React.FC<DashboardOrderModalProps> = ({
   // Add/Remove Tests Logic
   const [currentTotal, setCurrentTotal] = useState(order.total_amount);
   const [currentDue, setCurrentDue] = useState(order.due_amount || 0);
+  const refundedAmount = order.total_refunded_amount || 0;
   const [showAddTestModal, setShowAddTestModal] = useState(false);
   const [availableTests, setAvailableTests] = useState<any[]>([]);
   const [testSearch, setTestSearch] = useState('');
@@ -301,13 +305,18 @@ const DashboardOrderModal: React.FC<DashboardOrderModalProps> = ({
   useEffect(() => {
     if (invoiceDiscount && invoiceDiscount.total_discount > 0) {
       const chargesTotal = orderBillingItems.reduce((s: number, i: any) => s + (i.amount || 0), 0);
-      setCurrentDue(Math.max(0, invoiceDiscount.total_after_discount + chargesTotal - (order.paid_amount || 0)));
+      setCurrentDue(Math.max(0, invoiceDiscount.total_after_discount + chargesTotal - (order.paid_amount || 0) - refundedAmount));
     }
-  }, [invoiceDiscount, orderBillingItems]);
+  }, [invoiceDiscount, orderBillingItems, order.paid_amount, refundedAmount]);
 
   const testsSubtotalDisplay = invoiceDiscount?.subtotal != null
     ? invoiceDiscount.subtotal
     : Math.max(0, (order.total_amount || 0) - collectionCharge);
+
+  const formatBillingAmount = (amount: number) => {
+    const formatted = formatCurrency(amount || 0);
+    return formatted.endsWith(".00") ? formatted.slice(0, -3) : formatted;
+  };
 
   // Load order billing items (extra charges) and item type catalog.
   // order.total_amount = tests + collection ONLY (charges are always separate in order_billing_items).
@@ -343,16 +352,16 @@ const DashboardOrderModal: React.FC<DashboardOrderModalProps> = ({
       // Recalculate totals: order.total_amount includes collection_charge; extra billing items are additive
       const chargesTotal = chargesList.reduce((s: number, i: any) => s + (i.amount || 0), 0);
       setCurrentTotal((order.total_amount || 0) + chargesTotal);
-      setCurrentDue(Math.max(0, (order.total_amount || 0) + chargesTotal - (order.paid_amount || 0)));
+      setCurrentDue(Math.max(0, (order.total_amount || 0) + chargesTotal - (order.paid_amount || 0) - refundedAmount));
     };
     load();
-  }, [labId, order.id, invoiceRefreshTrigger]);
+  }, [labId, order.id, order.paid_amount, invoiceRefreshTrigger, refundedAmount]);
 
   // Helper: recompute and persist totals after charges change
   const recomputeTotalsFromItems = (items: typeof orderBillingItems) => {
     const chargesTotal = items.reduce((s, i) => s + (i.amount || 0), 0);
     const newTotal = (order.total_amount || 0) + chargesTotal;
-    const newDue = Math.max(0, newTotal - (order.paid_amount || 0));
+    const newDue = Math.max(0, newTotal - (order.paid_amount || 0) - refundedAmount);
     setCurrentTotal(newTotal);
     setCurrentDue(newDue);
   };
@@ -417,7 +426,7 @@ const DashboardOrderModal: React.FC<DashboardOrderModalProps> = ({
     setCollectionChargeInput('');
     const chargesTotal = orderBillingItems.reduce((s, i) => s + i.amount, 0);
     setCurrentTotal(newTotalAmount + chargesTotal);
-    setCurrentDue(Math.max(0, newTotalAmount + chargesTotal - (order.paid_amount || 0)));
+    setCurrentDue(Math.max(0, newTotalAmount + chargesTotal - (order.paid_amount || 0) - refundedAmount));
     setSavingCollectionCharge(false);
   };
 
@@ -948,11 +957,12 @@ const DashboardOrderModal: React.FC<DashboardOrderModalProps> = ({
       // Fetch all invoices for this order to get combined totals
       const { data: allInvoices } = await supabase
         .from('invoices')
-        .select('id, subtotal, discount, total, amount_paid')
+        .select('id, subtotal, discount, total, amount_paid, total_refunded_amount')
         .eq('order_id', order.id);
 
       const combinedSubtotal  = (allInvoices || []).reduce((s: number, inv: any) => s + (parseFloat(inv.subtotal) || 0), 0);
       const combinedPaid      = (allInvoices || []).reduce((s: number, inv: any) => s + (parseFloat(inv.amount_paid) || 0), 0);
+      const combinedRefunded  = (allInvoices || []).reduce((s: number, inv: any) => s + (parseFloat(inv.total_refunded_amount) || 0), 0);
       const newTotal          = combinedSubtotal - discountAmt;
 
       if (newTotal < combinedPaid) {
@@ -991,7 +1001,7 @@ const DashboardOrderModal: React.FC<DashboardOrderModalProps> = ({
       setDiscountInput('');
       setDiscountReason('');
       setInvoiceRefreshTrigger(t => t + 1);
-      setCurrentDue(Math.max(0, newTotal - combinedPaid));
+      setCurrentDue(Math.max(0, newTotal - combinedPaid - combinedRefunded));
       await onUpdateStatus(order.id, order.status);
       alert('Discount saved. Please regenerate the PDF to reflect the change.');
     } catch (err: any) {
@@ -1936,8 +1946,8 @@ const DashboardOrderModal: React.FC<DashboardOrderModalProps> = ({
                           <span className="text-sm text-green-700 font-medium flex items-center gap-1">
                             <span className="text-green-500">🏷️</span> Discount Applied
                           </span>
-                          <span className="font-bold text-green-600 text-base">
-                            -₹{invoiceDiscount.total_discount.toLocaleString()}
+                          <span className="font-bold text-green-600 text-base tabular-nums">
+                            -{formatBillingAmount(invoiceDiscount.total_discount)}
                           </span>
                         </div>
 
@@ -1951,10 +1961,10 @@ const DashboardOrderModal: React.FC<DashboardOrderModalProps> = ({
                                   <span className="text-green-700 truncate max-w-[150px]" title={item.test_name}>
                                     {item.test_name}
                                   </span>
-                                  <span className="text-green-600 font-medium">
+                                  <span className="text-green-600 font-medium tabular-nums">
                                     {item.discount_type === 'percent'
                                       ? `-${item.discount_value}%`
-                                      : `-₹${item.discount_amount}`}
+                                      : `-${formatBillingAmount(item.discount_amount)}`}
                                     {item.discount_reason && (
                                       <span className="text-green-500 ml-1">({item.discount_reason})</span>
                                     )}
@@ -1970,8 +1980,8 @@ const DashboardOrderModal: React.FC<DashboardOrderModalProps> = ({
                     {invoiceDiscount && invoiceDiscount.total_discount > 0 && (
                       <div className="flex justify-between items-center p-2 rounded bg-blue-50 border border-blue-100">
                         <span className="text-sm text-blue-700 font-medium">Net Amount</span>
-                        <span className="font-bold text-blue-700 text-base">
-                          ₹{invoiceDiscount.total_after_discount.toLocaleString()}
+                        <span className="font-bold text-blue-700 text-base tabular-nums">
+                          {formatBillingAmount(invoiceDiscount.total_after_discount)}
                         </span>
                       </div>
                     )}
@@ -1979,15 +1989,22 @@ const DashboardOrderModal: React.FC<DashboardOrderModalProps> = ({
                     {/* Paid Amount */}
                     <div className="flex justify-between items-center p-2 rounded hover:bg-gray-50 transition-colors">
                       <span className="text-sm text-gray-600 font-medium">Paid</span>
-                      <span className="font-bold text-green-600 text-base">₹{(order.paid_amount || 0).toLocaleString()}</span>
+                      <span className="font-bold text-green-600 text-base tabular-nums">{formatBillingAmount(order.paid_amount || 0)}</span>
                     </div>
+
+                    {(order.total_refunded_amount || 0) > 0 && (
+                      <div className="flex justify-between items-center p-2 rounded hover:bg-gray-50 transition-colors">
+                        <span className="text-sm text-gray-600 font-medium">Refund</span>
+                        <span className="font-bold text-orange-600 text-base tabular-nums">{formatBillingAmount(order.total_refunded_amount || 0)}</span>
+                      </div>
+                    )}
 
                     {/* Due Amount */}
                     {!order.account_name && (
                       <div className="pt-3 border-t border-gray-100 flex justify-between items-center">
                         <span className="text-sm font-bold text-gray-900 uppercase tracking-tight">Due Amount</span>
-                        <span className={`text-xl font-extrabold tracking-tight ${(currentDue || 0) > 0 ? 'text-red-500' : 'text-green-600'}`}>
-                          ₹{(currentDue || 0).toLocaleString()}
+                        <span className={`text-xl font-extrabold tracking-tight tabular-nums ${(currentDue || 0) > 0 ? 'text-red-500' : 'text-green-600'}`}>
+                          {formatBillingAmount(currentDue || 0)}
                         </span>
                       </div>
                     )}

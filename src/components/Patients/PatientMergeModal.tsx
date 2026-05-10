@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { X, Users, AlertTriangle, CheckCircle, Loader2, ArrowRight } from 'lucide-react';
 import { supabase, formatAge } from '../../utils/supabase';
+import { useEscapeModalClose } from '../../hooks/useEscapeModalClose';
 
 interface Patient {
   id: string;
@@ -27,6 +28,7 @@ const PatientMergeModal: React.FC<PatientMergeModalProps> = ({
   onClose,
   onSuccess,
 }) => {
+  useEscapeModalClose(onClose);
   const [searchTerm, setSearchTerm] = useState('');
   const [potentialDuplicates, setPotentialDuplicates] = useState<Patient[]>([]);
   const [selectedDuplicate, setSelectedDuplicate] = useState<Patient | null>(null);

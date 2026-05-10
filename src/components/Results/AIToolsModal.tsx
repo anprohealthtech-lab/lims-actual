@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { X, Brain, Camera, FileText, Zap, Upload, Eye, CheckCircle, AlertTriangle, Target } from 'lucide-react';
 import { attachments } from '../../utils/supabase';
+import { useEscapeModalClose } from '../../hooks/useEscapeModalClose';
 
 interface AIToolsModalProps {
   isOpen: boolean;
@@ -48,6 +49,7 @@ const AIToolsModal: React.FC<AIToolsModalProps> = ({
   result, 
   onAIResultGenerated 
 }) => {
+  useEscapeModalClose(onClose, isOpen);
   // Initialize with document tab if attachmentId exists, otherwise photo tab
   const [activeTab, setActiveTab] = useState(() => {
     if (result.attachmentId) {

@@ -88,12 +88,16 @@ Deno.serve(async (req: Request) => {
     } = body;
 
     // Build full phone with country code
-    const fullPhone = phone ? `${country_code || '+91'}${phone.replace(/^(\+\d+)/, '')}` : null;
+    const normalizedPhone = phone?.trim() || "";
+    const fullPhone = normalizedPhone
+      ? `${country_code || '+91'}${normalizedPhone.replace(/^(\+\d+)/, '')}`
+      : null;
 
     console.log('[CREATE-LAB-WITH-ADMIN] Request:', { lab_name, admin_email });
 
     // Validate required fields
     if (!lab_name) return bad("lab_name is required");
+    if (!normalizedPhone) return bad("phone is required");
     if (!admin_name) return bad("admin_name is required");
     if (!admin_email) return bad("admin_email is required");
 

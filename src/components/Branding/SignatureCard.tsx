@@ -1,5 +1,5 @@
 import React from 'react';
-import { PenTool, Star, Trash2 } from 'lucide-react';
+import { PenTool, Star, Trash2, Edit2 } from 'lucide-react';
 
 type ProcessingStatus = 'pending' | 'processing' | 'ready' | 'error' | undefined;
 
@@ -26,6 +26,7 @@ interface SignatureCardProps {
   signature: SignatureSummary;
   onSetDefault: () => void;
   onDelete: () => void;
+  onEdit: () => void;
   processingStatus?: ProcessingStatus;
 }
 
@@ -33,6 +34,7 @@ export const SignatureCard: React.FC<SignatureCardProps> = ({
   signature,
   onSetDefault,
   onDelete,
+  onEdit,
   processingStatus,
 }) => {
   const statusLabel = processingStatus ? `Status: ${processingStatus}` : 'Status: idle';
@@ -71,13 +73,21 @@ export const SignatureCard: React.FC<SignatureCardProps> = ({
 
       <p className="mb-3 text-xs text-gray-500">{statusLabel}</p>
 
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between gap-2">
         <button
           type="button"
           onClick={onSetDefault}
           className="rounded-md border border-gray-300 px-3 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-50"
         >
           Set as default
+        </button>
+        <button
+          type="button"
+          onClick={onEdit}
+          className="inline-flex items-center gap-2 rounded-md border border-indigo-200 px-3 py-1.5 text-xs font-medium text-indigo-600 hover:bg-indigo-50"
+        >
+          <Edit2 className="h-3 w-3" />
+          Edit
         </button>
         <button
           type="button"

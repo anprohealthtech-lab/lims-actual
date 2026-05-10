@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { supabase } from '../../utils/supabase';
 import { useAuth } from '../../contexts/AuthContext';
 import { Send, Phone, FileText, Check, X } from 'lucide-react';
+import { useEscapeModalClose } from '../../hooks/useEscapeModalClose';
 
 interface SendReportModalProps {
     orderId: string;
@@ -25,6 +26,7 @@ export const SendReportModal: React.FC<SendReportModalProps> = ({
     onClose
 }) => {
     const { user } = useAuth();
+    useEscapeModalClose(onClose);
     const [phone, setPhone] = useState(doctorPhone || '');
     // Only show summary checkbox enabled if: 1) flag is true AND 2) summary exists
     const [includeSummary, setIncludeSummary] = useState(includeSummaryFlag && !!clinicalSummary);

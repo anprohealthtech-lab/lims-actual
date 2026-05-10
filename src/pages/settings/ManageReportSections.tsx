@@ -19,9 +19,10 @@ import {
   Sparkles,
   Send,
   Lightbulb,
-  Copy
+  Copy,
+  Search
 } from 'lucide-react';
-import { database } from '../../utils/supabase';
+import { database, supabase } from '../../utils/supabase';
 import { generateSectionContent, getQuickPromptsForSection } from '../../utils/aiSectionService';
 
 // Types
@@ -33,6 +34,7 @@ interface TemplateSection {
   section_type: string;
   section_name: string;
   display_order: number;
+  font_size?: number;
   default_content?: string;
   predefined_options: string[];
   is_required: boolean;
@@ -49,6 +51,7 @@ interface TestGroup {
   id: string;
   name: string;
   category: string;
+  print_options?: Record<string, unknown> | null;
 }
 
 const SECTION_TYPES = [
@@ -463,6 +466,7 @@ const ManageReportSections: React.FC = () => {
     section_type: string;
     section_name: string;
     display_order: number;
+    font_size: number;
     default_content: string;
     predefined_options: string[];
     is_required: boolean;
@@ -476,6 +480,7 @@ const ManageReportSections: React.FC = () => {
     section_type: 'findings',
     section_name: '',
     display_order: 0,
+    font_size: 15,
     default_content: '',
     predefined_options: [''],
     is_required: false,
@@ -494,11 +499,13 @@ const ManageReportSections: React.FC = () => {
 
   // Filter state
   const [filterTestGroup, setFilterTestGroup] = useState<string>('');
+  const [searchQuery, setSearchQuery] = useState<string>('');
 
   // Copy-to-group modal state
   const [copySourceGroupId, setCopySourceGroupId] = useState<string | null>(null);
   const [copyTargetGroupId, setCopyTargetGroupId] = useState<string>('');
   const [copying, setCopying] = useState(false);
+  const [savingGroupSettingsId, setSavingGroupSettingsId] = useState<string | null>(null);
 
   // Load data
   const loadData = useCallback(async () => {
@@ -652,6 +659,7 @@ const ManageReportSections: React.FC = () => {
       section_type: section.section_type,
       section_name: section.section_name,
       display_order: section.display_order,
+      font_size: section.font_size ?? 13,
       default_content: section.default_content || '',
       predefined_options: section.predefined_options?.length > 0 ? section.predefined_options : [''],
       is_required: section.is_required,
@@ -674,6 +682,7 @@ const ManageReportSections: React.FC = () => {
     section_type: 'findings',
     section_name: '',
     display_order: 0,
+    font_size: 15,
     default_content: '',
     predefined_options: [''],
     is_required: false,
@@ -712,6 +721,7 @@ const ManageReportSections: React.FC = () => {
         section_type: formData.section_type,
         section_name: formData.section_name.trim(),
         display_order: formData.display_order,
+        font_size: Math.max(8, Math.min(48, formData.font_size || 15)),
         default_content: formData.default_content.trim(),
         predefined_options: cleanedOptions,
         is_required: formData.is_required,
@@ -768,6 +778,7 @@ const ManageReportSections: React.FC = () => {
           section_type: section.section_type,
           section_name: section.section_name,
           display_order: section.display_order,
+          font_size: section.font_size ?? 13,
           default_content: section.default_content || '',
           predefined_options: section.predefined_options || [],
           is_required: section.is_required,
@@ -828,18 +839,71 @@ const ManageReportSections: React.FC = () => {
     }));
   };
 
-  // Filter sections by test group
-  const filteredSections = filterTestGroup
-    ? sections.filter(s => s.test_group_id === filterTestGroup)
-    : sections;
+  // Filter sections by test group and search query
+  const filteredSections = sections.filter(s => {
+    const matchesGroup = !filterTestGroup || s.test_group_id === filterTestGroup;
+    if (!matchesGroup) return false;
+    if (!searchQuery.trim()) return true;
+    const q = searchQuery.toLowerCase();
+    const groupName = testGroups.find(tg => tg.id === s.test_group_id)?.name?.toLowerCase() || '';
+    const sectionName = s.section_name?.toLowerCase() || '';
+    return groupName.includes(q) || sectionName.includes(q);
+  });
 
   // Group sections by test group for display
   const groupedSections = filteredSections.reduce((acc, section) => {
-    const groupName = section.test_groups?.name || 'Unassigned';
-    if (!acc[groupName]) acc[groupName] = [];
-    acc[groupName].push(section);
+    const groupId = section.test_group_id || 'unassigned';
+    if (!acc[groupId]) acc[groupId] = [];
+    acc[groupId].push(section);
     return acc;
   }, {} as Record<string, TemplateSection[]>);
+
+  const getGroupReportOptions = (groupId: string) => {
+    const group = testGroups.find(tg => tg.id === groupId);
+    const printOptions = (group?.print_options || {}) as Record<string, unknown>;
+    return {
+      showPatientInfoBox: printOptions.showPatientInfoBox !== false,
+      showSignatureBlock: printOptions.showSignatureBlock !== false,
+    };
+  };
+
+  const updateGroupReportOption = async (
+    groupId: string,
+    key: 'showPatientInfoBox' | 'showSignatureBlock',
+    value: boolean,
+  ) => {
+    const group = testGroups.find(tg => tg.id === groupId);
+    if (!group) return;
+
+    setSavingGroupSettingsId(groupId);
+    setError(null);
+
+    try {
+      const nextPrintOptions: Record<string, unknown> = {
+        ...((group.print_options || {}) as Record<string, unknown>),
+        [key]: value,
+      };
+
+      const { error: updateError } = await supabase
+        .from('test_groups')
+        .update({
+          print_options: nextPrintOptions,
+          updated_at: new Date().toISOString(),
+        })
+        .eq('id', groupId);
+
+      if (updateError) throw updateError;
+
+      setTestGroups(prev => prev.map(tg => (
+        tg.id === groupId ? { ...tg, print_options: nextPrintOptions } : tg
+      )));
+      setSuccess('Report display settings updated');
+    } catch (err: any) {
+      setError(err.message || 'Failed to update report display settings');
+    } finally {
+      setSavingGroupSettingsId(null);
+    }
+  };
 
   if (loading) {
     return (
@@ -890,18 +954,49 @@ const ManageReportSections: React.FC = () => {
       )}
 
       {/* Filter */}
-      <div className="mb-6">
-        <label className="block text-sm font-medium text-gray-700 mb-1">Filter by Test Group</label>
-        <select
-          value={filterTestGroup}
-          onChange={(e) => setFilterTestGroup(e.target.value)}
-          className="w-64 px-3 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500"
-        >
-          <option value="">All Test Groups</option>
-          {testGroups.map(tg => (
-            <option key={tg.id} value={tg.id}>{tg.name}</option>
-          ))}
-        </select>
+      <div className="mb-6 flex flex-wrap items-end gap-4">
+        <div>
+          <label className="block text-sm font-medium text-gray-700 mb-1">Filter by Test Group</label>
+          <select
+            value={filterTestGroup}
+            onChange={(e) => setFilterTestGroup(e.target.value)}
+            className="w-64 px-3 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500"
+          >
+            <option value="">All Test Groups</option>
+            {testGroups.map(tg => (
+              <option key={tg.id} value={tg.id}>{tg.name}</option>
+            ))}
+          </select>
+        </div>
+        <div>
+          <label className="block text-sm font-medium text-gray-700 mb-1">Search</label>
+          <div className="relative">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400 pointer-events-none" />
+            <input
+              type="text"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              placeholder="Search CT Brain, USG..."
+              className="pl-9 pr-8 py-2 w-64 border rounded-lg focus:ring-2 focus:ring-blue-500 text-sm"
+            />
+            {searchQuery && (
+              <button
+                onClick={() => setSearchQuery('')}
+                className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            )}
+          </div>
+        </div>
+        {(filterTestGroup || searchQuery) && (
+          <button
+            onClick={() => { setFilterTestGroup(''); setSearchQuery(''); }}
+            className="text-sm text-blue-600 hover:text-blue-700 underline pb-2"
+          >
+            Clear filters
+          </button>
+        )}
       </div>
 
       {/* Sections List */}
@@ -913,12 +1008,56 @@ const ManageReportSections: React.FC = () => {
         </div>
       ) : (
         <div className="space-y-6">
-          {Object.entries(groupedSections).map(([groupName, groupSections]) => (
-            <div key={groupName} className="bg-white rounded-lg border shadow-sm">
+          {Object.entries(groupedSections).map(([groupId, groupSections]) => {
+            const group = testGroups.find(tg => tg.id === groupId);
+            const groupName = group?.name || groupSections[0]?.test_groups?.name || 'Unassigned';
+            const groupCategory = group?.category || '';
+            const reportOptions = getGroupReportOptions(groupId);
+            const isSavingGroupSettings = savingGroupSettingsId === groupId;
+
+            return (
+            <div key={groupId} className="bg-white rounded-lg border shadow-sm">
               <div className="px-4 py-3 bg-gray-50 border-b rounded-t-lg flex items-center justify-between">
                 <div>
                   <h3 className="font-semibold text-gray-900">{groupName}</h3>
-                  <span className="text-sm text-gray-500">{groupSections.length} section(s)</span>
+                  <div className="flex items-center gap-2 mt-1">
+                    <span className="text-sm text-gray-500">{groupSections.length} section(s)</span>
+                    {groupCategory && (
+                      <span className="px-2 py-0.5 text-xs bg-white border text-gray-600 rounded-full">
+                        {groupCategory}
+                      </span>
+                    )}
+                    {isSavingGroupSettings && (
+                      <span className="inline-flex items-center gap-1 text-xs text-blue-600">
+                        <Loader2 className="w-3 h-3 animate-spin" />
+                        Saving report settings...
+                      </span>
+                    )}
+                  </div>
+                  {groupId !== 'unassigned' && (
+                    <div className="flex flex-wrap gap-4 mt-3">
+                      <label className="flex items-center gap-2 text-sm text-gray-700 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={reportOptions.showPatientInfoBox}
+                          disabled={isSavingGroupSettings}
+                          onChange={(e) => updateGroupReportOption(groupId, 'showPatientInfoBox', e.target.checked)}
+                          className="h-4 w-4 text-blue-600 border-gray-300 rounded"
+                        />
+                        <span>Show patient info box</span>
+                      </label>
+                      <label className="flex items-center gap-2 text-sm text-gray-700 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={reportOptions.showSignatureBlock}
+                          disabled={isSavingGroupSettings}
+                          onChange={(e) => updateGroupReportOption(groupId, 'showSignatureBlock', e.target.checked)}
+                          className="h-4 w-4 text-blue-600 border-gray-300 rounded"
+                        />
+                        <span>Show signature block</span>
+                      </label>
+                    </div>
+                  )}
                 </div>
                 <button
                   onClick={() => {
@@ -962,6 +1101,9 @@ const ManageReportSections: React.FC = () => {
                                 Images
                               </span>
                             )}
+                            <span className="px-2 py-0.5 text-xs bg-gray-100 text-gray-600 rounded-full font-mono">
+                              {section.font_size ?? 13}px
+                            </span>
                           </div>
 
                           {section.default_content && (
@@ -1014,7 +1156,7 @@ const ManageReportSections: React.FC = () => {
                   ))}
               </div>
             </div>
-          ))}
+          )})}
         </div>
       )}
 
@@ -1236,8 +1378,8 @@ const ManageReportSections: React.FC = () => {
                 </div>
               </div>
 
-              {/* Display Order & Placeholder */}
-              <div className="grid grid-cols-2 gap-4">
+              {/* Display Order, Font Size & Placeholder */}
+              <div className="grid grid-cols-3 gap-4">
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1">Display Order</label>
                   <input
@@ -1246,6 +1388,20 @@ const ManageReportSections: React.FC = () => {
                     onChange={(e) => setFormData(prev => ({ ...prev, display_order: parseInt(e.target.value) || 0 }))}
                     className="w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500"
                     min="0"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                    Font Size (px)
+                    <span className="ml-1 text-xs text-gray-400">report text size</span>
+                  </label>
+                  <input
+                    type="number"
+                    value={formData.font_size}
+                    onChange={(e) => setFormData(prev => ({ ...prev, font_size: parseInt(e.target.value) || 15 }))}
+                    className="w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500 font-mono"
+                    min="8"
+                    max="48"
                   />
                 </div>
                 <div>

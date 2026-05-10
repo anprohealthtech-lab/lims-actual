@@ -48,6 +48,7 @@ import {
 import { supabase, database, aiAnalysis, formatAge } from "../utils/supabase";
 import { runAIFlagAnalysis, analyzeAndSaveFlag } from "../utils/aiFlagAnalysis";
 import { generateAndSaveTrendCharts, saveClinicalSummary, toggleOrderSummaryInReport, saveClinicalSummaryOptions } from "../utils/reportExtrasService";
+import { buildBlockedApprovalMessage, getBlockedApprovalCandidates } from "../utils/resultApprovalGuard";
 import TrendGraphPanel from "../components/Results/TrendGraphPanel";
 import PatientSummaryModal from "../components/Results/PatientSummaryModal";
 import SectionEditor from "../components/Results/SectionEditor";
@@ -621,6 +622,15 @@ const OrderVerificationView: React.FC<OrderVerificationViewProps> = ({ onBackToP
   const setBusyFor = (key: string, val: boolean) => setBusy(prev => ({ ...prev, [key]: val }));
 
   const approveAnalyte = async (analyteId: string) => {
+    const analyte = Object.values(rowsByResult).flat().find((row) => row.id === analyteId);
+    if (analyte) {
+      const blocked = getBlockedApprovalCandidates([analyte]);
+      if (blocked.length) {
+        alert(buildBlockedApprovalMessage("this analyte", blocked));
+        return;
+      }
+    }
+
     setBusyFor(analyteId, true);
     const { error } = await supabase
       .from("result_values")
@@ -665,7 +675,7 @@ const OrderVerificationView: React.FC<OrderVerificationViewProps> = ({ onBackToP
     }
   };
 
-  const approvePanel = async (panel: PanelRow, analytes: Analyte[]) => {
+  const approvePanel = async (panel: PanelRow, analytes: Analyte[]): Promise<boolean> => {
     if (panel.is_section_only) {
       setBusyFor(panel.result_id, true);
       try {
@@ -680,15 +690,23 @@ const OrderVerificationView: React.FC<OrderVerificationViewProps> = ({ onBackToP
 
         if (error) throw error;
         await loadPanels();
+        return true;
       } catch (err) {
         console.error("Failed to approve section-only panel", err);
+        return false;
       } finally {
         setBusyFor(panel.result_id, false);
       }
-      return;
+      return false;
     }
 
-    if (!analytes.length) return;
+    if (!analytes.length) return false;
+    const blocked = getBlockedApprovalCandidates(analytes);
+    if (blocked.length) {
+      alert(buildBlockedApprovalMessage(`panel "${panel.test_group_name || "Unknown"}"`, blocked));
+      return false;
+    }
+
     const ids = analytes.map(a => a.id);
     setBusyFor(panel.result_id, true);
     setSavingReportExtras(prev => ({ ...prev, [panel.order_id]: true }));
@@ -730,8 +748,10 @@ const OrderVerificationView: React.FC<OrderVerificationViewProps> = ({ onBackToP
       }
 
       await loadPanels();
+      return true;
     } catch (err) {
       console.error("Failed to approve panel", err);
+      return false;
     } finally {
       setBusyFor(panel.result_id, false);
       setSavingReportExtras(prev => ({ ...prev, [panel.order_id]: false }));
@@ -873,7 +893,8 @@ const OrderVerificationView: React.FC<OrderVerificationViewProps> = ({ onBackToP
         // immediately after setState, which can still be stale unless the UI
         // has already preloaded them via "Show All Analytes".
         const analytes = await ensureAnalytesLoaded(panel.result_id);
-        await approvePanel(panel, analytes);
+        const approved = await approvePanel(panel, analytes);
+        if (!approved) break;
       }
     } finally {
       setBulkProcessing(false);
@@ -2627,7 +2648,7 @@ ${summary.urgent_findings.map(f => `• ${f}`).join('\n')}` : ''}
                 <span className="font-semibold text-gray-800">
                   Quick Preview — {quickPreview.patientName}
                 </span>
-                <span className="text-xs text-gray-400 ml-1">(Basic print style)</span>
+                <span className="text-xs text-gray-400 ml-1">(Matches generate letterhead print version)</span>
               </div>
               <div className="flex items-center space-x-2">
                 <button

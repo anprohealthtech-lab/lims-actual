@@ -6,6 +6,7 @@ import {
   ChevronLeft, ChevronRight, Save, Send, Flag
 } from 'lucide-react';
 import { format } from 'date-fns';
+import { useEscapeModalClose } from '../../hooks/useEscapeModalClose';
 
 interface TestResult {
   id: string;
@@ -114,6 +115,7 @@ const DetailedApprovalModal: React.FC<DetailedApprovalModalProps> = ({
   onReject,
   onRequestClarification
 }) => {
+  useEscapeModalClose(onClose, isOpen);
   const [activeTab, setActiveTab] = useState<'results' | 'attachments' | 'history' | 'patient'>('results');
   const [orderDetails, setOrderDetails] = useState<OrderDetails | null>(null);
   const [patientDetails, setPatientDetails] = useState<PatientDetails | null>(null);

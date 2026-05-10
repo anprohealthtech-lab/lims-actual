@@ -213,7 +213,7 @@ th { padding: 3px 4px !important; }
   border-top: 1.5px solid #000; border-bottom: 1.5px solid #000;
   padding: 5px 0; margin: 6px 0 10px; font-weight: 700; color: #000;
 }
-.patient-header-table { width: 100%; table-layout: fixed; margin-bottom: 8px; border: none !important; }
+.patient-header-table { width: 100%; table-layout: fixed; margin-bottom: 0; border: none !important; }
 .patient-header-table th {
   width: 15%; font-weight: 700; text-align: left; color: #000;
   padding: 2px 3px !important; white-space: nowrap; border: none !important;
@@ -225,7 +225,7 @@ th { padding: 3px 4px !important; }
 }
 .tbl-results {
   width: 100%; table-layout: fixed; border-collapse: collapse;
-  border: none !important; margin-top: 4px;
+  border: none !important; margin-top: 2px;
 }
 .tbl-results thead th {
   border-top: 1.5px solid #000 !important; border-bottom: 1.5px solid #000 !important;
@@ -270,7 +270,7 @@ ${
 .main-group-row td { padding: 0 !important; border: none !important; }
 .center-title {
   text-align: center; font-weight: 700; text-decoration: underline;
-  font-size: ${basePx + 2}px; margin: 8px 0 0;
+  font-size: ${basePx + 2}px; margin: 3px 0 0;
   text-transform: uppercase; line-height: 1.2; color: #000;
 }
 .center-title.left {
@@ -279,11 +279,21 @@ ${
   margin: 0 0 6px;
 }
 .sub-section-header td {
+  padding: 0 !important;
+  border: none !important;
+}
+.sub-section-label {
+  display: block !important;
+  width: 100% !important;
+  box-sizing: border-box !important;
   font-weight: 700 !important;
-  padding-top: ${sectionHeaderInline ? 6 : 12}px !important;
-  padding-bottom: 3px !important; text-transform: uppercase !important;
+  text-transform: uppercase !important;
   font-size: ${sectionHeaderInline ? basePx - 1 : smallPx + 1}px !important;
-  border: none !important; color: #000 !important;
+  border: none !important;
+  color: #000 !important;
+  text-align: center !important;
+  white-space: nowrap !important;
+  padding: ${sectionHeaderInline ? 6 : 12}px 10px 3px 10px !important;
   ${sectionHeaderInline ? "border-bottom: 0.5px solid #ccc !important; background-color: #f5f5f5 !important;" : ""}
 }
 .descriptive-row td { border-bottom: 0.5px dotted #e5e5e5 !important; color: #111 !important; }
@@ -408,7 +418,7 @@ ${
   <div>
     <h2 class="report-main-title">TEST REPORT</h2>
   </div>
-  <figure style="margin: 0 0 10px;">
+  <figure style="margin: 0 0 4px;">
     <table class="patient-header-table">
       <tbody>
         <tr>
@@ -498,7 +508,7 @@ ${
       <tbody>
         ${groupTitleBelowHeaders ? `
         <tr class="main-group-row">
-          <td colspan="${colCount}">
+          <td colspan="${colCount}" style="border:none !important;padding:0 !important;">
             <div class="center-title">${group.testGroupName}</div>
           </td>
         </tr>` : ""}`;
@@ -524,7 +534,9 @@ ${
       if (block.heading) {
         testResultsHtml += `
         <tr class="sub-section-header">
-          <td colspan="${colCount}">${block.heading}</td>
+          <td colspan="${colCount}" style="border:none !important;padding:0 !important;">
+            <div class="sub-section-label">${block.heading}</div>
+          </td>
         </tr>`;
       }
 

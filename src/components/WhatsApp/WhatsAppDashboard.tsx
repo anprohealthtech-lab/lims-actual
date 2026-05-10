@@ -36,7 +36,7 @@ const WhatsAppDashboard: React.FC<WhatsAppDashboardProps> = ({ onConnectionChang
   const pollingTimeoutRef = React.useRef<number | null>(null);
   const pollingStartedAtRef = React.useRef<number>(0);
   const currentDelayRef = React.useRef<number>(5000);
-  const stoppedRef = React.useRef<boolean>(false);
+  const stoppedRef = React.useRef<boolean>(true);
   const isOperationInProgressRef = React.useRef<boolean>(false);
   const isMountedRef = React.useRef<boolean>(true);
 

@@ -4,6 +4,7 @@ import { database, supabase } from '../../utils/supabase';
 import { generateInvoicePDF } from '../../utils/invoicePdfService';
 import { WhatsAppAPI } from '../../utils/whatsappAPI';
 import { openWhatsAppManually } from '../../utils/whatsappUtils';
+import { useEscapeModalClose } from '../../hooks/useEscapeModalClose';
 
 interface CustomField {
   label: string;  // human label, e.g. "PO Number"
@@ -31,6 +32,7 @@ const InvoiceGenerationModal: React.FC<InvoiceGenerationModalProps> = ({
   onClose,
   onSuccess,
 }) => {
+  useEscapeModalClose(onClose);
   const [templates, setTemplates] = useState<InvoiceTemplate[]>([]);
   const [selectedTemplateId, setSelectedTemplateId] = useState<string>('');
   const [loading, setLoading] = useState(true);

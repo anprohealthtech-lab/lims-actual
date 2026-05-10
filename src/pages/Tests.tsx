@@ -106,6 +106,7 @@ interface TestGroup {
   startFromNextPage?: boolean;
   default_template_style?: string | null;
   print_options?: Record<string, unknown> | null;
+  group_interpretation?: string | null;
   report_priority?: number | null;
   analytes?: string[];
   ref_range_ai_config?: any;

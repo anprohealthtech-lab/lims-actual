@@ -1,4 +1,5 @@
 import React from 'react';
+import { useEscapeModalClose } from '../hooks/useEscapeModalClose';
 
 interface PDFProgressModalProps {
   isVisible: boolean;
@@ -17,6 +18,7 @@ const PDFProgressModal: React.FC<PDFProgressModalProps> = ({
   onView,
   onClose,
 }) => {
+  useEscapeModalClose(onClose ?? (() => {}), isVisible && !!onClose);
   if (!isVisible) return null;
 
   const isComplete = progress >= 100;

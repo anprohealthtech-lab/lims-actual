@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { CheckCircle2, FileText, PackageCheck, Plus, Save, Trash2, Truck, X, XCircle } from 'lucide-react';
 import { database, InventoryOrder, InventoryOrderItem } from '../../utils/supabase';
+import { useEscapeModalClose } from '../../hooks/useEscapeModalClose';
 
 interface InventoryPOProcessModalProps {
   po: InventoryOrder;
@@ -21,6 +22,7 @@ const statusBadgeClass = (status: InventoryOrder['status']) => {
 };
 
 const InventoryPOProcessModal: React.FC<InventoryPOProcessModalProps> = ({ po, locationId, onClose, onUpdated }) => {
+  useEscapeModalClose(onClose);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);

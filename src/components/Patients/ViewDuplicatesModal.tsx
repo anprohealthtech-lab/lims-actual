@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { X, Users, Loader2, AlertTriangle, UserCheck, Calendar, User } from 'lucide-react';
 import { supabase } from '../../utils/supabase';
 import { format } from 'date-fns';
+import { useEscapeModalClose } from '../../hooks/useEscapeModalClose';
 
 interface Patient {
   id: string;
@@ -29,6 +30,7 @@ const ViewDuplicatesModal: React.FC<ViewDuplicatesModalProps> = ({
   onClose,
   onUnmerge,
 }) => {
+  useEscapeModalClose(onClose);
   const [loading, setLoading] = useState(true);
   const [masterPatient, setMasterPatient] = useState<Patient | null>(null);
   const [duplicates, setDuplicates] = useState<Patient[]>([]);

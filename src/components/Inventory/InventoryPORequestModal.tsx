@@ -1,6 +1,7 @@
 import React, { useMemo, useState } from 'react';
 import { AlertCircle, Plus, Trash2, X } from 'lucide-react';
 import { database, InventoryItem, InventoryOrderItem } from '../../utils/supabase';
+import { useEscapeModalClose } from '../../hooks/useEscapeModalClose';
 
 interface DraftLine extends InventoryOrderItem {
   selected: boolean;
@@ -20,6 +21,7 @@ const getSuggestedQty = (item: InventoryItem): number => {
 };
 
 const InventoryPORequestModal: React.FC<InventoryPORequestModalProps> = ({ items, onClose, onSuccess }) => {
+  useEscapeModalClose(onClose);
   const lowStockItems = useMemo(() => items.filter(i => i.current_stock <= (i.min_stock || 0)), [items]);
 
   const [supplierName, setSupplierName] = useState('');

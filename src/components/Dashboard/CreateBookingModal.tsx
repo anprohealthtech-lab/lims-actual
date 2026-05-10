@@ -1,6 +1,7 @@
 import React, { useState, useEffect, KeyboardEvent } from 'react';
 import { X, User, Phone, Save, Loader, Sparkles } from 'lucide-react';
 import { database, supabase } from '../../utils/supabase';
+import { useEscapeModalClose } from '../../hooks/useEscapeModalClose';
 
 interface CreateBookingModalProps {
     onClose: () => void;
@@ -24,20 +25,27 @@ interface SelectedTest {
 }
 
 // Returns 'Male' | 'Female' | '' based on salutation and name keywords
-function detectGender(sal: string, first: string, last: string): 'Male' | 'Female' | '' {
-    const s = sal.toLowerCase().replace('.', '');
+function detectGender(sal: string, first: string, middle: string, last: string): 'Male' | 'Female' | '' {
+    const s = sal.toLowerCase().replace(/\./g, '').trim();
     if (['mr', 'master', 'shri', 'shriman', 'bhai'].includes(s)) return 'Male';
-    if (['mrs', 'ms', 'miss', 'smt', 'shrimati', 'ku', 'kumari', 'baby'].includes(s)) return 'Female';
+    if (['mrs', 'ms', 'miss', 'smt', 'shrimati', 'ku', 'kumari', 'baby', 'ben', 'bhen', 'bai'].includes(s)) return 'Female';
 
-    const words = `${first} ${last}`.toLowerCase().split(/\s+/);
+    const words = [first, middle, last]
+        .join(' ')
+        .toLowerCase()
+        .split(/[^a-z0-9]+/)
+        .filter(Boolean);
+
     const maleWords = ['bhai', 'bro', 'shriman', 'lal', 'singh', 'ram', 'kumar'];
     const femaleWords = ['ben', 'bhen', 'bai', 'devi', 'kumari', 'shrimati', 'smt', 'sister', 'mata', 'amma', 'didi'];
-    if (words.some(w => femaleWords.includes(w))) return 'Female';
-    if (words.some(w => maleWords.includes(w))) return 'Male';
+
+    if (words.some(w => femaleWords.includes(w) || w.endsWith('ben') || w.endsWith('bhen'))) return 'Female';
+    if (words.some(w => maleWords.includes(w) || w.endsWith('bhai'))) return 'Male';
     return '';
 }
 
 const CreateBookingModal: React.FC<CreateBookingModalProps> = ({ onClose, onSuccess }) => {
+    useEscapeModalClose(onClose);
     const [loading, setLoading] = useState(false);
 
     // Name fields
@@ -53,13 +61,15 @@ const CreateBookingModal: React.FC<CreateBookingModalProps> = ({ onClose, onSucc
 
     useEffect(() => {
         if (!genderManuallySet) {
-            const detected = detectGender(salutation, firstName, lastName);
+            const detected = detectGender(salutation, firstName, middleName, lastName);
             if (detected) {
                 setGender(detected);
                 setGenderAutoDetected(true);
+            } else {
+                setGenderAutoDetected(false);
             }
         }
-    }, [salutation, firstName, lastName]);
+    }, [salutation, firstName, middleName, lastName, genderManuallySet]);
 
     const [formData, setFormData] = useState({
         phone: '',

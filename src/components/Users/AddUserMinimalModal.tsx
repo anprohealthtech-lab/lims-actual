@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { X, AlertCircle, CheckCircle, Loader } from 'lucide-react';
 import { supabase, database } from '../../utils/supabase';
 import { useAuth } from '../../contexts/AuthContext';
+import { useEscapeModalClose } from '../../hooks/useEscapeModalClose';
 
 interface AddUserMinimalModalProps {
   onClose: () => void;
@@ -10,6 +11,7 @@ interface AddUserMinimalModalProps {
 }
 
 const AddUserMinimalModal: React.FC<AddUserMinimalModalProps> = ({ onClose, onSuccess, labId }) => {
+  useEscapeModalClose(onClose);
   const { user: authUser } = useAuth();
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);

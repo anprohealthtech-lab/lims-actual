@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { X, Settings, RotateCcw, Save, Loader2, Download, Image, Layers } from 'lucide-react';
 import { supabase } from '../../utils/supabase';
+import { useEscapeModalClose } from '../../hooks/useEscapeModalClose';
 
 // PDF rendering settings that can be adjusted by users
 export interface PDFRenderSettings {
@@ -189,6 +190,7 @@ const PDFSettingsModal: React.FC<PDFSettingsModalProps> = ({
   isRegenerating = false,
   labId,
 }) => {
+  useEscapeModalClose(onClose, isOpen);
   const [settings, setSettings] = useState<PDFRenderSettings>(PDF_PRESETS.standard);
   const [selectedPreset, setSelectedPreset] = useState<string>('custom');
   const [isSaving, setIsSaving] = useState(false);

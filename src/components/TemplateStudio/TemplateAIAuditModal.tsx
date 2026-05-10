@@ -1,5 +1,6 @@
 import React from 'react';
 import clsx from 'clsx';
+import { useEscapeModalClose } from '../../hooks/useEscapeModalClose';
 
 export interface TemplateAuditResult {
   status: 'pass' | 'attention' | 'fail';
@@ -94,6 +95,7 @@ const TemplateAIAuditModal: React.FC<TemplateAIAuditModalProps> = ({
   canRevert,
   successMessage,
 }) => {
+  useEscapeModalClose(onClose, open);
   if (!open) {
     return null;
   }

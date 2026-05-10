@@ -26,6 +26,7 @@ import {
   Maximize2,
 } from 'lucide-react';
 
+import { generateStyledTemplate, TemplateStyle, AnalyteInfo } from '../components/TemplateStudio/templateBlocks';
 import AIStudioModal from '../components/TemplateStudio/AIStudioModal';
 import CompletenessModal from '../components/TemplateStudio/CompletenessModal';
 import type { TemplateAuditResult } from '../components/TemplateStudio/TemplateAIAuditModal';
@@ -825,6 +826,7 @@ const TemplateStudioCKE: React.FC = () => {
   const [toolbarCollapsed, setToolbarCollapsed] = useState(false);
   const [templateSearchQuery, setTemplateSearchQuery] = useState('');
   const [testGroupQuery, setTestGroupQuery] = useState('');
+  const [isGeneratingTemplate, setIsGeneratingTemplate] = useState(false);
 
   // Dropdown menu states for grouped actions
   const [showToolsMenu, setShowToolsMenu] = useState(false);
@@ -1988,6 +1990,55 @@ const TemplateStudioCKE: React.FC = () => {
     }
   }, [ckeditorInstance, labId, templates]);
 
+  const handleGenerateStyledTemplate = useCallback(async (style: TemplateStyle) => {
+    const testGroupId = templateMeta?.test_group_id || metadataDraft.testGroupId;
+    if (!testGroupId) {
+      setSaveError('Link a test group first (and save Details) before generating a template.');
+      return;
+    }
+
+    setIsGeneratingTemplate(true);
+    setSaveError(null);
+    setSaveMessage(null);
+
+    try {
+      const { data: testParams, error } = await database.templateParameters.listTestGroupParameters(testGroupId);
+      if (error || !testParams?.length) {
+        setSaveError('No analytes found for this test group.');
+        return;
+      }
+
+      const linkedGroup = testGroups.find((g) => g.id === testGroupId);
+      const testGroupName = linkedGroup?.name || 'Test Results';
+
+      const analytes: AnalyteInfo[] = (testParams as any[])
+        .filter((item) => item.placeholderBase)
+        .map((item) => ({
+          label: item.label as string,
+          code: (item.placeholderBase as string).replace(/^ANALYTE_/, ''),
+          defaultUnit: item.unit || undefined,
+          defaultReference: item.referenceRange || undefined,
+        }));
+
+      const { html, css } = generateStyledTemplate(style, analytes, testGroupName);
+
+      const instance = editorInstanceRef.current || ckeditorInstance;
+      if (instance?.setData) {
+        instance.setData(html);
+      }
+      setHtmlContent(html);
+      setCssContent(css);
+      setSaveMessage(
+        `${style.charAt(0).toUpperCase() + style.slice(1)} template generated with ${analytes.length} analytes. Click Save to apply.`
+      );
+    } catch (err) {
+      console.error('Template generation failed:', err);
+      setSaveError('Failed to generate template. Please try again.');
+    } finally {
+      setIsGeneratingTemplate(false);
+    }
+  }, [templateMeta?.test_group_id, metadataDraft.testGroupId, testGroups, ckeditorInstance, setHtmlContent, setCssContent]);
+
   const handleSave = useCallback(async () => {
     if (!templateMeta) {
       return;
@@ -3017,6 +3068,40 @@ const TemplateStudioCKE: React.FC = () => {
                       </p>
                     )}
                   </div>
+
+                  {/* Generate Template from Test Group */}
+                  {(templateMeta?.test_group_id || metadataDraft.testGroupId) && (
+                    <div className="mt-3 p-3 bg-gray-50 border border-gray-200 rounded-md">
+                      <label className="block text-xs font-medium text-gray-700 mb-1">Generate Template</label>
+                      <p className="text-[10px] text-gray-500 mb-2 leading-relaxed">
+                        Auto-fill all analyte placeholders using the linked test group. Matches the PDF letterhead styles exactly.
+                      </p>
+                      <div className="flex flex-col gap-1.5">
+                        {([
+                          { style: 'basic' as TemplateStyle, label: 'Basic', desc: 'No-colour table · bold H/L values · barcode title bar' },
+                          { style: 'classic' as TemplateStyle, label: 'Classic', desc: 'Bordered table · blue header · coloured flag text' },
+                          { style: 'beautiful' as TemplateStyle, label: 'Beautiful', desc: 'Green accent · modern card patient info · badge flags' },
+                        ]).map(({ style, label, desc }) => (
+                          <button
+                            key={style}
+                            type="button"
+                            onClick={() => handleGenerateStyledTemplate(style)}
+                            disabled={isGeneratingTemplate}
+                            className="w-full px-3 py-2 text-left text-xs rounded border border-gray-300 bg-white hover:bg-blue-50 hover:border-blue-300 transition disabled:opacity-50 disabled:cursor-not-allowed"
+                          >
+                            {isGeneratingTemplate ? (
+                              <span className="text-gray-400">Generating…</span>
+                            ) : (
+                              <>
+                                <span className="font-semibold text-gray-800">{label}</span>
+                                <span className="text-[10px] text-gray-500 ml-1.5">{desc}</span>
+                              </>
+                            )}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
 
                   <button
                     type="button"

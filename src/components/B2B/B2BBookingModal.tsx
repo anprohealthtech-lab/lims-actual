@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { X, Search, Calendar, User, Phone, Loader, Package, FlaskConical, Info } from 'lucide-react';
 import { supabase } from '../../utils/supabase';
+import { useEscapeModalClose } from '../../hooks/useEscapeModalClose';
 
 interface B2BBookingModalProps {
     accountId: string;
@@ -19,6 +20,7 @@ interface CatalogItem {
 }
 
 const B2BBookingModal: React.FC<B2BBookingModalProps> = ({ accountId, labId, onClose, onSuccess }) => {
+    useEscapeModalClose(onClose);
     const [loading, setLoading] = useState(false);
     const [searchTerm, setSearchTerm] = useState('');
     const [searchResults, setSearchResults] = useState<CatalogItem[]>([]);

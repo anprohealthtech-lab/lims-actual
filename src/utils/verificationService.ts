@@ -1,4 +1,5 @@
 import { supabase } from './supabase';
+import { getBlockedApprovalCandidates } from './resultApprovalGuard';
 
 // Types for the verification console
 export interface VerificationParameter {
@@ -263,6 +264,21 @@ class VerificationService {
   // Approve a single result
   async approveResult(resultId: string, notes?: string): Promise<boolean> {
     try {
+      const { data: resultValues, error: validationError } = await supabase
+        .from('result_values')
+        .select('id, parameter, value, is_auto_calculated')
+        .eq('result_id', resultId);
+
+      if (validationError) {
+        console.error('Error validating result before approval:', validationError);
+        return false;
+      }
+
+      if (getBlockedApprovalCandidates(resultValues || []).length > 0) {
+        console.warn('Blocked approval for result with blank/placeholder values:', resultId);
+        return false;
+      }
+
       const { error } = await supabase
         .from('results')
         .update({
@@ -320,6 +336,35 @@ class VerificationService {
     failedIds: string[];
   }> {
     try {
+      const { data: resultValues, error: validationError } = await supabase
+        .from('result_values')
+        .select('id, result_id, parameter, value, is_auto_calculated')
+        .in('result_id', resultIds);
+
+      if (validationError) {
+        console.error('Error validating results before bulk approval:', validationError);
+        return {
+          success: false,
+          successCount: 0,
+          failedIds: resultIds
+        };
+      }
+
+      const blockedResultIds = Array.from(
+        new Set(
+          getBlockedApprovalCandidates(resultValues || []).map((row: any) => row.result_id)
+        )
+      );
+      const approvableResultIds = resultIds.filter(id => !blockedResultIds.includes(id));
+
+      if (approvableResultIds.length === 0) {
+        return {
+          success: false,
+          successCount: 0,
+          failedIds: resultIds
+        };
+      }
+
       const { data, error } = await supabase
         .from('results')
         .update({
@@ -328,7 +373,7 @@ class VerificationService {
           review_comment: notes,
           manually_verified: true
         })
-        .in('id', resultIds)
+        .in('id', approvableResultIds)
         .select('id');
 
       if (error) {
@@ -344,9 +389,9 @@ class VerificationService {
       const failedIds = resultIds.filter(id => !successfulIds.includes(id));
 
       return {
-        success: failedIds.length === 0,
+        success: blockedResultIds.length === 0 && failedIds.length === 0,
         successCount: successfulIds.length,
-        failedIds
+        failedIds: [...blockedResultIds, ...failedIds]
       };
 
     } catch (error) {

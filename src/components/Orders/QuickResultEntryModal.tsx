@@ -5,11 +5,14 @@
 
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import ReactDOM from "react-dom";
-import { X, Save, CheckCircle, ChevronDown, Loader2, RefreshCw } from "lucide-react";
+import { X, Save, CheckCircle, ChevronDown, Loader2, RefreshCw, Eye } from "lucide-react";
 import { supabase, database } from "../../utils/supabase";
+import { toast } from "react-hot-toast";
 import { useAuth } from "../../contexts/AuthContext";
 import { calculateFlag, calculateFlagsForResults } from "../../utils/flagCalculation";
-import SectionEditor, { SectionEditorRef } from "../Results/SectionEditor";
+import { calculationEngine, type CalculatedAnalyte } from "../../utils/calculationEngine";
+import { useEscapeModalClose } from "../../hooks/useEscapeModalClose";
+import SectionEditor, { SectionEditorRef, SectionPreviewItem } from "../Results/SectionEditor";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -44,6 +47,7 @@ interface TestGroup {
   ref_range_ai_config?: { enabled?: boolean; consider_age?: boolean } | null;
   analytes: {
     id: string;
+    lab_analyte_id?: string | null;
     name: string;
     code?: string;
     units?: string;
@@ -205,9 +209,16 @@ const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, on
   const [message, setMessage] = useState<{ text: string; type: "success" | "error" } | null>(null);
   // result row IDs per test_group_id — needed to render SectionEditor
   const [resultIds, setResultIds] = useState<Map<string, string>>(new Map());
+  // Preview modal state
+  const [previewGroupId, setPreviewGroupId] = useState<string | null>(null);
+  const [previewItems, setPreviewItems] = useState<Map<string, SectionPreviewItem[]>>(new Map());
+
+  useEscapeModalClose(onClose, !previewGroupId);
+  useEscapeModalClose(() => setPreviewGroupId(null), !!previewGroupId);
 
   // Flat refs for every value input/select in render order (for keyboard nav)
   const valueRefs = useRef<(HTMLInputElement | HTMLSelectElement | null)[]>([]);
+  const modalBodyRef = useRef<HTMLDivElement | null>(null);
   // Refs to SectionEditor instances keyed by test_group_id — used to save on Done
   const sectionEditorRefs = useRef<Map<string, React.RefObject<SectionEditorRef>>>(new Map());
   const getSectionEditorRef = (testGroupId: string) => {
@@ -216,6 +227,153 @@ const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, on
     }
     return sectionEditorRefs.current.get(testGroupId)!;
   };
+
+  const getPatientData = useCallback(() => {
+    const age = order.patient?.age ? Number(order.patient.age) : null;
+    if (age === null || !Number.isFinite(age)) return undefined;
+    const gender = order.patient?.gender === "Female"
+      ? "Female"
+      : order.patient?.gender === "Male"
+        ? "Male"
+        : "Other";
+    return { age, gender } as const;
+  }, [order.patient]);
+
+  const recalculateRowsWithSharedEngine = useCallback((
+    rowSet: AnalyteRow[],
+    groupsSource: TestGroup[] = testGroups,
+    dependencies: DepRow[] = calcDeps,
+    changedSource?: { analyteId?: string; labAnalyteId?: string | null },
+  ) => {
+    if (groupsSource.length === 0) return rowSet;
+
+    const nextRows = [...rowSet];
+    let hasChanges = false;
+
+    for (const tg of groupsSource) {
+      const allCalculatedDefs: CalculatedAnalyte[] = tg.analytes
+        .filter((analyte) => !!analyte.is_calculated && !!analyte.formula)
+        .map((analyte) => ({
+          id: analyte.id,
+          lab_analyte_id: analyte.lab_analyte_id || null,
+          name: analyte.name,
+          formula: analyte.formula || "",
+          formula_variables: analyte.formula_variables ?? [],
+          unit: analyte.units || "",
+          reference_range: analyte.reference_range || "",
+          code: analyte.code,
+          value_type: analyte.value_type,
+        }));
+      if (allCalculatedDefs.length === 0) continue;
+
+      let calculatedDefs = allCalculatedDefs;
+      if (changedSource && (changedSource.analyteId || changedSource.labAnalyteId)) {
+        const availableAnalyteIds = new Set<string>();
+        const availableLabAnalyteIds = new Set<string>();
+        if (changedSource.analyteId) availableAnalyteIds.add(changedSource.analyteId);
+        if (changedSource.labAnalyteId) availableLabAnalyteIds.add(changedSource.labAnalyteId);
+
+        const remaining = [...allCalculatedDefs];
+        const impacted: CalculatedAnalyte[] = [];
+        let advanced = true;
+
+        while (advanced) {
+          advanced = false;
+          for (let index = remaining.length - 1; index >= 0; index -= 1) {
+            const candidate = remaining[index];
+            const candidateDeps = candidate.lab_analyte_id
+              ? dependencies.filter((dep) => dep.calculated_lab_analyte_id === candidate.lab_analyte_id)
+              : [];
+            const fallbackDeps = dependencies.filter(
+              (dep) => !dep.calculated_lab_analyte_id && dep.calculated_analyte_id === candidate.id,
+            );
+            const depsForCandidate = candidateDeps.length > 0 ? candidateDeps : fallbackDeps;
+
+            if (depsForCandidate.length === 0) {
+              impacted.push(candidate);
+              if (candidate.id) availableAnalyteIds.add(candidate.id);
+              if (candidate.lab_analyte_id) availableLabAnalyteIds.add(candidate.lab_analyte_id);
+              remaining.splice(index, 1);
+              advanced = true;
+              continue;
+            }
+
+            const isImpacted = depsForCandidate.some((dep) =>
+              availableAnalyteIds.has(dep.source_analyte_id) ||
+              (!!dep.source_lab_analyte_id && availableLabAnalyteIds.has(dep.source_lab_analyte_id))
+            );
+
+            if (!isImpacted) continue;
+
+            impacted.push(candidate);
+            if (candidate.id) availableAnalyteIds.add(candidate.id);
+            if (candidate.lab_analyte_id) availableLabAnalyteIds.add(candidate.lab_analyte_id);
+            remaining.splice(index, 1);
+            advanced = true;
+          }
+        }
+
+        calculatedDefs = impacted;
+      }
+
+      if (calculatedDefs.length === 0) continue;
+
+      const analyteIds = new Set(tg.analytes.map((analyte) => analyte.id));
+      const groupResults = nextRows
+        .filter((row) => analyteIds.has(row.analyte_id))
+        .map((row) => ({
+          analyte_id: row.analyte_id,
+          lab_analyte_id: row.lab_analyte_id || null,
+          parameter: row.parameter,
+          value: row.value.replace(/,/g, ""),
+          unit: row.unit,
+          reference_range: row.reference,
+          flag: row.flag,
+          is_calculated: row.is_calculated,
+          is_auto_calculated: row.is_calculated,
+        }));
+
+      const calculations = calculationEngine.computeCalculatedValuesFromDefinitions(
+        groupResults,
+        calculatedDefs,
+        dependencies,
+        getPatientData(),
+      );
+
+      for (const calculation of calculations) {
+        if (!calculation.success || !hasMeaningfulTextValue(calculation.value)) continue;
+        const rowIndex = nextRows.findIndex((row) =>
+          (calculation.lab_analyte_id && row.lab_analyte_id === calculation.lab_analyte_id) ||
+          row.analyte_id === calculation.analyte_id,
+        );
+        if (rowIndex === -1) continue;
+        const currentRow = nextRows[rowIndex];
+        const autoFlag = calculateFlag(
+          calculation.value,
+          currentRow.reference,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          currentRow.value_type,
+        );
+        const nextValue = formatIndianNumber(calculation.value);
+        const nextFlag = autoFlag || currentRow.flag;
+        if (currentRow.value !== nextValue || currentRow.flag !== nextFlag) {
+          nextRows[rowIndex] = {
+            ...currentRow,
+            value: nextValue,
+            flag: nextFlag,
+          };
+          hasChanges = true;
+        }
+      }
+    }
+
+    return hasChanges ? nextRows : rowSet;
+  }, [calcDeps, getPatientData, testGroups]);
 
   // ── Data loading ────────────────────────────────────────────────────────────
 
@@ -496,53 +654,26 @@ const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, on
       // Load analyte_dependencies for live formula evaluation
       // Prefer lab-specific rows; fall back to global (lab_id IS NULL) when no lab override exists
       // Use flat (which has lab_analytes overrides applied) so lab-level is_calculated=true is respected
-      const calcIds = flat.filter(r => r.is_calculated).map(r => r.analyte_id).filter(Boolean) as string[];
+      const calculatedDefs: CalculatedAnalyte[] = merged
+        .flatMap((tg) => tg.analytes)
+        .filter((analyte) => !!analyte.is_calculated && !!analyte.formula)
+        .map((analyte) => ({
+          id: analyte.id,
+          lab_analyte_id: analyte.lab_analyte_id || null,
+          name: analyte.name,
+          formula: analyte.formula || "",
+          formula_variables: analyte.formula_variables ?? [],
+          unit: analyte.units || "",
+          reference_range: analyte.reference_range || "",
+          code: analyte.code,
+          value_type: analyte.value_type,
+        }));
       let loadedDeps: DepRow[] = [];
-      if (calcIds.length > 0) {
-        const { data: depsData } = await supabase
-          .from("analyte_dependencies")
-          .select("calculated_analyte_id, calculated_lab_analyte_id, source_analyte_id, source_lab_analyte_id, variable_name, lab_id")
-          .in("calculated_analyte_id", calcIds)
-          .or(`lab_id.eq.${data.lab_id},lab_id.is.null`);
-        // Deduplicate: prefer lab-specific over global for same (calculated_analyte_id, variable_name)
-        const seen = new Set<string>();
-        const sorted = [...(depsData || [])].sort((a: any, b: any) => (a.lab_id ? -1 : 1) - (b.lab_id ? -1 : 1));
-        for (const row of sorted as any[]) {
-          const key = `${row.calculated_analyte_id}:${row.variable_name}`;
-          if (!seen.has(key)) { seen.add(key); loadedDeps.push(row as DepRow); }
-        }
+      if (calculatedDefs.length > 0) {
+        loadedDeps = await calculationEngine.getDependenciesForCalculatedAnalytes(calculatedDefs, data.lab_id) as DepRow[];
         setCalcDeps(loadedDeps);
       }
-
-      // Auto-evaluate formulas on load using existing_result values (locked/saved analytes)
-      // so calculated params (e.g. MCHC, Bilirubin Indirect) show correct values immediately
-      const patientAgeLoad = order.patient?.age ? Number(order.patient.age) : null;
-      const patientGenderLoad = order.patient?.gender;
-      const lookup = new Map<string, number>();
-      if (patientAgeLoad !== null && Number.isFinite(patientAgeLoad)) lookup.set('age', patientAgeLoad);
-      if (patientGenderLoad) {
-        lookup.set('gender_male', patientGenderLoad === 'Male' ? 1 : 0);
-        lookup.set('gender_female', patientGenderLoad === 'Female' ? 1 : 0);
-        lookup.set('gender', patientGenderLoad === 'Male' ? 1 : 0);
-      }
-      for (const r of flat) {
-        if (r.is_calculated) continue;
-        const num = toNumber(r.value);
-        if (num !== null) {
-          if (r.analyte_id) lookup.set(r.analyte_id, num);
-          if (r.lab_analyte_id) lookup.set(r.lab_analyte_id, num);
-          lookup.set(r.parameter.toLowerCase(), num);
-          lookup.set(toVariableSlug(r.parameter), num);
-        }
-      }
-      const flatWithCalc = flat.map(r => {
-        if (!r.is_calculated || !r.formula || r.is_existing) return r;
-        const vars = parseFormulaVars(r.formula_variables);
-        const calcVal = evalFormula(r.formula, vars, lookup, loadedDeps, r.analyte_id, r.lab_analyte_id);
-        if (!calcVal) return r;
-        const autoFlag = calculateFlag(calcVal, r.reference, undefined, undefined, undefined, undefined, undefined, undefined, r.value_type);
-        return { ...r, value: formatIndianNumber(calcVal), flag: autoFlag || r.flag };
-      });
+      const flatWithCalc = recalculateRowsWithSharedEngine(flat, merged, loadedDeps);
       setRows(flatWithCalc);
     } catch (err) {
       console.error("QuickResultEntry load error:", err);
@@ -566,6 +697,11 @@ const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, on
         if (i !== idx) return r;
         const auto = calculateFlag(rawValue, r.reference, undefined, undefined, undefined, undefined, undefined, undefined, r.value_type);
         return { ...r, value: displayValue, flag: auto || r.flag };
+      });
+
+      return recalculateRowsWithSharedEngine(next, testGroups, calcDeps, {
+        analyteId: next[idx]?.analyte_id,
+        labAnalyteId: next[idx]?.lab_analyte_id || null,
       });
 
       // 2. Rebuild value lookup from all non-calculated rows
@@ -621,12 +757,14 @@ const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, on
         return { ...r, value: formatIndianNumber(calcVal), flag: autoFlag || r.flag };
       });
     });
-  }, [calcDeps, testGroups]);
+  }, [calcDeps, recalculateRowsWithSharedEngine, testGroups]);
 
   // Recalculate all formula-based analytes using saved (existing_result) + pending row values.
   // Called manually via the "↻" button when auto-calc didn't fire (e.g. all deps already saved).
   const handleRecalculate = useCallback(() => {
     setRows(prev => {
+      return recalculateRowsWithSharedEngine(prev);
+
       const lookup = new Map<string, number>();
       const patientAge = order.patient?.age ? Number(order.patient.age) : null;
       const patientGender = order.patient?.gender;
@@ -669,7 +807,7 @@ const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, on
         return { ...r, value: formatIndianNumber(calcVal), flag: autoFlag || r.flag };
       });
     });
-  }, [calcDeps, testGroups, order.patient]);
+  }, [calcDeps, order.patient, recalculateRowsWithSharedEngine, testGroups]);
 
   const getCalculatedDebugInfo = useCallback((row: AnalyteRow) => {
     if (!row.is_calculated || !row.formula) return null;
@@ -759,15 +897,51 @@ const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, on
   // valueRefs is rebuilt on each render via the ref callback below
   const inputableIndexes = rows
     .map((r, i) => ({ r, i }))
-    .filter(({ r }) => !r.is_calculated)
+    .filter(({ r }) => !r.is_calculated && (!r.is_existing || !!r.is_rerun))
     .map(({ i }) => i);
+
+  const keepElementVisible = useCallback((element: Element | null) => {
+    const container = modalBodyRef.current;
+    if (!container || !(element instanceof HTMLElement)) return;
+
+    const elementRect = element.getBoundingClientRect();
+    const containerRect = container.getBoundingClientRect();
+    const topGap = 12;
+    const bottomGap = 20;
+
+    if (elementRect.top < containerRect.top + topGap) {
+      container.scrollBy({
+        top: elementRect.top - containerRect.top - topGap,
+        behavior: "smooth",
+      });
+      return;
+    }
+
+    if (elementRect.bottom > containerRect.bottom - bottomGap) {
+      container.scrollBy({
+        top: elementRect.bottom - containerRect.bottom + bottomGap,
+        behavior: "smooth",
+      });
+    }
+  }, []);
+
+  const focusRowInput = useCallback((rowIdx: number) => {
+    const target = valueRefs.current[rowIdx];
+    if (!target) return;
+
+    target.focus();
+    requestAnimationFrame(() => {
+      keepElementVisible(target);
+      keepElementVisible(target.closest("tr"));
+    });
+  }, [keepElementVisible]);
 
   const focusNext = (currentRowIdx: number) => {
     const pos = inputableIndexes.indexOf(currentRowIdx);
     if (pos === -1) return;
     const nextRowIdx = inputableIndexes[pos + 1];
     if (nextRowIdx !== undefined) {
-      valueRefs.current[nextRowIdx]?.focus();
+      focusRowInput(nextRowIdx);
     }
   };
 
@@ -776,7 +950,7 @@ const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, on
     if (pos <= 0) return;
     const prevRowIdx = inputableIndexes[pos - 1];
     if (prevRowIdx !== undefined) {
-      valueRefs.current[prevRowIdx]?.focus();
+      focusRowInput(prevRowIdx);
     }
   };
 
@@ -788,6 +962,10 @@ const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, on
     if (e.key === "Tab" && e.shiftKey) {
       e.preventDefault();
       focusPrev(rowIdx);
+    }
+    if (e.key === "Tab" && !e.shiftKey) {
+      e.preventDefault();
+      focusNext(rowIdx);
     }
   };
 
@@ -909,19 +1087,6 @@ const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, on
       }
 
       for (const tg of testGroups) {
-        // Build value lookup map for formula evaluation
-        const valueLookup = new Map<string, number>();
-        for (const a of tg.analytes) {
-          const row = workingRows.find(r => r.analyte_id === a.id);
-          const val = row?.value || a.existing_result?.value;
-          const num = toNumber(val);
-          if (num !== null) {
-            if (a.id) valueLookup.set(a.id, num);
-            if (a.name) valueLookup.set(a.name.toLowerCase(), num);
-            if (a.code) valueLookup.set((a.code as string).toLowerCase(), num);
-          }
-        }
-
         // Determine rows to persist: manual entries + calculated
         const manualForGroup = workingRows.filter(r =>
           !r.is_calculated &&
@@ -929,26 +1094,52 @@ const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, on
           tg.analytes.some(a => a.id === r.analyte_id)
         );
 
-        const calcForGroup: AnalyteRow[] = tg.analytes
-          .filter(a => !!a.is_calculated)
-          .map(a => {
-            const vars = parseFormulaVars(a.formula_variables);
-            const calcVal = a.formula ? evalFormula(a.formula, vars, valueLookup, deps, a.id) : "";
-            const existingRow = workingRows.find(r => r.analyte_id === a.id);
+        const calcForGroup: AnalyteRow[] = calculationEngine.computeCalculatedValuesFromDefinitions(
+          manualForGroup.map((row) => ({
+            analyte_id: row.analyte_id,
+            lab_analyte_id: row.lab_analyte_id || null,
+            parameter: row.parameter,
+            value: row.value.replace(/,/g, ''),
+            unit: row.unit,
+            reference_range: row.reference,
+            flag: row.flag,
+          })),
+          tg.analytes
+            .filter((analyte) => !!analyte.is_calculated && !!analyte.formula)
+            .map((analyte) => ({
+              id: analyte.id,
+              lab_analyte_id: analyte.lab_analyte_id || null,
+              name: analyte.name,
+              formula: analyte.formula || "",
+              formula_variables: analyte.formula_variables ?? [],
+              unit: analyte.units || "",
+              reference_range: analyte.reference_range || "",
+              code: analyte.code,
+              value_type: analyte.value_type,
+            })),
+          deps,
+          getPatientData(),
+        )
+          .filter((calculation) => calculation.success && hasMeaningfulTextValue(calculation.value))
+          .map((calculation) => {
+            const existingRow = workingRows.find((row) =>
+              (calculation.lab_analyte_id && row.lab_analyte_id === calculation.lab_analyte_id) ||
+              row.analyte_id === calculation.analyte_id,
+            );
             return {
-              analyte_id: a.id,
-              lab_analyte_id: a.lab_analyte_id || null,
-              parameter: a.name,
-              value: existingRow?.value?.trim() ? existingRow.value : calcVal,
-              unit: existingRow?.unit || a.units || "",
-              reference: existingRow?.reference || a.reference_range || "",
+              analyte_id: calculation.analyte_id,
+              lab_analyte_id: calculation.lab_analyte_id || null,
+              parameter: calculation.parameter,
+              value: calculation.value,
+              unit: existingRow?.unit || calculation.unit || "",
+              reference: existingRow?.reference || calculation.reference_range || "",
               flag: existingRow?.flag || "",
               is_calculated: true,
               expected_normal_values: [],
               expected_value_flag_map: {},
+              value_type: existingRow?.value_type,
             };
-          })
-          .filter(r => hasMeaningfulTextValue(r.value));
+          });
 
         // Merge: prefer manual, add calc, dedup
         const toPersist = [...manualForGroup, ...calcForGroup].reduce<AnalyteRow[]>((acc, r) => {
@@ -1106,9 +1297,41 @@ const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, on
         const { error: ve } = await supabase.from("result_values").insert(valueRows);
         if (ve) throw ve;
 
-        // Non-blocking: inventory auto-consume
-        database.inventory.triggerAutoConsume({ labId: userLabId, orderId: order.id, resultId: resultRowId || undefined, testGroupId: tg.test_group_id })
-          .catch(e => console.warn("Inventory auto-consume skipped:", e));
+        // Inventory auto-consume (skip outsourced tests)
+        const { data: orderTest } = await supabase
+          .from("order_tests")
+          .select("outsourced_lab_id")
+          .eq("order_id", order.id)
+          .eq("test_group_id", tg.test_group_id)
+          .maybeSingle();
+
+        if (!orderTest?.outsourced_lab_id) {
+          try {
+            const { data: consumeResult } = await database.inventory.triggerAutoConsume({
+              labId: userLabId,
+              orderId: order.id,
+              resultId: resultRowId || undefined,
+              testGroupId: tg.test_group_id,
+            });
+            if (consumeResult && consumeResult.itemsConsumed > 0) {
+              if (consumeResult.alertsGenerated > 0) {
+                toast(`Inventory: ${consumeResult.itemsConsumed} items consumed | ${consumeResult.alertsGenerated} low stock alert${consumeResult.alertsGenerated > 1 ? "s" : ""}`, {
+                  icon: "⚠️",
+                  style: { background: "#FEF3C7", color: "#92400E" },
+                  duration: 5000,
+                });
+              } else {
+                toast.success(`Inventory updated: ${consumeResult.itemsConsumed} item${consumeResult.itemsConsumed > 1 ? "s" : ""} consumed`);
+              }
+            }
+          } catch (err) {
+            console.warn("Inventory auto-consume failed (non-blocking):", err);
+            toast("Inventory update failed (results saved)", {
+              icon: "📦",
+              style: { background: "#FED7AA", color: "#9A3412" },
+            });
+          }
+        }
       }
 
       // Non-blocking: AI flag analysis
@@ -1200,7 +1423,11 @@ const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, on
         </div>
 
         {/* Body */}
-        <div className="flex-1 overflow-y-auto" onKeyDown={e => { if (e.ctrlKey && e.key === "Enter") handleSubmit(); }}>
+        <div
+          ref={modalBodyRef}
+          className="flex-1 overflow-y-auto"
+          onKeyDown={e => { if (e.ctrlKey && e.key === "Enter") handleSubmit(); }}
+        >
           {loading ? (
             <div className="flex items-center justify-center py-16 gap-3 text-gray-500">
               <Loader2 className="h-6 w-6 animate-spin" />
@@ -1223,16 +1450,23 @@ const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, on
                   </div>
                 )}
 
-                <table className="w-full text-sm">
-                  <thead className="sticky top-0 bg-gray-50 border-b z-10">
-                    <tr>
-                      <th className="px-4 py-2 text-left text-xs font-semibold text-gray-600 w-[38%]">Analyte</th>
-                      <th className="px-4 py-2 text-left text-xs font-semibold text-gray-600 w-[26%]">Value</th>
-                      <th className="px-4 py-2 text-left text-xs font-semibold text-gray-600 w-[14%]">Unit</th>
-                      <th className="px-4 py-2 text-left text-xs font-semibold text-gray-600 w-[22%]">Flag</th>
-                    </tr>
-                  </thead>
-                  <tbody>
+                <div className="w-full overflow-x-auto">
+                  <table className="w-full min-w-[880px] table-fixed text-sm">
+                    <colgroup>
+                      <col style={{ width: "40%" }} />
+                      <col style={{ width: "26%" }} />
+                      <col style={{ width: "12%" }} />
+                      <col style={{ width: "22%" }} />
+                    </colgroup>
+                    <thead className="sticky top-0 bg-gray-50 border-b z-10">
+                      <tr>
+                        <th className="px-4 py-2 text-left text-xs font-semibold text-gray-600">Analyte</th>
+                        <th className="px-4 py-2 text-left text-xs font-semibold text-gray-600">Value</th>
+                        <th className="px-4 py-2 text-left text-xs font-semibold text-gray-600">Unit</th>
+                        <th className="px-4 py-2 text-left text-xs font-semibold text-gray-600">Flag</th>
+                      </tr>
+                    </thead>
+                    <tbody>
                     {groupRows.map(({ row, globalIdx }) => {
                       const isCalc = row.is_calculated;
                       const calcDebugInfo = isCalc ? getCalculatedDebugInfo(row) : null;
@@ -1251,7 +1485,7 @@ const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, on
                         <tr key={row.analyte_id} className={`border-b transition-colors ${rowBg}`}>
 
                           {/* Analyte name + ref range hint */}
-                          <td className="px-4 py-2.5">
+                          <td className="px-4 py-2.5 align-top">
                             <span className={`font-medium ${isCalc ? "text-blue-700" : "text-gray-800"}`}>{row.parameter}</span>
                             {isCalc && <span className="ml-1.5 text-xs text-blue-400 italic">auto</span>}
                             {isDefault && <span className="ml-1.5 text-xs text-amber-600 bg-amber-100 px-1 py-0.5 rounded">default</span>}
@@ -1280,7 +1514,7 @@ const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, on
                           </td>
 
                           {/* Value input */}
-                          <td className="px-4 py-2">
+                          <td className="px-4 py-2 align-top">
                             {isCalc ? (
                               <div className="flex items-center gap-1.5">
                                 <div className="flex-1 px-2 py-1.5 bg-blue-50 border border-blue-200 rounded text-blue-800 text-sm font-medium min-h-[34px] flex items-center">
@@ -1319,6 +1553,7 @@ const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, on
                                   }
                                   handleKeyDown(e, globalIdx);
                                 }}
+                                onFocus={e => keepElementVisible(e.currentTarget.closest("tr"))}
                                 className={`w-full px-2 py-1.5 border rounded text-sm focus:outline-none focus:ring-2 ${
                                   isDefault
                                     ? "border-amber-300 bg-amber-50 text-amber-800 italic focus:ring-amber-400"
@@ -1358,6 +1593,7 @@ const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, on
                                     setRows(prev => prev.map((r, i) => i !== globalIdx ? r : { ...r, value: typed, is_default: false }));
                                   }}
                                   onKeyDown={e => handleKeyDown(e, globalIdx)}
+                                  onFocus={e => keepElementVisible(e.currentTarget.closest("tr"))}
                                   className={`w-full px-2 py-1.5 border rounded text-sm focus:outline-none focus:ring-2 ${
                                     isDefault
                                       ? "border-amber-300 bg-amber-50 text-amber-800 italic focus:ring-amber-400"
@@ -1387,6 +1623,7 @@ const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, on
                                 }}
                                 onBlur={e => handleValueBlur(globalIdx, e.target.value)}
                                 onKeyDown={e => handleKeyDown(e, globalIdx)}
+                                onFocus={e => keepElementVisible(e.currentTarget.closest("tr"))}
                                 className={`w-full px-2 py-1.5 border rounded text-sm focus:outline-none focus:ring-2 ${
                                   isDefault
                                     ? "border-amber-300 bg-amber-50 text-amber-800 italic focus:ring-amber-400"
@@ -1401,13 +1638,15 @@ const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, on
                           <td className="px-4 py-2 text-gray-500 text-sm">{row.unit || "—"}</td>
 
                           {/* Flag select */}
-                          <td className="px-4 py-2">
+                          <td className="px-4 py-2 align-top">
                             {isCalc ? (
                               <span className={`text-sm ${flagColor}`}>{flagLabel?.label || "—"}</span>
                             ) : (
                               <select
                                 value={row.flag}
                                 onChange={e => setRowField(globalIdx, "flag", e.target.value)}
+                                onFocus={e => keepElementVisible(e.currentTarget.closest("tr"))}
+                                tabIndex={-1}
                                 className={`w-full px-1.5 py-1.5 border border-gray-200 rounded text-sm focus:outline-none focus:ring-1 focus:ring-green-400 ${flagColor}`}
                               >
                                 {flagOptions.map(opt => (
@@ -1419,18 +1658,32 @@ const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, on
                         </tr>
                       );
                     })}
-                  </tbody>
-                </table>
+                    </tbody>
+                  </table>
+                </div>
 
                 {/* Report Sections (technician-editable) */}
                 {resultIds.get(tg.test_group_id) && (
                   <div className="border-t border-blue-100 bg-blue-50/30 px-4 py-3">
+                    <div className="flex items-center justify-end mb-2">
+                      <button
+                        type="button"
+                        onClick={() => setPreviewGroupId(tg.test_group_id)}
+                        className="flex items-center gap-1.5 px-3 py-1.5 text-xs bg-indigo-50 text-indigo-700 border border-indigo-200 rounded-lg hover:bg-indigo-100 transition-colors"
+                      >
+                        <Eye className="h-3.5 w-3.5" />
+                        Preview Report Section
+                      </button>
+                    </div>
                     <SectionEditor
                       ref={getSectionEditorRef(tg.test_group_id)}
                       resultId={resultIds.get(tg.test_group_id)!}
                       testGroupId={tg.test_group_id}
                       editorRole="technician"
                       showAIAssistant={false}
+                      onContentChange={(items) =>
+                        setPreviewItems(prev => new Map(prev).set(tg.test_group_id, items))
+                      }
                     />
                   </div>
                 )}
@@ -1472,7 +1725,100 @@ const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, on
     </div>
   );
 
-  return ReactDOM.createPortal(modal, document.body);
+  // ── Section Preview Modal ───────────────────────────────────────────────────
+  const previewTg = previewGroupId ? testGroups.find(t => t.test_group_id === previewGroupId) : null;
+  const previewResultId = previewGroupId ? resultIds.get(previewGroupId) : undefined;
+  const previewSectionEditorRef = React.useRef<SectionEditorRef>(null);
+
+  const previewModal = previewGroupId && previewResultId ? ReactDOM.createPortal(
+    <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/70">
+      <div className="bg-white rounded-xl shadow-2xl w-[92vw] max-w-5xl max-h-[96vh] flex flex-col overflow-hidden">
+        {/* Header */}
+        <div className="flex items-center justify-between px-6 py-4 border-b bg-gradient-to-r from-indigo-600 to-purple-600 text-white rounded-t-xl">
+          <div>
+            <h2 className="text-lg font-bold">Report Section Preview &amp; Edit</h2>
+            <p className="text-sm text-indigo-100 mt-0.5">{previewTg?.test_group_name}</p>
+          </div>
+          <button onClick={() => setPreviewGroupId(null)} className="p-1 rounded hover:bg-white/20 transition-colors">
+            <X className="h-5 w-5" />
+          </button>
+        </div>
+
+        <div className="flex-1 overflow-y-auto flex flex-col lg:flex-row gap-0 divide-y lg:divide-y-0 lg:divide-x divide-gray-200">
+          {/* Left: Live Preview panel */}
+          <div className="lg:w-1/2 p-5 bg-gray-50">
+            <h3 className="text-sm font-semibold text-gray-600 uppercase tracking-wide mb-3">Report Preview</h3>
+            {(previewItems.get(previewGroupId) ?? []).length === 0 ? (
+              <p className="text-sm text-gray-400 italic">No section content yet.</p>
+            ) : (
+              <div className="space-y-4">
+                {(previewItems.get(previewGroupId) ?? []).map(item => (
+                  item.final_content.trim() ? (
+                    <div key={item.id} className="bg-white border border-gray-200 rounded-lg p-4 shadow-sm">
+                      <h4
+                        className="font-semibold text-gray-800 uppercase tracking-wide border-b border-gray-100 pb-2 mb-3"
+                        style={{ fontSize: `${(item.font_size ?? 13) + 1}px` }}
+                      >
+                        {item.section_name}
+                      </h4>
+                      <div
+                        className="text-gray-700 leading-relaxed whitespace-pre-wrap"
+                        style={{ fontSize: `${item.font_size ?? 13}px`, lineHeight: 1.7 }}
+                        dangerouslySetInnerHTML={{ __html: item.final_content }}
+                      />
+                    </div>
+                  ) : null
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* Right: Editable SectionEditor */}
+          <div className="lg:w-1/2 p-5 overflow-y-auto">
+            <h3 className="text-sm font-semibold text-gray-600 uppercase tracking-wide mb-3">Edit Sections</h3>
+            <SectionEditor
+              ref={previewSectionEditorRef}
+              resultId={previewResultId}
+              testGroupId={previewGroupId}
+              editorRole="technician"
+              showAIAssistant={false}
+              onContentChange={(items) =>
+                setPreviewItems(prev => new Map(prev).set(previewGroupId, items))
+              }
+            />
+          </div>
+        </div>
+
+        {/* Footer */}
+        <div className="px-6 py-3 border-t bg-gray-50 flex items-center justify-end gap-3 rounded-b-xl">
+          <button
+            onClick={() => setPreviewGroupId(null)}
+            className="px-4 py-2 text-sm text-gray-700 border border-gray-300 rounded-lg hover:bg-gray-100 transition-colors"
+          >
+            Close
+          </button>
+          <button
+            onClick={async () => {
+              await previewSectionEditorRef.current?.save();
+              setPreviewGroupId(null);
+            }}
+            className="flex items-center gap-2 px-5 py-2 text-sm bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition-colors font-medium"
+          >
+            <Save className="h-4 w-4" />
+            Save &amp; Close
+          </button>
+        </div>
+      </div>
+    </div>,
+    document.body,
+  ) : null;
+
+  return (
+    <>
+      {ReactDOM.createPortal(modal, document.body)}
+      {previewModal}
+    </>
+  );
 };
 
 export default QuickResultEntryModal;

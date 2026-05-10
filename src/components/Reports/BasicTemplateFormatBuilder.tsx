@@ -174,7 +174,7 @@ function buildBasicHtml(
 .basic-report-template .patient-header-table {
   width: 100% !important;
   table-layout: fixed !important;
-  margin-bottom: 8px !important;
+  margin-bottom: 0 !important;
   border: none !important;
 }
 
@@ -206,7 +206,7 @@ function buildBasicHtml(
   table-layout: fixed !important;
   border-collapse: collapse !important;
   border: none !important;
-  margin-top: 4px !important;
+  margin-top: 2px !important;
 }
 
 .basic-report-template .tbl-results thead th {
@@ -304,7 +304,7 @@ ${flagSymbol === 'before' ? `
   font-weight: 700 !important;
   text-decoration: underline !important;
   font-size: ${basePx + 1}px !important;
-  margin: 8px 0 0 !important;
+  margin: 3px 0 0 !important;
   text-transform: uppercase !important;
   line-height: 1.2 !important;
   color: #000 !important;
@@ -325,14 +325,22 @@ ${flagSymbol === 'before' ? `
 }
 
 .basic-report-template .sub-section-header td {
+  padding: 0 !important;
+  border: none !important;
+}
+
+.basic-report-template .sub-section-label {
+  display: block !important;
+  width: 100% !important;
+  box-sizing: border-box !important;
   font-weight: 700 !important;
-  padding-top: ${sectionHeaderInline ? 6 : 12}px !important;
-  padding-bottom: 3px !important;
   text-transform: uppercase !important;
   font-size: ${sectionHeaderInline ? basePx - 1 : smallPx + 1}px !important;
   letter-spacing: ${sectionHeaderInline ? 0 : 0.25}px !important;
-  border: none !important;
   color: #000 !important;
+  text-align: center !important;
+  white-space: nowrap !important;
+  padding: ${sectionHeaderInline ? 6 : 12}px 10px 3px 10px !important;
   ${sectionHeaderInline ? `border-bottom: 0.5px solid #ccc !important; background-color: #f5f5f5 !important;` : ''}
 }
 
@@ -476,7 +484,7 @@ ${flagSymbol === 'before' ? `
     <div class="report-header-top">
       <h2 class="report-main-title">TEST REPORT</h2>
     </div>
-    <figure class="table" style="margin: 0 0 10px;">
+    <figure class="table" style="margin: 0 0 4px;">
       <table class="patient-header-table">
         <tbody>
           <tr>
@@ -529,7 +537,7 @@ ${flagSymbol === 'before' ? `
           <tbody>
             ${groupTitleBelowHeaders ? `
             <tr class="main-group-row">
-              <td colspan="${colCount}">
+              <td colspan="${colCount}" style="border:none !important;padding:0 !important;">
                 <div class="center-title" style="font-size:${basePx + 1}px;">${groupName}</div>
                 ${specimenText}
               </td>
@@ -542,7 +550,9 @@ ${flagSymbol === 'before' ? `
       if (block.heading) {
         testResultsHtml += `
             <tr class="sub-section-header">
-              <td colspan="${colCount}" style="font-size:${smallPx + 1}px;">${block.heading}</td>
+              <td colspan="${colCount}" style="border:none !important;padding:0 !important;">
+                <div class="sub-section-label" style="font-size:${smallPx + 1}px;">${block.heading}</div>
+              </td>
             </tr>
         `;
       }

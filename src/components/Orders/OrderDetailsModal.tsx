@@ -55,6 +55,7 @@ import PhlebotomistSelector from "../Users/PhlebotomistSelector";
 import { OrderStatusDisplay } from "./OrderStatusDisplay";
 import { capturePhoto, isNative } from "../../utils/androidFileUpload";
 import { calculateFlagsForResults, calculateFlag } from "../../utils/flagCalculation";
+import { calculationEngine, type CalculatedAnalyte } from "../../utils/calculationEngine";
 import SectionEditor from "../Results/SectionEditor";
 import VoiceRecorder from "../Voice/VoiceRecorder";
 
@@ -1304,17 +1305,22 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
       }
 
       // Fetch analyte_dependencies; prefer lab-specific rows over global (lab_id IS NULL)
-      const calcAnalyteIds = flatAnalytes
-        .filter((a: any) => a.is_calculated)
-        .map((a: any) => a.id)
-        .filter(Boolean);
-      if (calcAnalyteIds.length > 0) {
-        const { data: depsData } = await supabase
-          .from('analyte_dependencies')
-          .select('calculated_analyte_id, calculated_lab_analyte_id, source_analyte_id, source_lab_analyte_id, variable_name, lab_id')
-          .in('calculated_analyte_id', calcAnalyteIds)
-          .or(`lab_id.eq.${order.lab_id},lab_id.is.null`);
-        setCalcDeps((depsData || []) as any);
+      const calculatedDefs: CalculatedAnalyte[] = flatAnalytes
+        .filter((a: any) => a.is_calculated && a.formula)
+        .map((a: any) => ({
+          id: a.id,
+          lab_analyte_id: a.lab_analyte_id || null,
+          name: a.name,
+          formula: a.formula || "",
+          formula_variables: a.formula_variables ?? [],
+          unit: a.unit || "",
+          reference_range: a.reference_range || "",
+          code: a.code,
+          value_type: a.value_type,
+        }));
+      if (calculatedDefs.length > 0) {
+        const depsData = await calculationEngine.getDependenciesForCalculatedAnalytes(calculatedDefs, order.lab_id);
+        setCalcDeps(depsData as any);
       }
 
       setOrderAnalytes(flatAnalytes);
@@ -2833,119 +2839,68 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
   // Recompute all calculated analytes from current manualValues snapshot.
   // Called after any manual value change so calculated rows update live.
   const recomputeCalculatedValues = React.useCallback((values: ExtractedValue[]): ExtractedValue[] => {
-    const toVariableSlug = (name: string): string => {
-      const abbrevMap: Record<string, string> = {
-        'total cholesterol': 'TC', 'hdl cholesterol': 'HDL', 'ldl cholesterol': 'LDL',
-        'triglycerides': 'TG', 'hemoglobin': 'HGB', 'hematocrit': 'HCT',
-        'red blood cell': 'RBC', 'white blood cell': 'WBC', 'platelet': 'PLT',
-        'mean corpuscular volume': 'MCV', 'mean corpuscular hemoglobin': 'MCH',
-        'albumin': 'ALB', 'globulin': 'GLOB', 'total protein': 'TP',
-        'creatinine': 'CREAT', 'blood urea nitrogen': 'BUN', 'urea': 'UREA',
-        'glucose': 'GLU', 'calcium': 'CA', 'sodium': 'NA', 'potassium': 'K',
-      };
-      const lower = name.toLowerCase();
-      for (const [full, abbrev] of Object.entries(abbrevMap)) {
-        if (lower.includes(full)) return abbrev.toLowerCase();
-      }
-      const words = name.replace(/[^a-zA-Z0-9\s]/g, '').split(/\s+/);
-      if (words.length === 1) return words[0].substring(0, 4).toLowerCase();
-      return words.map(w => w.substring(0, 3)).join('').toLowerCase().substring(0, 6);
-    };
-
-    const toNumberLocal = (raw: string | number | null | undefined): number | null => {
-      if (raw === null || raw === undefined || raw === "") return null;
-      const parsed = Number(String(raw).trim());
-      return Number.isFinite(parsed) ? parsed : null;
-    };
-
-      const parseVars = (fv: string[] | string | null | undefined): string[] => {
-      if (!fv) return [];
-      if (Array.isArray(fv)) return fv.filter(Boolean);
-      try { return (JSON.parse(fv) as string[]).filter(Boolean); } catch { return []; }
-    };
-
-    // Build lookup: UUID → number, name_lower → number
-    // Stores both so formula resolution works even when dep points to a different
-    // copy of the same analyte (different ID, same name)
-    const lookup = new Map<string, number>();
-    // Inject patient context so formulas like eGFR can use AGE / GENDER_MALE
     const patientAge = order.patient?.age ? Number(order.patient.age) : null;
-    const patientGender = order.patient?.gender;
-    if (patientAge !== null && Number.isFinite(patientAge)) {
-      lookup.set('age', patientAge);
-    }
-    if (patientGender) {
-      lookup.set('gender_male', patientGender === 'Male' ? 1 : 0);
-      lookup.set('gender_female', patientGender === 'Female' ? 1 : 0);
-      lookup.set('gender', patientGender === 'Male' ? 1 : 0);
-    }
+    const patientData = patientAge !== null && Number.isFinite(patientAge)
+      ? {
+          age: patientAge,
+          gender: order.patient?.gender === 'Female'
+            ? 'Female'
+            : order.patient?.gender === 'Male'
+              ? 'Male'
+              : 'Other',
+        } as const
+      : undefined;
+
+    const recalculated = [...values];
     for (const tg of testGroups) {
-      for (const a of tg.analytes) {
-        if (a.is_calculated) continue;
-        const savedVal = a.existing_result?.value;
-        const num = toNumberLocal(savedVal);
-        if (num !== null) {
-          if (a.id) lookup.set(a.id, num);
-          if ((a as any).lab_analyte_id) lookup.set((a as any).lab_analyte_id, num);
-          lookup.set(a.name.toLowerCase(), num);
-          lookup.set(toVariableSlug(a.name), num);
-        }
+      const calculatedDefs: CalculatedAnalyte[] = tg.analytes
+        .filter((analyte) => !!analyte.is_calculated && !!analyte.formula)
+        .map((analyte) => ({
+          id: analyte.id,
+          lab_analyte_id: (analyte as any).lab_analyte_id || null,
+          name: analyte.name,
+          formula: analyte.formula || "",
+          formula_variables: analyte.formula_variables ?? [],
+          unit: analyte.unit || "",
+          reference_range: analyte.reference_range || "",
+          code: analyte.code,
+          value_type: analyte.value_type,
+        }));
+      if (calculatedDefs.length === 0) continue;
+
+      const analyteIds = new Set(tg.analytes.map((analyte) => analyte.id));
+      const calculations = calculationEngine.computeCalculatedValuesFromDefinitions(
+        recalculated
+          .filter((value) => analyteIds.has(value.analyte_id))
+          .map((value) => ({
+            analyte_id: value.analyte_id,
+            lab_analyte_id: value.lab_analyte_id || null,
+            parameter: value.parameter,
+            value: String(value.value || "").replace(/,/g, ""),
+            unit: value.unit,
+            reference_range: value.reference,
+            flag: value.flag,
+          })),
+        calculatedDefs,
+        calcDeps as any,
+        patientData,
+      );
+
+      for (const calculation of calculations) {
+        if (!calculation.success) continue;
+        const index = recalculated.findIndex((value) =>
+          (calculation.lab_analyte_id && value.lab_analyte_id === calculation.lab_analyte_id) ||
+          value.analyte_id === calculation.analyte_id,
+        );
+        if (index === -1) continue;
+        recalculated[index] = {
+          ...recalculated[index],
+          value: String(calculation.value),
+        };
       }
     }
 
-    for (const v of values) {
-      if (v.is_calculated) continue;
-      const num = toNumberLocal(v.value);
-      if (num === null || v.value === "") continue;
-      if (v.analyte_id) lookup.set(v.analyte_id, num);
-      if (v.lab_analyte_id) lookup.set(v.lab_analyte_id, num);
-      if (v.parameter) lookup.set(v.parameter.toLowerCase(), num);
-      if (v.parameter) lookup.set(toVariableSlug(v.parameter), num);
-    }
-
-    return values.map(v => {
-      if (!v.is_calculated || !v.formula) return v;
-
-      let formula = v.formula.trim();
-      const analyteRef = testGroups.flatMap(tg => tg.analytes).find(a => a.id === v.analyte_id || a.name === v.parameter);
-      const vars = parseVars(analyteRef?.formula_variables ?? null);
-      const analyteSliceDeps = getPreferredDepsForCalculated(calcDeps, v.analyte_id, v.lab_analyte_id);
-
-      for (const variable of vars) {
-        const key = variable.toLowerCase();
-        const dep = analyteSliceDeps.find(d => d.variable_name.toLowerCase() === key);
-
-        let val: number | undefined =
-          dep?.source_lab_analyte_id ? lookup.get(dep.source_lab_analyte_id) : undefined;
-        if (val === undefined) val = dep ? lookup.get(dep.source_analyte_id) : undefined;
-        if (val === undefined) val = lookup.get(key);
-        if (val === undefined && dep) {
-          const srcAnalyte = testGroups
-            .flatMap(tg => tg.analytes)
-            .find(a =>
-              ((a as any).lab_analyte_id && dep.source_lab_analyte_id && (a as any).lab_analyte_id === dep.source_lab_analyte_id) ||
-              a.id === dep.source_analyte_id
-            );
-          if (srcAnalyte?.name) {
-            val = lookup.get(srcAnalyte.name.toLowerCase());
-            if (val === undefined) {
-              val = lookup.get(toVariableSlug(srcAnalyte.name));
-            }
-          }
-        }
-
-        if (val === undefined) return v; // missing source — keep old value
-        formula = formula.replace(new RegExp(`\\b${variable}\\b`, "g"), String(val));
-      }
-
-      if (!/^[0-9+\-*/().\s]+$/.test(formula)) return v;
-      try {
-        // eslint-disable-next-line no-new-func
-        const computed = Function(`"use strict"; return (${formula});`)();
-        if (!Number.isFinite(computed)) return v;
-        return { ...v, value: String(Math.round(computed * 10000) / 10000) };
-      } catch { return v; }
-    });
+    return recalculated;
   }, [testGroups, calcDeps, order, getPreferredDepsForCalculated]);
 
   const getCalculatedDebugInfo = React.useCallback((value: ExtractedValue) => {
@@ -3484,19 +3439,27 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
       //
       // This means any new calculated parameter only needs a row here – no
       // code/naming convention in the analyte record is required.
-      const allCalcAnalyteIds = targetTestGroupsForSave
-        .flatMap((tg) => tg.analytes.filter((a) => a.is_calculated).map((a) => a.id))
-        .filter(Boolean) as string[];
+      const allCalculatedDefs: CalculatedAnalyte[] = targetTestGroupsForSave
+        .flatMap((tg) =>
+          tg.analytes
+            .filter((analyte) => analyte.is_calculated && analyte.formula)
+            .map((analyte) => ({
+              id: analyte.id,
+              lab_analyte_id: (analyte as any).lab_analyte_id || null,
+              name: analyte.name,
+              formula: analyte.formula || "",
+              formula_variables: analyte.formula_variables ?? [],
+              unit: analyte.unit || "",
+              reference_range: analyte.reference_range || "",
+              code: analyte.code,
+              value_type: analyte.value_type,
+            })),
+        );
 
       type DepRow = { calculated_analyte_id: string; calculated_lab_analyte_id?: string | null; source_analyte_id: string; source_lab_analyte_id?: string | null; variable_name: string };
       let allDeps: DepRow[] = [];
-      if (allCalcAnalyteIds.length > 0) {
-        const { data: depsData } = await supabase
-          .from('analyte_dependencies')
-          .select('calculated_analyte_id, calculated_lab_analyte_id, source_analyte_id, source_lab_analyte_id, variable_name, lab_id')
-          .in('calculated_analyte_id', allCalcAnalyteIds)
-          .or(`lab_id.eq.${order.lab_id},lab_id.is.null`);
-        allDeps = (depsData || []) as DepRow[];
+      if (allCalculatedDefs.length > 0) {
+        allDeps = await calculationEngine.getDependenciesForCalculatedAnalytes(allCalculatedDefs, order.lab_id) as DepRow[];
       }
 
       // evaluateCalculatedValue now receives the deps slice for this analyte.

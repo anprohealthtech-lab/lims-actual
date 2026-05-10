@@ -14,6 +14,7 @@ import {
 } from 'lucide-react';
 import clsx from 'clsx';
 import { supabase } from '../../utils/supabase';
+import { useEscapeModalClose } from '../../hooks/useEscapeModalClose';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -91,6 +92,7 @@ const AIStudioModal: React.FC<AIStudioModalProps> = ({
   onApplied,
   onHtmlGenerated,
 }) => {
+  useEscapeModalClose(onClose, open);
   const [activeTab, setActiveTab] = useState<StudioTab>('edit');
 
   if (!open) return null;

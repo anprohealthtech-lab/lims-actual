@@ -1,5 +1,6 @@
 import React from 'react';
 import { X, Package, DollarSign, Calendar, Settings, Edit, Layers, Clock } from 'lucide-react';
+import { useEscapeModalClose } from '../../hooks/useEscapeModalClose';
 
 interface PackageType {
   id: string;
@@ -33,6 +34,7 @@ interface PackageDetailModalProps {
 }
 
 const PackageDetailModal: React.FC<PackageDetailModalProps> = ({ package: pkg, testGroups, onClose, onEdit }) => {
+  useEscapeModalClose(onClose);
   const testGroupIds = pkg.testGroupIds || [];
   const includedGroups = testGroups.filter(group => testGroupIds.includes(group.id));
   const originalPrice = includedGroups.reduce((sum, group) => sum + group.price, 0);

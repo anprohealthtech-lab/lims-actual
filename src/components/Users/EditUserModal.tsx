@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { X } from 'lucide-react';
 import { supabase, database } from '../../utils/supabase';
 import { useAuth } from '../../contexts/AuthContext';
+import { useEscapeModalClose } from '../../hooks/useEscapeModalClose';
 
 interface User {
   id: string;
@@ -42,6 +43,7 @@ interface EditUserModalProps {
 }
 
 const EditUserModal: React.FC<EditUserModalProps> = ({ user, onClose, onSuccess, isAdmin = false }) => {
+  useEscapeModalClose(onClose);
   const { user: authUser } = useAuth();
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);

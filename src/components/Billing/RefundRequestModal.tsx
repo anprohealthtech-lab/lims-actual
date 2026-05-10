@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { X, AlertCircle, DollarSign, CreditCard, Wallet, Banknote, Building2 } from 'lucide-react';
 import { database } from '../../utils/supabase';
 import type { RefundMethod, RefundReasonCategory, RefundedItem } from '../../types';
+import { useEscapeModalClose } from '../../hooks/useEscapeModalClose';
 
 interface InvoiceItem {
   id?: string;
@@ -53,6 +54,7 @@ const RefundRequestModal: React.FC<RefundRequestModalProps> = ({
   invoiceItems = [],
   onSuccess,
 }) => {
+  useEscapeModalClose(onClose, isOpen);
   const maxRefundable = amountPaid - totalRefunded;
   
   const [formData, setFormData] = useState({

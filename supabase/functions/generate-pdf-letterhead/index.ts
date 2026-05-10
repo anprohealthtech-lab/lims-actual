@@ -1554,6 +1554,51 @@ function mergePrintOptions(
   return merged;
 }
 
+function shouldHideSignatureBlock(
+  printOptions?: Record<string, unknown> | null,
+): boolean {
+  return printOptions?.showSignatureBlock === false;
+}
+
+function getEffectivePatientInfoConfig(
+  patientInfoConfig: PatientInfoConfig | null | undefined,
+  printOptions?: Record<string, unknown> | null,
+  fallbackLayout: PatientInfoConfig["layout"] = "inline",
+): PatientInfoConfig | null {
+  if (printOptions?.showPatientInfoBox === false) {
+    return {
+      visible: false,
+      layout: patientInfoConfig?.layout || fallbackLayout,
+      fields: patientInfoConfig?.fields || [],
+    };
+  }
+
+  if (!patientInfoConfig) {
+    return null;
+  }
+
+  return {
+    ...patientInfoConfig,
+    visible: true,
+  };
+}
+
+function getEffectiveSignatoryInfo(signatoryInfo: any, hideSignatureBlock: boolean): any {
+  if (!hideSignatureBlock) {
+    return signatoryInfo;
+  }
+
+  return {
+    ...signatoryInfo,
+    showDualSignatory: false,
+    technicianInfo: null,
+    hideSignatureBlock: true,
+    signatoryName: "",
+    signatoryDesignation: "",
+    signatoryImageUrl: "",
+  };
+}
+
 type PrintLayoutMode = "standard" | "compact";
 type PrintPlanSource = "manual" | "deterministic" | "ai" | "fallback";
 
@@ -1578,6 +1623,76 @@ interface CompactPrintPlan {
   orderedGroupIds: string[];
   clusters: Array<{ id: string; groupIds: string[]; reason?: string }>;
   notes?: string[];
+}
+
+function buildManualCompactPlan(
+  descriptors: CompactPlanGroupDescriptor[],
+  manualPageAssignments: Record<string, number>,
+): CompactPrintPlan | null {
+  if (!descriptors.length) return null;
+
+  const normalizedAssignments = new Map<string, number>();
+  for (const descriptor of descriptors) {
+    const rawPage = manualPageAssignments?.[descriptor.groupId];
+    const pageNumber = Math.max(1, Number(rawPage || 0));
+    if (Number.isFinite(pageNumber) && pageNumber > 0) {
+      normalizedAssignments.set(descriptor.groupId, pageNumber);
+    }
+  }
+
+  if (!normalizedAssignments.size) return null;
+
+  const ordered = [...descriptors].sort((a, b) => {
+    const aPage = normalizedAssignments.get(a.groupId) ?? Number.MAX_SAFE_INTEGER;
+    const bPage = normalizedAssignments.get(b.groupId) ?? Number.MAX_SAFE_INTEGER;
+    if (aPage !== bPage) return aPage - bPage;
+
+    const aManual = a.manualOrderIndex ?? Number.MAX_SAFE_INTEGER;
+    const bManual = b.manualOrderIndex ?? Number.MAX_SAFE_INTEGER;
+    if (aManual !== bManual) return aManual - bManual;
+
+    const aPriority = (a.reportPriority != null && a.reportPriority > 0) ? a.reportPriority : Number.MAX_SAFE_INTEGER;
+    const bPriority = (b.reportPriority != null && b.reportPriority > 0) ? b.reportPriority : Number.MAX_SAFE_INTEGER;
+    if (aPriority !== bPriority) return aPriority - bPriority;
+
+    if (a.printOrder !== b.printOrder) return a.printOrder - b.printOrder;
+    return String(a.createdAt || "").localeCompare(String(b.createdAt || ""));
+  });
+
+  const clusters: Array<{ id: string; groupIds: string[]; reason?: string }> = [];
+  let currentPage: number | null = null;
+  let currentGroupIds: string[] = [];
+
+  const flushCluster = () => {
+    if (!currentGroupIds.length) return;
+    const pageLabel = currentPage ?? clusters.length + 1;
+    clusters.push({
+      id: `manual_page_${pageLabel}`,
+      groupIds: currentGroupIds,
+      reason: `Manual compact planner grouped these tests on page ${pageLabel}.`,
+    });
+    currentGroupIds = [];
+  };
+
+  for (const descriptor of ordered) {
+    const pageNumber = normalizedAssignments.get(descriptor.groupId) ?? (currentPage ?? 1);
+    if (currentPage === null) {
+      currentPage = pageNumber;
+    } else if (pageNumber !== currentPage) {
+      flushCluster();
+      currentPage = pageNumber;
+    }
+    currentGroupIds.push(descriptor.groupId);
+  }
+  flushCluster();
+
+  return {
+    layoutMode: "compact",
+    source: "manual",
+    orderedGroupIds: clusters.flatMap((cluster) => cluster.groupIds),
+    clusters,
+    notes: ["Manual compact page assignments from order report settings were used."],
+  };
 }
 
 function normalizePrintLayoutMode(value: unknown): PrintLayoutMode {
@@ -1606,7 +1721,7 @@ function getCompactPrintConfig(pdfLayoutSettings: any) {
     maxClusterGroups: Math.max(2, toInt(compactPrint?.maxClusterGroups, 2)),
     compactTemplateStyle: ["beautiful", "classic", "basic"].includes(compactPrint?.templateStyle)
       ? compactPrint.templateStyle as "beautiful" | "classic" | "basic"
-      : "basic",
+      : null,
     bannedKeywords,
   };
 }
@@ -1877,6 +1992,7 @@ function buildOrderedAnalytesByGroup(
 
 // ── Configurable Patient Info Section Builder ──
 interface PatientInfoConfig {
+  visible?: boolean;
   layout: 'table' | 'inline';
   fields: string[];
 }
@@ -1901,6 +2017,8 @@ function buildPatientInfoHtml(
   accentColor = '#5a7f3a',
   extraFieldConfigs?: Array<{ field_key: string; label: string }>,
 ): string {
+  if (config.visible === false) return '';
+
   // Build dynamic lookup for custom_* keys from lab's field configs
   const customFieldMap: Record<string, { label: string; placeholder: string }> = {};
   if (extraFieldConfigs) {
@@ -2038,6 +2156,10 @@ function buildSignatoryFooterHtml(
     sigPx?: number;
   } = {},
 ): string {
+  if (signatoryInfo?.hideSignatureBlock) {
+    return "";
+  }
+
   const showDual = !!(signatoryInfo?.showDualSignatory);
   const techInfo = signatoryInfo?.technicianInfo as { names: string; signatures: Array<{ imageUrl: string; name: string }> } | null;
 
@@ -2847,7 +2969,7 @@ function generateBasicDefaultTemplateHtml(
 .basic-report-template .patient-header-table {
   width: 100% !important;
   table-layout: fixed !important;
-  margin-bottom: 8px !important;
+  margin-bottom: 0 !important;
   border: none !important;
 }
 
@@ -2879,7 +3001,7 @@ function generateBasicDefaultTemplateHtml(
   table-layout: fixed !important;
   border-collapse: collapse !important;
   border: none !important;
-  margin-top: 4px !important;
+  margin-top: 2px !important;
 }
 
 .basic-report-template .tbl-results thead th {
@@ -2975,7 +3097,7 @@ ${flagSymbol === "before" ? `
 }
 
 .basic-report-template .main-group-row td {
-  padding: 8px 0 5px 0 !important;
+  padding: 2px 0 2px 0 !important;
   border: none !important;
 }
 
@@ -2984,7 +3106,7 @@ ${flagSymbol === "before" ? `
   font-weight: 700 !important;
   text-decoration: underline !important;
   font-size: ${basePx + 1}px !important;
-  margin: 8px 0 0 !important;
+  margin: 3px 0 0 !important;
   text-transform: uppercase !important;
   line-height: 1.2 !important;
   color: #000 !important;
@@ -3005,14 +3127,22 @@ ${flagSymbol === "before" ? `
 }
 
 .basic-report-template .sub-section-header td {
+  padding: 0 !important;
+  border: none !important;
+}
+
+.basic-report-template .sub-section-label {
+  display: block !important;
+  width: 100% !important;
+  box-sizing: border-box !important;
   font-weight: 700 !important;
-  padding-top: ${sectionHeaderInline ? 6 : 12}px !important;
-  padding-bottom: 3px !important;
   text-transform: uppercase !important;
   font-size: ${sectionHeaderInline ? basePx - 1 : smallPx + 1}px !important;
   letter-spacing: ${sectionHeaderInline ? 0 : 0.25}px !important;
-  border: none !important;
   color: #000 !important;
+  text-align: center !important;
+  white-space: nowrap !important;
+  padding: ${sectionHeaderInline ? 6 : 12}px 10px 3px 10px !important;
   ${sectionHeaderInline ? `border-bottom: 0.5px solid #ccc !important; background-color: #f5f5f5 !important;` : ""}
 }
 
@@ -3204,7 +3334,7 @@ ${flagSymbol === "before" ? `
         </tr>`);
       }
       return `
-      <figure class="table" style="margin: 0 0 10px;">
+      <figure class="table" style="margin: 0 0 4px;">
         <table class="patient-header-table">
           <tbody>${rows.join('')}</tbody>
         </table>
@@ -3213,7 +3343,7 @@ ${flagSymbol === "before" ? `
 
     // Default fallback when no config
     return `
-    <figure class="table" style="margin: 0 0 10px;">
+    <figure class="table" style="margin: 0 0 4px;">
       <table class="patient-header-table">
         <tbody>
           <tr>
@@ -3356,7 +3486,7 @@ ${flagSymbol === "before" ? `
           <tbody>
             ${groupTitleBelowHeaders ? `
             <tr class="main-group-row">
-              <td colspan="${colCount}">
+              <td colspan="${colCount}" style="border:none !important;padding:0 !important;">
                 <div class="center-title">${groupName}</div>
                 ${specimenText}
               </td>
@@ -3369,7 +3499,9 @@ ${flagSymbol === "before" ? `
       if (block.heading) {
         testResultsHtml += `
             <tr class="sub-section-header">
-              <td colspan="${colCount}">${block.heading}</td>
+              <td colspan="${colCount}" style="border:none !important;padding:0 !important;">
+                <div class="sub-section-label">${block.heading}</div>
+              </td>
             </tr>
         `;
       }
@@ -3481,6 +3613,9 @@ ${flagSymbol === "before" ? `
     }
 
     const _basicGroupInterp = groupInterpretations?.get(groupId);
+    const groupInterpFontPx = typeof printOptions?.groupInterpretationFontSize === "number"
+      ? Math.max(8, Math.min(24, printOptions.groupInterpretationFontSize as number))
+      : basePx;
     testResultsHtml += `
           </tbody>
         </table>
@@ -3492,7 +3627,7 @@ ${flagSymbol === "before" ? `
           if (showFlagLegend && flagSymbol !== "none" && hasNumericInGroup) parts.push("H = High &nbsp; L = Low &nbsp; A = Abnormal &nbsp; H* = Critical High &nbsp; L* = Critical Low");
           return parts.length ? `<p class="calculated-note">${parts.join(" &nbsp;|&nbsp; ")}</p>` : "";
         })()}
-        ${_basicGroupInterp ? `<div class="limsv2-report group-interpretation" style="margin-top:8px;padding:6px 0;border-top:1px solid #ddd;font-size:inherit;">${_basicGroupInterp}</div>` : ''}
+        ${_basicGroupInterp ? `<div class="limsv2-report group-interpretation" style="margin-top:8px;padding:6px 0;border-top:1px solid #ddd;font-size:${groupInterpFontPx}px;line-height:1.7;">${_basicGroupInterp}</div>` : ''}
       </figure>
     `;
   }
@@ -3605,12 +3740,22 @@ function generateDefaultTemplateHtml(
   sectionLabels?: Record<string, string>,
   sectionFontSizes?: Record<string, number>,
 ): string {
+  const effectivePatientInfoConfig = getEffectivePatientInfoConfig(
+    patientInfoConfig,
+    printOptions,
+    templateStyle === "classic" ? "table" : "inline",
+  );
+  const effectiveSignatoryInfo = getEffectiveSignatoryInfo(
+    signatoryInfo,
+    shouldHideSignatureBlock(printOptions),
+  );
+
   // Branch to classic template if requested
   if (templateStyle === 'classic') {
     return generateClassicDefaultTemplateHtml(
-      context, testGroupNames, analytesByGroup, signatoryInfo,
+      context, testGroupNames, analytesByGroup, effectiveSignatoryInfo,
       sectionContent, includeSections, showMethodology, showInterpretation,
-      patientInfoConfig, printOptions, extraFieldConfigs, groupInterpretations,
+      effectivePatientInfoConfig, printOptions, extraFieldConfigs, groupInterpretations,
       sectionLabels, sectionFontSizes,
     );
   }
@@ -3618,9 +3763,9 @@ function generateDefaultTemplateHtml(
   // Branch to basic (old-school) template if requested
   if (templateStyle === 'basic') {
     return generateBasicDefaultTemplateHtml(
-      context, testGroupNames, analytesByGroup, signatoryInfo,
+      context, testGroupNames, analytesByGroup, effectiveSignatoryInfo,
       sectionContent, includeSections, showMethodology, showInterpretation,
-      patientInfoConfig, printOptions, extraFieldConfigs,
+      effectivePatientInfoConfig, printOptions, extraFieldConfigs,
       groupId, groupInterpretations, sectionLabels, sectionFontSizes,
     );
   }
@@ -3816,8 +3961,8 @@ function generateDefaultTemplateHtml(
   }
 
   // ── Patient Information Section ──
-  const patientInfoHtml = patientInfoConfig
-    ? buildPatientInfoHtml(patientInfoConfig, THEME.accent, extraFieldConfigs)
+  const patientInfoHtml = effectivePatientInfoConfig
+    ? buildPatientInfoHtml(effectivePatientInfoConfig, THEME.accent, extraFieldConfigs)
     : `
     <div class="patient-info" style="margin-bottom: 16px; padding: 12px 16px; background: #ffffff; border: 1px solid #d1d5db; border-radius: 4px; page-break-inside: avoid;">
       <div style="display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 6px;">
@@ -4073,9 +4218,12 @@ function generateDefaultTemplateHtml(
 
     // ── Group Interpretation Block ──
     const _groupInterp = groupInterpretations?.get(groupId);
+    const groupInterpFontPx = typeof printOptions?.groupInterpretationFontSize === "number"
+      ? Math.max(8, Math.min(24, printOptions.groupInterpretationFontSize as number))
+      : 13;
     if (_groupInterp) {
       testResultsHtml += `
-        <div class="limsv2-report group-interpretation" style="margin-top:10px;padding:8px 12px;border-top:1px solid #e5e7eb;border-radius:0 0 4px 4px;background:#f9fafb;">
+        <div class="limsv2-report group-interpretation" style="margin-top:10px;padding:8px 12px;border-top:1px solid #e5e7eb;border-radius:0 0 4px 4px;background:#f9fafb;font-size:${groupInterpFontPx}px;line-height:1.7;">
           ${_groupInterp}
         </div>
       `;
@@ -4089,7 +4237,7 @@ function generateDefaultTemplateHtml(
   testResultsHtml += "</div>";
 
   // ── Signatory Section ──
-  const signatoryHtml = buildSignatoryFooterHtml(signatoryInfo, {
+  const signatoryHtml = buildSignatoryFooterHtml(effectiveSignatoryInfo, {
     wrapperClass: "signatures",
     wrapperStyle: "margin-top:30px;page-break-inside:avoid;",
     approvedImgStyle: "max-height:50px;max-width:150px;margin-bottom:5px;object-fit:contain;",
@@ -4163,7 +4311,10 @@ function buildPdfBodyDocumentV2(
   pdfSettings?: any,
   verificationUrl?: string | null,
 ): string {
-  const useNativePdfHeaderFooter = !!pdfSettings?.displayHeaderFooter;
+  // Only collapse body side padding when PDF.co is rendering native header/footer.
+  // Background letterhead mode still needs the lab's left/right safe area inside the page.
+  const useNativePdfHeaderFooter = !letterheadBackgroundUrl &&
+    !!pdfSettings?.displayHeaderFooter;
   console.log("🚀🚀🚀 VERSION 3.3 - PER-GROUP TEMPLATE STYLE 🚀🚀🚀");
   console.log("🏗️ buildPdfBodyDocumentV2 called with:", {
 	    bodyHtmlLength: bodyHtml?.length || 0,
@@ -6229,9 +6380,17 @@ serve(async (req) => {
           .eq("id", orderId)
           .maybeSingle()
         : { data: null };
-      const orderReportSettings = (orderSettingsRow as any)?.report_settings || {};
-      const requestedPrintLayoutMode = requestBody.printLayoutMode ?? orderReportSettings?.printLayoutMode;
-      const printLayoutMode = normalizePrintLayoutMode(requestedPrintLayoutMode);
+        const orderReportSettings = (orderSettingsRow as any)?.report_settings || {};
+        const requestCompactPageAssignments = requestBody.compactPageAssignments && typeof requestBody.compactPageAssignments === "object"
+          ? requestBody.compactPageAssignments
+          : null;
+        const compactPageAssignments = requestCompactPageAssignments
+          || (orderReportSettings?.compactPageAssignments && typeof orderReportSettings.compactPageAssignments === "object"
+            ? orderReportSettings.compactPageAssignments
+            : null);
+        const hasManualCompactPageAssignments = !!compactPageAssignments && Object.keys(compactPageAssignments).length > 0;
+        const requestedPrintLayoutMode = requestBody.printLayoutMode ?? orderReportSettings?.printLayoutMode;
+        const printLayoutMode = normalizePrintLayoutMode(requestedPrintLayoutMode);
 
       console.log(
         "═══════════════════════════════════════════════════════════",
@@ -7084,10 +7243,11 @@ serve(async (req) => {
         rotation: labSettings?.watermark_rotation ?? 0,
       };
 
-      // ========================================
-      // Step 5b: Get Signatory Info (Approver fallback to Lab Default)
-      // ========================================
-      console.log("\n✍️ Step 5b: Fetching signatory information...");
+	      // ========================================
+	      // Step 5b: Get Signatory Info (Approver fallback to Lab Default)
+	      // ========================================
+	      console.log("\n✍️ Step 5b: Fetching signatory information...");
+	      const hideSignatureBlock = false;
 
       interface SignatoryInfo {
         signatoryName: string;
@@ -7485,7 +7645,7 @@ serve(async (req) => {
       interface TechnicianEntry { imageUrl: string; name: string }
       interface TechnicianInfo { names: string; signatures: TechnicianEntry[] }
 
-      const showDualSignatory = !!(labSettings?.show_dual_signatory);
+	      const showDualSignatory = !!(labSettings?.show_dual_signatory);
       let technicianInfo: TechnicianInfo | null = null;
 
       if (showDualSignatory) {
@@ -7563,8 +7723,9 @@ serve(async (req) => {
 
       // Attach dual-signatory data onto signatoryInfo so templates can read it
       // without requiring signature changes to every template function call.
-      (signatoryInfo as any).showDualSignatory = showDualSignatory;
-      (signatoryInfo as any).technicianInfo = technicianInfo;
+	      (signatoryInfo as any).showDualSignatory = showDualSignatory;
+	      (signatoryInfo as any).technicianInfo = technicianInfo;
+	      (signatoryInfo as any).hideSignatureBlock = hideSignatureBlock;
 
       await updateProgress(
         supabaseClient,
@@ -7890,18 +8051,34 @@ serve(async (req) => {
         );
       }
 
-      const compactPrintConfig = getCompactPrintConfig(pdfSettings);
-      let compactPrintPlan: CompactPrintPlan | null = null;
-      let orderedGroupIdsForPrint = [...contextTestGroupIds];
+        const compactPrintConfig = getCompactPrintConfig(pdfSettings);
+        if (requestBody.compactMaxClubbedAnalytes != null) {
+          const requestedMaxCluster = Math.max(2, Number(requestBody.compactMaxClubbedAnalytes || compactPrintConfig.maxClusterAnalytes));
+          if (Number.isFinite(requestedMaxCluster)) {
+            compactPrintConfig.maxClusterAnalytes = requestedMaxCluster;
+          }
+        } else if (orderReportSettings?.compactMaxClubbedAnalytes != null) {
+          const savedMaxCluster = Math.max(2, Number(orderReportSettings.compactMaxClubbedAnalytes || compactPrintConfig.maxClusterAnalytes));
+          if (Number.isFinite(savedMaxCluster)) {
+            compactPrintConfig.maxClusterAnalytes = savedMaxCluster;
+          }
+        }
+        let compactPrintPlan: CompactPrintPlan | null = null;
+        let orderedGroupIdsForPrint = [...contextTestGroupIds];
       let orderedAnalytesByGroupForPrint = analytesByGroup;
       // Map of groupId → printOrder, used by the render loop to suppress page breaks between equal-priority groups
       const printOrderByGroupId = new Map<string, number>();
 
       if (testGroupIdsToFetch.length > 0) {
         const descriptorById = new Map<string, CompactPlanGroupDescriptor>();
-        const manualGroupOrder = Array.isArray(orderReportSettings?.groupOrder)
-          ? orderReportSettings.groupOrder.map((value: unknown) => String(value || "")).filter(Boolean)
-          : [];
+          const requestCompactGroupOrder = Array.isArray(requestBody.compactGroupOrder)
+            ? requestBody.compactGroupOrder.map((value: unknown) => String(value || "")).filter(Boolean)
+            : [];
+          const manualGroupOrder = requestCompactGroupOrder.length > 0
+            ? requestCompactGroupOrder
+            : Array.isArray(orderReportSettings?.groupOrder)
+              ? orderReportSettings.groupOrder.map((value: unknown) => String(value || "")).filter(Boolean)
+              : [];
         const manualOrderEnabled = orderReportSettings?.groupOrderOverrideEnabled === true && manualGroupOrder.length > 0;
         const manualOrderIndexMap = new Map(manualGroupOrder.map((id: string, index: number) => [id, index]));
 
@@ -8003,15 +8180,27 @@ serve(async (req) => {
           ? "compact"
           : "standard";
 
-        compactPrintPlan = buildDeterministicCompactPlan(
-          descriptors,
-          requestedCompactMode,
-          compactPrintConfig,
-        );
+          compactPrintPlan = requestedCompactMode === "compact" && compactPageAssignments
+            ? buildManualCompactPlan(
+              descriptors,
+              Object.fromEntries(
+                Object.entries(compactPageAssignments).map(([groupId, page]) => [String(groupId), Number(page)]),
+              ),
+            )
+            : null;
+
+          if (!compactPrintPlan) {
+            compactPrintPlan = buildDeterministicCompactPlan(
+              descriptors,
+              requestedCompactMode,
+              compactPrintConfig,
+            );
+          }
 
         const geminiApiKey = Deno.env.get("ALLGOOGLE_KEY") || Deno.env.get("GEMINI_API_KEY") || "";
         if (
           requestedCompactMode === "compact" &&
+          !hasManualCompactPageAssignments &&
           compactPrintConfig.aiEnabled &&
           geminiApiKey &&
           descriptors.length > 1
@@ -8045,6 +8234,23 @@ serve(async (req) => {
         contextTestGroupIds = context.testGroupIds || orderedGroupIdsForPrint;
         orderedAnalytesByGroupForPrint = buildOrderedAnalytesByGroup(analytesByGroup, orderedGroupIdsForPrint);
 
+        if (requestedCompactMode === "compact" && compactPrintPlan?.clusters?.length) {
+          const compactBucketByGroupId = new Map<string, number>();
+          compactPrintPlan.clusters.forEach((cluster, clusterIndex) => {
+            const bucket = clusterIndex + 1;
+            for (const groupId of cluster.groupIds || []) {
+              compactBucketByGroupId.set(groupId, bucket);
+            }
+          });
+
+          for (const groupId of orderedGroupIdsForPrint) {
+            const compactBucket = compactBucketByGroupId.get(groupId);
+            if (compactBucket != null) {
+              printOrderByGroupId.set(groupId, compactBucket);
+            }
+          }
+        }
+
         console.log("ðŸ“ Group report priorities:", descriptors.map((d) => ({
           groupId: d.groupId,
           groupName: d.groupName,
@@ -8058,6 +8264,9 @@ serve(async (req) => {
           source: compactPrintPlan?.source || "deterministic",
           orderedGroupIds: orderedGroupIdsForPrint,
           clusters: compactPrintPlan?.clusters || [],
+          renderBuckets: Object.fromEntries(
+            orderedGroupIdsForPrint.map((groupId) => [groupId, printOrderByGroupId.get(groupId) ?? null]),
+          ),
         });
       }
 
@@ -8301,13 +8510,18 @@ serve(async (req) => {
           const _st = testGroupSampleTypes.get(singleGroupId);
           if (_st) (singlePrintOptions as any)._sampleType = _st;
         }
-        mergedPrintOptions = singlePrintOptions; // lift to outer scope for print version
-        const dynamicCss = generateDynamicCss(pdfSettings, singlePrintOptions ?? undefined);
-        const singleInterpretationTemplates = getInterpretationTemplatesForGroup(
-          singleGroupId,
-        );
-        let renderedHtml = "";
-        let interpretationCss = "";
+	        mergedPrintOptions = singlePrintOptions; // lift to outer scope for print version
+	        const dynamicCss = generateDynamicCss(pdfSettings, singlePrintOptions ?? undefined);
+	        const singleInterpretationTemplates = getInterpretationTemplatesForGroup(
+	          singleGroupId,
+	        );
+	        const singleHideSignatureBlock = shouldHideSignatureBlock(singlePrintOptions ?? undefined);
+	        const singleSignatoryInfo = getEffectiveSignatoryInfo(
+	          signatoryInfo,
+	          singleHideSignatureBlock,
+	        );
+	        let renderedHtml = "";
+	        let interpretationCss = "";
 
         if (!template) {
           // No custom template found - use default template.
@@ -8319,12 +8533,12 @@ serve(async (req) => {
           console.log(
             `⚠️ No custom template found for lab, using default template (style: ${resolvedStyle})`,
           );
-          renderedHtml = generateDefaultTemplateHtml(
-            context,
-            testGroupNames,
-            analytesByGroup,
-            signatoryInfo,
-            fullContext?.sectionContent,
+	          renderedHtml = generateDefaultTemplateHtml(
+	            context,
+	            testGroupNames,
+	            analytesByGroup,
+	            singleSignatoryInfo,
+	            fullContext?.sectionContent,
             true,
             resolvedStyle,
             labSettings?.show_methodology ?? true,
@@ -8344,7 +8558,7 @@ serve(async (req) => {
             `https://app.limsapp.in/verify?id=${
               encodeURIComponent(context.sampleId || orderId || "")
             }`;
-          renderedHtml = injectQrCode(renderedHtml, defaultVerifyUrl);
+	          renderedHtml = injectQrCode(renderedHtml, defaultVerifyUrl);
 
           console.log(
             "✅ Generated default template HTML, length:",
@@ -8355,21 +8569,21 @@ serve(async (req) => {
           renderedHtml = renderTemplate(template.gjs_html, fullContext);
 
           // Inject signature image if template doesn't have one
-          if (signatoryInfo.signatoryImageUrl) {
-            renderedHtml = injectSignatureImage(
-              renderedHtml,
-              signatoryInfo.signatoryImageUrl,
-              signatoryInfo.signatoryName,
-              signatoryInfo.signatoryDesignation,
-            );
-          }
+	          if (singleSignatoryInfo.signatoryImageUrl) {
+	            renderedHtml = injectSignatureImage(
+	              renderedHtml,
+	              singleSignatoryInfo.signatoryImageUrl,
+	              singleSignatoryInfo.signatoryName,
+	              singleSignatoryInfo.signatoryDesignation,
+	            );
+	          }
 
           // Inject QR code for verification (next to signature area)
           const singleVerifyUrl = fullContext.verifyUrl ||
             `https://app.limsapp.in/verify?id=${
               encodeURIComponent(context.sampleId || orderId || "")
             }`;
-          renderedHtml = injectQrCode(renderedHtml, singleVerifyUrl);
+	          renderedHtml = injectQrCode(renderedHtml, singleVerifyUrl);
         }
 
         if (singleInterpretationTemplates.length > 0) {
@@ -8553,9 +8767,22 @@ serve(async (req) => {
             );
           }
 
-          const groupFullContext = prepareFullContext(groupContext);
-          let renderedHtml = "";
-          let bodyContent = "";
+	          const groupFullContext = prepareFullContext(groupContext);
+	          const baseGroupPrintOptions = mergePrintOptions(
+	            pdfSettings,
+	            testGroupPrintOptions.get(testGroupId),
+	          ) ?? {};
+	          if ((baseGroupPrintOptions as any).showSampleType) {
+	            const _gst = testGroupSampleTypes.get(testGroupId);
+	            if (_gst) (baseGroupPrintOptions as any)._sampleType = _gst;
+	          }
+	          const groupHideSignatureBlock = shouldHideSignatureBlock(baseGroupPrintOptions);
+	          const groupSignatoryInfo = getEffectiveSignatoryInfo(
+	            signatoryInfo,
+	            groupHideSignatureBlock,
+	          );
+	          let renderedHtml = "";
+	          let bodyContent = "";
 
           if (groupTemplate?.gjs_html && !useGenericTemplate) {
             if (!firstGroupTemplate) firstGroupTemplate = groupTemplate;
@@ -8565,22 +8792,22 @@ serve(async (req) => {
               groupFullContext,
             );
 
-            // Inject signature image if template doesn't have one
-            if (signatoryInfo.signatoryImageUrl) {
-              renderedHtml = injectSignatureImage(
-                renderedHtml,
-                signatoryInfo.signatoryImageUrl,
-                signatoryInfo.signatoryName,
-                signatoryInfo.signatoryDesignation,
-              );
-            }
+	            // Inject signature image if template doesn't have one
+	            if (groupSignatoryInfo.signatoryImageUrl) {
+	              renderedHtml = injectSignatureImage(
+	                renderedHtml,
+	                groupSignatoryInfo.signatoryImageUrl,
+	                groupSignatoryInfo.signatoryName,
+	                groupSignatoryInfo.signatoryDesignation,
+	              );
+	            }
 
             // Inject QR code for verification (next to signature area)
             const groupVerifyUrl = groupFullContext.verifyUrl ||
               `https://app.limsapp.in/verify?id=${
                 encodeURIComponent(context.sampleId || orderId || "")
               }`;
-            renderedHtml = injectQrCode(renderedHtml, groupVerifyUrl);
+	            renderedHtml = injectQrCode(renderedHtml, groupVerifyUrl);
 
             // Extract body content
             const bodyMatch = renderedHtml.match(
@@ -8618,25 +8845,20 @@ serve(async (req) => {
               _nextGPrintOrder !== 999 &&
               _nextGPrintOrder === _groupPrintOrder;
             const _suppressMinHeight = _isSamePageAsPrev || _isSamePageAsNext;
-            const _mergedGroupOpts = mergePrintOptions(pdfSettings, testGroupPrintOptions.get(testGroupId)) ?? {};
-            if ((_mergedGroupOpts as any).showSampleType) {
-              const _gst = testGroupSampleTypes.get(testGroupId);
-              if (_gst) (_mergedGroupOpts as any)._sampleType = _gst;
-            }
-            const _groupPrintOptions = _suppressMinHeight
-              ? { ..._mergedGroupOpts, _isCompact: true }
-              : (Object.keys(_mergedGroupOpts).length > 0 ? _mergedGroupOpts : undefined);
+	            const _groupPrintOptions = _suppressMinHeight
+	              ? { ...baseGroupPrintOptions, _isCompact: true }
+	              : (Object.keys(baseGroupPrintOptions).length > 0 ? baseGroupPrintOptions : undefined);
 
             const _rawGroupStyle = testGroupStyles.get(testGroupId);
             const _resolvedGroupStyle = (_rawGroupStyle && _rawGroupStyle !== 'cke' ? _rawGroupStyle : null)
               || labSettings?.default_template_style
               || 'beautiful';
-            renderedHtml = generateDefaultTemplateHtml(
-              groupContext,
-              testGroupNames,
-              singleGroupMap,
-              signatoryInfo,
-              groupSectionContentForRender,
+	            renderedHtml = generateDefaultTemplateHtml(
+	              groupContext,
+	              testGroupNames,
+	              singleGroupMap,
+	              groupSignatoryInfo,
+	              groupSectionContentForRender,
               groupSectionContentForRender != null && Object.keys(groupSectionContentForRender).length > 0,
               _resolvedGroupStyle,
               labSettings?.show_methodology ?? true,
@@ -8656,7 +8878,7 @@ serve(async (req) => {
               `https://app.limsapp.in/verify?id=${
                 encodeURIComponent(context.sampleId || orderId || "")
               }`;
-            renderedHtml = injectQrCode(renderedHtml, groupDefaultVerifyUrl);
+	            renderedHtml = injectQrCode(renderedHtml, groupDefaultVerifyUrl);
 
             bodyContent = renderedHtml;
           }
@@ -8726,12 +8948,17 @@ serve(async (req) => {
           console.log(
             "⚠️ No custom templates rendered, using complete default template",
           );
-          fullContext = prepareFullContext(context);
-          const defaultHtml = generateDefaultTemplateHtml(
-            context,
-            testGroupNames,
-            analytesByGroup,
-            signatoryInfo,
+	          fullContext = prepareFullContext(context);
+	          const fallbackHideSignatureBlock = shouldHideSignatureBlock(undefined);
+	          const fallbackSignatoryInfo = getEffectiveSignatoryInfo(
+	            signatoryInfo,
+	            fallbackHideSignatureBlock,
+	          );
+	          const defaultHtml = generateDefaultTemplateHtml(
+	            context,
+	            testGroupNames,
+	            analytesByGroup,
+	            fallbackSignatoryInfo,
             fullContext?.sectionContent,
             true,
             labSettings?.default_template_style || 'beautiful',
@@ -8752,10 +8979,10 @@ serve(async (req) => {
             `https://app.limsapp.in/verify?id=${
               encodeURIComponent(context.sampleId || orderId || "")
             }`;
-          renderedDefaultHtml = injectQrCode(
-            renderedDefaultHtml,
-            fallbackVerifyUrl,
-          );
+	          renderedDefaultHtml = injectQrCode(
+	            renderedDefaultHtml,
+	            fallbackVerifyUrl,
+	          );
 
           renderedSections.push(renderedDefaultHtml);
         }
@@ -8951,43 +9178,95 @@ serve(async (req) => {
             watermarkText: "",
             showWatermark: false,
           };
-          const compactPrintOptions = {
-            ...(mergedPrintOptions || {}),
-            baseFontSize: Math.min(
-              Number((mergedPrintOptions as any)?.baseFontSize || 11),
-              11,
-            ),
-            alternateRows: false,
-            _isCompact: true,
-          };
-          effectivePrintOptionsForCss = compactPrintOptions;
+	          const compactPrintOptions = {
+	            ...(mergedPrintOptions || {}),
+	            _isCompact: true,
+	          };
+	          const compactTemplateStyle = compactPrintConfig.compactTemplateStyle
+	            || labSettings?.default_template_style
+	            || "beautiful";
+	          effectivePrintOptionsForCss = compactPrintOptions;
+	          const compactHideSignatureBlock = shouldHideSignatureBlock(compactPrintOptions);
+	          const compactSignatoryInfo = getEffectiveSignatoryInfo(
+	            signatoryInfo,
+	            compactHideSignatureBlock,
+	          );
 
-          let compactRenderedHtml = generateDefaultTemplateHtml(
-            compactPrintContext,
-            testGroupNames,
-            orderedAnalytesByGroupForPrint,
-            signatoryInfo,
-            printSectionContent,
-            true,
-            compactPrintConfig.compactTemplateStyle,
-            labSettings?.show_methodology ?? true,
-            false,
-            labSettings?.report_patient_info_config,
-            compactPrintOptions,
-            customPatientFieldConfigs ?? [],
-            undefined,
-            testGroupInterpretations,
-            (fullContext as any)?.sectionLabels,
-            (fullContext as any)?.sectionFontSizes,
-          );
-          compactRenderedHtml = renderTemplate(
-            compactRenderedHtml,
-            compactPrintContext,
-          );
-          compactRenderedHtml = injectQrCode(
-            compactRenderedHtml,
-            printVerifyUrl,
-          );
+	          let compactRenderedHtml = "";
+	          const compactClusters = compactPrintPlan?.clusters?.length
+	            ? compactPrintPlan.clusters
+	            : [{
+	                id: "compact_fallback_cluster",
+	                groupIds: orderedGroupIdsForPrint,
+	                reason: "Fallback single-cluster compact render.",
+	              }];
+
+	          const compactClusterHtmlChunks = compactClusters.map((cluster, clusterIndex) => {
+	            const clusterGroupIds = (cluster.groupIds || []).filter((groupId) =>
+	              orderedAnalytesByGroupForPrint.has(groupId)
+	            );
+	            const clusterAnalytesByGroup = new Map<string, any[]>();
+	            for (const groupId of clusterGroupIds) {
+	              const rows = orderedAnalytesByGroupForPrint.get(groupId);
+	              if (rows?.length) {
+	                clusterAnalytesByGroup.set(groupId, rows);
+	              }
+	            }
+
+	            const clusterAnalytes = clusterGroupIds.flatMap((groupId) =>
+	              clusterAnalytesByGroup.get(groupId) || []
+	            );
+	            const clusterContext = {
+	              ...compactPrintContext,
+	              analytes: clusterAnalytes,
+	              testGroupIds: clusterGroupIds,
+	            };
+	            const isLastCluster = clusterIndex === compactClusters.length - 1;
+	            const clusterPrintOptions = isLastCluster
+	              ? compactPrintOptions
+	              : {
+	                  ...compactPrintOptions,
+	                  showSignatureBlock: false,
+	                };
+	            const clusterSignatoryInfo = getEffectiveSignatoryInfo(
+	              signatoryInfo,
+	              !isLastCluster || shouldHideSignatureBlock(clusterPrintOptions),
+	            );
+
+	            let clusterHtml = generateDefaultTemplateHtml(
+	              clusterContext,
+	              testGroupNames,
+	              clusterAnalytesByGroup,
+	              clusterSignatoryInfo,
+                printSectionContent,
+                true,
+                compactTemplateStyle,
+                labSettings?.show_methodology ?? true,
+                false,
+                labSettings?.report_patient_info_config,
+                clusterPrintOptions,
+                customPatientFieldConfigs ?? [],
+                undefined,
+                testGroupInterpretations,
+                (fullContext as any)?.sectionLabels,
+                (fullContext as any)?.sectionFontSizes,
+              );
+              clusterHtml = renderTemplate(
+                clusterHtml,
+                clusterContext,
+              );
+	            if (isLastCluster) {
+	              clusterHtml = injectQrCode(
+	                clusterHtml,
+	                printVerifyUrl,
+	              );
+	            }
+	            return clusterHtml;
+	          });
+
+	          compactRenderedHtml = compactClusterHtmlChunks.join(
+	            '<div class="compact-page-break" style="page-break-before: always; break-before: page;"></div>',
+	          );
           compactRenderedHtml = addFlagClassesToHtml(compactRenderedHtml);
 
           printHtml = buildPdfBodyDocumentV2(
@@ -9071,12 +9350,19 @@ serve(async (req) => {
           const printInterpretationTemplates = getInterpretationTemplatesForGroup(
             context.testGroupIds?.[0],
           );
-          const renderedPrintInterpretation = renderInterpretationBlocks(
-            printInterpretationTemplates,
-            printTemplateContext,
-          );
+	          const renderedPrintInterpretation = renderInterpretationBlocks(
+	            printInterpretationTemplates,
+	            printTemplateContext,
+	          );
+	          const printHideSignatureBlock = shouldHideSignatureBlock(
+	            mergedPrintOptions ?? undefined,
+	          );
+	          const printSignatoryInfo = getEffectiveSignatoryInfo(
+	            signatoryInfo,
+	            printHideSignatureBlock,
+	          );
 
-          if (template?.gjs_html) {
+	          if (template?.gjs_html) {
             // Use custom template
             printRenderedHtml = renderTemplate(
               template.gjs_html,
@@ -9084,23 +9370,23 @@ serve(async (req) => {
             );
 
             // Inject signature image if template doesn't have one (Critical for print version)
-            if (signatoryInfo.signatoryImageUrl) {
-              printRenderedHtml = injectSignatureImage(
-                printRenderedHtml,
-                signatoryInfo.signatoryImageUrl,
-                signatoryInfo.signatoryName,
-                signatoryInfo.signatoryDesignation,
-              );
-            }
+	            if (printSignatoryInfo.signatoryImageUrl) {
+	              printRenderedHtml = injectSignatureImage(
+	                printRenderedHtml,
+	                printSignatoryInfo.signatoryImageUrl,
+	                printSignatoryInfo.signatoryName,
+	                printSignatoryInfo.signatoryDesignation,
+	              );
+	            }
 
             // Inject QR code for verification (next to signature area)
             const printVerifyUrlForQr = `https://app.limsapp.in/verify?id=${
               encodeURIComponent(context.sampleId || orderId || "")
             }`;
-            printRenderedHtml = injectQrCode(
-              printRenderedHtml,
-              printVerifyUrlForQr,
-            );
+	            printRenderedHtml = injectQrCode(
+	              printRenderedHtml,
+	              printVerifyUrlForQr,
+	            );
 
             if (renderedPrintInterpretation.html) {
               printRenderedHtml += renderedPrintInterpretation.html;
@@ -9110,12 +9396,12 @@ serve(async (req) => {
             console.log("⚠️ Using default template for print version");
             const printSingleGroupId = context.testGroupIds?.[0];
             const printResolvedStyle = (printSingleGroupId && testGroupStyles.get(printSingleGroupId)) || labSettings?.default_template_style || 'beautiful';
-            printRenderedHtml = generateDefaultTemplateHtml(
-              context,
-              testGroupNames,
-              analytesByGroup,
-              signatoryInfo,
-              printSectionContent,
+	            printRenderedHtml = generateDefaultTemplateHtml(
+	              context,
+	              testGroupNames,
+	              analytesByGroup,
+	              printSignatoryInfo,
+	              printSectionContent,
               true,
               printResolvedStyle,
               labSettings?.show_methodology ?? true,
@@ -9137,10 +9423,10 @@ serve(async (req) => {
             const printDefaultVerifyUrl = `https://app.limsapp.in/verify?id=${
               encodeURIComponent(context.sampleId || orderId || "")
             }`;
-            printRenderedHtml = injectQrCode(
-              printRenderedHtml,
-              printDefaultVerifyUrl,
-            );
+	            printRenderedHtml = injectQrCode(
+	              printRenderedHtml,
+	              printDefaultVerifyUrl,
+	            );
 
             if (renderedPrintInterpretation.html) {
               printRenderedHtml += renderedPrintInterpretation.html;

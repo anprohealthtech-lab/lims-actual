@@ -1,8 +1,9 @@
 import React, { useState, useEffect } from 'react';
 import { X, Printer, Loader2, User, AlertTriangle } from 'lucide-react';
-import { quickViewPDF } from '../../utils/pdfViewerService';
 import QuickSendReport from '../WhatsApp/QuickSendReport';
 import { supabase } from '../../utils/supabase';
+import { useEscapeModalClose } from '../../hooks/useEscapeModalClose';
+import { buildReportLetterheadPreview } from '../../utils/reportLetterheadPreview';
 
 interface ReportPreviewModalProps {
     isOpen: boolean;
@@ -24,8 +25,12 @@ export const ReportPreviewModal: React.FC<ReportPreviewModalProps> = ({
     doctorName
 }) => {
     const [pdfUrl, setPdfUrl] = useState<string | null>(null);
+    const [previewHtml, setPreviewHtml] = useState<string | null>(null);
     const [loading, setLoading] = useState(false);
     const safeTestNames = Array.isArray(testNames) ? testNames : [];
+    useEscapeModalClose(onClose, isOpen);
+    const isTempPdfUrl = (url?: string | null) =>
+        !!url && url.includes('pdf-temp-files.s3.amazonaws.com');
 
     // Extra details needed for sending to doctor
     const [doctorPhone, setDoctorPhone] = useState<string>('');
@@ -46,6 +51,9 @@ export const ReportPreviewModal: React.FC<ReportPreviewModalProps> = ({
     const loadPdf = async () => {
         setLoading(true);
         try {
+            setPreviewHtml(null);
+            setPdfUrl(null);
+            setFinalReportUrl(undefined);
             // Check if there's already a generated PDF stored for this order
             const { data: reportData } = await supabase
                 .from('reports')
@@ -57,23 +65,20 @@ export const ReportPreviewModal: React.FC<ReportPreviewModalProps> = ({
                 .limit(1)
                 .maybeSingle();
 
-            const isTempPdfUrl = (url?: string | null) =>
-                !!url && url.includes('pdf-temp-files.s3.amazonaws.com');
-
             if (reportData?.pdf_url && !isTempPdfUrl(reportData.pdf_url)) {
                 // Use the already-generated PDF directly — matches what was actually sent
                 setPdfUrl(reportData.pdf_url);
                 setFinalReportUrl(reportData.pdf_url);
             } else {
-                // Fall back to on-the-fly jsPDF generation
-                const url = await quickViewPDF(orderId, { openInNewTab: false });
-                setPdfUrl(url);
+                const preview = await buildReportLetterheadPreview(orderId);
+                setPreviewHtml(preview.html);
             }
         } catch (e) {
             console.error("Failed to load PDF preview:", e);
-            // Last resort fallback
-            const url = await quickViewPDF(orderId, { openInNewTab: false }).catch(() => null);
-            setPdfUrl(url);
+            const preview = await buildReportLetterheadPreview(orderId).catch(() => null);
+            if (preview?.html) {
+                setPreviewHtml(preview.html);
+            }
         } finally {
             setLoading(false);
         }
@@ -98,7 +103,7 @@ export const ReportPreviewModal: React.FC<ReportPreviewModalProps> = ({
                 // Check for final report URL in results
                 if (Array.isArray(data.results)) {
                     const resultWithReport = data.results.find((r: any) => r.final_report && r.final_report.pdf_url);
-                    if (resultWithReport) {
+                    if (resultWithReport && !isTempPdfUrl(resultWithReport.final_report.pdf_url)) {
                         setFinalReportUrl(resultWithReport.final_report.pdf_url);
                     }
                 }
@@ -137,7 +142,7 @@ export const ReportPreviewModal: React.FC<ReportPreviewModalProps> = ({
                 {/* Toolbar */}
                 <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between px-4 sm:px-6 py-3 bg-gray-50 border-b">
                     <div className="text-xs sm:text-sm text-gray-500">
-                        Preview Mode • {doctorName ? `Ref: ${doctorName}` : 'Self Request'}
+                        {previewHtml ? 'Final Letterhead Preview' : 'Generated Report PDF'} • {doctorName ? `Ref: ${doctorName}` : 'Self Request'}
                     </div>
 
                     <div className="flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-3 sm:ml-auto w-full sm:w-auto">
@@ -156,9 +161,9 @@ export const ReportPreviewModal: React.FC<ReportPreviewModalProps> = ({
                         <div className="hidden sm:block h-6 w-px bg-gray-300 mx-1"></div>
 
                         {/* Send to Doctor */}
-                        {pdfUrl && (
+                        {(finalReportUrl || pdfUrl) && (
                             <QuickSendReport
-                                reportUrl={finalReportUrl || pdfUrl}
+                                reportUrl={finalReportUrl || pdfUrl!}
                                 reportName={`${patientName} - Report (Dr)`}
                                 patientName={patientName}
                                 patientPhone={doctorPhone}
@@ -172,9 +177,9 @@ export const ReportPreviewModal: React.FC<ReportPreviewModalProps> = ({
                         )}
 
                         {/* Send to Patient (WhatsApp) */}
-                        {pdfUrl && (
+                        {(finalReportUrl || pdfUrl) && (
                             <QuickSendReport
-                                reportUrl={finalReportUrl || pdfUrl}
+                                reportUrl={finalReportUrl || pdfUrl!}
                                 reportName={`${patientName} - Report`}
                                 patientName={patientName}
                                 patientPhone={patientPhone}
@@ -194,11 +199,12 @@ export const ReportPreviewModal: React.FC<ReportPreviewModalProps> = ({
                             <Loader2 className="w-10 h-10 animate-spin text-blue-600" />
                             <p className="text-gray-500 font-medium">Generating preview...</p>
                         </div>
-                    ) : pdfUrl ? (
+                    ) : pdfUrl || previewHtml ? (
                         <iframe
                             id="report-preview-frame"
-                            src={pdfUrl}
-                            className="w-full h-full border-none"
+                            src={pdfUrl || undefined}
+                            srcDoc={previewHtml || undefined}
+                            className="w-full h-full border-none bg-white"
                             title="Report Preview"
                         />
                     ) : (

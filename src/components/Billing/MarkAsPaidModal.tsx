@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { X, CreditCard, FileText, Calendar } from 'lucide-react';
+import { useEscapeModalClose } from '../../hooks/useEscapeModalClose';
 
 interface MarkAsPaidModalProps {
   isOpen: boolean;
@@ -18,6 +19,7 @@ const MarkAsPaidModal: React.FC<MarkAsPaidModalProps> = ({
   paidAmount,
   onSubmit
 }) => {
+  useEscapeModalClose(onClose, isOpen);
   const remainingAmount = invoiceTotal - paidAmount;
 
   const [formData, setFormData] = useState({

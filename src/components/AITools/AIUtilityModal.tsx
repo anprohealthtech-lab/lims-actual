@@ -3,6 +3,7 @@ import { Dialog, Transition } from '@headlessui/react';
 import { Fragment } from 'react';
 import { X, Play, AlertTriangle } from 'lucide-react';
 import { supabase } from '../../utils/supabase';
+import { useEscapeModalClose } from '../../hooks/useEscapeModalClose';
 // import ProtocolFlowEngine from './ProtocolFlowEngine';
 
 interface AIProtocol {
@@ -39,6 +40,7 @@ interface AIUtilityModalProps {
 }
 
 const AIUtilityModal: React.FC<AIUtilityModalProps> = ({ isOpen, onClose, context }) => {
+  useEscapeModalClose(onClose, isOpen);
   const [protocols, setProtocols] = useState<AIProtocol[]>([]);
   const [selectedProtocol, setSelectedProtocol] = useState<AIProtocol | null>(null);
   const [currentSession, setCurrentSession] = useState<AIProtocolSession | null>(null);

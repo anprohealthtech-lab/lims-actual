@@ -32,6 +32,7 @@ interface BrandingAsset {
 
 interface UserSignature {
   id: string;
+  user_id?: string;
   signature_type: 'digital' | 'handwritten' | 'stamp' | 'text';
   signature_name: string;
   file_url?: string;
@@ -41,6 +42,12 @@ interface UserSignature {
   processing_status?: 'pending' | 'processing' | 'ready' | 'error';
   created_at: string;
   variants?: SignatureVariant[] | Record<string, string> | null;
+  users?: {
+    id: string;
+    name: string;
+    email: string;
+    role?: string;
+  };
 }
 
 interface AssetVariant {
@@ -91,10 +98,19 @@ export const BrandingSettings: React.FC = () => {
   const [pdfSettings, setPdfSettings] = useState<any>({});
   const [savingPdfSettings, setSavingPdfSettings] = useState(false);
 
+  // Dual-signatory toggle
+  const [showDualSignatory, setShowDualSignatory] = useState(false);
+  const [savingDualSignatory, setSavingDualSignatory] = useState(false);
+
   // Upload states
   const [showAssetUploader, setShowAssetUploader] = useState(false);
   const [showSignatureUploader, setShowSignatureUploader] = useState(false);
   const [selectedAssetType, setSelectedAssetType] = useState<'header' | 'footer' | 'watermark' | 'logo' | 'letterhead' | 'front_page' | 'last_page'>('logo');
+
+  // Edit signature state
+  const [editingSignature, setEditingSignature] = useState<UserSignature | null>(null);
+  const [editSignatureName, setEditSignatureName] = useState('');
+  const [isSavingEdit, setIsSavingEdit] = useState(false);
 
   // Processing status polling
   const { processingItems, isPolling } = useBrandingProcessingStatus(labId);
@@ -126,7 +142,7 @@ export const BrandingSettings: React.FC = () => {
       // Load lab watermark & PDF settings
       const { data: labData, error: labError } = await supabase
         .from('labs')
-        .select('watermark_enabled, watermark_image_url, watermark_opacity, watermark_position, watermark_size, watermark_rotation, pdf_layout_settings')
+        .select('watermark_enabled, watermark_image_url, watermark_opacity, watermark_position, watermark_size, watermark_rotation, pdf_layout_settings, show_dual_signatory')
         .eq('id', currentLabId)
         .single();
 
@@ -137,6 +153,7 @@ export const BrandingSettings: React.FC = () => {
         setWatermarkPosition(labData.watermark_position || 'center');
         setWatermarkSize(labData.watermark_size || 'medium');
         setWatermarkRotation(labData.watermark_rotation || 0);
+        setShowDualSignatory(labData.show_dual_signatory || false);
 
         // Load PDF Settings
         if (labData.pdf_layout_settings) {
@@ -212,13 +229,18 @@ export const BrandingSettings: React.FC = () => {
     }
   };
 
-  const handleSetSignatureDefault = async (signatureId: string) => {
-    if (isPlaceholderId(signatureId)) {
+  const handleSetSignatureDefault = async (signature: UserSignature) => {
+    if (isPlaceholderId(signature.id)) {
       return;
     }
 
     try {
-      const { error } = await database.userSignatures.setDefault(signatureId);
+      const signatureOwnerId = signature.user_id || signature.users?.id || currentUserId || undefined;
+      const { error } = await database.userSignatures.setDefault(
+        signature.id,
+        signatureOwnerId,
+        labId || undefined,
+      );
       if (error) {
         throw new Error(error.message);
       }
@@ -278,6 +300,63 @@ export const BrandingSettings: React.FC = () => {
     }
   };
 
+  const handleEditSignature = (signature: UserSignature) => {
+    setEditingSignature(signature);
+    setEditSignatureName(signature.signature_name);
+  };
+
+  const handleSaveSignatureEdit = async () => {
+    if (!editingSignature || !editSignatureName.trim()) {
+      alert('Signature name is required');
+      return;
+    }
+
+    if (editSignatureName === editingSignature.signature_name) {
+      // No changes made
+      setEditingSignature(null);
+      return;
+    }
+
+    setIsSavingEdit(true);
+    try {
+      if (isPlaceholderId(editingSignature.id)) {
+        // Update local state for placeholder
+        setUserSignatures(prev =>
+          prev.map(sig =>
+            sig.id === editingSignature.id
+              ? { ...sig, signature_name: editSignatureName }
+              : sig
+          )
+        );
+      } else {
+        // Update in database
+        const { error } = await database.userSignatures.update(editingSignature.id, {
+          signature_name: editSignatureName,
+        });
+
+        if (error) {
+          throw new Error(error.message);
+        }
+
+        setUserSignatures(prev =>
+          prev.map(sig =>
+            sig.id === editingSignature.id
+              ? { ...sig, signature_name: editSignatureName }
+              : sig
+          )
+        );
+      }
+
+      alert('✅ Signature name updated successfully!');
+      setEditingSignature(null);
+    } catch (err) {
+      console.error('Error updating signature:', err);
+      alert('Failed to update signature. Please try again.');
+    } finally {
+      setIsSavingEdit(false);
+    }
+  };
+
   const handleSaveWatermarkSettings = async () => {
     if (!labId) return;
 
@@ -303,6 +382,23 @@ export const BrandingSettings: React.FC = () => {
       alert('Failed to save watermark settings. Please try again.');
     } finally {
       setSavingWatermark(false);
+    }
+  };
+
+  const handleSaveDualSignatory = async (value: boolean) => {
+    if (!labId) return;
+    setSavingDualSignatory(true);
+    try {
+      const { error } = await supabase
+        .from('labs')
+        .update({ show_dual_signatory: value, updated_at: new Date().toISOString() })
+        .eq('id', labId);
+      if (error) throw error;
+      setShowDualSignatory(value);
+    } catch (err) {
+      console.error('Error saving dual signatory setting:', err);
+    } finally {
+      setSavingDualSignatory(false);
     }
   };
 
@@ -749,6 +845,30 @@ export const BrandingSettings: React.FC = () => {
             </div>
           </div>
 
+          {/* Dual-signatory toggle */}
+          <div className="bg-white border border-gray-200 rounded-lg p-4 flex items-center justify-between">
+            <div>
+              <h4 className="text-sm font-medium text-gray-900">Show dual signatory on reports</h4>
+              <p className="text-xs text-gray-500 mt-0.5">
+                When enabled, reports show <strong>Verified By</strong> (technician who entered results) on the left
+                and <strong>Approved By</strong> (lab default signatory) on the right. Disabled by default.
+              </p>
+            </div>
+            <button
+              onClick={() => handleSaveDualSignatory(!showDualSignatory)}
+              disabled={savingDualSignatory}
+              className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none ${
+                showDualSignatory ? 'bg-blue-600' : 'bg-gray-200'
+              } ${savingDualSignatory ? 'opacity-50 cursor-not-allowed' : ''}`}
+            >
+              <span
+                className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${
+                  showDualSignatory ? 'translate-x-6' : 'translate-x-1'
+                }`}
+              />
+            </button>
+          </div>
+
           {/* Signatures Grid */}
           {userSignatures.length > 0 && (
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
@@ -756,7 +876,8 @@ export const BrandingSettings: React.FC = () => {
                 <SignatureCard
                   key={signature.id}
                   signature={signature}
-                  onSetDefault={() => handleSetSignatureDefault(signature.id)}
+                  onSetDefault={() => handleSetSignatureDefault(signature)}
+                  onEdit={() => handleEditSignature(signature)}
                   onDelete={() => handleDeleteSignature(signature.id)}
                   processingStatus={processingItems.find(item =>
                     item.asset_id === signature.id && item.asset_type === 'user_signature'
@@ -985,6 +1106,66 @@ export const BrandingSettings: React.FC = () => {
           onSuccess={handleSignatureUploaded}
           onClose={() => setShowSignatureUploader(false)}
         />
+      )}
+
+      {/* Edit Signature Modal */}
+      {editingSignature && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50 p-4">
+          <div className="w-full max-w-md rounded-lg bg-white shadow-lg">
+            <div className="border-b border-gray-200 px-6 py-4">
+              <h2 className="text-lg font-semibold text-gray-900">Edit Signature</h2>
+            </div>
+
+            <div className="space-y-4 px-6 py-4">
+              <div>
+                <label htmlFor="edit-sig-name" className="block text-sm font-medium text-gray-700 mb-1">
+                  Signature Name
+                </label>
+                <input
+                  id="edit-sig-name"
+                  type="text"
+                  value={editSignatureName}
+                  onChange={(e) => setEditSignatureName(e.target.value)}
+                  className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                  placeholder="Enter signature name"
+                  disabled={isSavingEdit}
+                />
+              </div>
+
+              <div className="text-sm text-gray-600">
+                <p><strong>Type:</strong> {editingSignature.signature_type}</p>
+                {editingSignature.file_url && (
+                  <div className="mt-2">
+                    <img
+                      src={editingSignature.file_url}
+                      alt={editingSignature.signature_name}
+                      className="h-20 w-full object-contain rounded border border-gray-200"
+                    />
+                  </div>
+                )}
+              </div>
+            </div>
+
+            <div className="border-t border-gray-200 px-6 py-4 flex justify-end gap-3">
+              <button
+                type="button"
+                onClick={() => setEditingSignature(null)}
+                className="px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 rounded-lg border border-gray-300"
+                disabled={isSavingEdit}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleSaveSignatureEdit}
+                className="px-4 py-2 text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-700 rounded-lg disabled:opacity-50"
+                disabled={isSavingEdit}
+              >
+                {isSavingEdit ? 'Saving...' : 'Save Changes'}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );

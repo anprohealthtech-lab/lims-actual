@@ -265,6 +265,14 @@ const buildContextFromReportTemplate = (
   const patient = context.patient ?? ({} as ReportTemplateContext["patient"]);
   const order = context.order ?? ({} as ReportTemplateContext["order"]);
   const meta = context.meta ?? ({} as ReportTemplateContext["meta"]);
+  const visibleGroupInterpretation = (context.analytes || []).find((analyte) =>
+    analyte.show_group_interpretation_in_report !== false &&
+    typeof analyte.group_interpretation === "string" &&
+    analyte.group_interpretation.trim().length > 0
+  )?.group_interpretation?.trim();
+  const groupInterpretationHtml = visibleGroupInterpretation
+    ? new nunjucks.runtime.SafeString(visibleGroupInterpretation)
+    : "";
 
   const derived: Record<string, any> = {
     orderId: context.orderId,
@@ -301,6 +309,11 @@ const buildContextFromReportTemplate = (
     orderStatus: meta?.status ?? "",
     totalAmount: meta?.totalAmount ?? "",
     allAnalytesApproved: meta?.allAnalytesApproved ?? false,
+    groupInterpretation: groupInterpretationHtml,
+    group_interpretation: groupInterpretationHtml,
+    testGroupInterpretation: groupInterpretationHtml,
+    test_group_interpretation: groupInterpretationHtml,
+    showGroupInterpretation: !!visibleGroupInterpretation,
   };
 
   return Object.fromEntries(
@@ -308,6 +321,88 @@ const buildContextFromReportTemplate = (
       value !== undefined && value !== null
     ),
   );
+};
+
+const getVisibleGroupInterpretationHtml = (
+  context?: ReportTemplateContext | null,
+): string => {
+  if (!context?.analytes?.length) {
+    return "";
+  }
+
+  return context.analytes.find((analyte) =>
+    analyte.show_group_interpretation_in_report !== false &&
+    typeof analyte.group_interpretation === "string" &&
+    analyte.group_interpretation.trim().length > 0
+  )?.group_interpretation?.trim() ?? "";
+};
+
+const hasMeaningfulInterpretationContent = (element: Element): boolean => {
+  const text = (element.textContent ?? "").replace(/\u00a0/g, " ").trim();
+  if (text.length > 0) {
+    return true;
+  }
+
+  return !!element.querySelector("img, table, figure, ul, ol, li, p, blockquote");
+};
+
+const applyGroupInterpretationVisibility = (
+  html: string,
+  context?: ReportTemplateContext | null,
+): string => {
+  if (!html?.trim() || !context || typeof DOMParser === "undefined") {
+    return html;
+  }
+
+  const visibleGroupInterpretationHtml = getVisibleGroupInterpretationHtml(context);
+  const parser = new DOMParser();
+  const doc = parser.parseFromString(html, "text/html");
+
+  doc.querySelectorAll(".group-interpretation-block").forEach((block) => {
+    if (!visibleGroupInterpretationHtml || !hasMeaningfulInterpretationContent(block)) {
+      block.remove();
+    }
+  });
+
+  if (visibleGroupInterpretationHtml) {
+    doc.querySelectorAll(".basic-report-template").forEach((templateRoot) => {
+      const hasExistingVisibleBlock = Array.from(
+        templateRoot.querySelectorAll(".group-interpretation-block"),
+      ).some((block) => hasMeaningfulInterpretationContent(block));
+
+      if (hasExistingVisibleBlock) {
+        return;
+      }
+
+      const block = doc.createElement("div");
+      block.className = "group-interpretation-block";
+      block.innerHTML = visibleGroupInterpretationHtml;
+
+      const reportFooter = templateRoot.querySelector(":scope > .report-footer");
+      if (reportFooter) {
+        templateRoot.insertBefore(block, reportFooter);
+        return;
+      }
+
+      const testResults = templateRoot.querySelector(".test-results");
+      if (testResults) {
+        testResults.insertAdjacentElement("afterend", block);
+        return;
+      }
+
+      templateRoot.appendChild(block);
+    });
+  }
+
+  if (/<body[\s>]/i.test(html)) {
+    const bodyOpenTag = html.match(/<body[^>]*>/i)?.[0] ?? "<body>";
+    return html.replace(
+      /<body[^>]*>[\s\S]*<\/body>/i,
+      `${bodyOpenTag}${doc.body.innerHTML}</body>`,
+    );
+  }
+
+  return doc.body.innerHTML;
 };
 
 // === Section: Template rendering options & helpers ===
@@ -425,7 +520,7 @@ export interface ReportHtmlBundle {
   customCss?: string;
 }
 
-interface PreparedReportHtml {
+export interface PreparedReportHtml {
   html: string;
   bundle: ReportHtmlBundle | null;
   filenameBase: string;
@@ -967,6 +1062,10 @@ export const renderLabTemplateHtmlBundle = (
   }
 
   const rendered = renderTemplateWithContext(template.gjs_html, renderContext);
+  const managedRendered = applyGroupInterpretationVisibility(
+    rendered,
+    options.context,
+  );
 
   // 🐛 Debug template CSS
   console.log("🎨 renderLabTemplateHtmlBundle CSS Debug:", {
@@ -977,7 +1076,7 @@ export const renderLabTemplateHtmlBundle = (
   });
 
   return buildReportHtmlBundle({
-    html: rendered,
+    html: managedRendered,
     css: template.gjs_css,
     brandingDefaults: options.brandingDefaults,
   });
@@ -2199,6 +2298,7 @@ const renderMultipleTestGroupTemplates = async (
   isDraft: boolean,
   brandingDefaults: LabBrandingHtmlDefaults,
   templates: LabTemplateRecord[],
+  forPrint = false,
 ): Promise<{ html: string; bundle: any }> => {
   const context = reportData.templateContext;
   if (!context || !context.analytes || context.analytes.length === 0) {
@@ -2227,7 +2327,7 @@ const renderMultipleTestGroupTemplates = async (
         brandingDefaults,
       });
 
-      return { html: bundle.previewHtml, bundle };
+      return { html: forPrint ? bundle.bodyHtml : bundle.previewHtml, bundle };
     }
   }
 
@@ -2279,11 +2379,20 @@ const renderMultipleTestGroupTemplates = async (
         brandingDefaults,
       });
 
-      // Extract the body content from the rendered HTML
-      const bodyMatch = bundle.previewHtml.match(
+      const sourceHtml = forPrint ? bundle.bodyHtml : bundle.previewHtml;
+      const mainMatch = forPrint
+        ? sourceHtml.match(
+          /<main[^>]*class="[^"]*limsv2-report-body[^"]*"[^>]*>([\s\S]*?)<\/main>/i,
+        )
+        : null;
+      const bodyMatch = sourceHtml.match(
         /<body[^>]*>([\s\S]*)<\/body>/i,
       );
-      const bodyContent = bodyMatch ? bodyMatch[1] : bundle.previewHtml;
+      const bodyContent = mainMatch
+        ? mainMatch[1]
+        : bodyMatch
+          ? bodyMatch[1]
+          : sourceHtml;
 
       // Add section with test group separator
       const testName = groupAnalytes[0]?.test_name ||
@@ -2336,11 +2445,16 @@ const renderMultipleTestGroupTemplates = async (
     brandingDefaults,
   });
 
-  // Replace the body content with merged sections
-  const mergedHtml = baseBundle.previewHtml.replace(
-    /<body[^>]*>[\s\S]*<\/body>/i,
-    `<body class="limsv2-report multi-test-group-report">${mergedBody}</body>`,
-  );
+  const baseHtml = forPrint ? baseBundle.bodyHtml : baseBundle.previewHtml;
+  const mergedHtml = forPrint
+    ? baseHtml.replace(
+      /<main([^>]*)class="([^"]*limsv2-report-body[^"]*)"([^>]*)>[\s\S]*?<\/main>/i,
+      `<main$1class="$2"$3>${mergedBody}</main>`,
+    )
+    : baseHtml.replace(
+      /<body[^>]*>[\s\S]*<\/body>/i,
+      `<body class="limsv2-report multi-test-group-report">${mergedBody}</body>`,
+    );
 
   console.log(
     `✅ Successfully merged ${renderedSections.length} test group template(s)`,
@@ -2510,7 +2624,7 @@ const injectSectionContent = async (
   }
 };
 
-const prepareReportHtml = async (
+export const prepareReportHtml = async (
   reportData: ReportData,
   isDraft: boolean,
   allTemplates?: LabTemplateRecord[],
@@ -2540,6 +2654,7 @@ const prepareReportHtml = async (
         isDraft,
         brandingDefaults,
         allTemplates,
+        forPrint,
       );
 
       finalHtml = result.html;

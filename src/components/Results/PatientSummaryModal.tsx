@@ -22,6 +22,7 @@ import {
     type SupportedLanguage,
     LANGUAGE_DISPLAY_NAMES
 } from '../../hooks/useAIResultIntelligence';
+import { useEscapeModalClose } from '../../hooks/useEscapeModalClose';
 
 interface PatientSummaryModalProps {
     orderId: string;
@@ -48,6 +49,7 @@ const PatientSummaryModal: React.FC<PatientSummaryModalProps> = ({
     onSendWhatsApp,
     onIncludeInPdf
 }) => {
+    useEscapeModalClose(onClose);
     const [isEditing, setIsEditing] = useState(false);
     const [editedSummary, setEditedSummary] = useState<PatientSummaryResponse | null>(summary);
     const [saving, setSaving] = useState(false);

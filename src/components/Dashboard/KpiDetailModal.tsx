@@ -2,6 +2,7 @@ import React from "react";
 import { X, Search, Eye, Loader2, AlertTriangle } from "lucide-react";
 import { supabase, database } from "../../utils/supabase";
 import OrderDetailsModal from "../Orders/OrderDetailsModal";
+import { useEscapeModalClose } from "../../hooks/useEscapeModalClose";
 
 export type KpiKind =
   | "approved"          // results.verification_status = 'verified'
@@ -34,6 +35,7 @@ type Props = {
 };
 
 const KpiDetailModal: React.FC<Props> = ({ open, onClose, kind, title, dateRange }) => {
+  useEscapeModalClose(onClose, open);
   const [loading, setLoading] = React.useState(true);
   const [error, setError] = React.useState<string | null>(null);
   const [rows, setRows] = React.useState<Row[]>([]);

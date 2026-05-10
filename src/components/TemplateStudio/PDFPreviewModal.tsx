@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { Eye, Printer, Monitor, X, Loader2, ChevronLeft, ChevronRight, Download } from 'lucide-react';
 import clsx from 'clsx';
 import { supabase } from '../../utils/supabase';
+import { useEscapeModalClose } from '../../hooks/useEscapeModalClose';
 
 interface PDFPreviewModalProps {
   open: boolean;
@@ -376,6 +377,7 @@ const PDFPreviewModal: React.FC<PDFPreviewModalProps> = ({
   cssContent,
   labId,
 }) => {
+  useEscapeModalClose(onClose, open);
   const [mode, setMode] = useState<PreviewMode>('ecopy');
   const [settings, setSettings] = useState<LabPdfSettings>({});
   const [loading, setLoading] = useState(false);

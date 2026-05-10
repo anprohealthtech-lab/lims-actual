@@ -3,6 +3,7 @@ import { Save, CheckCircle, AlertTriangle, PackageX } from 'lucide-react';
 import { database, supabase } from '../../../utils/supabase';
 import { useAuth } from '../../../contexts/AuthContext';
 import { calculateFlagsForResults } from '../../../utils/flagCalculation';
+import { calculationEngine, type CalculatedAnalyte } from '../../../utils/calculationEngine';
 import { toast } from 'react-hot-toast';
 import SectionEditor from '../SectionEditor';
 import { usePermissions } from '../../../hooks/usePermissions';
@@ -31,6 +32,7 @@ interface AnalyteData {
   isApproved?: boolean;
   isVerified?: boolean;
   existingId?: string;
+  isCalculated?: boolean;
 }
 
 const formatIndianNumber = (value: string): string => {
@@ -45,6 +47,7 @@ const ManualEntryForm: React.FC<ManualEntryFormProps> = ({ order, testGroup, onS
   const { loading: permissionsLoading, hasPermission } = usePermissions();
   const [analytes, setAnalytes] = useState<any[]>([]);
   const [formData, setFormData] = useState<Record<string, AnalyteData>>({});
+  const [calcDeps, setCalcDeps] = useState<any[]>([]);
   const valueInputRefs = useRef<(HTMLInputElement | HTMLSelectElement | null)[]>([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -140,6 +143,25 @@ const ManualEntryForm: React.FC<ManualEntryFormProps> = ({ order, testGroup, onS
           };
         });
         setAnalytes(analyteList);
+
+        const calculatedDefs: CalculatedAnalyte[] = analyteList
+          .filter((analyte) => !!analyte.is_calculated && !!analyte.formula)
+          .map((analyte) => ({
+            id: analyte.id,
+            lab_analyte_id: analyte.lab_analyte_id || null,
+            name: analyte.name,
+            formula: analyte.formula || '',
+            formula_variables: analyte.formula_variables ?? [],
+            unit: analyte.unit || '',
+            reference_range: analyte.reference_range || '',
+            value_type: analyte.value_type,
+          }));
+        if (calculatedDefs.length > 0) {
+          const deps = await calculationEngine.getDependenciesForCalculatedAnalytes(calculatedDefs, order.lab_id);
+          setCalcDeps(deps);
+        } else {
+          setCalcDeps([]);
+        }
         
         // Initialize form data
         const initialData: Record<string, AnalyteData> = {};
@@ -148,7 +170,8 @@ const ManualEntryForm: React.FC<ManualEntryFormProps> = ({ order, testGroup, onS
             value: '',
             unit: analyte.unit,
             referenceRange: analyte.reference_range,
-            flag: ''
+            flag: '',
+            isCalculated: !!analyte.is_calculated,
           };
         });
         setFormData(initialData);
@@ -226,6 +249,60 @@ const ManualEntryForm: React.FC<ManualEntryFormProps> = ({ order, testGroup, onS
       fetchExistingResults();
     }
   }, [analytes]);
+
+  useEffect(() => {
+    const calculatedDefs: CalculatedAnalyte[] = analytes
+      .filter((analyte) => !!analyte.is_calculated && !!analyte.formula)
+      .map((analyte) => ({
+        id: analyte.id,
+        lab_analyte_id: analyte.lab_analyte_id || null,
+        name: analyte.name,
+        formula: analyte.formula || '',
+        formula_variables: analyte.formula_variables ?? [],
+        unit: analyte.unit || '',
+        reference_range: analyte.reference_range || '',
+        value_type: analyte.value_type,
+      }));
+    if (calculatedDefs.length === 0 || calcDeps.length === 0) return;
+
+    const calculations = calculationEngine.computeCalculatedValuesFromDefinitions(
+      analytes
+        .filter((analyte) => !analyte.is_calculated)
+        .map((analyte) => ({
+          analyte_id: analyte.id,
+          lab_analyte_id: analyte.lab_analyte_id || null,
+          parameter: analyte.name,
+          value: String(formData[analyte.id]?.value || '').replace(/,/g, ''),
+          unit: formData[analyte.id]?.unit || analyte.unit || '',
+          reference_range: formData[analyte.id]?.referenceRange || analyte.reference_range || '',
+          flag: formData[analyte.id]?.flag || '',
+        })),
+      calculatedDefs,
+      calcDeps,
+    );
+
+    let changed = false;
+    const nextFormData = { ...formData };
+    for (const calculation of calculations) {
+      if (!calculation.success) continue;
+      const current = nextFormData[calculation.analyte_id];
+      if (!current) continue;
+      const nextValue = formatIndianNumber(calculation.value);
+      if (current.value === nextValue) continue;
+      changed = true;
+      nextFormData[calculation.analyte_id] = {
+        ...current,
+        value: nextValue,
+        unit: current.unit || calculation.unit || '',
+        referenceRange: current.referenceRange || calculation.reference_range || '',
+        isCalculated: true,
+      };
+    }
+
+    if (changed) {
+      setFormData(nextFormData);
+    }
+  }, [analytes, calcDeps, formData]);
 
   const ensureResultRecord = async () => {
     const { data: existing, error: existingError } = await database.results.getByOrderAndTestGroup(
@@ -324,8 +401,9 @@ const ManualEntryForm: React.FC<ManualEntryFormProps> = ({ order, testGroup, onS
 
   const renderValueInput = (analyte: any, currentValue: AnalyteData, isApproved: boolean, analyteIdx: number) => {
     const categoricalOptions = getCategoricalOptions(analyte);
+    const isCalculated = !!analyte.is_calculated;
     
-    if (categoricalOptions && !isApproved) {
+    if (categoricalOptions && !isApproved && !isCalculated) {
       return (
         <select
           ref={el => { valueInputRefs.current[analyteIdx] = el; }}
@@ -353,10 +431,10 @@ const ManualEntryForm: React.FC<ManualEntryFormProps> = ({ order, testGroup, onS
           if (formatted !== e.target.value) handleAnalyteChange(analyte.id, { value: formatted });
         }}
         onKeyDown={(e) => handleKeyDown(e, analyteIdx)}
-        placeholder="Enter value"
-        disabled={isApproved}
+        placeholder={isCalculated ? "Calculated automatically" : "Enter value"}
+        disabled={isApproved || isCalculated}
         className={`w-full px-3 py-2 border rounded-md ${
-          isApproved
+          isApproved || isCalculated
             ? 'bg-gray-100 text-gray-600 cursor-not-allowed'
             : 'border-gray-300 focus:ring-2 focus:ring-blue-500'
         }`}
@@ -385,7 +463,8 @@ const ManualEntryForm: React.FC<ManualEntryFormProps> = ({ order, testGroup, onS
             value: data.value.replace(/,/g, ''),
             unit: data.unit,
             reference_range: data.referenceRange,
-            flag: data.flag
+            flag: data.flag,
+            is_auto_calculated: !!analyte?.is_calculated,
           };
         });
 
@@ -544,6 +623,11 @@ const ManualEntryForm: React.FC<ManualEntryFormProps> = ({ order, testGroup, onS
               <div className="col-span-1">
                 <label className="text-sm font-medium text-gray-700">
                   {analyte.name}
+                  {analyte.is_calculated && (
+                    <span className="ml-2 text-[11px] font-semibold uppercase tracking-wide text-blue-600">
+                      Auto
+                    </span>
+                  )}
                   {isApproved && (
                     <div className="flex items-center mt-1 text-xs text-green-600">
                       <CheckCircle className="h-3 w-3 mr-1" />

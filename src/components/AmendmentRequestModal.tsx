@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { X, AlertTriangle, FileText } from 'lucide-react';
 import { requestResultAmendment } from '../utils/securityService';
 import { ResultWithSecurity } from '../types/security';
+import { useEscapeModalClose } from '../hooks/useEscapeModalClose';
 
 interface AmendmentRequestModalProps {
   isOpen: boolean;
@@ -16,6 +17,7 @@ export const AmendmentRequestModal: React.FC<AmendmentRequestModalProps> = ({
   result,
   onSuccess
 }) => {
+  useEscapeModalClose(onClose, isOpen);
   const [reason, setReason] = useState('');
   const [proposedChanges, setProposedChanges] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);

@@ -10,8 +10,6 @@
 import { serve } from 'https://deno.land/std@0.168.0/http/server.ts';
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.38.4';
 
-const GEMINI_MODEL = 'gemini-2.5-flash';
-
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
@@ -78,8 +76,8 @@ interface MapRequest {
   batch_size?: number;
 }
 
-// Call Gemini for mapping
-async function mapWithGemini(
+// Call Anthropic Claude for mapping
+async function mapWithAnthropic(
   items: ClassifiedItem[],
   testGroups: TestGroup[],
   qcLots: QCLot[],
@@ -121,106 +119,174 @@ async function mapWithGemini(
     return desc;
   }).join('\n\n');
 
-  const prompt = `You are an expert in diagnostic laboratory inventory-to-test mapping. Your task is to:
-1. Map inventory items to the correct test groups
-2. Set consumption rules (how much is used per test)
-3. Link QC items to their corresponding QC lots
+  const prompt = `Map inventory items to test groups.
 
-## Available Test Groups:
-${testGroupList || 'No test groups available'}
+TEST GROUPS: ${testGroupList || 'None'}
+QC LOTS: ${qcLotList || 'None'}
 
-## Available QC Lots:
-${qcLotList || 'No QC lots available'}
-
-## Items to Map:
+ITEMS:
 ${itemDescriptions}
 
-## Mapping Rules:
+RULES:
+- test_specific → map to test_groups, scope="per_test"
+- qc_control → map to test_groups, scope="manual", link to QC lots
 
-### For test_specific items:
-- Match to relevant test_groups based on name, methodology, reagent type
-- Set quantity_per_test (usually 1 for kits, may vary for reagents)
-- Determine consumption_scope: "per_test" for most reagents/kits
-- Calculate pack_contains if item is a kit (e.g., "100 test kit" → pack_contains: 100)
-- consumption_per_use is typically 1 for discrete items, or actual amount for liquid reagents
-
-### For qc_control items:
-- consumption_scope: "manual" (QC consumption tracked separately)
-- Try to match to a QC lot based on name/material similarity
-- Map to test groups that this QC validates
-
-### Consumption Rule Logic:
-- If unit is "kit", "box", "pack" and contains X tests → pack_contains: X, per_use: 1/X (or 1)
-- If unit is "ml", "L" → pack_contains: null, per_use: amount per test
-- If unit is "pcs", "test" → pack_contains: null, per_use: 1
-
-## Response Format (JSON array):
+OUTPUT JSON ONLY:
 [
   {
     "item_index": 1,
-    "item_id": "uuid-here",
-    "mappings": [
-      {
-        "test_group_id": "uuid-of-test",
-        "test_group_name": "Test Name",
-        "quantity_per_test": 1,
-        "confidence": 0.9,
-        "reasoning": "TSH reagent directly maps to TSH test"
-      }
-    ],
-    "consumption_rule": {
-      "scope": "per_test",
-      "per_use": 1,
-      "pack_contains": 100
-    },
-    "qc_lot_link": {
-      "qc_lot_id": "uuid-of-lot",
-      "lot_number": "LOT123",
-      "confidence": 0.85
-    }
+    "mappings": [{"test_group_id": "uuid", "test_group_name": "Name", "quantity_per_test": 1, "confidence": 0.9, "reasoning": "reason"}],
+    "consumption_rule": {"scope": "per_test", "per_use": 1, "pack_contains": null},
+    "qc_lot_link": {"qc_lot_id": "uuid", "lot_number": "LOT123", "confidence": 0.8}
   }
-]
+]`;
 
-Notes:
-- qc_lot_link is only for qc_control items (null for test_specific)
-- mappings can be empty if no clear match
-- Provide multiple mappings if item is used for multiple tests
-- Be conservative with confidence scores
-
-Respond ONLY with the JSON array, no other text.`;
-
-  const response = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${apiKey}`,
-    {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        contents: [{ parts: [{ text: prompt }] }],
-        generationConfig: {
-          temperature: 0.2,
-          maxOutputTokens: 8192,
+  const response = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-api-key': apiKey,
+      'anthropic-version': '2023-06-01',
+    },
+    body: JSON.stringify({
+      model: 'claude-haiku-4-5-20251001',
+      max_tokens: 16384,
+      temperature: 0.2,
+      messages: [
+        {
+          role: 'user',
+          content: prompt,
         },
-      }),
-    }
-  );
+      ],
+    }),
+  });
 
   if (!response.ok) {
     const errorText = await response.text();
-    console.error('Gemini API error:', errorText);
-    throw new Error(`Gemini API error: ${response.status} (${GEMINI_MODEL})`);
+    console.error('Anthropic API error:', errorText);
+    throw new Error(`Anthropic API error: ${response.status}`);
   }
 
   const data = await response.json();
-  const text = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
+  let text = data.content?.[0]?.text || '';
 
-  // Extract JSON from response
-  const jsonMatch = text.match(/\[[\s\S]*\]/);
-  if (!jsonMatch) {
-    console.error('No JSON found in response:', text);
-    throw new Error('Failed to parse Gemini response');
+  // Extract JSON from response - handle various formats
+  let jsonText = '';
+
+  // First, try to extract content from markdown code blocks
+  const codeBlockMatch = text.match(/```(?:json)?\s*([\s\S]*?)\s*```/);
+  if (codeBlockMatch) {
+    text = codeBlockMatch[1].trim();
+  } else {
+    // If no code blocks found, try to remove any leading/trailing markdown
+    text = text.replace(/^```(?:json)?\s*/m, '').replace(/\s*```$/m, '').trim();
   }
 
-  const results = JSON.parse(jsonMatch[0]);
+  // Now find the JSON array in the cleaned text
+  const startBracket = text.indexOf('[');
+  if (startBracket !== -1) {
+    let bracketCount = 0;
+    let inString = false;
+    let escapeNext = false;
+
+    for (let i = startBracket; i < text.length; i++) {
+      const char = text[i];
+
+      if (escapeNext) {
+        escapeNext = false;
+        continue;
+      }
+
+      if (char === '\\') {
+        escapeNext = true;
+        continue;
+      }
+
+      if (char === '"') {
+        inString = !inString;
+        continue;
+      }
+
+      if (!inString) {
+        if (char === '[') bracketCount++;
+        else if (char === ']') bracketCount--;
+
+        if (bracketCount === 0) {
+          jsonText = text.substring(startBracket, i + 1);
+          break;
+        }
+      }
+    }
+  }
+
+  // If bracket matching failed, try a simpler approach
+  if (!jsonText) {
+    const simpleMatch = text.match(/\[[\s\S]*\]/);
+    if (simpleMatch) {
+      jsonText = simpleMatch[0];
+    }
+  }
+
+  if (!jsonText) {
+    console.error('No JSON found in response. Full response length:', text.length);
+    console.error('First 500 chars:', text.substring(0, 500));
+    console.error('Last 500 chars:', text.substring(Math.max(0, text.length - 500)));
+    throw new Error('Failed to find JSON in Anthropic response');
+  }
+
+  // Clean up any remaining artifacts
+  jsonText = jsonText
+    .replace(/^\s*[\r\n]+/gm, '') // Remove leading/trailing whitespace
+    .replace(/\s*[\r\n]+\s*$/gm, '')
+    .trim();
+
+  // Try to fix common JSON issues
+  jsonText = jsonText
+    .replace(/,\s*}/g, '}') // Remove trailing commas before }
+    .replace(/,\s*]/g, ']') // Remove trailing commas before ]
+    .replace(/([{,]\s*)([a-zA-Z_][a-zA-Z0-9_]*)\s*:/g, '$1"$2":'); // Quote unquoted keys
+
+  let results;
+  try {
+    results = JSON.parse(jsonText);
+  } catch (parseError: any) {
+    console.error('JSON parse error:', parseError.message);
+    console.error('Error position:', parseError.message.match(/position (\d+)/)?.[1]);
+    console.error('JSON text length:', jsonText.length);
+    console.error('JSON text around error (chars 820-840):', jsonText.substring(820, 840));
+    console.error('JSON text (first 1000 chars):', jsonText.substring(0, 1000));
+
+    // Try to extract partial results if possible
+    try {
+      // Try to find the last complete object in the array
+      const lastCompleteObjectMatch = jsonText.match(/(\{[\s\S]*?\})(?=\s*,\s*\{|\s*\])/g);
+      if (lastCompleteObjectMatch && lastCompleteObjectMatch.length > 0) {
+        const lastCompleteObject = lastCompleteObjectMatch[lastCompleteObjectMatch.length - 1];
+        const partialArray = '[' + lastCompleteObject + ']';
+        results = JSON.parse(partialArray);
+        console.log('Successfully parsed partial results, length:', results.length);
+      } else {
+        // Try to fix common truncation issues
+        const fixedJson = jsonText
+          .replace(/,\s*$/, '') // Remove trailing comma
+          .replace(/\{\s*$/, '') // Remove incomplete object start
+          .replace(/\[\s*$/, '') // Remove incomplete array start
+          + ']}'; // Add closing brackets
+
+        results = JSON.parse(fixedJson);
+        console.log('Successfully parsed fixed truncated JSON, length:', results.length);
+      }
+    } catch (partialError) {
+      console.error('Partial parsing also failed:', partialError.message);
+      throw new Error(`Invalid JSON from Anthropic: ${parseError.message}. JSON length: ${jsonText.length}`);
+    }
+  }
+
+  // Ensure results is an array
+  if (!Array.isArray(results)) {
+    console.error('Anthropic response is not an array:', typeof results, results);
+    throw new Error('Anthropic response must be a JSON array');
+  }
 
   // Map back with item names
   return results.map((r: any) => ({
@@ -246,9 +312,9 @@ serve(async (req) => {
     }
 
     // Get API key
-    const geminiApiKey = Deno.env.get('ALLGOOGLE_KEY') || Deno.env.get('GEMINI_API_KEY');
-    if (!geminiApiKey) {
-      throw new Error('Gemini API key not configured');
+    const apiKey = Deno.env.get('ANTHROPIC_API_KEY');
+    if (!apiKey) {
+      throw new Error('ANTHROPIC_API_KEY not configured');
     }
 
     // Create Supabase client
@@ -310,12 +376,12 @@ serve(async (req) => {
 
     console.log(`Context: ${testGroups?.length || 0} test groups, ${qcLots?.length || 0} QC lots`);
 
-    // Map with Gemini
-    const mappingResults = await mapWithGemini(
+    // Map with Anthropic Claude
+    const mappingResults = await mapWithAnthropic(
       items as ClassifiedItem[],
       testGroups || [],
       qcLots || [],
-      geminiApiKey
+      apiKey
     );
 
     // Process results and update database
@@ -348,8 +414,17 @@ serve(async (req) => {
         });
 
         if (mapError) {
-          // Duplicate means mapping already exists; treat as non-fatal/idempotent.
-          if ((mapError as any)?.code === '23505' || `${mapError.message || ''}`.toLowerCase().includes('duplicate key')) {
+          console.error('inventory-ai-map mapping RPC failed', {
+            item_id: result.item_id,
+            test_group_id: mapping.test_group_id,
+            test_group_name: mapping.test_group_name,
+            error: mapError,
+          });
+
+          const isDuplicate = (mapError as any)?.code === '23505'
+            || `${mapError.message || ''}`.toLowerCase().includes('duplicate key');
+
+          if (isDuplicate) {
             processedItem.errors.push(`Mapping to ${mapping.test_group_name}: already exists`);
           } else {
             processedItem.errors.push(`Mapping to ${mapping.test_group_name}: ${mapError.message}`);

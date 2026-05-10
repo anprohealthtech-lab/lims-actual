@@ -1,5 +1,6 @@
 import React from 'react';
 import { X, Beaker, AlertTriangle, Settings, Edit, Brain } from 'lucide-react';
+import { useEscapeModalClose } from '../../hooks/useEscapeModalClose';
 
 interface Analyte {
   id: string;
@@ -35,6 +36,7 @@ interface AnalyteDetailModalProps {
 }
 
 const AnalyteDetailModal: React.FC<AnalyteDetailModalProps> = ({ analyte, onClose, onEdit }) => {
+  useEscapeModalClose(onClose);
   const getCategoryColor = (category: string) => {
     const colors = {
       'Hematology': 'bg-red-100 text-red-800',

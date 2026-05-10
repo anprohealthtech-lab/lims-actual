@@ -144,6 +144,12 @@ interface FirstPageContext {
   signatoryImageUrl: string
 }
 
+interface SmartReportTestGroup {
+  id: string
+  name: string
+  is_section_only?: boolean
+}
+
 function buildFirstPageHtml(ctx: FirstPageContext, letterheadUrl: string | null): string {
   const testChips = ctx.testGroups
     .map(g => `<span class="test-chip">${g.name}</span>`)
@@ -1090,21 +1096,21 @@ serve(async (req) => {
 
     // 4. Extract test group info
     const testGroupIds = context.testGroupIds || []
-    let testGroups: { id: string; name: string }[] = []
+    let testGroups: SmartReportTestGroup[] = []
 
     if (testGroupIds.length > 0) {
       const { data: tgData } = await supabase
         .from('test_groups')
-        .select('id, name')
+        .select('id, name, is_section_only')
         .in('id', testGroupIds)
 
       testGroups = tgData || []
     }
 
-    // Fallback if no test groups
-    if (testGroups.length === 0) {
-      testGroups = [{ id: 'default', name: 'Laboratory Tests' }]
-    }
+    const analyteBearingTestGroups = testGroups.filter((group) => !group.is_section_only)
+    const displayTestGroups = analyteBearingTestGroups.length > 0
+      ? analyteBearingTestGroups
+      : [{ id: 'default', name: 'Laboratory Tests' }]
 
     // 5. Build First Page Context
     const placeholders = context.placeholderValues || {}
@@ -1121,7 +1127,7 @@ serve(async (req) => {
       orderDate: placeholders.reportDate || new Date().toLocaleDateString('en-IN'),
       collectionDate: placeholders.collectionTime || '',
       doctorName: placeholders.referringDoctor || context.order?.referringDoctorName || '',
-      testGroups: testGroups,
+      testGroups: displayTestGroups,
       signatoryName: signatoryName,
       signatoryImageUrl: signatoryImageUrl
     }
@@ -1150,7 +1156,7 @@ serve(async (req) => {
 
     // Build test groups data for Gamma
     const testGroupsData: TestGroupData[] = []
-    for (const group of testGroups) {
+    for (const group of analyteBearingTestGroups) {
       const groupAnalytes = analytesByGroup.get(group.id) || analytesByGroup.get('ungrouped') || []
       if (groupAnalytes.length > 0) {
         testGroupsData.push({

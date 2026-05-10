@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { X, Edit2, Save, AlertCircle, Plus } from 'lucide-react';
 import { database } from '../../utils/supabase';
+import { useEscapeModalClose } from '../../hooks/useEscapeModalClose';
 
 interface Analyte {
   id: string;
@@ -28,6 +29,7 @@ export const EditAnalyteModal: React.FC<EditAnalyteModalProps> = ({
   onClose,
   onSave
 }) => {
+  useEscapeModalClose(onClose, isOpen);
   const [formData, setFormData] = useState<Analyte>(analyte);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);

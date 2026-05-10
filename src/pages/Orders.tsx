@@ -33,6 +33,7 @@ type Priority = "Normal" | "Urgent" | "STAT";
 
 type ProgressRow = {
   order_id: string;
+  order_test_id: string;
   test_group_id: string | null;
   test_group_name: string | null;
   expected_analytes: number;
@@ -61,6 +62,10 @@ type Panel = {
   outsourcedLab?: string;
   sample_type?: string;
   sample_color?: string;
+  order_test_id?: string;
+  test_group_id?: string;
+  reportSectionSaved?: boolean;
+  reportSubmitted?: boolean;
   // TAT fields per panel
   hours_until_tat_breach?: number | null;
   is_tat_breached?: boolean;
@@ -98,6 +103,8 @@ type CardOrder = {
   panels: Panel[];
   expectedTotal: number;
   enteredTotal: number;
+  reportOnlyPanelTotal: number;
+  completedReportOnlyPanels: number;
 
   // 3-bucket model
   pendingAnalytes: number;       // not started OR partial/in-progress
@@ -109,6 +116,91 @@ type CardOrder = {
   is_tat_breached?: boolean | null;
   tat_hours?: number | null;
   tatStarted?: boolean;
+};
+
+const getPanelOverlayState = (panel: Panel) => {
+  const isReportOnly = panel.expected === 0 && !panel.isOutsourced;
+  const hasReportOverlay = isReportOnly && (panel.reportSectionSaved || panel.reportSubmitted);
+  const isGreen = panel.verified || hasReportOverlay;
+
+  return {
+    isGreen,
+    statusText: hasReportOverlay
+      ? panel.reportSubmitted
+        ? "Report submitted"
+        : "Report saved"
+      : null,
+  };
+};
+
+const getPanelProgressLabel = (panel: Panel, overlayState?: ReturnType<typeof getPanelOverlayState>) => {
+  const state = overlayState ?? getPanelOverlayState(panel);
+  if (panel.expected === 0 && !panel.isOutsourced) {
+    return state.statusText ?? "Report pending";
+  }
+
+  return `${panel.entered}/${panel.expected} analytes`;
+};
+
+const isCompletedReportOnlyPanel = (panel: Panel) =>
+  panel.expected === 0 &&
+  !panel.isOutsourced &&
+  !!(panel.reportSectionSaved || panel.reportSubmitted);
+
+const getOrderProgressSummary = (order: CardOrder) => {
+  const isReportOnlyOrder = order.expectedTotal === 0 && order.reportOnlyPanelTotal > 0;
+
+  if (isReportOnlyOrder) {
+    return {
+      progressLabel: `${order.completedReportOnlyPanels}/${order.reportOnlyPanelTotal} reports ready`,
+      pendingLabel: "Pending reports",
+      pendingValue: Math.max(order.reportOnlyPanelTotal - order.completedReportOnlyPanels, 0),
+      approvalLabel: "Saved reports",
+      approvalValue: 0,
+      approvedLabel: "Ready reports",
+      approvedValue: order.completedReportOnlyPanels,
+      totalLabel: `Total reports: ${order.reportOnlyPanelTotal}`,
+      progressPercent:
+        order.reportOnlyPanelTotal > 0
+          ? Math.round((order.completedReportOnlyPanels / order.reportOnlyPanelTotal) * 100)
+          : 0,
+      approvedPercent:
+        order.reportOnlyPanelTotal > 0
+          ? (order.completedReportOnlyPanels / order.reportOnlyPanelTotal) * 100
+          : 0,
+    };
+  }
+
+  return {
+    progressLabel: `${order.enteredTotal}/${order.expectedTotal} analytes`,
+    pendingLabel: "Pending",
+    pendingValue: order.pendingAnalytes,
+    approvalLabel: "For approval",
+    approvalValue: order.forApprovalAnalytes,
+    approvedLabel: "Approved",
+    approvedValue: order.approvedAnalytes,
+    totalLabel: `Total: ${order.expectedTotal}`,
+    progressPercent:
+      order.expectedTotal > 0 ? Math.round((order.enteredTotal / order.expectedTotal) * 100) : 0,
+    approvedPercent:
+      order.expectedTotal > 0 ? (order.approvedAnalytes / order.expectedTotal) * 100 : 0,
+  };
+};
+
+const isOrderFullyDone = (order: CardOrder) =>
+  order.status === "Completed" ||
+  order.status === "Delivered" ||
+  (order.expectedTotal > 0 && order.approvedAnalytes >= order.expectedTotal) ||
+  (order.expectedTotal === 0 &&
+    order.reportOnlyPanelTotal > 0 &&
+    order.completedReportOnlyPanels >= order.reportOnlyPanelTotal);
+
+const isOrderMostlyDone = (order: CardOrder) => {
+  if (order.expectedTotal === 0 && order.reportOnlyPanelTotal > 0) {
+    return order.completedReportOnlyPanels > 0;
+  }
+
+  return order.enteredTotal > 0 && order.enteredTotal >= order.expectedTotal * 0.75;
 };
 
 /* ===========================
@@ -301,12 +393,14 @@ const Orders: React.FC = () => {
           patient: orderRow.patients,
           tests: (orderRow.order_tests || []).map((t: any) => t.test_name),
           order_tests: orderRow.order_tests || [],
-          panels,
-          expectedTotal: 0,
-          enteredTotal: 0,
-          pendingAnalytes: 0,
-          forApprovalAnalytes: 0,
-          approvedAnalytes: 0,
+	          panels,
+	          expectedTotal: 0,
+	          enteredTotal: 0,
+	          reportOnlyPanelTotal: 0,
+	          completedReportOnlyPanels: 0,
+	          pendingAnalytes: 0,
+	          forApprovalAnalytes: 0,
+	          approvedAnalytes: 0,
         };
 
         setOrders(prev => [newCardOrder, ...prev]);
@@ -563,6 +657,49 @@ const Orders: React.FC = () => {
       byOrder.set(r.order_id, arr);
     });
 
+    const reportOnlyPanelState = new Map<string, { reportSectionSaved: boolean; reportSubmitted: boolean }>();
+    const { data: resultRows, error: resultErr } = await supabase
+      .from("results")
+      .select(`
+        order_id,
+        order_test_id,
+        test_group_id,
+        status,
+        result_section_content(
+          final_content,
+          custom_text,
+          selected_options,
+          image_urls
+        )
+      `)
+      .in("order_id", orderIds);
+
+    if (resultErr) console.error("results/report sections load error", resultErr);
+
+    (resultRows || []).forEach((row: any) => {
+      const sections = Array.isArray(row.result_section_content) ? row.result_section_content : [];
+      const reportSectionSaved = sections.some((section: any) => {
+        const hasText = typeof section?.final_content === "string" && section.final_content.trim().length > 0;
+        const hasCustomText = typeof section?.custom_text === "string" && section.custom_text.trim().length > 0;
+        const hasSelectedOptions = Array.isArray(section?.selected_options) && section.selected_options.length > 0;
+        const hasImages = Array.isArray(section?.image_urls) && section.image_urls.length > 0;
+        return hasText || hasCustomText || hasSelectedOptions || hasImages;
+      });
+      const reportSubmitted = typeof row.status === "string" && row.status.trim().length > 0;
+      const keys = [
+        row.order_test_id ? `test:${row.order_test_id}` : null,
+        row.order_id && row.test_group_id ? `group:${row.order_id}:${row.test_group_id}` : null,
+      ].filter(Boolean) as string[];
+
+      keys.forEach((key) => {
+        const existing = reportOnlyPanelState.get(key);
+        reportOnlyPanelState.set(key, {
+          reportSectionSaved: (existing?.reportSectionSaved || false) || reportSectionSaved,
+          reportSubmitted: (existing?.reportSubmitted || false) || reportSubmitted,
+        });
+      });
+    });
+
     // 3) invoice aggregation — single batched query instead of one per order
     const { data: allInvoices } = await supabase
       .from("invoices")
@@ -613,6 +750,11 @@ const Orders: React.FC = () => {
         const labInfo = Array.isArray(outsourcedTest?.outsourced_labs)
           ? outsourcedTest.outsourced_labs[0]
           : outsourcedTest?.outsourced_labs;
+        const reportState =
+          reportOnlyPanelState.get(`test:${r.order_test_id}`) ||
+          (r.test_group_id ? reportOnlyPanelState.get(`group:${o.id}:${r.test_group_id}`) : undefined);
+        const reportOnlyCompleted =
+          (r.expected_analytes || 0) === 0 && !!(reportState?.reportSectionSaved || reportState?.reportSubmitted);
 
         // Get sample info from joined test_groups if not in view
         const testGroupInfo = (outsourcedTest as any)?.test_groups;
@@ -623,12 +765,16 @@ const Orders: React.FC = () => {
           name: r.test_group_name || "Test",
           expected: r.expected_analytes || 0,
           entered: r.entered_analytes || 0,
-          verified: !!r.is_verified,
+          verified: !!r.is_verified || reportOnlyCompleted,
           status: r.panel_status,
           isOutsourced: !!outsourcedTest?.outsourced_lab_id,
           outsourcedLab: labInfo?.name,
           sample_type: effectiveSampleType,
           sample_color: effectiveSampleColor,
+          order_test_id: r.order_test_id,
+          test_group_id: r.test_group_id || undefined,
+          reportSectionSaved: reportState?.reportSectionSaved || false,
+          reportSubmitted: reportState?.reportSubmitted || false,
           // TAT fields per panel
           hours_until_tat_breach: r.hours_until_tat_breach,
           is_tat_breached: r.is_tat_breached,
@@ -654,9 +800,11 @@ const Orders: React.FC = () => {
       });
 
 
-      // Calculate totals correctly
-      const expectedTotal = panels.reduce((sum, p) => sum + p.expected, 0);
-      const enteredTotal = panels.reduce((sum, p) => sum + Math.min(p.entered, p.expected), 0);
+	      // Calculate totals correctly
+	      const expectedTotal = panels.reduce((sum, p) => sum + p.expected, 0);
+	      const enteredTotal = panels.reduce((sum, p) => sum + Math.min(p.entered, p.expected), 0);
+	      const reportOnlyPanelTotal = panels.filter((p) => p.expected === 0 && !p.isOutsourced).length;
+	      const completedReportOnlyPanels = panels.filter(isCompletedReportOnlyPanel).length;
 
       // ✅ Fix: Calculate approved analytes correctly
       // Only count analytes from verified panels, not entire expected total
@@ -701,12 +849,14 @@ const Orders: React.FC = () => {
         tests: (o.order_tests || []).map((t: any) => t.test_name),
         order_tests: o.order_tests || [], // ✅ Include full order_tests with outsourcing data
 
-        panels,
-        expectedTotal,
-        enteredTotal,
-        pendingAnalytes,
-        forApprovalAnalytes,
-        approvedAnalytes,
+	        panels,
+	        expectedTotal,
+	        enteredTotal,
+	        reportOnlyPanelTotal,
+	        completedReportOnlyPanels,
+	        pendingAnalytes,
+	        forApprovalAnalytes,
+	        approvedAnalytes,
 
         hours_until_tat_breach: minHours,
         is_tat_breached: isBreached,
@@ -726,15 +876,14 @@ const Orders: React.FC = () => {
     });
 
     // dashboard summary (kept)
-    const s = sorted.reduce(
-      (acc, o) => {
-        if (o.status === "Completed" || o.status === "Delivered" ||
-            (o.expectedTotal > 0 && o.approvedAnalytes >= o.expectedTotal)) acc.allDone++;
-        else if (o.status === "Pending Approval") acc.awaitingApproval++;
-        else if (o.enteredTotal > 0 && o.enteredTotal >= o.expectedTotal * 0.75) acc.mostlyDone++;
-        else acc.pending++;
-        return acc;
-      },
+	    const s = sorted.reduce(
+	      (acc, o) => {
+	        if (isOrderFullyDone(o)) acc.allDone++;
+	        else if (o.status === "Pending Approval") acc.awaitingApproval++;
+	        else if (isOrderMostlyDone(o)) acc.mostlyDone++;
+	        else acc.pending++;
+	        return acc;
+	      },
       { allDone: 0, mostlyDone: 0, pending: 0, awaitingApproval: 0 }
     );
 
@@ -802,16 +951,15 @@ const Orders: React.FC = () => {
   }, [orders]);
 
   // Calculate filtered summary stats that update based on filters
-  const filteredSummary = useMemo(() => {
-    return filtered.reduce(
-      (acc, o) => {
-        if (o.status === "Completed" || o.status === "Delivered" ||
-            (o.expectedTotal > 0 && o.approvedAnalytes >= o.expectedTotal)) acc.allDone++;
-        else if (o.status === "Pending Approval") acc.awaitingApproval++;
-        else if (o.enteredTotal > 0 && o.enteredTotal >= o.expectedTotal * 0.75) acc.mostlyDone++;
-        else acc.pending++;
-        return acc;
-      },
+	  const filteredSummary = useMemo(() => {
+	    return filtered.reduce(
+	      (acc, o) => {
+	        if (isOrderFullyDone(o)) acc.allDone++;
+	        else if (o.status === "Pending Approval") acc.awaitingApproval++;
+	        else if (isOrderMostlyDone(o)) acc.mostlyDone++;
+	        else acc.pending++;
+	        return acc;
+	      },
       { allDone: 0, mostlyDone: 0, pending: 0, awaitingApproval: 0 }
     );
   }, [filtered]);
@@ -1298,9 +1446,10 @@ const Orders: React.FC = () => {
                 </div>
 
                 <div className="space-y-4">
-                  {g.orders.map((o) => {
-                    const pct = o.expectedTotal > 0 ? Math.round((o.enteredTotal / o.expectedTotal) * 100) : 0;
-                    const canAddTests = !['Completed', 'Delivered'].includes(o.status);
+	                  {g.orders.map((o) => {
+	                    const progressSummary = getOrderProgressSummary(o);
+	                    const pct = progressSummary.progressPercent;
+	                    const canAddTests = !['Completed', 'Delivered'].includes(o.status);
                     const visiblePanels = mobile.isMobile ? o.panels.slice(0, 2) : o.panels;
                     const hiddenPanelCount = Math.max(0, o.panels.length - visiblePanels.length);
                     const visibleTests = mobile.isMobile ? o.tests.slice(0, 2) : o.tests;
@@ -1435,11 +1584,13 @@ const Orders: React.FC = () => {
                               <div className="flex flex-wrap gap-3">
                                 {o.panels.length > 0
                                   ? visiblePanels.map((p, i) => {
+                                    const overlayState = getPanelOverlayState(p);
                                     const progress = p.expected > 0 ? (p.entered / p.expected) * 100 : 0;
 
                                     // Modern minimalistic colors based on progress
-                                    const getMinimalColor = (percent: number, isOutsourced?: boolean) => {
+                                    const getMinimalColor = (percent: number, isOutsourced?: boolean, forceGreen?: boolean) => {
                                       if (isOutsourced) return "bg-purple-50 border-purple-200 text-purple-800";
+                                      if (forceGreen) return "bg-green-50 border-green-200 text-green-800";
                                       if (percent === 0) return "bg-gray-100 border-gray-300 text-gray-700";
                                       if (percent < 40) return "bg-red-50 border-red-200 text-red-800";
                                       if (percent < 70) return "bg-orange-50 border-orange-200 text-orange-800";
@@ -1447,7 +1598,7 @@ const Orders: React.FC = () => {
                                       return "bg-green-50 border-green-200 text-green-800";
                                     };
 
-                                    const colorClass = getMinimalColor(progress, p.isOutsourced);
+                                    const colorClass = getMinimalColor(progress, p.isOutsourced, overlayState.isGreen);
 
                                     return (
                                       <div
@@ -1483,11 +1634,11 @@ const Orders: React.FC = () => {
                                             </>
                                           ) : (
                                             <>
-                                              <span className="font-mono">
-                                                {p.entered}/{p.expected} analytes
-                                              </span>
+	                                              <span className="font-mono">
+	                                                {getPanelProgressLabel(p, overlayState)}
+	                                              </span>
                                               <span className="text-xs opacity-75">
-                                                {progress === 0 ? "Pending" : progress < 100 ? "Partial" : "Complete"}
+                                                {overlayState.statusText || (progress === 0 ? "Pending" : progress < 100 ? "Partial" : "Complete")}
                                               </span>
                                             </>
                                           )}
@@ -1597,9 +1748,9 @@ const Orders: React.FC = () => {
                             <span className="text-blue-800 font-semibold flex items-center">
                               📊 Overall Progress
                             </span>
-                            <span className="text-blue-800 font-bold text-base">
-                              {o.enteredTotal}/{o.expectedTotal} analytes
-                            </span>
+	                            <span className="text-blue-800 font-bold text-base">
+	                              {progressSummary.progressLabel}
+	                            </span>
                           </div>
 
                           {/* Enhanced progress bar with dynamic colors and segments */}
@@ -1622,7 +1773,7 @@ const Orders: React.FC = () => {
                             {/* Approved segment overlay (darker green) */}
                             <div
                               className="absolute left-0 top-0 h-4 bg-green-600 transition-all duration-500 rounded-full opacity-80"
-                              style={{ width: `${o.expectedTotal > 0 ? (o.approvedAnalytes / o.expectedTotal) * 100 : 0}% ` }}
+	                              style={{ width: `${progressSummary.approvedPercent}% ` }}
                             />
 
                             {/* Progress indicator line */}
@@ -1645,19 +1796,19 @@ const Orders: React.FC = () => {
                           <div className="grid grid-cols-2 lg:grid-cols-4 gap-2 text-sm">
                             <div className="inline-flex items-center bg-white rounded-md px-2 py-1 border border-gray-200">
                               <span className="inline-block w-3 h-3 bg-red-400 rounded-full mr-2 shadow-sm" />
-                              <span className="text-gray-700">Pending: <strong>{o.pendingAnalytes}</strong></span>
+	                              <span className="text-gray-700">{progressSummary.pendingLabel}: <strong>{progressSummary.pendingValue}</strong></span>
                             </div>
                             <div className="inline-flex items-center bg-white rounded-md px-2 py-1 border border-amber-200">
                               <span className="inline-block w-3 h-3 bg-amber-500 rounded-full mr-2 shadow-sm" />
-                              <span className="text-amber-700">For approval: <strong>{o.forApprovalAnalytes}</strong></span>
+	                              <span className="text-amber-700">{progressSummary.approvalLabel}: <strong>{progressSummary.approvalValue}</strong></span>
                             </div>
                             <div className="inline-flex items-center bg-white rounded-md px-2 py-1 border border-green-200">
                               <span className="inline-block w-3 h-3 bg-green-500 rounded-full mr-2 shadow-sm" />
-                              <span className="text-green-700">Approved: <strong>{o.approvedAnalytes}</strong></span>
+	                              <span className="text-green-700">{progressSummary.approvedLabel}: <strong>{progressSummary.approvedValue}</strong></span>
                             </div>
                             <div className="inline-flex items-center bg-white rounded-md px-2 py-1 border border-blue-200 lg:justify-end">
                               <span className={`font - bold ${pct < 25 ? 'text-red-600' : pct < 50 ? 'text-orange-600' : pct < 75 ? 'text-yellow-600' : pct < 100 ? 'text-lime-600' : 'text-green-600'} `}>
-                                {pct < 25 ? '🔴' : pct < 50 ? '🟠' : pct < 75 ? '🟡' : pct < 100 ? '🟢' : '✅'} Total: {o.expectedTotal}
+                                {progressSummary.totalLabel}
                               </span>
                             </div>
                           </div>

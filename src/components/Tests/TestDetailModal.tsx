@@ -1,5 +1,6 @@
 import React from 'react';
 import { X, TestTube, DollarSign, Clock, Settings, AlertTriangle, Edit } from 'lucide-react';
+import { useEscapeModalClose } from '../../hooks/useEscapeModalClose';
 
 interface Test {
   id: string;
@@ -26,6 +27,7 @@ interface TestDetailModalProps {
 }
 
 const TestDetailModal: React.FC<TestDetailModalProps> = ({ test, onClose, onEdit }) => {
+  useEscapeModalClose(onClose);
   const getCategoryColor = (category: string) => {
     const colors = {
       'Hematology': 'bg-red-100 text-red-800',

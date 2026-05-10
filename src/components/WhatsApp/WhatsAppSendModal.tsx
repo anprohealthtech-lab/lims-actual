@@ -3,6 +3,7 @@ import React, { useState, useEffect } from 'react';
 import { X, Send, Loader, Phone, MessageCircle } from 'lucide-react';
 import { WhatsAppAPI } from '../../utils/whatsappAPI';
 import { formatPhoneWithLabCountryCode } from '../../utils/phoneFormatter';
+import { useEscapeModalClose } from '../../hooks/useEscapeModalClose';
 
 interface WhatsAppSendModalProps {
   isOpen: boolean;
@@ -23,6 +24,7 @@ const WhatsAppSendModal: React.FC<WhatsAppSendModalProps> = ({
   testName = '',
   onSuccess
 }) => {
+  useEscapeModalClose(onClose, isOpen);
   const [phoneNumber, setPhoneNumber] = useState(defaultPhone);
   const [formattedPhone, setFormattedPhone] = useState('');
   const [message, setMessage] = useState('');
