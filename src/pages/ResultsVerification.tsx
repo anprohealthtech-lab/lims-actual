@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import { supabase, formatAge } from '../utils/supabase';
+import { isDateInCalendarRange, type CalendarDateFilter } from '../utils/dateRangeFilters';
 import { 
   CheckCircle, 
   XCircle, 
@@ -253,27 +254,7 @@ export default function ResultsVerification() {
       const matchesDate = (() => {
         if (filterDate === 'all') return true;
         
-        const resultDate = new Date(testGroup.order_date);
-        const today = new Date();
-        const yesterday = new Date(today);
-        yesterday.setDate(yesterday.getDate() - 1);
-        const weekAgo = new Date(today);
-        weekAgo.setDate(weekAgo.getDate() - 7);
-        const monthAgo = new Date(today);
-        monthAgo.setMonth(monthAgo.getMonth() - 1);
-        
-        switch (filterDate) {
-          case 'today':
-            return resultDate.toDateString() === today.toDateString();
-          case 'yesterday':
-            return resultDate.toDateString() === yesterday.toDateString();
-          case 'week':
-            return resultDate >= weekAgo;
-          case 'month':
-            return resultDate >= monthAgo;
-          default:
-            return true;
-        }
+        return isDateInCalendarRange(testGroup.order_date, filterDate as CalendarDateFilter);
       })();
       
       return matchesSearch && matchesUrgency && matchesCategory && matchesDate;

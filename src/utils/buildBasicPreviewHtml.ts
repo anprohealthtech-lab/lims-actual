@@ -6,7 +6,7 @@
  *
  * Produces a complete standalone HTML document for the quick-preview
  * srcdoc iframe on the result-verification page.
- * Pure function — no DB calls, no external deps.
+ * Pure function - no DB calls, no external deps.
  */
 
 export interface PreviewAnalyte {
@@ -17,9 +17,19 @@ export interface PreviewAnalyte {
   flag: string | null;
   section_heading?: string | null;
   is_auto_calculated?: boolean;
+  analyte_id?: string | null;
+  analyteId?: string | null;
+  id?: string | null;
+  lab_analyte_id?: string | null;
+  labAnalyteId?: string | null;
+  report_display_options?: {
+    sameRowSiblingAnalyteId?: string | null;
+    hiddenWhenRenderedAsSibling?: boolean;
+  } | null;
 }
 
 export interface PreviewTestGroup {
+  testGroupId?: string | null;
   testGroupName: string;
   analytes: PreviewAnalyte[];
   groupInterpretation?: string | null;
@@ -31,6 +41,7 @@ export interface PreviewSection {
 }
 
 export interface BuildBasicPreviewParams {
+  orderId?: string;
   patientName: string;
   patientCode: string;
   ageGender: string;
@@ -42,7 +53,16 @@ export interface BuildBasicPreviewParams {
   sections?: PreviewSection[];
   signatoryName?: string;
   signatoryDesignation?: string;
+  signatoryImageUrl?: string;
+  verificationUrl?: string;
   printOptions?: Record<string, unknown>;
+  pdfLayoutSettings?: Record<string, unknown>;
+  printLayoutMode?: "standard" | "compact";
+  compactPlan?: {
+    orderedGroupIds?: string[];
+    pageAssignments?: Record<string, number>;
+    maxClubbedAnalytes?: number;
+  };
 }
 
 function formatIndianNumber(val: string | number): string {
@@ -92,6 +112,85 @@ function escapeHtml(value: string): string {
     .replace(/'/g, "&#39;");
 }
 
+function toPx(value: unknown, fallback: number): number {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string") {
+    const parsed = Number.parseFloat(value);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return fallback;
+}
+
+function resolvePreviewMargins(pdfLayoutSettings?: Record<string, unknown>): {
+  top: number;
+  right: number;
+  bottom: number;
+  left: number;
+} {
+  const margins = pdfLayoutSettings?.margins;
+  const headerHeight = toPx(pdfLayoutSettings?.headerHeight, 90);
+  const footerHeight = toPx(pdfLayoutSettings?.footerHeight, 80);
+  const fallback = {
+    top: headerHeight,
+    right: 20,
+    bottom: footerHeight,
+    left: 20,
+  };
+
+  if (margins && typeof margins === "object" && !Array.isArray(margins)) {
+    const m = margins as Record<string, unknown>;
+    return {
+      top: toPx(m.top, fallback.top),
+      right: toPx(m.right, fallback.right),
+      bottom: toPx(m.bottom, fallback.bottom),
+      left: toPx(m.left, fallback.left),
+    };
+  }
+
+  if (typeof margins === "string" && margins.trim()) {
+    const parts = margins.trim().split(/\s+/);
+    const top = toPx(parts[0], fallback.top);
+    const right = toPx(parts[1], fallback.right);
+    const bottom = toPx(parts[2], top);
+    const left = toPx(parts[3], right);
+    return { top, right, bottom, left };
+  }
+
+  return fallback;
+}
+
+function autoAssignCompactPages(
+  groups: PreviewTestGroup[],
+  maxClubbedAnalytes = 5,
+): Record<string, number> {
+  let currentPage = 1;
+  let currentPageCount = 0;
+  const assignments: Record<string, number> = {};
+
+  for (const group of groups) {
+    const key = group.testGroupId || group.testGroupName;
+    const analyteCount = Math.max(group.analytes.filter((row) => !!row.parameter).length, 1);
+
+    if (analyteCount > maxClubbedAnalytes) {
+      if (currentPageCount > 0) currentPage += 1;
+      assignments[key] = currentPage;
+      currentPage += 1;
+      currentPageCount = 0;
+      continue;
+    }
+
+    if (currentPageCount > 0 && currentPageCount + analyteCount > maxClubbedAnalytes) {
+      currentPage += 1;
+      currentPageCount = 0;
+    }
+
+    assignments[key] = currentPage;
+    currentPageCount += analyteCount;
+  }
+
+  return assignments;
+}
+
 function stripLooseMarkdown(value: string): string {
   return value
     .replace(/\*\*([^*]+)\*\*/g, "$1")
@@ -122,8 +221,8 @@ function formatNarrativeHtml(rawContent: string): string {
   };
 
   for (const line of lines) {
-    if (/^[-*•]\s+/.test(line)) {
-      listItems.push(`<li>${escapeHtml(line.replace(/^[-*•]\s+/, "").trim())}</li>`);
+    if (/^[-*\u2022]\s+/.test(line)) {
+      listItems.push(`<li>${escapeHtml(line.replace(/^[-*\u2022]\s+/, "").trim())}</li>`);
       continue;
     }
 
@@ -163,8 +262,39 @@ function isNarrativeGroup(analytes: PreviewAnalyte[]): boolean {
   return narrativeRows > 0 && narrativeRows / analytes.length >= 0.7;
 }
 
+function getPreviewAnalyteIdentityIds(analyte: PreviewAnalyte): string[] {
+  const ids = [
+    analyte.analyte_id,
+    analyte.analyteId,
+    analyte.id,
+    analyte.lab_analyte_id,
+    analyte.labAnalyteId,
+  ];
+
+  return [...new Set(
+    ids
+      .map((value) => String(value || "").trim())
+      .filter(Boolean),
+  )];
+}
+
+function normalizeBasicColumnWidths(raw: unknown, fallback: number[], expectedLength: number): number[] {
+  if (!Array.isArray(raw) || raw.length !== expectedLength) return fallback;
+  const values = raw.map((value) => Number(value));
+  const total = values.reduce((sum, value) => sum + value, 0);
+  if (values.some((value) => !Number.isFinite(value) || value <= 0) || Math.abs(total - 100) > 0.5) {
+    return fallback;
+  }
+  return values;
+}
+
+function formatBasicWidth(value: number): string {
+  return `${Number(value.toFixed(2))}%`;
+}
+
 export function buildBasicPreviewHtml(params: BuildBasicPreviewParams): string {
   const {
+    orderId = "",
     patientName,
     patientCode,
     ageGender,
@@ -176,43 +306,96 @@ export function buildBasicPreviewHtml(params: BuildBasicPreviewParams): string {
     sections = [],
     signatoryName = "",
     signatoryDesignation = "",
+    signatoryImageUrl = "",
+    verificationUrl = "",
     printOptions = {},
+    pdfLayoutSettings = {},
+    printLayoutMode = "standard",
+    compactPlan = {},
   } = params;
 
   const basePx =
     typeof printOptions.baseFontSize === "number"
       ? Math.max(8, Math.min(24, printOptions.baseFontSize as number))
-      : 11;
+      : 14;
   const smallPx = Math.max(7, basePx - 3);
-  const testNameWeight = (printOptions.testNameBold ?? true) ? "600" : "normal";
-  const boldAllValues = (printOptions.boldAllValues as boolean) ?? true;
+  const testNameWeight = (printOptions.testNameBold ?? false) ? "600" : "normal";
+  const boldAllValues = (printOptions.boldAllValues as boolean) ?? false;
   const boldAbnormal = (printOptions.boldAbnormalValues as boolean) ?? true;
-  const sectionHeaderInline = (printOptions.sectionHeaderInline as boolean) ?? false;
+  const sectionHeaderInline = (printOptions.sectionHeaderInline as boolean) ?? true;
   const flagSymbol = (printOptions.flagSymbol as string) ?? "none";
   const showFlagLegend = (printOptions.showFlagLegend as boolean) ?? false;
-  const calcMarker = (printOptions.calcMarker as string) ?? "asterisk";
+  const calcMarker = (printOptions.calcMarker as string) ?? "cal";
   const flagAsterisk = (printOptions.flagAsterisk as boolean) ?? false;
   const flagAsteriskCritical = (printOptions.flagAsteriskCritical as boolean) ?? false;
-  const testGroupTitlePosition = (printOptions.testGroupTitlePosition as string) ?? "below_headers";
+  const testGroupTitlePosition = (printOptions.testGroupTitlePosition as string) ?? "above_headers_center";
   const qrHorizontalOffset = Math.max(0, Math.min(80, Number(printOptions.qrHorizontalOffset ?? 0)));
-  const colCount = flagSymbol === "before" ? 5 : 4;
+  const colCount = 4;
+  const basicColumnWidths = (printOptions.basicColumnWidths || {}) as Record<string, unknown>;
+  const standardColumnWidths = normalizeBasicColumnWidths(basicColumnWidths.standard, [36, 24, 12, 28], 4);
+  const siblingColumnWidths = normalizeBasicColumnWidths(basicColumnWidths.sibling, [30, 14, 8, 16, 16, 16], 6);
   const resultColors = printOptions.resultColors as Record<string, unknown> | undefined;
   const colorsEnabled = resultColors?.enabled !== false;
   const highColor = colorsEnabled ? (String(resultColors?.high || "") || "#dc2626") : "#000000";
   const lowColor = colorsEnabled ? (String(resultColors?.low || "") || "#000000") : "#000000";
+  const isCompact = printLayoutMode === "compact";
+  const previewMargins = resolvePreviewMargins(pdfLayoutSettings);
+  const compactMaxClubbedAnalytes = Math.max(1, Number(compactPlan.maxClubbedAnalytes || 5));
+  const orderedGroupIds = compactPlan.orderedGroupIds || [];
+  const orderedGroupIndex = new Map(orderedGroupIds.map((id, index) => [id, index]));
+	  const visibleTestGroups = testGroups
+	    .map((group) => ({
+	      ...group,
+	      analytes: (group.analytes || []).filter((row: any) => !row.is_hidden_from_report),
+	    }))
+	    .filter((group) => group.analytes.length > 0);
+	  const orderedTestGroups = [...visibleTestGroups].sort((a, b) => {
+    const aKey = a.testGroupId || "";
+    const bKey = b.testGroupId || "";
+    const aOrder = orderedGroupIndex.has(aKey) ? orderedGroupIndex.get(aKey)! : Number.MAX_SAFE_INTEGER;
+    const bOrder = orderedGroupIndex.has(bKey) ? orderedGroupIndex.get(bKey)! : Number.MAX_SAFE_INTEGER;
+    return aOrder - bOrder;
+  });
+  const compactAssignments = isCompact
+    ? Object.keys(compactPlan.pageAssignments || {}).length
+      ? compactPlan.pageAssignments!
+      : autoAssignCompactPages(orderedTestGroups, compactMaxClubbedAnalytes)
+    : {};
 
   const css = `<style>
-* { box-sizing: border-box; }
-body { margin: 16px; font-family: Arial, Helvetica, sans-serif; font-size: ${basePx}px; color: #000; background: #fff; }
-table { border: none !important; border-collapse: collapse !important; }
+	* { box-sizing: border-box; }
+	body {
+	  margin: 0;
+	  min-width: calc(210mm + 24px);
+	  font-family: Arial, Helvetica, sans-serif;
+	  font-size: ${basePx}px;
+	  color: #000;
+	  background: #eef2f7;
+	  overflow: auto;
+	}
+	.preview-shell { width: 210mm; margin: 12px auto; }
+		.preview-page {
+			  width: 210mm; min-height: 297mm; background: #fff; padding: ${previewMargins.top}px ${previewMargins.right}px ${previewMargins.bottom}px ${previewMargins.left}px;
+		  margin: 0 auto 12px; box-shadow: 0 10px 28px rgba(15, 23, 42, 0.14);
+		  display: flex; flex-direction: column;
+		  break-after: page; page-break-after: always;
+		}
+	.preview-page:last-child { margin-bottom: 0; break-after: auto; page-break-after: auto; }
+	.preview-mode-badge {
+	  float: right; font-size: ${smallPx}px; color: #475569; border: 1px solid #cbd5e1;
+	  padding: 2px 6px; border-radius: 999px; text-transform: uppercase; letter-spacing: 0.04em;
+	}
+	table { border: none !important; border-collapse: collapse !important; }
 td, th { color: #000 !important; font-weight: normal; background-color: #fff !important; vertical-align: top !important; }
 td { padding: 2px 4px !important; }
 th { padding: 3px 4px !important; }
-.report-main-title {
-  text-align: center; font-size: ${basePx + 3}px;
-  border-top: 1.5px solid #000; border-bottom: 1.5px solid #000;
-  padding: 5px 0; margin: 6px 0 10px; font-weight: 700; color: #000;
-}
+	.report-main-title {
+	  text-align: center; font-size: ${basePx + 3}px;
+	  border-top: 1.5px solid #000; border-bottom: 1.5px solid #000;
+	  padding: 5px 0; margin: 6px 0 10px; font-weight: 700; color: #000;
+	}
+		.report-id-line { display: none; }
+		.report-id-line strong { color: #111827; }
 .patient-header-table { width: 100%; table-layout: fixed; margin-bottom: 8px; border: none !important; }
 .patient-header-table th {
   width: 15%; font-weight: 700; text-align: left; color: #000;
@@ -222,6 +405,11 @@ th { padding: 3px 4px !important; }
 .patient-header-table td {
   width: 35%; padding: 2px 3px !important; border: none !important;
   color: #111 !important; word-break: break-word; font-size: ${basePx}px;
+}
+.patient-test-separator {
+  border-top: 1.5px solid #000;
+  height: 0;
+  margin: 4px 0 8px;
 }
 .tbl-results {
   width: 100%; table-layout: fixed; border-collapse: collapse;
@@ -233,37 +421,40 @@ th { padding: 3px 4px !important; }
   font-weight: 700; color: #000; padding: 4px 4px !important;
   font-size: ${Math.max(10, basePx - 0.5)}px; vertical-align: middle;
 }
-${
-  flagSymbol === "before"
-    ? `
-.tbl-results thead th:nth-child(1) { width: 44%; text-align: left; }
-.tbl-results thead th:nth-child(2) { width: 7%;  text-align: center; }
-.tbl-results thead th:nth-child(3) { width: 14%; text-align: right; }
-.tbl-results thead th:nth-child(4) { width: 10%; text-align: left; }
-.tbl-results thead th:nth-child(5) { width: 25%; text-align: left; }
-.tbl-results tbody td:nth-child(1) { width: 44%; text-align: left; color: #111 !important; }
-.tbl-results tbody td:nth-child(2) { width: 7%;  text-align: center; font-weight: 700; }
-.tbl-results tbody td:nth-child(3) { width: 14%; text-align: right; }
-.tbl-results tbody td:nth-child(4) { width: 10%; text-align: left; color: #444 !important; white-space: nowrap; }
-.tbl-results tbody td:nth-child(5) { width: 25%; text-align: left; color: #666 !important; }
-`
-    : `
-.tbl-results thead th:nth-child(1) { width: 50%; text-align: left; }
-.tbl-results thead th:nth-child(2) { width: 15%; text-align: right; }
-.tbl-results thead th:nth-child(3) { width: 10%; text-align: left; }
-.tbl-results thead th:nth-child(4) { width: 25%; text-align: left; }
-.tbl-results tbody td:nth-child(1) { width: 50%; text-align: left; color: #111 !important; }
-.tbl-results tbody td:nth-child(2) { width: 15%; text-align: right; }
-.tbl-results tbody td:nth-child(3) { width: 10%; text-align: left; color: #444 !important; white-space: nowrap; }
-.tbl-results tbody td:nth-child(4) { width: 25%; text-align: left; color: #666 !important; }
-`
-}
-.tbl-results td, .tbl-results th { border: none !important; padding: 2px 4px !important; line-height: 1.28; font-size: ${basePx}px !important; }
+		.tbl-results thead th:nth-child(1) { width: ${formatBasicWidth(standardColumnWidths[0])}; text-align: left; }
+		.tbl-results thead th:nth-child(2) { width: ${formatBasicWidth(standardColumnWidths[1])}; text-align: right; }
+		.tbl-results thead th:nth-child(3) { width: ${formatBasicWidth(standardColumnWidths[2])}; text-align: left; }
+		.tbl-results thead th:nth-child(4) { width: ${formatBasicWidth(standardColumnWidths[3])}; text-align: left; }
+			.tbl-results tbody td:nth-child(1) { width: ${formatBasicWidth(standardColumnWidths[0])}; text-align: left; color: #111 !important; }
+			.tbl-results tbody td:nth-child(2) { width: ${formatBasicWidth(standardColumnWidths[1])}; text-align: right; white-space: nowrap; overflow: hidden; }
+			.tbl-results tbody td:nth-child(3) { width: ${formatBasicWidth(standardColumnWidths[2])}; text-align: left; color: #444 !important; white-space: nowrap; }
+			.tbl-results tbody td:nth-child(4) { width: ${formatBasicWidth(standardColumnWidths[3])}; text-align: left; color: #666 !important; }
+			.tbl-results.has-sibling thead th:nth-child(1) { width: ${formatBasicWidth(siblingColumnWidths[0])}; text-align: left; }
+			.tbl-results.has-sibling thead th:nth-child(2) { width: ${formatBasicWidth(siblingColumnWidths[1])}; text-align: right; }
+			.tbl-results.has-sibling thead th:nth-child(3) { width: ${formatBasicWidth(siblingColumnWidths[2])}; text-align: left; }
+			.tbl-results.has-sibling thead th:nth-child(4) { width: ${formatBasicWidth(siblingColumnWidths[3])}; text-align: left; }
+			.tbl-results.has-sibling thead th:nth-child(5) { width: ${formatBasicWidth(siblingColumnWidths[4])}; text-align: right; }
+			.tbl-results.has-sibling thead th:nth-child(6) { width: ${formatBasicWidth(siblingColumnWidths[5])}; text-align: left; }
+			.tbl-results.has-sibling tbody td:nth-child(1) { width: ${formatBasicWidth(siblingColumnWidths[0])}; text-align: left; }
+			.tbl-results.has-sibling tbody td:nth-child(2) { width: ${formatBasicWidth(siblingColumnWidths[1])}; text-align: right; }
+			.tbl-results.has-sibling tbody td:nth-child(3) { width: ${formatBasicWidth(siblingColumnWidths[2])}; text-align: left; }
+			.tbl-results.has-sibling tbody td:nth-child(4) { width: ${formatBasicWidth(siblingColumnWidths[3])}; text-align: left; }
+			.tbl-results.has-sibling tbody td:nth-child(5) { width: ${formatBasicWidth(siblingColumnWidths[4])}; text-align: right; }
+			.tbl-results.has-sibling tbody td:nth-child(6) { width: ${formatBasicWidth(siblingColumnWidths[5])}; text-align: left; }
+		.same-row-sibling { display: inline; white-space: nowrap; color: #000; font-size: ${basePx}px; text-align: right; }
+		.same-row-sibling-unit { color: #444; font-weight: normal; margin-left: 4px; }
+		.same-row-sibling-ref { display: inline; color: #666; font-size: ${smallPx + 1}px; line-height: 1.15; text-align: left; }
+		.sub-section-col-header td {
+		  border-bottom: 1px solid #999 !important;
+		  background-color: #fafafa !important;
+		  color: #333 !important;
+		}
+	.tbl-results td, .tbl-results th { border: none !important; padding: 2px 4px !important; line-height: 1.28; font-size: ${basePx}px !important; }
 .tbl-results tbody tr:not(.main-group-row):not(.sub-section-header):not(.descriptive-row) td {
   border-bottom: 0.5px dotted #e5e5e5 !important;
 }
 .test-name { font-size: ${basePx}px; font-weight: ${testNameWeight}; color: #111; line-height: 1.22; }
-.val { text-align: right; vertical-align: top; font-size: ${basePx}px; font-weight: ${boldAllValues ? "600" : "normal"}; }
+.val { text-align: right; vertical-align: top; font-size: ${basePx}px; font-weight: ${boldAllValues ? "600" : "normal"}; white-space: nowrap; }
 .val.high, .val.critical_high { color: ${highColor} !important; ${boldAbnormal ? "font-weight: 700 !important;" : ""} }
 .val.low, .val.critical_low   { color: ${lowColor} !important;  ${boldAbnormal ? "font-weight: 700 !important;" : ""} }
 .val.abnormal { color: ${highColor} !important; ${boldAbnormal ? "font-weight: 700 !important;" : ""} }
@@ -394,45 +585,127 @@ ${
   letter-spacing: 0.02em; color: #000;
 }
 .narrative-para { margin: 3px 0 6px; line-height: 1.55; }
-.report-footer { margin-top: 20px; padding-top: 8px; display: flex; justify-content: space-between; align-items: flex-end; }
-.report-footer .qr-verify { margin-left: ${qrHorizontalOffset}px; }
-.auth-text { font-size: ${smallPx}px; color: #444; font-style: italic; }
-.signatory-box { text-align: right; }
-.signatory-name { font-weight: 700; font-size: ${basePx + 1}px; }
-.signatory-role { font-size: ${basePx - 1}px; margin-top: 2px; color: #333; }
-@media print { body { margin: 0; } @page { margin: 12mm; } }
-</style>`;
+		.test-results { display: flex; flex-direction: column; flex: 1 1 auto; }
+		.report-footer { margin-top: auto; padding-top: 30px; display: flex; justify-content: space-between; align-items: flex-end; page-break-inside: avoid; break-inside: avoid; }
+	.report-footer .qr-verify { margin-left: ${qrHorizontalOffset}px; }
+	.qr-verify img { width: 46px; height: 46px; display: block; }
+	.qr-verify p { margin: 2px 0 0; font-size: ${smallPx}px; color: #6b7280; }
+	.auth-text { font-size: ${smallPx}px; color: #444; font-style: italic; }
+	.signatory-box { text-align: right; }
+	.signature-image { max-height: 45px; max-width: 130px; margin-bottom: 4px; display: block; margin-left: auto; object-fit: contain; }
+	.signatory-name { font-weight: 700; font-size: ${basePx + 1}px; }
+	.signatory-role { font-size: ${basePx - 1}px; margin-top: 2px; color: #333; }
+		.compact-page .report-main-title { font-size: ${basePx + 3}px; padding: 5px 0; margin-bottom: 10px; }
+		.compact-page .patient-header-table { margin-bottom: 5px; }
+		.compact-page .patient-header-table th,
+		.compact-page .patient-header-table td,
+		.compact-page .tbl-results td,
+		.compact-page .tbl-results th { font-size: ${basePx}px !important; padding-top: 2px !important; padding-bottom: 2px !important; }
+		.compact-page figure { margin-bottom: 7px !important; page-break-inside: avoid; break-inside: avoid; }
+		.compact-page .center-title { font-size: ${basePx + 1}px; margin-top: 8px; }
+		@media print {
+		  body { margin: 0; background: #fff; }
+		  body { min-width: 0; overflow: visible; }
+		  .preview-shell { width: auto; margin: 0; }
+			  .preview-page { width: auto; min-height: auto; margin: 0; padding: ${previewMargins.top}px ${previewMargins.right}px ${previewMargins.bottom}px ${previewMargins.left}px; box-shadow: none; }
+			  @page { size: A4; margin: 0; }
+		}
+	</style>`;
 
-  // ── Patient header ──────────────────────────────────────────────────────────
+  // Patient header
   const patientHtml = `
-  <div>
-    <h2 class="report-main-title">TEST REPORT</h2>
-  </div>
+	  <div>
+	    <div class="report-id-line">
+	      <span>${orderId ? `Order ID: <strong>${escapeHtml(orderId)}</strong>` : ""}</span>
+	      <span class="preview-mode-badge">${isCompact ? "Compact Preview" : "Basic Preview"}</span>
+	    </div>
+	    <h2 class="report-main-title">TEST REPORT</h2>
+	  </div>
   <figure style="margin: 0 0 10px;">
     <table class="patient-header-table">
       <tbody>
         <tr>
-          <th>Name</th><td>: ${patientName || ""}</td>
-          <th>Reg. No</th><td>: ${patientCode || ""}</td>
-        </tr>
-        <tr>
-          <th>Age / Sex</th><td>: ${ageGender || ""}</td>
-          <th>Reg. Date</th><td>: ${orderDate || ""}</td>
-        </tr>
-        <tr>
-          <th>Ref. By</th><td>: ${referredBy || ""}</td>
-          <th>Report Date</th><td>: ${reportDate || ""}</td>
-        </tr>
-        ${sampleId ? `<tr><th>Sample ID</th><td>: ${sampleId}</td><td colspan="2"></td></tr>` : ""}
-      </tbody>
-    </table>
-  </figure>`;
+	          <th>Name</th><td>: ${escapeHtml(patientName || "")}</td>
+	          <th>Reg. No</th><td>: ${escapeHtml(patientCode || "")}</td>
+	        </tr>
+	        <tr>
+	          <th>Age / Sex</th><td>: ${escapeHtml(ageGender || "")}</td>
+	          <th>Reg. Date</th><td>: ${escapeHtml(orderDate || "")}</td>
+	        </tr>
+	        <tr>
+	          <th>Ref. By</th><td>: ${escapeHtml(referredBy || "")}</td>
+	          <th>Report Date</th><td>: ${escapeHtml(reportDate || "")}</td>
+	        </tr>
+	        ${sampleId ? `<tr><th>Sample ID</th><td>: ${escapeHtml(sampleId)}</td><td colspan="2"></td></tr>` : ""}
+	      </tbody>
+	    </table>
+	  </figure>
+    <div class="patient-test-separator"></div>`;
 
-  // ── Test results (all groups) ───────────────────────────────────────────────
-  let testResultsHtml = '<div class="test-results">';
+  // Test results (all groups)
+    let sectionsHtml = "";
+    const validSections = sections.filter(s => s.content && s.content.trim());
+    if (validSections.length > 0) {
+      sectionsHtml = `<div class="report-sections">`;
+      for (const sec of validSections) {
+        sectionsHtml += `
+        <div class="section-block">
+          <div class="section-label">${escapeHtml(sec.sectionName)}</div>
+          <div>${formatNarrativeHtml(sec.content)}</div>
+        </div>`;
+      }
+      sectionsHtml += `</div>`;
+    }
 
-  for (const group of testGroups) {
-    if (!group.analytes || group.analytes.length === 0) continue;
+    const qrBlock = verificationUrl
+      ? `<div class="qr-verify">
+          <img src="https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=${encodeURIComponent(verificationUrl)}" alt="Verify Report" />
+          <p>Scan to verify</p>
+        </div>`
+      : "";
+
+    const authBlock = `<div>${qrBlock}<div class="auth-text">Authenticated Electronic Report</div></div>`;
+
+    const signatoryBlock = (signatoryName || signatoryDesignation || signatoryImageUrl)
+      ? `<div class="signatory-box">
+          ${signatoryImageUrl ? `<img class="signature-image" src="${escapeHtml(signatoryImageUrl)}" alt="" onerror="this.style.display='none'" />` : ""}
+          ${signatoryName ? `<div class="signatory-name">${escapeHtml(signatoryName)}</div>` : ""}
+          ${signatoryDesignation ? `<div class="signatory-role">${escapeHtml(signatoryDesignation)}</div>` : ""}
+        </div>`
+      : "";
+
+    const footerHtml = `
+    <div class="report-footer">
+      ${authBlock}
+      ${signatoryBlock}
+    </div>`;
+
+	  let testResultsHtml = isCompact ? '<div class="compact-pages">' : '<div class="standard-pages">';
+	  let currentCompactPage = 0;
+	  const standardGroupCount = orderedTestGroups.filter((group) => group.analytes?.length).length;
+	  let standardRenderedGroupIndex = 0;
+
+	  for (let groupIndex = 0; groupIndex < orderedTestGroups.length; groupIndex += 1) {
+	    const group = orderedTestGroups[groupIndex];
+	    if (!group.analytes || group.analytes.length === 0) continue;
+	    let standardPageFooterHtml = "";
+
+	    if (isCompact) {
+	      const groupKey = group.testGroupId || group.testGroupName;
+	      const pageNumber = Math.max(1, Number(compactAssignments[groupKey] || 1));
+	      if (pageNumber !== currentCompactPage) {
+		        if (currentCompactPage > 0) testResultsHtml += `</div>${footerHtml}</div>`;
+	        currentCompactPage = pageNumber;
+	        testResultsHtml += `<div class="preview-page compact-page">${patientHtml}<div class="test-results">`;
+	      }
+	    }
+	    if (!isCompact) {
+	      standardRenderedGroupIndex += 1;
+	      standardPageFooterHtml = !sectionsHtml && standardRenderedGroupIndex === standardGroupCount
+	        ? footerHtml
+	        : "";
+	      testResultsHtml += `<div class="preview-page standard-page">${patientHtml}<div class="test-results">`;
+	    }
 
     if (isNarrativeGroup(group.analytes)) {
       const titleClass = testGroupTitlePosition === "above_headers_left" ? "center-title left" : "center-title";
@@ -468,42 +741,78 @@ ${
         </div>`;
       }).join("");
 
-      testResultsHtml += `
-      <section class="narrative-panel">
-        <div class="${titleClass}">${group.testGroupName}</div>
-        <div class="narrative-body">${rowsHtml}</div>
-        ${group.groupInterpretation ? `<div class="group-interpretation-block">${group.groupInterpretation}</div>` : ""}
-      </section>`;
-      continue;
-    }
+	      testResultsHtml += `
+	      <section class="narrative-panel">
+	        <div class="${titleClass}">${group.testGroupName}</div>
+	        <div class="narrative-body">${rowsHtml}</div>
+	        ${group.groupInterpretation ? `<div class="group-interpretation-block">${group.groupInterpretation}</div>` : ""}
+	      </section>`;
+	      if (!isCompact) testResultsHtml += `</div>${standardPageFooterHtml}</div>`;
+	      continue;
+	    }
 
-    let hasCalcInGroup = false;
+		    let hasCalcInGroup = false;
+		    const analyteById = new Map<string, PreviewAnalyte>();
+		    const sameRowSiblingIds = new Set<string>();
+		    let sameRowSiblingLabel = "Absolute Count";
+		    for (const row of group.analytes) {
+		      for (const analyteId of getPreviewAnalyteIdentityIds(row)) {
+		        analyteById.set(analyteId, row);
+		      }
+		    }
+		    for (const row of group.analytes) {
+		      const options = row.report_display_options || {};
+		      const siblingId = String(options.sameRowSiblingAnalyteId || "").trim();
+		      if (siblingId && analyteById.has(siblingId)) {
+		        sameRowSiblingIds.add(siblingId);
+		        if ((options as any).sameRowSiblingLabel) sameRowSiblingLabel = String((options as any).sameRowSiblingLabel);
+		      }
+		    }
+		    const hasSameRowSibling = sameRowSiblingIds.size > 0;
+		    const effectiveColCount = hasSameRowSibling ? 6 : colCount;
+
+    // Pre-compute which sections have siblings
+    const sectionsWithSiblings = new Set<string | null>();
+    for (const a of group.analytes) {
+      const siblingId = String(a.report_display_options?.sameRowSiblingAnalyteId || "").trim();
+      if (siblingId && analyteById.has(siblingId)) {
+        sectionsWithSiblings.add(a.section_heading ?? null);
+      }
+    }
 
     const groupTitleBelowHeaders = testGroupTitlePosition === "below_headers";
     const groupTitleClass = testGroupTitlePosition === "above_headers_left" ? "center-title left" : "center-title";
 
-    testResultsHtml += `
-  <figure style="margin: 0 0 14px;">
-    ${!groupTitleBelowHeaders ? `<div class="${groupTitleClass}">${group.testGroupName}</div>` : ""}
-    <table class="tbl-results">
-      <thead>
-        <tr>
-          <th>TEST NAME</th>
-          ${flagSymbol === "before" ? `<th>FLAG</th>` : ""}
-          <th>VALUE</th>
-          <th>UNITS</th>
-          <th>Bio. Ref. Interval</th>
-        </tr>
-      </thead>
-      <tbody>
-        ${groupTitleBelowHeaders ? `
-        <tr class="main-group-row">
-          <td colspan="${colCount}">
-            <div class="center-title">${group.testGroupName}</div>
-          </td>
+	    testResultsHtml += `
+	  <figure style="margin: 0 0 14px;">
+		    ${!groupTitleBelowHeaders ? `<div class="${groupTitleClass}">${group.testGroupName}</div>` : ""}
+			    <table class="tbl-results${hasSameRowSibling ? " has-sibling" : ""}">
+			      ${hasSameRowSibling ? `<colgroup>
+			        <col style="width:${formatBasicWidth(siblingColumnWidths[0])}">
+		        <col style="width:${formatBasicWidth(siblingColumnWidths[1])}">
+		        <col style="width:${formatBasicWidth(siblingColumnWidths[2])}">
+		        <col style="width:${formatBasicWidth(siblingColumnWidths[3])}">
+				        <col style="width:${formatBasicWidth(siblingColumnWidths[4])}">
+				        <col style="width:${formatBasicWidth(siblingColumnWidths[5])}">
+				      </colgroup>` : ""}
+		      <thead>
+		        <tr>
+		          <th>TEST NAME</th>
+		          <th>VALUE</th>
+		          <th>UNITS</th>
+		          <th>Bio. Ref. Interval</th>
+		          ${hasSameRowSibling ? `<th colspan="2"></th>` : ""}
+		        </tr>
+		      </thead>
+			      <tbody>
+			        ${groupTitleBelowHeaders ? `
+		        <tr class="main-group-row">
+	          <td colspan="${effectiveColCount}">
+	            <div class="center-title">${group.testGroupName}</div>
+	          </td>
         </tr>` : ""}`;
 
-    // Group analytes by section_heading — stable, first-appearance order so that
+    // Group analytes by section_heading - stable, first-appearance order so that
     // same-section analytes are always together even if sort_order values leave gaps.
     type SectionBlock = { heading: string | null; analytes: PreviewAnalyte[] };
     const sectionBlockMap = new Map<string | null, PreviewAnalyte[]>();
@@ -520,16 +829,35 @@ ${
 
     const groupLegendParts: string[] = [];
 
-    for (const block of sectionBlocks) {
-      if (block.heading) {
-        testResultsHtml += `
-        <tr class="sub-section-header">
-          <td colspan="${colCount}">${block.heading}</td>
-        </tr>`;
+	    for (const block of sectionBlocks) {
+	      const sectionHasSiblings = sectionsWithSiblings.has(block.heading);
+	      if (block.heading) {
+	        if (sectionHasSiblings && hasSameRowSibling) {
+	          // Section with siblings: show section name plus the sibling label only.
+		        testResultsHtml += `
+		        <tr class="sub-section-header">
+		          <td colspan="4">${block.heading}</td>
+		          <td colspan="2" style="text-align:center; text-decoration:underline;">${sameRowSiblingLabel}</td>
+		        </tr>`;
+	        } else {
+          // Section without siblings: span all columns
+	        testResultsHtml += `
+	        <tr class="sub-section-header">
+	          <td colspan="${effectiveColCount}">${block.heading}</td>
+	        </tr>`;
+        }
       }
 
-      for (const analyte of block.analytes) {
-        const rawValue = analyte.value ?? "";
+	      for (const analyte of block.analytes) {
+		        const currentAnalyteIds = getPreviewAnalyteIdentityIds(analyte);
+		        if (
+		          currentAnalyteIds.some((id) => sameRowSiblingIds.has(id)) &&
+		          analyte.report_display_options?.hiddenWhenRenderedAsSibling !== false
+		        ) {
+		          continue;
+	        }
+
+	        const rawValue = analyte.value ?? "";
         const unit = analyte.unit || "";
         const refRange = (analyte.reference_range || "").replace(/\n/g, "<br>");
         const canonical = normalizeFlag(analyte.flag);
@@ -565,34 +893,85 @@ ${
           : "";
 
         if (isDescriptive) {
-          testResultsHtml += `
-        <tr class="descriptive-row">
-          <td colspan="${colCount}" style="font-size:${basePx}px;">
-            <span style="font-weight:600;">${analyte.parameter}${calcSuffix}</span>: ${rawValue || refText || ""}
-          </td>
+	        testResultsHtml += `
+	        <tr class="descriptive-row">
+	          <td colspan="${effectiveColCount}" style="font-size:${basePx}px;">
+	            <span style="font-weight:600;">${analyte.parameter}${calcSuffix}</span>: ${rawValue || refText || ""}
+	          </td>
         </tr>`;
           continue;
         }
 
         const sym = flagSymbol !== "none" ? getFlagSymbolText(canonical) : "";
         const formattedValue = formatIndianNumber(rawValue);
-        const displayValue =
-          flagSymbol === "after" && sym
-            ? `${formattedValue + asteriskSuffix} <span style="font-weight:700;">${sym}</span>`
-            : formattedValue + asteriskSuffix;
+	        const displayValue =
+	          flagSymbol === "before" && sym
+	            ? `<span style="display:inline-block;min-width:${basePx * 1.15}px;text-align:center;font-weight:700;margin-right:4px;">${sym}</span>${formattedValue + asteriskSuffix}`
+	            : flagSymbol === "after" && sym
+	            ? `${formattedValue + asteriskSuffix} <span style="font-weight:700;">${sym}</span>`
+	            : formattedValue + asteriskSuffix;
 
-        const valClass = canonical ? `val ${canonical}` : "val";
+	        const valClass = canonical ? `val ${canonical}` : "val";
+		        const siblingId = String(analyte.report_display_options?.sameRowSiblingAnalyteId || "").trim();
+	        const siblingAnalyte = siblingId ? analyteById.get(siblingId) : null;
+	        const siblingValueHtml = siblingAnalyte
+	          ? (() => {
+		              const siblingValue = formatIndianNumber(siblingAnalyte.value ?? "");
+		              const siblingUnit = siblingAnalyte.unit || "";
+		              if (!siblingValue && !siblingUnit) return "";
+		              const siblingCanonical = normalizeFlag(siblingAnalyte.flag);
+		              const siblingClass = siblingCanonical ? `val ${siblingCanonical}` : "val";
+		              return `<span class="same-row-sibling"><span class="${siblingClass}">${siblingValue}</span>${siblingUnit ? `<span class="same-row-sibling-unit">${siblingUnit}</span>` : ""}</span>`;
+		            })()
+		          : "";
+	        const siblingRefHtml = siblingAnalyte
+	          ? (() => {
+		              const siblingRefRange = (siblingAnalyte.reference_range || "").replace(/\n/g, "<br>");
+		              if (!siblingRefRange) return "";
+		              return `<span class="same-row-sibling-ref">${siblingRefRange}</span>`;
+		            })()
+		          : "";
 
-        testResultsHtml += `
-        <tr>
-          <td class="test-name-cell">
-            <div class="test-name">${analyte.parameter}${calcSuffix}</div>
-          </td>
-          ${flagSymbol === "before" ? `<td class="${valClass}" style="text-align:center;">${sym}</td>` : ""}
-          <td class="${valClass}">${displayValue}</td>
-          <td style="text-align:left; vertical-align:top; font-size:${basePx}px; color:#444;">${unit}</td>
-          <td style="text-align:left; vertical-align:top; font-size:${smallPx + 1}px; color:#666;">${refRange}</td>
-        </tr>`;
+        // Determine if THIS row's section has siblings
+        const rowSectionHasSiblings = sectionsWithSiblings.has(analyte.section_heading ?? null);
+
+        // Use explicit widths: sibling sections get 6-column narrow layout, non-sibling sections get 4-column wide layout
+	        if (hasSameRowSibling && rowSectionHasSiblings) {
+	          // 6-column narrow layout for sibling sections
+	          testResultsHtml += `
+	          <tr>
+	            <td class="test-name-cell" style="width:${formatBasicWidth(siblingColumnWidths[0])};">
+	              <div class="test-name">${analyte.parameter}${calcSuffix}</div>
+	            </td>
+	            <td class="${valClass}" style="width:${formatBasicWidth(siblingColumnWidths[1])}; text-align:right;">${displayValue}</td>
+	            <td style="width:${formatBasicWidth(siblingColumnWidths[2])}; text-align:left; vertical-align:top; font-size:${basePx}px; color:#444;">${unit}</td>
+	            <td style="width:${formatBasicWidth(siblingColumnWidths[3])}; text-align:left; vertical-align:top; font-size:${smallPx + 1}px; color:#666;">${refRange}</td>
+	            <td style="width:${formatBasicWidth(siblingColumnWidths[4])}; text-align:right; vertical-align:top;">${siblingValueHtml}</td>
+	            <td style="width:${formatBasicWidth(siblingColumnWidths[5])}; text-align:left; vertical-align:top; font-size:${smallPx + 1}px; color:#666;">${siblingRefHtml}</td>
+	          </tr>`;
+	        } else if (hasSameRowSibling && !rowSectionHasSiblings) {
+	          // 4-column wide layout (with colspan) for non-sibling sections in a table that has siblings elsewhere
+	          testResultsHtml += `
+	          <tr>
+	            <td class="test-name-cell" style="width:${formatBasicWidth(standardColumnWidths[0])};">
+	              <div class="test-name">${analyte.parameter}${calcSuffix}</div>
+	            </td>
+	            <td class="${valClass}" style="width:${formatBasicWidth(standardColumnWidths[1])}; text-align:right;">${displayValue}</td>
+	            <td style="width:${formatBasicWidth(standardColumnWidths[2])}; text-align:left; vertical-align:top; font-size:${basePx}px; color:#444;">${unit}</td>
+	            <td style="width:${formatBasicWidth(standardColumnWidths[3])}; text-align:left; vertical-align:top; font-size:${smallPx + 1}px; color:#666;" colspan="3">${refRange}</td>
+	          </tr>`;
+        } else {
+          // Standard 4-column layout (no siblings in entire table)
+          testResultsHtml += `
+          <tr>
+            <td class="test-name-cell">
+              <div class="test-name">${analyte.parameter}${calcSuffix}</div>
+            </td>
+            <td class="${valClass}">${displayValue}</td>
+            <td style="text-align:left; vertical-align:top; font-size:${basePx}px; color:#444;">${unit}</td>
+            <td style="text-align:left; vertical-align:top; font-size:${smallPx + 1}px; color:#666;">${refRange}</td>
+          </tr>`;
+        }
       }
     }
 
@@ -609,40 +988,16 @@ ${
       </tbody>
     </table>
     ${groupLegendParts.length ? `<p class="calculated-note">${groupLegendParts.join(" &nbsp;|&nbsp; ")}</p>` : ""}
-    ${group.groupInterpretation ? `<div class="group-interpretation-block">${group.groupInterpretation}</div>` : ""}
-  </figure>`;
-  }
+	    ${group.groupInterpretation ? `<div class="group-interpretation-block">${group.groupInterpretation}</div>` : ""}
+	  </figure>`;
+	    if (!isCompact) testResultsHtml += `</div>${standardPageFooterHtml}</div>`;
+	  }
 
-  testResultsHtml += "</div>";
-
-  // ── Report Sections (findings, impression, etc.) ────────────────────────────
-  let sectionsHtml = "";
-  const validSections = sections.filter(s => s.content && s.content.trim());
-  if (validSections.length > 0) {
-    sectionsHtml = `<div class="report-sections">`;
-    for (const sec of validSections) {
-      sectionsHtml += `
-      <div class="section-block">
-        <div class="section-label">${sec.sectionName}</div>
-        <div>${formatNarrativeHtml(sec.content)}</div>
-      </div>`;
-    }
-    sectionsHtml += `</div>`;
-  }
-
-  // ── Footer + Signatory ──────────────────────────────────────────────────────
-  const signatoryBlock = (signatoryName || signatoryDesignation)
-    ? `<div class="signatory-box">
-        ${signatoryName ? `<div class="signatory-name">${signatoryName}</div>` : ""}
-        ${signatoryDesignation ? `<div class="signatory-role">${signatoryDesignation}</div>` : ""}
-      </div>`
-    : "";
-
-  const footerHtml = `
-  <div class="report-footer">
-    <div class="auth-text">Authenticated Electronic Report</div>
-    ${signatoryBlock}
-  </div>`;
+			  testResultsHtml += isCompact
+			    ? currentCompactPage > 0
+				      ? `${sectionsHtml}</div>${footerHtml}</div></div>`
+			      : `<div class="preview-page compact-page">${patientHtml}${sectionsHtml}${footerHtml}</div></div>`
+			    : `${sectionsHtml ? `<div class="preview-page standard-page">${patientHtml}${sectionsHtml}${footerHtml}</div>` : ""}</div>`;
 
   return `<!DOCTYPE html>
 <html lang="en">
@@ -653,11 +1008,8 @@ ${
 ${css}
 </head>
 <body>
-<div style="font-family: Arial, Helvetica, sans-serif; font-size: ${basePx}px; color: #000;">
-  ${patientHtml}
+<div class="preview-shell" style="font-family: Arial, Helvetica, sans-serif; font-size: ${basePx}px; color: #000;">
   ${testResultsHtml}
-  ${sectionsHtml}
-  ${footerHtml}
 </div>
 </body>
 </html>`;

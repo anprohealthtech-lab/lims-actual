@@ -19,12 +19,17 @@ export interface TrendAnalyte {
     max: number;
   };
   trend: 'increasing' | 'decreasing' | 'stable' | 'insufficient_data';
+  selected_for_report?: boolean;
 }
 
 export interface TrendGraphData {
   analytes: TrendAnalyte[];
   patient_id: string;
   generated_at: string;
+  selected_analyte_keys?: string[];
+  include_in_report?: boolean;
+  include_in_report_updated_at?: string;
+  images_generated_at?: string;
 }
 
 // Input type for generating trends - supports both ID and name matching
@@ -66,7 +71,8 @@ export const useTrendGraphs = () => {
     orderId: string,
     patientId: string,
     analyteIds: string[],
-    analyteNames?: string[] // Optional: analyte names for better matching
+    analyteNames?: string[], // Optional: analyte names for better matching
+    selectedAnalyteKeys?: string[]
   ) => {
     setLoading(true);
     setError(null);
@@ -185,6 +191,16 @@ export const useTrendGraphs = () => {
         return { min: 0, max: 0 };
       };
 
+      const getAnalyteKey = (analyteId?: string | null, analyteName?: string | null) =>
+        (analyteId || analyteName || '').toString().trim().toLowerCase();
+
+      const selectedKeys = selectedAnalyteKeys && selectedAnalyteKeys.length > 0
+        ? selectedAnalyteKeys
+        : [
+          ...analyteIds.map(id => getAnalyteKey(id, null)),
+          ...(analyteNames || []).map(name => getAnalyteKey(null, name)),
+        ];
+
       const trendData: TrendGraphData = {
         analytes: Array.from(analyteMap.values()).map((data) => {
           // Sort by date
@@ -192,17 +208,21 @@ export const useTrendGraphs = () => {
             (a, b) => new Date(a.date).getTime() - new Date(b.date).getTime()
           );
 
+          const analyteKey = getAnalyteKey(data.analyte_id, data.analyte_name);
+
           return {
             analyte_id: data.analyte_id,
             analyte_name: data.analyte_name,
             unit: data.unit,
             dataPoints: sortedPoints,
             reference_range: parseReferenceRange(data.reference_range),
-            trend: calculateTrend(sortedPoints)
+            trend: calculateTrend(sortedPoints),
+            selected_for_report: selectedKeys.includes(analyteKey),
           };
         }),
         patient_id: patientId,
-        generated_at: new Date().toISOString()
+        generated_at: new Date().toISOString(),
+        selected_analyte_keys: selectedKeys,
       };
 
       console.log('[TrendGraphs] Built trend data:', {

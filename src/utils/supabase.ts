@@ -5,6 +5,7 @@ import {
   getOrderAssignedColor,
 } from "./colorAssignment";
 import { notificationTriggerService } from "./notificationTriggerService";
+import { optimizeBatch, smartOptimizeImage } from "./imageOptimizer";
 
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
 const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
@@ -3714,7 +3715,7 @@ export const database = {
         const { data: order, error: orderError } = await supabase
           .from("orders")
           .select(`
-            id, status,
+            id, status, lab_id,
             order_tests(id),
             results(id, status, verification_status, result_values(id))
           `)
@@ -3777,6 +3778,26 @@ export const database = {
           console.log(
             `Order ${orderId} status automatically updated from "${order.status}" to "${newStatus}"`,
           );
+
+          // Auto compact print on approval: fire-and-forget when lab has the setting enabled
+          if (newStatus === "Report Ready" && order.lab_id) {
+            supabase
+              .from("labs")
+              .select("pdf_layout_settings")
+              .eq("id", order.lab_id)
+              .single()
+              .then(({ data: lab }) => {
+                if (lab?.pdf_layout_settings?.compactPrint?.autoOnApproval === true) {
+                  supabase.functions
+                    .invoke("generate-pdf-letterhead", {
+                      body: { orderId, printLayoutMode: "compact" },
+                    })
+                    .then(() => console.log(`✅ Auto compact print triggered for order ${orderId}`))
+                    .catch((e) => console.error("Auto compact print failed:", e));
+                }
+              });
+          }
+
           return {
             data: {
               ...updatedOrder,
@@ -4041,9 +4062,12 @@ export const database = {
           parameter: val.parameter, // Keep parameter name as well
           value: val.value,
           unit: val.unit,
-          reference_range: val.reference_range,
-          flag: val.flag,
-        }));
+	          reference_range: val.reference_range,
+	          flag: val.flag,
+	          verify_status: val.is_hidden_from_report ? "approved" : (val.verify_status || "pending"),
+	          is_hidden_from_report: !!val.is_hidden_from_report,
+	          hidden_reason: val.is_hidden_from_report ? (val.hidden_reason || "Hidden from report") : null,
+	        }));
 
         const { error: valuesError } = await supabase
           .from("result_values")
@@ -4132,9 +4156,12 @@ export const database = {
           parameter: val.parameter, // Keep parameter name as well
           value: val.value,
           unit: val.unit,
-          reference_range: val.reference_range,
-          flag: val.flag,
-        }));
+	          reference_range: val.reference_range,
+	          flag: val.flag,
+	          verify_status: val.is_hidden_from_report ? "approved" : (val.verify_status || "pending"),
+	          is_hidden_from_report: !!val.is_hidden_from_report,
+	          hidden_reason: val.is_hidden_from_report ? (val.hidden_reason || "Hidden from report") : null,
+	        }));
 
         const { error: valuesError } = await supabase
           .from("result_values")
@@ -6811,10 +6838,11 @@ export const database = {
             test_group_analytes(
               analyte_id,
               lab_analyte_id,
-              sort_order,
-              section_heading,
-              is_visible,
-              analytes(
+	              sort_order,
+	              section_heading,
+	              is_visible,
+	              report_display_options,
+	              analytes(
                 id,
                 name,
                 code,
@@ -6919,10 +6947,11 @@ export const database = {
 	            test_group_analytes(
               analyte_id,
               lab_analyte_id,
-              sort_order,
-              section_heading,
-              is_visible,
-              analytes(
+	              sort_order,
+	              section_heading,
+	              is_visible,
+	              report_display_options,
+	              analytes(
                 id,
                 name,
                 code,
@@ -7020,10 +7049,11 @@ export const database = {
             test_group_analytes(
               analyte_id,
               lab_analyte_id,
-              sort_order,
-              section_heading,
-              is_visible,
-              analytes(
+	              sort_order,
+	              section_heading,
+	              is_visible,
+	              report_display_options,
+	              analytes(
                 id,
                 name,
                 code,
@@ -7159,13 +7189,20 @@ export const database = {
             }
           }
 
-          const analyteRelations = testGroupData.analytes.map((
-            analyteId: string,
-          ) => ({
-            test_group_id: testGroup.id,
-            analyte_id: analyteId,
-            lab_analyte_id: labAnalyteMap[analyteId] || null,
-          }));
+	          const analyteMetadata: Record<string, { sort_order?: number; section_heading?: string; is_visible?: boolean; report_display_options?: Record<string, unknown> }> =
+	            testGroupData.analyteMetadata || {};
+
+	          const analyteRelations = testGroupData.analytes.map((
+	            analyteId: string,
+	          ) => ({
+	            test_group_id: testGroup.id,
+	            analyte_id: analyteId,
+	            lab_analyte_id: labAnalyteMap[analyteId] || null,
+	            sort_order: analyteMetadata[analyteId]?.sort_order ?? 0,
+	            section_heading: analyteMetadata[analyteId]?.section_heading || null,
+	            is_visible: analyteMetadata[analyteId]?.is_visible ?? true,
+	            report_display_options: analyteMetadata[analyteId]?.report_display_options || {},
+	          }));
 
           const { error: relationError } = await supabase
             .from("test_group_analytes")
@@ -7361,8 +7398,8 @@ export const database = {
         // Step 2: Update analyte relationships if analytes are provided
 	        if (updates.analytes && Array.isArray(updates.analytes)) {
           const newAnalyteIds: string[] = updates.analytes;
-          const analyteMetadata: Record<string, { sort_order?: number; section_heading?: string; is_visible?: boolean }> =
-            updates.analyteMetadata || {};
+	          const analyteMetadata: Record<string, { sort_order?: number; section_heading?: string; is_visible?: boolean; report_display_options?: Record<string, unknown> }> =
+	            updates.analyteMetadata || {};
 
           // Resolve lab_analyte_id for each analyte_id (use the test group's lab_id)
           let labAnalyteMap: Record<string, string> = {};
@@ -7407,11 +7444,12 @@ export const database = {
             for (const analyteId of newAnalyteIds) {
               const meta = analyteMetadata[analyteId];
               const labAnalyteId = labAnalyteMap[analyteId] || null;
-              const updatePayload: Record<string, any> = {
-                sort_order: meta?.sort_order ?? 0,
-                section_heading: meta?.section_heading || null,
-                is_visible: meta?.is_visible ?? true,
-              };
+	              const updatePayload: Record<string, any> = {
+	                sort_order: meta?.sort_order ?? 0,
+	                section_heading: meta?.section_heading || null,
+	                is_visible: meta?.is_visible ?? true,
+	                report_display_options: meta?.report_display_options || {},
+	              };
               // Always backfill lab_analyte_id when we have it resolved
               if (labAnalyteId) updatePayload.lab_analyte_id = labAnalyteId;
               await supabase
@@ -8633,8 +8671,6 @@ export const attachmentBatch = {
 
     if (context.optimize !== false) {
       console.log(`Optimizing ${files.length} files for batch upload...`);
-      const { optimizeBatch } = await import("./imageOptimizer");
-
       const optimizationResult = await optimizeBatch(
         files,
         context.onOptimizationProgress,
@@ -8920,9 +8956,6 @@ export const attachments = {
     onOptimizationProgress?: (progress: number, fileName: string) => void;
   }) => {
     try {
-      // Import optimization function dynamically to avoid circular imports
-      const { smartOptimizeImage } = await import("./imageOptimizer");
-
       // Optimize image if enabled and it's an image file
       let fileToUpload = file;
       let optimizationStats = null;
@@ -12434,10 +12467,11 @@ export const aiAnalysis = {
   /**
    * Update include_in_report flag for trend data and generate/upload images if included
    */
-  updateTrendIncludeInReport: async (
-    orderId: string,
-    includeInReport: boolean,
-  ) => {
+	  updateTrendIncludeInReport: async (
+	    orderId: string,
+	    includeInReport: boolean,
+	    selectedAnalyteKeys?: string[],
+	  ) => {
     try {
       // First get the existing trend data
       const { data: orderData, error: fetchError } = await supabase
@@ -12449,11 +12483,27 @@ export const aiAnalysis = {
       if (fetchError) throw fetchError;
 
       const existingData = orderData?.trend_graph_data || {};
-      let updatedData = {
-        ...existingData,
-        include_in_report: includeInReport,
-        include_in_report_updated_at: new Date().toISOString(),
-      };
+	      const normalizedSelectedKeys = (selectedAnalyteKeys || existingData.selected_analyte_keys || [])
+	        .map((key: string) => key?.toString().trim().toLowerCase())
+	        .filter(Boolean);
+	      const shouldIncludeAnalyte = (analyte: any) => {
+	        if (normalizedSelectedKeys.length === 0) return true;
+	        const key = (analyte.analyte_id || analyte.analyte_name || "").toString().trim().toLowerCase();
+	        return normalizedSelectedKeys.includes(key);
+	      };
+	      const baseAnalytes = Array.isArray(existingData.analytes)
+	        ? existingData.analytes.map((analyte: any) => ({
+	          ...analyte,
+	          selected_for_report: shouldIncludeAnalyte(analyte),
+	        }))
+	        : existingData.analytes;
+	      let updatedData = {
+	        ...existingData,
+	        analytes: baseAnalytes,
+	        selected_analyte_keys: normalizedSelectedKeys,
+	        include_in_report: includeInReport,
+	        include_in_report_updated_at: new Date().toISOString(),
+	      };
 
       // If including in report and we have analytes, generate and upload images
       if (
@@ -12468,9 +12518,15 @@ export const aiAnalysis = {
         const { generateTrendSVG, svgToPngBlob, uploadChartImage } =
           await import("./trendChartGenerator");
 
-        const analytesWithImages = await Promise.all(
-          existingData.analytes.map(async (analyte: any) => {
-            try {
+	        const analytesWithImages = await Promise.all(
+	          baseAnalytes.map(async (analyte: any) => {
+	            if (!shouldIncludeAnalyte(analyte)) {
+	              return {
+	                ...analyte,
+	                selected_for_report: false,
+	              };
+	            }
+	            try {
               // Convert stored data format to TrendDataPoint format for SVG generation
               const trendDataPoints = analyte.dataPoints?.map((dp: any) => ({
                 order_date: dp.date || dp.timestamp,
@@ -12512,11 +12568,12 @@ export const aiAnalysis = {
                   console.log(
                     `✅ Uploaded trend image for ${analyte.analyte_name}`,
                   );
-                  return {
-                    ...analyte,
-                    image_url: imageUrl,
-                    image_generated_at: new Date().toISOString(),
-                  };
+	                  return {
+	                    ...analyte,
+	                    selected_for_report: true,
+	                    image_url: imageUrl,
+	                    image_generated_at: new Date().toISOString(),
+	                  };
                 }
               }
 

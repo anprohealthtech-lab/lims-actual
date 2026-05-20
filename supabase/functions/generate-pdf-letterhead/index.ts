@@ -1,5 +1,5 @@
 // Supabase Edge Function: Full Server-Side PDF Generation with PDF.co
-// Complete pipeline: Context → Templates → HTML → PDF.co → Storage
+// Complete pipeline: Context â†’ Templates â†’ HTML â†’ PDF.co â†’ Storage
 
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.38.4";
@@ -28,7 +28,7 @@ const corsHeaders = {
   "Access-Control-Allow-Methods": "POST, OPTIONS",
 };
 
-// ─── Inline Code 128-B barcode generator (no external API) ───────────────────
+// â”€â”€â”€ Inline Code 128-B barcode generator (no external API) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // Eliminates dependency on barcodeapi.org which may return "FAILED" images
 // when called from PDF rendering servers.
 // renderWidth: rendered pixel width (SVG scales via viewBox to fit exactly)
@@ -86,10 +86,10 @@ function generateCode128SVG(data: string, height = 36, renderWidth = 100): strin
       rects += `<rect x="${i}" y="0" width="1" height="${height}"/>`;
     }
   }
-  // viewBox scales all modules to fit renderWidth exactly — no overflow
+  // viewBox scales all modules to fit renderWidth exactly â€” no overflow
   return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${totalModules} ${height}" width="${renderWidth}" height="${height}" style="display:block;"><g fill="#000000">${rects}</g></svg>`;
 }
-// ─────────────────────────────────────────────────────────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 // Custom domain for reports storage (configured via Deno environment variable)
 const CUSTOM_REPORTS_DOMAIN = Deno.env.get("CUSTOM_STORAGE_DOMAIN") || "";
@@ -130,7 +130,7 @@ const DEFAULT_PDF_SETTINGS = {
 // Comprehensive baseline CSS for report styling (server-side)
 const BASELINE_CSS = `
 /* LIMS Report Baseline CSS - Server-Side */
-/* FIX: Removed duplicate @import — fonts loaded via <link> tags in buildPdfBodyDocumentV2 */
+/* FIX: Removed duplicate @import â€” fonts loaded via <link> tags in buildPdfBodyDocumentV2 */
 
 :root {
   --report-font-family: "Inter", "Noto Sans", "Noto Sans Gujarati", "Noto Sans Devanagari", "Noto Sans Tamil", "Noto Sans Telugu", "Noto Sans Kannada", "Noto Sans Bengali", "Noto Sans Gurmukhi", "Noto Sans Malayalam", "Noto Sans Oriya", Arial, sans-serif;
@@ -182,7 +182,7 @@ const BASELINE_CSS = `
 .limsv2-report h3 { font-size: 1.25rem; }
 .limsv2-report h4 { font-size: 1.1rem; }
 
-/* Normalize headings inside interpretation blocks — CKEditor often saves <p> content as <h4> */
+/* Normalize headings inside interpretation blocks â€” CKEditor often saves <p> content as <h4> */
 .limsv2-report .group-interpretation h1,
 .limsv2-report .group-interpretation h2,
 .limsv2-report .group-interpretation h3,
@@ -359,7 +359,7 @@ figure.table table thead th,
     page-break-before: auto !important;
   }
 
-  /* Override h4 page-break rule inside interpretation — these are prose, not section headers */
+  /* Override h4 page-break rule inside interpretation â€” these are prose, not section headers */
   .limsv2-report .group-interpretation h1,
   .limsv2-report .group-interpretation h2,
   .limsv2-report .group-interpretation h3,
@@ -478,13 +478,13 @@ figure.table table thead th,
 .section-content h4 { font-size: 14px; }
 .section-content h5 { font-size: 13px; }
 .section-content h6 { font-size: 12px; }
-`;
+		    `;
 
 // CSS injected only for CKEditor custom templates (not basic/beautiful default templates).
 // These rules are intentionally excluded from BASELINE_CSS to avoid cascade conflicts
 // with generated structured templates that own their own table/flag/signature styling.
 const CKEDITOR_CSS = `
-/* Tables — CKEditor template default table styling */
+/* Tables â€” CKEditor template default table styling */
 .limsv2-report table {
   width: 100%;
   border-collapse: collapse;
@@ -524,7 +524,7 @@ const CKEDITOR_CSS = `
   font-weight: normal;
 }
 
-/* Header title contrast — dark-background sections */
+/* Header title contrast â€” dark-background sections */
 .report-header-title,
 .report-title,
 .header-dark h1,
@@ -631,7 +631,7 @@ const ABNORMAL_TEXT_PATTERNS = [
 ];
 
 // Semi-quantitative normal values
-const SEMI_QUANT_NORMAL = ["nil", "negative", "trace", "±", "+-", "neg"];
+const SEMI_QUANT_NORMAL = ["nil", "negative", "trace", "Â±", "+-", "neg"];
 const SEMI_QUANT_ABNORMAL_ORDER = [
   "1+",
   "+",
@@ -657,14 +657,14 @@ function parseReferenceRange(refRange: string | null | undefined): ParsedRange {
     .replace(/,/g, "") // Remove commas
     .trim();
 
-  // Pattern: "< X" or "≤ X"
-  const lessThanMatch = cleaned.match(/[<≤]\s*([\d.]+)/);
+  // Pattern: "< X" or "â‰¤ X"
+  const lessThanMatch = cleaned.match(/[<â‰¤]\s*([\d.]+)/);
   if (lessThanMatch) {
     return { low: null, high: parseFloat(lessThanMatch[1]), type: "less_than" };
   }
 
-  // Pattern: "> X" or "≥ X"
-  const greaterThanMatch = cleaned.match(/[>≥]\s*([\d.]+)/);
+  // Pattern: "> X" or "â‰¥ X"
+  const greaterThanMatch = cleaned.match(/[>â‰¥]\s*([\d.]+)/);
   if (greaterThanMatch) {
     return {
       low: parseFloat(greaterThanMatch[1]),
@@ -673,8 +673,8 @@ function parseReferenceRange(refRange: string | null | undefined): ParsedRange {
     };
   }
 
-  // Pattern: "X - Y" or "X – Y" or "X to Y"
-  const rangeMatch = cleaned.match(/([\d.]+)\s*[-–—~to]+\s*([\d.]+)/i);
+  // Pattern: "X - Y" or "X â€“ Y" or "X to Y"
+  const rangeMatch = cleaned.match(/([\d.]+)\s*[-â€“â€”~to]+\s*([\d.]+)/i);
   if (rangeMatch) {
     const low = parseFloat(rangeMatch[1]);
     const high = parseFloat(rangeMatch[2]);
@@ -703,7 +703,7 @@ function extractNumericValue(
   if (value === null || value === undefined || value === "") return null;
   if (typeof value === "number") return value;
 
-  const cleaned = String(value).replace(/[,<>≤≥]/g, "").trim();
+  const cleaned = String(value).replace(/[,<>â‰¤â‰¥]/g, "").trim();
   const match = cleaned.match(/^-?([\d.]+)/);
   if (match) {
     const num = parseFloat(match[0]);
@@ -940,7 +940,7 @@ function generateAnalyteShortKey(name: string): string {
     "Mean Corpuscular Volume": "MCV",
     "Alanine Aminotransferase (ALT/SGPT)": "ALT",
     "ALT (SGPT)": "ALT",
-    // 5-Part CBC differential — canonical names
+    // 5-Part CBC differential â€” canonical names
     "Neutrophils (%)": "NEUT_PCT",
     "Neutrophils (Abs)": "NEUT_ABS",
     "Lymphocytes (%)": "LYMPH_PCT",
@@ -1129,7 +1129,7 @@ function generateAnalytePlaceholders(analytes: any[]): Record<string, any> {
   const valueKeys = Object.keys(placeholders).filter((k) =>
     k.endsWith("_VALUE")
   );
-  console.log("📋 Generated analyte placeholders:");
+  console.log("ðŸ“‹ Generated analyte placeholders:");
   console.log("   Total keys:", Object.keys(placeholders).length);
   console.log(
     "   VALUE keys:",
@@ -1197,20 +1197,20 @@ function injectSignatureImage(
   signatoryDesignation: string = "",
 ): string {
   if (!html || !signatoryImageUrl) {
-    console.log("  ⚠️ Missing required params for signature injection");
+    console.log("  âš ï¸ Missing required params for signature injection");
     return html;
   }
 
   // Already present?
   if (html.includes(`src="${signatoryImageUrl}"`)) {
-    console.log("  ✅ Signature image already present");
+    console.log("  âœ… Signature image already present");
     return html;
   }
 
   // Build complete signature block with image and text
   const signatureBlockHtml = `
     <div style="margin-top: 10px;">
-      <img src="${signatoryImageUrl}" alt="Signature" style="display:block;max-height:40px;max-width:120px;width:auto;height:auto;object-fit:contain;margin-top:5px;margin-bottom:0px;" />
+      <img src="${signatoryImageUrl}" alt="" style="display:block;max-height:40px;max-width:120px;width:auto;height:auto;object-fit:contain;margin-top:5px;margin-bottom:0px;" onerror="this.style.display='none'" />
       ${
     signatoryName
       ? `<p style="margin-top:8px;margin-bottom:4px;font-weight:600;font-size:14px;">${signatoryName}</p>`
@@ -1225,20 +1225,20 @@ function injectSignatureImage(
   `.trim();
 
   console.log(
-    `  🔍 Looking for .signatures or .report-footer block (name: ${signatoryName})`,
+    `  ðŸ” Looking for .signatures or .report-footer block (name: ${signatoryName})`,
   );
 
   // 1. PRIORITY: Inject into .signatures block (most common)
   const signaturesPattern = /(<div[^>]*class="[^"]*signatures[^"]*"[^>]*>)/i;
   if (signaturesPattern.test(html)) {
-    console.log("  ✅ Found .signatures block - injecting signature");
+    console.log("  âœ… Found .signatures block - injecting signature");
     return html.replace(signaturesPattern, `$1${signatureBlockHtml}`);
   }
 
   // 2. Inject into .report-footer block
   const footerPattern = /(<div[^>]*class="[^"]*report-footer[^"]*"[^>]*>)/i;
   if (footerPattern.test(html)) {
-    console.log("  ✅ Found .report-footer block - injecting signature");
+    console.log("  âœ… Found .report-footer block - injecting signature");
     return html.replace(footerPattern, `$1${signatureBlockHtml}`);
   }
 
@@ -1246,14 +1246,14 @@ function injectSignatureImage(
   const signatoryPattern =
     /(<div[^>]*class="[^"]*(?:signatory|signature-block|approver|signer)[^"]*"[^>]*>)/i;
   if (signatoryPattern.test(html)) {
-    console.log("  ✅ Found signatory-related block - injecting signature");
+    console.log("  âœ… Found signatory-related block - injecting signature");
     return html.replace(signatoryPattern, `$1${signatureBlockHtml}`);
   }
 
   // 4. Fallback: inject before closing </section> with report-region--body class
   const sectionPattern = /(<\/section>)/i;
   if (sectionPattern.test(html)) {
-    console.log("  ⚠️ Fallback: injecting before </section>");
+    console.log("  âš ï¸ Fallback: injecting before </section>");
     return html.replace(
       sectionPattern,
       `<div style="margin-top:20px;">${signatureBlockHtml}</div>$1`,
@@ -1262,7 +1262,7 @@ function injectSignatureImage(
 
   // 5. Last resort: inject before closing </body>
   if (html.includes("</body>")) {
-    console.log("  ⚠️ Last resort: injecting before </body>");
+    console.log("  âš ï¸ Last resort: injecting before </body>");
     return html.replace(
       "</body>",
       `<div style="margin:20px;">${signatureBlockHtml}</div></body>`,
@@ -1271,7 +1271,7 @@ function injectSignatureImage(
 
   // 6. Absolute last resort: Append to end of HTML string (for partials/sections)
   console.log(
-    "  ⚠️ Absolute last resort: Appending signature to end of HTML string",
+    "  âš ï¸ Absolute last resort: Appending signature to end of HTML string",
   );
   return html +
     `<div style="margin-top:20px; page-break-inside: avoid;">${signatureBlockHtml}</div>`;
@@ -1284,13 +1284,13 @@ function injectSignatureImage(
  */
 function injectQrCode(html: string, verifyUrl: string): string {
   if (!html || !verifyUrl) {
-    console.log("  ⚠️ Missing required params for QR injection");
+    console.log("  âš ï¸ Missing required params for QR injection");
     return html;
   }
 
   // Already has QR code? Check for the actual HTML element, not just the CSS class name string
   if (html.includes('class="qr-verify"') || html.includes("class='qr-verify'") || html.includes("api.qrserver.com")) {
-    console.log("  ✅ QR code already present in template");
+    console.log("  âœ… QR code already present in template");
     return html;
   }
 
@@ -1306,13 +1306,13 @@ function injectQrCode(html: string, verifyUrl: string): string {
     </div>
   `.trim();
 
-  console.log(`  🔍 Looking for signature block to add QR code`);
+  console.log(`  ðŸ” Looking for signature block to add QR code`);
 
   // 1. PRIORITY: Look for .signatures block - wrap content in flex container
   const signaturesPattern =
     /(<div[^>]*class="[^"]*signatures[^"]*"[^>]*>)([\s\S]*?)(<\/div>\s*$|<\/div>\s*<\/|<\/div>\s*<section|<\/div>\s*<div class="(?:attachments|interpretation))/i;
   if (signaturesPattern.test(html)) {
-    console.log("  ✅ Found .signatures block - adding QR with flex layout");
+    console.log("  âœ… Found .signatures block - adding QR with flex layout");
     return html.replace(
       signaturesPattern,
       (match, openTag, content, closeOrNext) => {
@@ -1344,7 +1344,7 @@ function injectQrCode(html: string, verifyUrl: string): string {
   // 2. Look for .report-footer block
   const footerPattern = /(<div[^>]*class="[^"]*report-footer[^"]*"[^>]*>)/i;
   if (footerPattern.test(html)) {
-    console.log("  ✅ Found .report-footer block - prepending QR");
+    console.log("  âœ… Found .report-footer block - prepending QR");
     return html.replace(footerPattern, `$1${qrBlockHtml}`);
   }
 
@@ -1352,7 +1352,7 @@ function injectQrCode(html: string, verifyUrl: string): string {
   const signatoryPattern =
     /(<div[^>]*class="[^"]*(?:signatory|signature-block|approver|signer)[^"]*"[^>]*>)/i;
   if (signatoryPattern.test(html)) {
-    console.log("  ✅ Found signatory block - prepending QR");
+    console.log("  âœ… Found signatory block - prepending QR");
     return html.replace(
       signatoryPattern,
       `<div style="display:flex;justify-content:space-between;align-items:flex-end;margin-top:20px;">${qrBlockHtml}$1</div>`,
@@ -1362,7 +1362,7 @@ function injectQrCode(html: string, verifyUrl: string): string {
   // 4. Fallback: inject before </section>
   const sectionPattern = /(<\/section>)/i;
   if (sectionPattern.test(html)) {
-    console.log("  ⚠️ Fallback: adding QR before </section>");
+    console.log("  âš ï¸ Fallback: adding QR before </section>");
     return html.replace(
       sectionPattern,
       `<div style="margin-top:20px;text-align:left;">${qrBlockHtml}</div>$1`,
@@ -1371,7 +1371,7 @@ function injectQrCode(html: string, verifyUrl: string): string {
 
   // 5. Last resort: inject before </body>
   if (html.includes("</body>")) {
-    console.log("  ⚠️ Last resort: adding QR before </body>");
+    console.log("  âš ï¸ Last resort: adding QR before </body>");
     return html.replace(
       "</body>",
       `<div style="margin:20px;text-align:left;">${qrBlockHtml}</div></body>`,
@@ -1379,7 +1379,7 @@ function injectQrCode(html: string, verifyUrl: string): string {
   }
 
   // 6. Absolute last resort: Append to end
-  console.log("  ⚠️ Absolute last resort: Appending QR to end of HTML");
+  console.log("  âš ï¸ Absolute last resort: Appending QR to end of HTML");
   return html +
     `<div style="margin-top:20px;text-align:left;">${qrBlockHtml}</div>`;
 }
@@ -1471,7 +1471,7 @@ function generateDynamicCss(settings: any, printOptions?: any): string {
     }
   }
 
-  // ── Print Options overrides (lab-level + test-group-level) ──────────────────
+  // â”€â”€ Print Options overrides (lab-level + test-group-level) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   if (hasPrintOptions) {
     css += "\n/* Print Options Overrides */\n";
 
@@ -1875,7 +1875,7 @@ function buildOrderedAnalytesByGroup(
   return ordered;
 }
 
-// ── Configurable Patient Info Section Builder ──
+// â”€â”€ Configurable Patient Info Section Builder â”€â”€
 interface PatientInfoConfig {
   layout: 'table' | 'inline';
   fields: string[];
@@ -1916,7 +1916,7 @@ function buildPatientInfoHtml(
     .map(key => {
       if (PATIENT_INFO_FIELD_MAP[key]) return PATIENT_INFO_FIELD_MAP[key];
       if (customFieldMap[key]) return customFieldMap[key];
-      // Fallback: derive label from key name (e.g. custom_abha_id → "Abha Id")
+      // Fallback: derive label from key name (e.g. custom_abha_id â†’ "Abha Id")
       if (key.startsWith('custom_')) {
         const rawKey = key.replace(/^custom_/, '');
         const label = rawKey.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
@@ -1929,7 +1929,7 @@ function buildPatientInfoHtml(
   if (fields.length === 0) return '';
 
   if (config.layout === 'table') {
-    // Table layout — 2 columns of label/value pairs per row
+    // Table layout â€” 2 columns of label/value pairs per row
     const rows: string[] = [];
     for (let i = 0; i < fields.length; i += 2) {
       const f1 = fields[i];
@@ -1950,7 +1950,7 @@ function buildPatientInfoHtml(
     </div>`;
   }
 
-  // Inline layout — flex row of spans (beautiful style)
+  // Inline layout â€” flex row of spans (beautiful style)
   // First field (usually patientName) gets prominent heading treatment
   const firstField = fields[0];
   const restFields = fields.slice(1);
@@ -1972,13 +1972,13 @@ function buildPatientInfoHtml(
     </div>`;
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // Shared helper: sort analytes by sort_order and group by section_heading.
 //
 // Returns an array of { heading: string | null, analytes: any[] } blocks.
 // Analytes with no section_heading (or all the same heading) are treated as
 // a single block with heading = null.
-// ─────────────────────────────────────────────────────────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 function groupAnalytesBySectionHeading(
   analytes: any[],
 ): { heading: string | null; analytes: any[] }[] {
@@ -1988,7 +1988,7 @@ function groupAnalytesBySectionHeading(
     const ob = b.sort_order ?? 0;
     return oa - ob;
   });
-  console.log("📊 Analyte sort order:", sorted.map(a => `${a.parameter}(sort_order=${a.sort_order ?? 'null'})`).join(', '));
+  console.log("ðŸ“Š Analyte sort order:", sorted.map(a => `${a.parameter}(sort_order=${a.sort_order ?? 'null'})`).join(', '));
 
   // Check if any analyte has a section_heading
   const hasHeadings = sorted.some((a) => a.section_heading);
@@ -2017,6 +2017,38 @@ function groupAnalytesBySectionHeading(
     blocks.push({ heading: currentHeading, analytes: currentBlock });
   }
   return blocks;
+}
+
+function getAnalyteIdentityIds(analyte: any): string[] {
+  const ids = [
+    analyte?.analyte_id,
+    analyte?.analyteId,
+    analyte?.id,
+    analyte?.lab_analyte_id,
+    analyte?.labAnalyteId,
+    analyte?.analytes?.id,
+    analyte?.lab_analytes?.id,
+  ];
+
+  return [...new Set(
+    ids
+      .map((value) => String(value || "").trim())
+      .filter(Boolean),
+  )];
+}
+
+function normalizeBasicColumnWidths(raw: unknown, fallback: number[], expectedLength: number): number[] {
+  if (!Array.isArray(raw) || raw.length !== expectedLength) return fallback;
+  const values = raw.map((value) => Number(value));
+  const total = values.reduce((sum, value) => sum + value, 0);
+  if (values.some((value) => !Number.isFinite(value) || value <= 0) || Math.abs(total - 100) > 0.5) {
+    return fallback;
+  }
+  return values;
+}
+
+function formatBasicWidth(value: number): string {
+  return `${Number(value.toFixed(2))}%`;
 }
 
 /**
@@ -2078,9 +2110,9 @@ function generateClassicDefaultTemplateHtml(
     };
 
     for (const line of lines) {
-      if (/^[-*•]\s+/.test(line)) {
+      if (/^[-*â€¢]\s+/.test(line)) {
         listItems.push(
-          `<li>${escapeNarrativeHtml(line.replace(/^[-*•]\s+/, "").trim())}</li>`,
+          `<li>${escapeNarrativeHtml(line.replace(/^[-*â€¢]\s+/, "").trim())}</li>`,
         );
         continue;
       }
@@ -2253,13 +2285,30 @@ function generateClassicDefaultTemplateHtml(
         }
 
         if (isDescriptive) {
-          testResultsHtml += `
-              <tr style="background: ${rowBg};">
-                <td colspan="5" style="padding: 10px 12px; border: 1px solid #e5e7eb;">
-                  <strong>${parameterName}:</strong> ${value || refText || ""}
+          if (value && value.trim()) {
+            testResultsHtml += `
+              <tr class="descriptive-row" style="background: ${rowBg};">
+                <td style="padding: 10px 12px; font-size: ${basePx}px; text-align: center; font-weight: 600;">
+                  ${parameterName}
+                </td>
+                <td style="padding: 10px 12px; font-size: ${basePx}px; text-align: right;">
+                  ${value}
+                </td>
+                <td style="padding: 10px 12px; font-size: ${basePx}px;"></td>
+                <td style="padding: 10px 12px; font-size: ${basePx}px; color: #666;">
+                  ${refText || ""}
                 </td>
               </tr>
-          `;
+            `;
+          } else {
+            testResultsHtml += `
+              <tr style="background: ${rowBg};">
+                <td colspan="5" style="padding: 10px 12px; border: 1px solid #e5e7eb;">
+                  <strong>${parameterName}:</strong> ${refText || ""}
+                </td>
+              </tr>
+            `;
+          }
           continue;
         }
 
@@ -2309,8 +2358,8 @@ function generateClassicDefaultTemplateHtml(
   }
 
   } else if (hasSections) {
-    // ── Section-only rendering (radiology, micro, etc.) ──
-    // No analyte table — render section content directly as the primary report body
+    // â”€â”€ Section-only rendering (radiology, micro, etc.) â”€â”€
+    // No analyte table â€” render section content directly as the primary report body
     const groupName = testGroupNames.size > 0
       ? Array.from(testGroupNames.values())[0]
       : "Report";
@@ -2328,7 +2377,7 @@ function generateClassicDefaultTemplateHtml(
         ? sectionLabels[key]
         : buildSectionLabel(key);
 
-      // Rich HTML (e.g. Glass Prescription table) — pass through
+      // Rich HTML (e.g. Glass Prescription table) â€” pass through
       if (/<table\b/i.test(rawContent)) {
         testResultsHtml += `
           <div style="margin-top: 14px; page-break-inside: avoid;">
@@ -2339,7 +2388,7 @@ function generateClassicDefaultTemplateHtml(
         continue;
       }
 
-      // Parse text → lines
+      // Parse text â†’ lines
       const plainText = rawContent
         .replace(/<div[^>]*>/gi, "").replace(/<\/div>/gi, "\n")
         .replace(/<br\s*\/?>/gi, "\n")
@@ -2351,7 +2400,7 @@ function generateClassicDefaultTemplateHtml(
       const hasStructuredData = colonLines.length >= lines.length * 0.5 && colonLines.length >= 2;
 
       if (hasStructuredData) {
-        // Key-value pairs → Parameter | Finding table
+        // Key-value pairs â†’ Parameter | Finding table
         const rowsHtml = lines.map((line: string, idx: number) => {
           const colonIdx = line.indexOf(":");
           if (colonIdx > 0) {
@@ -2406,7 +2455,7 @@ function generateClassicDefaultTemplateHtml(
 
   const signatoryHtml = `
     <div class="signatures" style="margin-top: 20px; text-align: right; page-break-inside: avoid;">
-      ${sigImageUrl ? `<img src="${sigImageUrl}" alt="Signature" style="max-height: 50px; max-width: 150px; margin-bottom: 5px;" />` : ""}
+      ${sigImageUrl ? `<img src="${sigImageUrl}" alt="" style="max-height: 50px; max-width: 150px; margin-bottom: 5px;" onerror="this.style.display='none'" />` : ""}
       ${sigName ? `<p style="margin: 0; font-weight: 600; font-size: 14px;">${sigName}</p>` : ""}
       ${sigDesignation ? `<p style="margin: 4px 0 0 0; color: #64748b; font-size: 12px;">${sigDesignation}</p>` : ""}
     </div>
@@ -2444,10 +2493,10 @@ function generateClassicDefaultTemplateHtml(
 
   return `
     <div class="default-report-template">
-      ${patientInfoHtml}
+      ${printOptions?._suppressPatientHeader ? '' : patientInfoHtml}
       ${testResultsHtml}
       ${reportSectionsHtml}
-      ${signatoryHtml}
+      ${printOptions?._suppressSignature ? '' : signatoryHtml}
     </div>
   `;
 }
@@ -2464,7 +2513,7 @@ function renderSectionContentForTemplate(
 ): string {
   if (!rawContent) return "";
 
-  // Rich HTML (e.g. Glass Prescription table) — pass through
+  // Rich HTML (e.g. Glass Prescription table) â€” pass through
   if (/<table\b/i.test(rawContent)) {
     return `
       <div style="margin-top: 12px;">
@@ -2528,18 +2577,18 @@ function renderSectionContentForTemplate(
 }
 
 /**
- * "Basic" template — old-school plain layout matching traditional printed lab reports.
+ * "Basic" template â€” old-school plain layout matching traditional printed lab reports.
  *
  * Design rules:
  *  - "TEST REPORT" title bar with 1.5px border top/bottom
  *  - Patient info as figure.table with <th> labels (15%) + <td> values (35%)
- *  - 4 columns: TEST NAME (38%) | VALUE (12%) | UNITS (10%) | Bio. Ref. Interval (40%)
- *  - Column header row: 1.5px solid border top/bottom only — no cell borders
+ *  - 4 columns: TEST NAME (36%) | VALUE (24%) | UNITS (12%) | Bio. Ref. Interval (28%)
+ *  - Column header row: 1.5px solid border top/bottom only â€” no cell borders
  *  - Group name as center-title (underlined, uppercase) inside main-group-row
  *  - Section headings: sub-section-header class (uppercase, small, bold)
- *  - High flags → red (#dc2626) bold; Low flags → black bold; Qualitative abnormal → black bold
+ *  - High flags â†’ red (#dc2626) bold; Low flags â†’ black bold; Qualitative abnormal â†’ black bold
  *  - Test name bold, method italic small below it, calculated marker *
- *  - Footer: flex layout — "Authenticated Electronic Report" left, signature right
+ *  - Footer: flex layout â€” "Authenticated Electronic Report" left, signature right
  *  - Font size controllable via printOptions.baseFontSize (lab-level setting)
  */
 function generateBasicDefaultTemplateHtml(
@@ -2563,20 +2612,24 @@ function generateBasicDefaultTemplateHtml(
 
   const basePx = typeof printOptions?.baseFontSize === "number"
     ? Math.max(8, Math.min(24, printOptions.baseFontSize as number))
-    : 11;
+    : 14;
   const smallPx = Math.max(7, basePx - 3);
   const titlePx = basePx + 2;
   const sigPx = basePx + 1;
-  const testNameWeight = (printOptions?.testNameBold ?? true) ? "600" : "normal";
-  const calcMarker = (printOptions?.calcMarker as string) ?? "asterisk";
-  const boldAllValues = (printOptions?.boldAllValues as boolean) ?? true;
+  const testNameWeight = (printOptions?.testNameBold ?? false) ? "600" : "normal";
+  const testNameAlignment = (printOptions?.testNameAlignment as string) ?? "left";
+  const calcMarker = (printOptions?.calcMarker as string) ?? "cal";
+  const boldAllValues = (printOptions?.boldAllValues as boolean) ?? false;
   const boldAbnormal = (printOptions?.boldAbnormalValues as boolean) ?? true;
-  const sectionHeaderInline = (printOptions?.sectionHeaderInline as boolean) ?? false;
+  const sectionHeaderInline = (printOptions?.sectionHeaderInline as boolean) ?? true;
   const flagSymbol = (printOptions?.flagSymbol as string) ?? "none";
   const showFlagLegend = (printOptions?.showFlagLegend as boolean) ?? false;
-  const testGroupTitlePosition = (printOptions?.testGroupTitlePosition as string) ?? "below_headers";
+  const testGroupTitlePosition = (printOptions?.testGroupTitlePosition as string) ?? "above_headers_center";
   const qrHorizontalOffset = Math.max(0, Math.min(80, Number(printOptions?.qrHorizontalOffset ?? 0)));
-  const colCount = flagSymbol === "before" ? 5 : 4;
+  const colCount = 4;
+  const basicColumnWidths = (printOptions?.basicColumnWidths || {}) as Record<string, unknown>;
+  const standardColumnWidths = normalizeBasicColumnWidths(basicColumnWidths.standard, [36, 24, 12, 28], 4);
+  const siblingColumnWidths = normalizeBasicColumnWidths(basicColumnWidths.sibling, [30, 14, 8, 16, 16, 16], 6);
   console.log("[generateBasicDefaultTemplateHtml] printOptions received:", JSON.stringify(printOptions));
   console.log("[generateBasicDefaultTemplateHtml] boldAllValues resolved to:", boldAllValues, "(raw value:", printOptions?.boldAllValues, "type:", typeof printOptions?.boldAllValues, ")");
   const resultColors = printOptions?.resultColors as Record<string, unknown> | undefined;
@@ -2593,7 +2646,7 @@ function generateBasicDefaultTemplateHtml(
   font-family: Arial, Helvetica, sans-serif;
   display: flex;
   flex-direction: column;
-  min-height: ${printOptions?._isCompact ? '0' : '780px'}; /* ≈ A4 body height minus default top/bottom margins (180px + 150px) */
+  min-height: ${printOptions?._isCompact ? '0' : '780px'}; /* â‰ˆ A4 body height minus default top/bottom margins (180px + 150px) */
 }
 
 .basic-report-template table {
@@ -2761,6 +2814,12 @@ function generateBasicDefaultTemplateHtml(
   font-size: ${basePx}px !important;
 }
 
+.basic-report-template .patient-test-separator {
+  border-top: 1.5px solid #000 !important;
+  height: 0 !important;
+  margin: 4px 0 8px !important;
+}
+
 .basic-report-template .tbl-results {
   width: 100% !important;
   table-layout: fixed !important;
@@ -2781,27 +2840,55 @@ function generateBasicDefaultTemplateHtml(
   vertical-align: middle !important;
 }
 
-${flagSymbol === "before" ? `
-.basic-report-template .tbl-results thead th:nth-child(1) { width: 35% !important; text-align: left !important; }
-.basic-report-template .tbl-results thead th:nth-child(2) { width: 6% !important; text-align: center !important; }
-.basic-report-template .tbl-results thead th:nth-child(3) { width: 11% !important; text-align: right !important; }
-.basic-report-template .tbl-results thead th:nth-child(4) { width: 10% !important; text-align: left !important; }
-.basic-report-template .tbl-results thead th:nth-child(5) { width: 38% !important; text-align: left !important; }
-.basic-report-template .tbl-results tbody td:nth-child(1) { width: 35% !important; text-align: left !important; color: #111 !important; }
-.basic-report-template .tbl-results tbody td:nth-child(2) { width: 6% !important; text-align: center !important; font-weight: 700 !important; }
-.basic-report-template .tbl-results tbody td:nth-child(3) { width: 11% !important; text-align: right !important; }
-.basic-report-template .tbl-results tbody td:nth-child(4) { width: 10% !important; text-align: left !important; color: #444 !important; white-space: nowrap !important; }
-.basic-report-template .tbl-results tbody td:nth-child(5) { width: 38% !important; text-align: left !important; color: #666 !important; }
-` : `
-.basic-report-template .tbl-results thead th:nth-child(1) { width: 38% !important; text-align: left !important; }
-.basic-report-template .tbl-results thead th:nth-child(2) { width: 12% !important; text-align: right !important; }
-.basic-report-template .tbl-results thead th:nth-child(3) { width: 10% !important; text-align: left !important; }
-.basic-report-template .tbl-results thead th:nth-child(4) { width: 40% !important; text-align: left !important; }
-.basic-report-template .tbl-results tbody td:nth-child(1) { width: 38% !important; text-align: left !important; color: #111 !important; }
-.basic-report-template .tbl-results tbody td:nth-child(2) { width: 12% !important; text-align: right !important; }
-.basic-report-template .tbl-results tbody td:nth-child(3) { width: 10% !important; text-align: left !important; color: #444 !important; white-space: nowrap !important; }
-.basic-report-template .tbl-results tbody td:nth-child(4) { width: 40% !important; text-align: left !important; color: #666 !important; }
-`}
+.basic-report-template .tbl-results thead th:nth-child(1) { width: ${formatBasicWidth(standardColumnWidths[0])} !important; text-align: ${testNameAlignment} !important; }
+.basic-report-template .tbl-results thead th:nth-child(2) { width: ${formatBasicWidth(standardColumnWidths[1])} !important; text-align: right !important; }
+.basic-report-template .tbl-results thead th:nth-child(3) { width: ${formatBasicWidth(standardColumnWidths[2])} !important; text-align: left !important; }
+.basic-report-template .tbl-results thead th:nth-child(4) { width: ${formatBasicWidth(standardColumnWidths[3])} !important; text-align: left !important; }
+.basic-report-template .tbl-results tbody td:nth-child(1) { width: ${formatBasicWidth(standardColumnWidths[0])} !important; text-align: ${testNameAlignment} !important; color: #111 !important; }
+.basic-report-template .tbl-results tbody td:nth-child(2) { width: ${formatBasicWidth(standardColumnWidths[1])} !important; text-align: right !important; white-space: nowrap !important; overflow: hidden !important; }
+.basic-report-template .tbl-results tbody td:nth-child(3) { width: ${formatBasicWidth(standardColumnWidths[2])} !important; text-align: left !important; color: #444 !important; white-space: nowrap !important; }
+.basic-report-template .tbl-results tbody td:nth-child(4) { width: ${formatBasicWidth(standardColumnWidths[3])} !important; text-align: left !important; color: #666 !important; }
+
+.basic-report-template .tbl-results.has-sibling thead th:nth-child(1) { width: ${formatBasicWidth(siblingColumnWidths[0])} !important; text-align: ${testNameAlignment} !important; }
+.basic-report-template .tbl-results.has-sibling thead th:nth-child(2) { width: ${formatBasicWidth(siblingColumnWidths[1])} !important; text-align: right !important; }
+.basic-report-template .tbl-results.has-sibling thead th:nth-child(3) { width: ${formatBasicWidth(siblingColumnWidths[2])} !important; text-align: left !important; }
+.basic-report-template .tbl-results.has-sibling thead th:nth-child(4) { width: ${formatBasicWidth(siblingColumnWidths[3])} !important; text-align: left !important; }
+.basic-report-template .tbl-results.has-sibling thead th:nth-child(5) { width: ${formatBasicWidth(siblingColumnWidths[4])} !important; text-align: right !important; }
+.basic-report-template .tbl-results.has-sibling thead th:nth-child(6) { width: ${formatBasicWidth(siblingColumnWidths[5])} !important; text-align: left !important; }
+/* Only apply narrow widths to rows with sibling-section-row class */
+.basic-report-template .tbl-results.has-sibling tbody tr.sibling-section-row td:nth-child(1) { width: ${formatBasicWidth(siblingColumnWidths[0])} !important; text-align: ${testNameAlignment} !important; }
+.basic-report-template .tbl-results.has-sibling tbody tr.sibling-section-row td:nth-child(2) { width: ${formatBasicWidth(siblingColumnWidths[1])} !important; text-align: right !important; }
+.basic-report-template .tbl-results.has-sibling tbody tr.sibling-section-row td:nth-child(3) { width: ${formatBasicWidth(siblingColumnWidths[2])} !important; text-align: left !important; }
+.basic-report-template .tbl-results.has-sibling tbody tr.sibling-section-row td:nth-child(4) { width: ${formatBasicWidth(siblingColumnWidths[3])} !important; text-align: left !important; }
+.basic-report-template .tbl-results.has-sibling tbody tr.sibling-section-row td:nth-child(5) { width: ${formatBasicWidth(siblingColumnWidths[4])} !important; text-align: right !important; }
+.basic-report-template .tbl-results.has-sibling tbody tr.sibling-section-row td:nth-child(6) { width: ${formatBasicWidth(siblingColumnWidths[5])} !important; text-align: left !important; }
+/* Wide widths for non-sibling rows in has-sibling table */
+.basic-report-template .tbl-results.has-sibling tbody tr.wide-section-row td:nth-child(1) { width: ${formatBasicWidth(standardColumnWidths[0])} !important; text-align: ${testNameAlignment} !important; }
+.basic-report-template .tbl-results.has-sibling tbody tr.wide-section-row td:nth-child(2) { width: ${formatBasicWidth(standardColumnWidths[1])} !important; text-align: right !important; }
+.basic-report-template .tbl-results.has-sibling tbody tr.wide-section-row td:nth-child(3) { width: ${formatBasicWidth(standardColumnWidths[2])} !important; text-align: left !important; }
+.basic-report-template .tbl-results.has-sibling tbody tr.wide-section-row td:nth-child(4) { width: ${formatBasicWidth(standardColumnWidths[3])} !important; text-align: left !important; }
+
+.basic-report-template .same-row-sibling {
+  display: inline !important;
+  white-space: nowrap !important;
+  color: #000 !important;
+  font-size: ${basePx}px !important;
+  text-align: right !important;
+}
+
+.basic-report-template .same-row-sibling-unit {
+  color: #444 !important;
+  font-weight: normal !important;
+  margin-left: 4px !important;
+}
+
+.basic-report-template .same-row-sibling-ref {
+  display: inline !important;
+  color: #666 !important;
+  font-size: ${smallPx + 1}px !important;
+  line-height: 1.15 !important;
+  text-align: right !important;
+}
 
 .basic-report-template .tbl-results td,
 .basic-report-template .tbl-results th {
@@ -2840,6 +2927,7 @@ ${flagSymbol === "before" ? `
   font-size: ${basePx}px !important;
   font-weight: ${boldAllValues ? "600" : "normal"} !important;
   font-variant-numeric: tabular-nums !important;
+  white-space: nowrap !important;
 }
 
 .basic-report-template .val.high,
@@ -2901,6 +2989,12 @@ ${flagSymbol === "before" ? `
   border: none !important;
   color: #000 !important;
   ${sectionHeaderInline ? `border-bottom: 0.5px solid #ccc !important; background-color: #f5f5f5 !important;` : ""}
+}
+
+.basic-report-template .sub-section-col-header td {
+  border-bottom: 1px solid #999 !important;
+  background-color: #fafafa !important;
+  color: #333 !important;
 }
 
 .basic-report-template .descriptive-row td {
@@ -3122,7 +3216,7 @@ ${flagSymbol === "before" ? `
 
   let testResultsHtml = '<div class="test-results">';
 
-  // ── Narrative helpers (scoped to this function) ─────────────────────────
+  // â”€â”€ Narrative helpers (scoped to this function) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const _stripMd = (v: string) =>
     v.replace(/\*\*([^*]+)\*\*/g, "$1").replace(/^(\*\*+)\s*/gm, "").replace(/\s*(\*\*+)$/gm, "").trim();
   const _escHtml = (v: string) =>
@@ -3136,7 +3230,7 @@ ${flagSymbol === "before" ? `
     let lis: string[] = [];
     const flush = () => { if (lis.length) { parts.push(`<ul>${lis.join("")}</ul>`); lis = []; } };
     for (const line of lines) {
-      if (/^[-*•]\s+/.test(line)) { lis.push(`<li>${_escHtml(line.replace(/^[-*•]\s+/, "").trim())}</li>`); continue; }
+      if (/^[-*â€¢]\s+/.test(line)) { lis.push(`<li>${_escHtml(line.replace(/^[-*â€¢]\s+/, "").trim())}</li>`); continue; }
       flush();
       const ci = line.indexOf(":");
       if (ci > 0 && ci < 40) {
@@ -3160,7 +3254,7 @@ ${flagSymbol === "before" ? `
     }).length;
     return n > 0 && n / analytes.length >= 0.7;
   };
-  // ────────────────────────────────────────────────────────────────────────
+  // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
   for (const [groupId, analytes] of analytesByGroup) {
     if (!analytes || analytes.length === 0) continue;
@@ -3177,10 +3271,42 @@ ${flagSymbol === "before" ? `
         ? `<div class="center-subtitle">Specimen: ${analytes[0].specimen}</div>`
         : "");
 
-    const groupTitleBelowHeaders = testGroupTitlePosition === "below_headers";
-    const groupTitleClass = testGroupTitlePosition === "above_headers_left" ? "center-title left" : "center-title";
+	    const groupTitleBelowHeaders = testGroupTitlePosition === "below_headers";
+	    const groupTitleClass = testGroupTitlePosition === "above_headers_left" ? "center-title left" : "center-title";
+	    const analyteById = new Map<string, any>();
+	    const sameRowSiblingIds = new Set<string>();
+	    let sameRowLinkCount = 0;
+	    let sameRowSiblingLabel = "Absolute Count";
+	    for (const analyte of analytes) {
+	      for (const analyteId of getAnalyteIdentityIds(analyte)) {
+	        analyteById.set(analyteId, analyte);
+	      }
+	    }
+	    for (const analyte of analytes) {
+	      const options = analyte.report_display_options || {};
+	      const siblingId = String(options.sameRowSiblingAnalyteId || "").trim();
+	      if (siblingId && analyteById.has(siblingId)) {
+	        sameRowSiblingIds.add(siblingId);
+	        sameRowLinkCount += 1;
+	        if (options.sameRowSiblingLabel) sameRowSiblingLabel = String(options.sameRowSiblingLabel);
+	      }
+	    }
+	    const hasSameRowSibling = sameRowLinkCount > 0;
+	    const effectiveColCount = hasSameRowSibling ? 6 : colCount;
+	    if (sameRowLinkCount > 0) {
+	      console.log(`[basic-template] same-row sibling links applied for ${groupName}: ${sameRowLinkCount}`);
+	    }
 
-    if (_isNarrativeGroup(analytes)) {
+	    // Pre-compute which sections have siblings for section-level header labels
+	    const sectionsWithSiblings = new Set<string | null>();
+	    for (const analyte of analytes) {
+	      const siblingId = String(analyte.report_display_options?.sameRowSiblingAnalyteId || "").trim();
+	      if (siblingId && analyteById.has(siblingId)) {
+	        sectionsWithSiblings.add(analyte.section_heading ?? null);
+	      }
+	    }
+
+	    if (_isNarrativeGroup(analytes)) {
       const rowsHtml = analytes.map((analyte: any) => {
         const rawParam = String(analyte.parameter || analyte.name || analyte.test_name || "").trim();
         const rawValue = String(analyte.value ?? analyte.reference_range ?? "").trim();
@@ -3224,45 +3350,107 @@ ${flagSymbol === "before" ? `
       continue;
     }
 
-    testResultsHtml += `
-      <figure class="table" style="margin: 0 0 14px;">
-        ${!groupTitleBelowHeaders ? `
-          <div class="${groupTitleClass}">${groupName}</div>
-          ${specimenText}
-        ` : ""}
-        <table class="tbl-results">
-          <thead>
-            <tr>
-              <th>TEST NAME</th>
-              ${flagSymbol === "before" ? `<th>FLAG</th>` : ""}
-              <th>VALUE</th>
-              <th>UNITS</th>
-              <th>Bio. Ref. Interval</th>
-            </tr>
-          </thead>
-          <tbody>
-            ${groupTitleBelowHeaders ? `
-            <tr class="main-group-row">
-              <td colspan="${colCount}">
-                <div class="center-title">${groupName}</div>
-                ${specimenText}
-              </td>
-            </tr>
-            ` : ""}
-    `;
+	    const groupColumnHeaderHtml = `
+	      <table class="tbl-results" style="width:100%; table-layout:fixed; border-collapse:collapse; margin-top:4px;">
+	        <colgroup>
+	          <col style="width:${formatBasicWidth(standardColumnWidths[0])}">
+	          <col style="width:${formatBasicWidth(standardColumnWidths[1])}">
+	          <col style="width:${formatBasicWidth(standardColumnWidths[2])}">
+	          <col style="width:${formatBasicWidth(standardColumnWidths[3])}">
+	        </colgroup>
+	        <thead>
+	          <tr>
+	            <th style="border-top:1.5px solid #000; border-bottom:1.5px solid #000; font-weight:700; padding:4px; text-align:left;">TEST NAME</th>
+	            <th style="border-top:1.5px solid #000; border-bottom:1.5px solid #000; font-weight:700; padding:4px; text-align:right;">VALUE</th>
+	            <th style="border-top:1.5px solid #000; border-bottom:1.5px solid #000; font-weight:700; padding:4px; text-align:left;">UNITS</th>
+	            <th style="border-top:1.5px solid #000; border-bottom:1.5px solid #000; font-weight:700; padding:4px; text-align:left;">Bio. Ref. Interval</th>
+	          </tr>
+	        </thead>
+	        ${groupTitleBelowHeaders ? `
+	        <tbody>
+	          <tr class="main-group-row">
+	            <td colspan="4">
+	              <div class="${groupTitleClass}">${groupName}</div>
+	              ${specimenText}
+	            </td>
+	          </tr>
+	        </tbody>` : ""}
+	      </table>
+	    `;
+
+	    // Group title and column labels render once per test group.
+	    testResultsHtml += `
+	      <figure class="table" style="margin: 0 0 14px;">
+	        ${!groupTitleBelowHeaders ? `
+	          <div class="${groupTitleClass}">${groupName}</div>
+	          ${specimenText}
+	        ` : ""}
+	        ${groupColumnHeaderHtml}
+	    `;
 
     const sectionBlocks = groupAnalytesBySectionHeading(analytes);
-    for (const block of sectionBlocks) {
-      if (block.heading) {
-        testResultsHtml += `
-            <tr class="sub-section-header">
-              <td colspan="${colCount}">${block.heading}</td>
-            </tr>
-        `;
-      }
+    let isFirstSection = true;
 
-      for (const analyte of block.analytes) {
-        const parameterName = analyte.parameter || analyte.name || analyte.test_name || "";
+    for (const block of sectionBlocks) {
+      const sectionHasSiblings = sectionsWithSiblings.has(block.heading);
+      // Determine column structure for THIS section
+	      const sectionColCount = sectionHasSiblings ? 6 : 4;
+	      const sectionWidths = sectionHasSiblings
+	        ? {
+	            name: formatBasicWidth(siblingColumnWidths[0]),
+	            value: formatBasicWidth(siblingColumnWidths[1]),
+	            unit: formatBasicWidth(siblingColumnWidths[2]),
+	            ref: formatBasicWidth(siblingColumnWidths[3]),
+	            sibVal: formatBasicWidth(siblingColumnWidths[4]),
+	            sibRef: formatBasicWidth(siblingColumnWidths[5]),
+	          }
+	        : {
+	            name: formatBasicWidth(standardColumnWidths[0]),
+	            value: formatBasicWidth(standardColumnWidths[1]),
+	            unit: formatBasicWidth(standardColumnWidths[2]),
+	            ref: formatBasicWidth(standardColumnWidths[3]),
+	          };
+
+      // Close previous table if not first section
+      if (!isFirstSection) {
+        testResultsHtml += `</tbody></table>`;
+      }
+      isFirstSection = false;
+
+	      // Open new table with appropriate column widths for this section
+	      testResultsHtml += `
+	        <table class="tbl-results${sectionHasSiblings ? " has-sibling" : ""}" style="width:100%; table-layout:fixed; border-collapse:collapse; margin-top:${block.heading ? "0" : "4"}px;">
+	          <colgroup>
+	            <col style="width:${sectionWidths.name}">
+	            <col style="width:${sectionWidths.value}">
+	            <col style="width:${sectionWidths.unit}">
+	            <col style="width:${sectionWidths.ref}">
+	            ${sectionHasSiblings ? `<col style="width:${sectionWidths.sibVal}"><col style="width:${sectionWidths.sibRef}">` : ""}
+	          </colgroup>
+	          <tbody>
+	      `;
+
+	      // Add section header row if this section has a heading
+	      if (block.heading) {
+	        testResultsHtml += `
+	          <tr class="sub-section-header">
+	            ${sectionHasSiblings
+	              ? `<td colspan="4" style="font-weight:700; padding-top:6px; padding-bottom:3px; text-transform:uppercase; font-size:${smallPx + 1}px; border-bottom:0.5px solid #ccc; background-color:#f5f5f5;">${block.heading}</td><td colspan="2" style="font-weight:700; padding-top:6px; padding-bottom:3px; text-align:center; text-decoration:underline; font-size:${smallPx + 1}px; border-bottom:0.5px solid #ccc; background-color:#f5f5f5;">${sameRowSiblingLabel}</td>`
+	              : `<td colspan="${sectionColCount}" style="font-weight:700; padding-top:6px; padding-bottom:3px; text-transform:uppercase; font-size:${smallPx + 1}px; border-bottom:0.5px solid #ccc; background-color:#f5f5f5;">${block.heading}</td>`}
+	          </tr>
+	        `;
+	      }
+
+	      for (const analyte of block.analytes) {
+		        const currentAnalyteIds = getAnalyteIdentityIds(analyte);
+		        if (
+		          currentAnalyteIds.some((id) => sameRowSiblingIds.has(id)) &&
+		          analyte.report_display_options?.hiddenWhenRenderedAsSibling !== false
+		        ) {
+		          continue;
+		        }
+
+	        const parameterName = analyte.parameter || analyte.name || analyte.test_name || "";
         const isCalculated = analyte.is_auto_calculated || analyte.is_calculated;
         const rawValue = analyte.value ?? "";
         const value = formatIndianNumber(
@@ -3281,7 +3469,7 @@ ${flagSymbol === "before" ? `
             : calcMarker === "cal"
             ? `<span style="font-size:${smallPx - 1}px; color:#888; margin-left:2px; font-style:italic;">*cal</span>`
             : ""
-          : "";
+		          : "";
 
         const unitText = String(unit || "").trim().toLowerCase();
         const refText = String(refRange || "").trim();
@@ -3316,25 +3504,75 @@ ${flagSymbol === "before" ? `
           return "";
         })();
 
-        const displayValue = flagSymbol === "after" && flagSymbolText
+        const displayValue = flagSymbol === "before" && flagSymbolText
+          ? `<span style="display:inline-block;min-width:${basePx * 1.15}px;text-align:center;font-weight:700;margin-right:4px;">${flagSymbolText}</span>${value + asteriskSuffix}`
+          : flagSymbol === "after" && flagSymbolText
           ? `${value + asteriskSuffix} <span style="font-weight:700;">${flagSymbolText}</span>`
           : value + asteriskSuffix;
 
         if (isDescriptive) {
-          testResultsHtml += `
+          if (value && value.trim()) {
+            testResultsHtml += `
               <tr class="descriptive-row">
-                <td colspan="${colCount}" style="font-size: ${basePx}px;">
-                  <span style="font-weight:600;">${parameterName}</span>: ${value || refText || ""}
+                <td class="test-name-cell" style="font-size:${basePx}px;">
+                  <div class="test-name" style="font-size:${basePx}px; font-weight:${testNameWeight};">${parameterName}${calcSuffix}</div>
                 </td>
+                <td class="val" style="font-size:${basePx}px; text-align:right;">${value}</td>
+                <td style="font-size:${basePx}px;"></td>
+	                <td style="font-size:${basePx}px; color:#666;">${refText || ""}</td>
+	                ${sectionHasSiblings ? `<td></td><td></td>` : ""}
+	              </tr>
+	            `;
+	          } else {
+	            testResultsHtml += `
+	              <tr class="descriptive-row">
+	                <td colspan="${sectionColCount}" style="font-size: ${basePx}px;">
+	                  <span style="font-weight:600;">${parameterName}</span>: ${refText || ""}
+	                </td>
               </tr>
-          `;
+            `;
+          }
           continue;
         }
 
-        const valClass = canonicalFlag ? `val ${canonicalFlag}` : "val";
+	        const valClass = canonicalFlag ? `val ${canonicalFlag}` : "val";
+		        const siblingId = String(analyte.report_display_options?.sameRowSiblingAnalyteId || "").trim();
+	        const siblingAnalyte = siblingId ? analyteById.get(siblingId) : null;
+	        const siblingValueHtml = siblingAnalyte
+	          ? (() => {
+	              const siblingRawValue = siblingAnalyte.value ?? "";
+	              const siblingValue = formatIndianNumber(
+	                (siblingAnalyte.is_auto_calculated || siblingAnalyte.is_calculated) &&
+	                  siblingRawValue !== "" &&
+	                  !isNaN(Number(siblingRawValue))
+	                  ? String(parseFloat(Number(siblingRawValue).toFixed(2)))
+	                  : siblingRawValue
+	              );
+		              const siblingUnit = siblingAnalyte.unit || "";
+		              if (!siblingValue && !siblingUnit) return "";
+		              const siblingFlag = normalizeReportFlag(siblingAnalyte.flag || "").canonical;
+		              const siblingClass = siblingFlag ? `val ${siblingFlag}` : "val";
+		              return `
+		                <span class="same-row-sibling">
+		                  <span class="${siblingClass}">${siblingValue}</span>
+		                  ${siblingUnit ? `<span class="same-row-sibling-unit">${siblingUnit}</span>` : ""}
+		                </span>
+		              `;
+		            })()
+	          : "";
+	        const siblingRefHtml = siblingAnalyte
+	          ? (() => {
+		              const siblingRefRange = (siblingAnalyte.reference_range || "").replace(/\n/g, "<br>");
+		              if (!siblingRefRange) return "";
+		              return `<span class="same-row-sibling-ref">${siblingRefRange}</span>`;
+		            })()
+	          : "";
 
-        testResultsHtml += `
-              <tr>
+	        // Each section now has its own table with correct column structure
+	        if (sectionHasSiblings) {
+	          // 6-column layout for sibling sections
+	          testResultsHtml += `
+	              <tr>
                 <td class="test-name-cell">
                   <div class="test-name" style="font-size:${basePx}px; font-weight:${testNameWeight};">
                     ${parameterName}${calcSuffix}
@@ -3342,13 +3580,32 @@ ${flagSymbol === "before" ? `
                   ${showMethodology && analyte.method
                     ? `<div class="test-method">${analyte.method}</div>`
                     : ""}
-                </td>
-                ${flagSymbol === "before" ? `<td class="${valClass}" style="font-size:${basePx}px; text-align:center;">${flagSymbolText}</td>` : ""}
-                <td class="${valClass}">${displayValue}</td>
-                <td style="text-align:left; vertical-align:top; font-size:${basePx}px; color:#444;">${unit}</td>
-                <td style="text-align:left; vertical-align:top; font-size:${smallPx + 1}px; color:#666;">${refRange}</td>
-              </tr>
-        `;
+	                </td>
+	                <td class="${valClass}" style="text-align:right;">${displayValue}</td>
+		                <td style="text-align:left; vertical-align:top; font-size:${basePx}px; color:#444;">${unit}</td>
+		                <td style="text-align:left; vertical-align:top; font-size:${smallPx + 1}px; color:#666;">${refRange}</td>
+		                <td style="text-align:right; vertical-align:top;">${siblingValueHtml}</td>
+		                <td style="text-align:left; vertical-align:top; font-size:${smallPx + 1}px; color:#666;">${siblingRefHtml}</td>
+		              </tr>
+		        `;
+	        } else {
+	          // 4-column layout for non-sibling sections
+	          testResultsHtml += `
+	              <tr>
+                <td class="test-name-cell">
+                  <div class="test-name" style="font-size:${basePx}px; font-weight:${testNameWeight};">
+                    ${parameterName}${calcSuffix}
+                  </div>
+                  ${showMethodology && analyte.method
+                    ? `<div class="test-method">${analyte.method}</div>`
+                    : ""}
+	                </td>
+	                <td class="${valClass}" style="text-align:right;">${displayValue}</td>
+		                <td style="text-align:left; vertical-align:top; font-size:${basePx}px; color:#444;">${unit}</td>
+		                <td style="text-align:left; vertical-align:top; font-size:${smallPx + 1}px; color:#666;">${refRange}</td>
+		              </tr>
+		        `;
+	        }
 
         if (showInterpretation) {
           let interp = "";
@@ -3357,11 +3614,11 @@ ${flagSymbol === "before" ? `
           else interp = analyte.interpretation_normal || "";
 
           if (interp) {
-            testResultsHtml += `
-              <tr class="interpretation-row">
-                <td colspan="${colCount}">${interp}</td>
-              </tr>
-            `;
+	            testResultsHtml += `
+	              <tr class="interpretation-row">
+	                <td colspan="${sectionColCount}">${interp}</td>
+	              </tr>
+	            `;
           }
         }
       }
@@ -3395,7 +3652,7 @@ ${flagSymbol === "before" ? `
       <div class="auth-text">Authenticated Electronic Report</div>
       <div class="signature-box">
         ${sigImageUrl
-          ? `<img src="${sigImageUrl}" alt="Signature" style="max-height: 45px; max-width: 130px; margin-bottom: 4px; display: block; margin-left: auto;" />`
+          ? `<img src="${sigImageUrl}" alt="" style="max-height: 45px; max-width: 130px; margin-bottom: 4px; display: block; margin-left: auto;" onerror="this.style.display='none'" />`
           : ""}
         ${sigName ? `<div style="font-weight:700; font-size:${sigPx}px;">${sigName}</div>` : ""}
         ${sigDesignation ? `<div style="font-size:${basePx - 1}px; margin-top:2px;">${sigDesignation}</div>` : ""}
@@ -3426,7 +3683,7 @@ ${flagSymbol === "before" ? `
 
         // If content contains a real <table>, render as standalone rich HTML block
         // to protect inner table borders from the basic template's border:none resets.
-        // Simple <div>-wrapped text (e.g. from Survey.js) is NOT rich — render in columns.
+        // Simple <div>-wrapped text (e.g. from Survey.js) is NOT rich â€” render in columns.
         const isRichHtml = /<table\b/i.test(rawContent);
         if (isRichHtml) {
           return `
@@ -3455,11 +3712,12 @@ ${flagSymbol === "before" ? `
   const innerHtml = `
     ${scopedCss}
     <div class="basic-report-template" style="font-family: Arial, Helvetica, sans-serif; font-size: ${basePx}px; color: #000;">
-      ${reportTitleBarHtml}
-      ${patientInfoHtml}
+      ${printOptions?._suppressPatientHeader ? '' : reportTitleBarHtml}
+      ${printOptions?._suppressPatientHeader ? '' : patientInfoHtml}
+      ${printOptions?._suppressPatientHeader ? '' : '<div class="patient-test-separator"></div>'}
       ${testResultsHtml}
       ${reportSectionsHtml}
-      ${signatoryHtml}
+      ${printOptions?._suppressSignature ? '' : signatoryHtml}
     </div>
   `;
   // The scoped CSS uses [data-test-group-id="..."] .basic-report-template selectors.
@@ -3504,9 +3762,14 @@ function generateDefaultTemplateHtml(
     );
   }
 
-  // Branch to basic (old-school) template if requested
-  if (templateStyle === 'basic') {
-    return generateBasicDefaultTemplateHtml(
+	  // Branch to basic (old-school) template if requested
+	  if (templateStyle === 'basic') {
+	    console.log("[basic-template] rendering built-in basic template", {
+	      groupId,
+	      groups: analytesByGroup.size,
+	      analytes: [...analytesByGroup.values()].reduce((count, rows) => count + rows.length, 0),
+	    });
+	    return generateBasicDefaultTemplateHtml(
       context, testGroupNames, analytesByGroup, signatoryInfo,
       sectionContent, includeSections, showMethodology, showInterpretation,
       patientInfoConfig, printOptions, extraFieldConfigs,
@@ -3519,7 +3782,7 @@ function generateDefaultTemplateHtml(
   const normalizedSectionContent =
     sectionContent && typeof sectionContent === "object" ? sectionContent : {};
 
-  // ── Theme colors ──
+  // â”€â”€ Theme colors â”€â”€
   const THEME = {
     accent: "#5a7f3a",
     normalBg: "#4a8c4a", normalText: "#ffffff",
@@ -3528,7 +3791,7 @@ function generateDefaultTemplateHtml(
     headerBg: "#e8efe4", headerText: "#374151",
   };
 
-  // ── Helper: classify a numeric value against structured ranges ──
+  // â”€â”€ Helper: classify a numeric value against structured ranges â”€â”€
   function classifyValue(
     numVal: number,
     analyte: any,
@@ -3548,7 +3811,7 @@ function generateDefaultTemplateHtml(
 
     // Fallback: try parsing text reference_range "10 - 20" style
     const refText = String(analyte.reference_range || "").trim();
-    const rangeMatch = refText.match(/([\d.]+)\s*[-–]\s*([\d.]+)/);
+    const rangeMatch = refText.match(/([\d.]+)\s*[-â€“]\s*([\d.]+)/);
     if (rangeMatch) {
       const lo = parseFloat(rangeMatch[1]);
       const hi = parseFloat(rangeMatch[2]);
@@ -3559,8 +3822,8 @@ function generateDefaultTemplateHtml(
       }
     }
 
-    // One-sided upper limit: "< X" or "≤ X" (e.g. Total Cholesterol < 200)
-    const upperMatch = refText.match(/^[<≤]\s*([\d.]+)/);
+    // One-sided upper limit: "< X" or "â‰¤ X" (e.g. Total Cholesterol < 200)
+    const upperMatch = refText.match(/^[<â‰¤]\s*([\d.]+)/);
     if (upperMatch) {
       const hi = parseFloat(upperMatch[1]);
       if (!isNaN(hi)) {
@@ -3569,8 +3832,8 @@ function generateDefaultTemplateHtml(
       }
     }
 
-    // One-sided lower limit: "> X" or "≥ X" (e.g. HDL > 40)
-    const lowerMatch = refText.match(/^[>≥]\s*([\d.]+)/);
+    // One-sided lower limit: "> X" or "â‰¥ X" (e.g. HDL > 40)
+    const lowerMatch = refText.match(/^[>â‰¥]\s*([\d.]+)/);
     if (lowerMatch) {
       const lo = parseFloat(lowerMatch[1]);
       if (!isNaN(lo)) {
@@ -3582,7 +3845,7 @@ function generateDefaultTemplateHtml(
     return null; // no structured range available
   }
 
-  // ── Helper: get color by semantic ──
+  // â”€â”€ Helper: get color by semantic â”€â”€
   function getColor(semantic: "good" | "borderline" | "bad") {
     switch (semantic) {
       case "good": return { bg: THEME.normalBg, text: THEME.normalText };
@@ -3591,7 +3854,7 @@ function generateDefaultTemplateHtml(
     }
   }
 
-  // ── Helper: format reference range text for a column position ──
+  // â”€â”€ Helper: format reference range text for a column position â”€â”€
   function formatRefForColumn(
     analyte: any,
     position: 1 | 2 | 3,
@@ -3605,31 +3868,31 @@ function generateDefaultTemplateHtml(
 
     if (minVal !== null && maxVal !== null && !isNaN(minVal) && !isNaN(maxVal)) {
       if (position === 1) return `< ${minVal}`;
-      if (position === 2) return `${minVal} – ${maxVal}`;
+      if (position === 2) return `${minVal} â€“ ${maxVal}`;
       return `> ${maxVal}`;
     }
 
     // Fallback: parse text reference_range
     const refText = String(analyte.reference_range || "").trim();
-    const rangeMatch = refText.match(/([\d.]+)\s*[-–]\s*([\d.]+)/);
+    const rangeMatch = refText.match(/([\d.]+)\s*[-â€“]\s*([\d.]+)/);
     if (rangeMatch) {
       const lo = rangeMatch[1];
       const hi = rangeMatch[2];
       if (position === 1) return `< ${lo}`;
-      if (position === 2) return `${lo} – ${hi}`;
+      if (position === 2) return `${lo} â€“ ${hi}`;
       return `> ${hi}`;
     }
 
-    // One-sided upper limit: "< X" — LOW col empty, NORMAL = "< X", HIGH = "> X"
-    const upperMatch = refText.match(/^[<≤]\s*([\d.]+)/);
+    // One-sided upper limit: "< X" â€” LOW col empty, NORMAL = "< X", HIGH = "> X"
+    const upperMatch = refText.match(/^[<â‰¤]\s*([\d.]+)/);
     if (upperMatch) {
       if (position === 1) return "";
       if (position === 2) return `< ${upperMatch[1]}`;
       return `> ${upperMatch[1]}`;
     }
 
-    // One-sided lower limit: "> X" — LOW = "< X", NORMAL = "> X", HIGH col empty
-    const lowerMatch = refText.match(/^[>≥]\s*([\d.]+)/);
+    // One-sided lower limit: "> X" â€” LOW = "< X", NORMAL = "> X", HIGH col empty
+    const lowerMatch = refText.match(/^[>â‰¥]\s*([\d.]+)/);
     if (lowerMatch) {
       if (position === 1) return `< ${lowerMatch[1]}`;
       if (position === 2) return `> ${lowerMatch[1]}`;
@@ -3640,24 +3903,24 @@ function generateDefaultTemplateHtml(
     return "";
   }
 
-  // ── Helper: check if analyte has structured numeric range ──
+  // â”€â”€ Helper: check if analyte has structured numeric range â”€â”€
   function hasStructuredRange(analyte: any): boolean {
     if (
       analyte.normal_range_min != null && analyte.normal_range_max != null
     ) return true;
     const refText = String(analyte.reference_range || "").trim();
     // Two-sided: "10 - 20"
-    if (/[\d.]+\s*[-–]\s*[\d.]+/.test(refText)) return true;
+    if (/[\d.]+\s*[-â€“]\s*[\d.]+/.test(refText)) return true;
     // One-sided: "< 200" or "> 40"
-    if (/^[<>≤≥]\s*[\d.]+/.test(refText)) return true;
+    if (/^[<>â‰¤â‰¥]\s*[\d.]+/.test(refText)) return true;
     return false;
   }
 
-  // ── Helper: check if value is numeric ──
+  // â”€â”€ Helper: check if value is numeric â”€â”€
   function isNumericValue(val: any): boolean {
     if (val == null || val === "") return false;
     const str = String(val).trim();
-    return /^[<>≤≥]?\s*[\d.]+$/.test(str);
+    return /^[<>â‰¤â‰¥]?\s*[\d.]+$/.test(str);
   }
 
   function extractNumericVal(val: any): number | null {
@@ -3667,7 +3930,7 @@ function generateDefaultTemplateHtml(
     return m ? parseFloat(m[1]) : null;
   }
 
-  // ── Helper: check if analyte is descriptive (should be shown as full-width row) ──
+  // â”€â”€ Helper: check if analyte is descriptive (should be shown as full-width row) â”€â”€
   function isDescriptiveAnalyte(analyte: any): boolean {
     const unitText = String(analyte.unit || "").trim().toLowerCase();
     const refText = String(analyte.reference_range || "").trim();
@@ -3682,7 +3945,7 @@ function generateDefaultTemplateHtml(
     );
   }
 
-  // ── Helper: get flag display + color for flat table badge ──
+  // â”€â”€ Helper: get flag display + color for flat table badge â”€â”€
   function getFlagBadge(flag: string): { text: string; bg: string } {
     const normalized = normalizeReportFlag(flag);
 
@@ -3704,7 +3967,7 @@ function generateDefaultTemplateHtml(
     return { text: (normalized.label || flag || "").toUpperCase(), bg: "#6b7280" };
   }
 
-  // ── Patient Information Section ──
+  // â”€â”€ Patient Information Section â”€â”€
   const patientInfoHtml = patientInfoConfig
     ? buildPatientInfoHtml(patientInfoConfig, THEME.accent, extraFieldConfigs)
     : `
@@ -3728,7 +3991,7 @@ function generateDefaultTemplateHtml(
     </div>
   `;
 
-  // ── Test Results Section - group by test group ──
+  // â”€â”€ Test Results Section - group by test group â”€â”€
   let testResultsHtml = '<div class="test-results">';
 
   for (const [groupId, analytes] of analytesByGroup) {
@@ -3757,11 +4020,11 @@ function generateDefaultTemplateHtml(
       <div class="test-group-section" style="margin-bottom: 20px; page-break-inside: auto;">
         <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 10px; padding-bottom: 6px; border-bottom: 2px solid ${THEME.accent};">
           <h3 style="font-size: 18px; font-weight: 600; color: ${THEME.accent}; margin: 0;">${groupName}</h3>
-          ${(printOptions as any)?._sampleType ? `<span style="font-size:11px;color:#6b7280;font-style:italic;">· Specimen: ${(printOptions as any)._sampleType}</span>` : ''}
+          ${(printOptions as any)?._sampleType ? `<span style="font-size:11px;color:#6b7280;font-style:italic;">Â· Specimen: ${(printOptions as any)._sampleType}</span>` : ''}
         </div>
     `;
 
-    // ── 3-Band Color Matrix Table (for numeric analytes with structured ranges) ──
+    // â”€â”€ 3-Band Color Matrix Table (for numeric analytes with structured ranges) â”€â”€
     if (colorMatrixAnalytes.length > 0) {
       testResultsHtml += `
         <table style="width: 100%; border-collapse: collapse; font-size: 13px; background: #ffffff; -webkit-print-color-adjust: exact; print-color-adjust: exact; margin-bottom: 12px;">
@@ -3854,11 +4117,11 @@ function generateDefaultTemplateHtml(
       testResultsHtml += `
           </tbody>
         </table>
-        ${colorMatrixAnalytes.some((a: any) => a.is_auto_calculated || a.is_calculated) ? '<p style="font-size:9px;color:#9ca3af;margin:2px 0 8px;font-style:italic;">*calc – Calculated parameter</p>' : ''}
+        ${colorMatrixAnalytes.some((a: any) => a.is_auto_calculated || a.is_calculated) ? '<p style="font-size:9px;color:#9ca3af;margin:2px 0 8px;font-style:italic;">*calc â€“ Calculated parameter</p>' : ''}
       `;
     }
 
-    // ── Flat Table (for numeric analytes without structured ranges, or non-numeric) ──
+    // â”€â”€ Flat Table (for numeric analytes without structured ranges, or non-numeric) â”€â”€
     if (flatTableAnalytes.length > 0) {
       testResultsHtml += `
         <table class="report-table" style="width: 100%; border-collapse: collapse; font-size: 13px; background: #ffffff; margin-bottom: 12px;">
@@ -3938,7 +4201,7 @@ function generateDefaultTemplateHtml(
       `;
     }
 
-    // ── Descriptive Rows ──
+    // â”€â”€ Descriptive Rows â”€â”€
     if (descriptiveAnalytes.length > 0) {
       for (const descBlock of groupAnalytesBySectionHeading(descriptiveAnalytes)) {
         if (descBlock.heading) {
@@ -3960,7 +4223,7 @@ function generateDefaultTemplateHtml(
       }
     }
 
-    // ── Group Interpretation Block ──
+    // â”€â”€ Group Interpretation Block â”€â”€
     const _groupInterp = groupInterpretations?.get(groupId);
     if (_groupInterp) {
       testResultsHtml += `
@@ -3977,7 +4240,7 @@ function generateDefaultTemplateHtml(
 
   testResultsHtml += "</div>";
 
-  // ── Signatory Section ──
+  // â”€â”€ Signatory Section â”€â”€
   const sigName = signatoryInfo?.signatoryName || "";
   const sigDesignation = signatoryInfo?.signatoryDesignation || "";
   const sigImageUrl = signatoryInfo?.signatoryImageUrl || "";
@@ -3987,7 +4250,7 @@ function generateDefaultTemplateHtml(
       <div style="display: inline-block; text-align: center; min-width: 200px;">
         ${
     sigImageUrl
-      ? `<img src="${sigImageUrl}" alt="Signature" style="max-height: 50px; max-width: 150px; margin-bottom: 5px;" />`
+      ? `<img src="${sigImageUrl}" alt="" style="max-height: 50px; max-width: 150px; margin-bottom: 5px;" onerror="this.style.display='none'" />`
       : ""
   }
         ${
@@ -4043,13 +4306,13 @@ function generateDefaultTemplateHtml(
     }
   }
 
-  // ── Combine all sections ──
+  // â”€â”€ Combine all sections â”€â”€
   return `
     <div class="default-report-template">
-      ${patientInfoHtml}
+      ${printOptions?._suppressPatientHeader ? '' : patientInfoHtml}
       ${testResultsHtml}
       ${reportSectionsHtml}
-      ${signatoryHtml}
+      ${printOptions?._suppressSignature ? '' : signatoryHtml}
     </div>
   `;
 }
@@ -4066,8 +4329,8 @@ function buildPdfBodyDocumentV2(
   verificationUrl?: string | null,
 ): string {
   const useNativePdfHeaderFooter = !!pdfSettings?.displayHeaderFooter;
-  console.log("🚀🚀🚀 VERSION 3.3 - PER-GROUP TEMPLATE STYLE 🚀🚀🚀");
-  console.log("🏗️ buildPdfBodyDocumentV2 called with:", {
+  console.log("ðŸš€ðŸš€ðŸš€ VERSION 3.3 - PER-GROUP TEMPLATE STYLE ðŸš€ðŸš€ðŸš€");
+  console.log("ðŸ—ï¸ buildPdfBodyDocumentV2 called with:", {
 	    bodyHtmlLength: bodyHtml?.length || 0,
     customCssLength: customCss?.length || 0,
 	    letterheadUrl: letterheadBackgroundUrl || "NONE",
@@ -4082,12 +4345,14 @@ function buildPdfBodyDocumentV2(
   const bottomSpacerHeight = pdfSettings?.margins?.bottom ?? 130;
   const leftPadding = pdfSettings?.margins?.left ?? 20;
   const rightPadding = pdfSettings?.margins?.right ?? 20;
-  const bodySidePaddingLeft = useNativePdfHeaderFooter ? 0 : leftPadding;
-  const bodySidePaddingRight = useNativePdfHeaderFooter ? 0 : rightPadding;
+  // For letterhead eCopy, PDF.co uses 0 page margins (full-bleed), so HTML content
+  // needs its own padding. Fall back to 20px if the lab left margins.left/right at 0.
+  const bodySidePaddingLeft = letterheadBackgroundUrl ? Math.max(leftPadding, 20) : leftPadding;
+  const bodySidePaddingRight = letterheadBackgroundUrl ? Math.max(rightPadding, 20) : rightPadding;
 
   // QR code is now placed in signature area (bottom) - not at top
   // The QR will be injected where signature exists, on the opposite side
-  // 🎨 PDF.co compatibility: Expand CSS custom properties (variables) to literal values
+  // ðŸŽ¨ PDF.co compatibility: Expand CSS custom properties (variables) to literal values
   let normalizedCss = customCss;
   if (customCss) {
     const cssVarMap = new Map<string, string>();
@@ -4109,15 +4374,15 @@ function buildPdfBodyDocumentV2(
         return value || `var(--${varName})`; // fallback to original if not found
       });
 
-      console.log("🎨 CSS Variables expanded for PDF.co:", {
+      console.log("ðŸŽ¨ CSS Variables expanded for PDF.co:", {
         variableCount: cssVarMap.size,
         variables: Array.from(cssVarMap.keys()),
       });
     }
   }
 
-  // 🐛 Debug CSS inclusion
-  console.log("🎨 buildPdfBodyDocument CSS Debug:", {
+  // ðŸ› Debug CSS inclusion
+  console.log("ðŸŽ¨ buildPdfBodyDocument CSS Debug:", {
     hasBaselineCss: !!BASELINE_CSS,
     baselineCssLength: BASELINE_CSS?.length || 0,
     hasCustomCss: !!normalizedCss,
@@ -4127,7 +4392,7 @@ function buildPdfBodyDocumentV2(
   });
 
   // Build letterhead background styles if URL provided
-  console.log("🎨 Building letterhead styles...");
+  console.log("ðŸŽ¨ Building letterhead styles...");
   console.log("  letterheadBackgroundUrl value:", letterheadBackgroundUrl);
   console.log(
     "  letterheadBackgroundUrl type:",
@@ -4227,7 +4492,7 @@ function buildPdfBodyDocumentV2(
     <div id="page-bg"></div>
     
     <!-- Layout Table for Multi-Page Spacing -->
-    <table style="width: 100%; border: none; border-collapse: collapse;">
+    <table style="width: 100%; max-width: 210mm; border: none; border-collapse: collapse;">
       
       <!-- HEADER SPACER (Repeats on every page) -->
       <thead style="display: table-header-group;">
@@ -4276,7 +4541,7 @@ function buildPdfBodyDocumentV2(
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <!-- Load Google Fonts: Inter (primary) + Noto Sans (Unicode fallback) -->
-<!-- FIX: Removed 9 unused Indian script Noto variants — saves ~200-400KB from PDF embed -->
+<!-- FIX: Removed 9 unused Indian script Noto variants â€” saves ~200-400KB from PDF embed -->
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Noto+Sans:wght@400;700&display=swap" rel="stylesheet">
@@ -4302,7 +4567,7 @@ ${wrappedBody}
 </body>
 </html>`;
 
-  console.log("🎯 buildPdfBodyDocumentV2 FINAL CHECK before return:");
+  console.log("ðŸŽ¯ buildPdfBodyDocumentV2 FINAL CHECK before return:");
   console.log("  - letterheadStyles included?:", !!letterheadStyles);
   console.log("  - wrappedBody type:", typeof wrappedBody);
   console.log(
@@ -4501,7 +4766,7 @@ function applyHeaderTextColor(html: string, settings?: any): string {
   // Check if we have a report-header class in the HTML
   if (!styledHtml.includes("report-header")) {
     console.log(
-      "⚠️ No report-header found in HTML, skipping header text color",
+      "âš ï¸ No report-header found in HTML, skipping header text color",
     );
     return styledHtml;
   }
@@ -4612,7 +4877,7 @@ function applyHeaderTextColor(html: string, settings?: any): string {
     i++;
   }
 
-  console.log("🎨 Applied header text color:", color);
+  console.log("ðŸŽ¨ Applied header text color:", color);
   return result;
 }
 
@@ -4652,11 +4917,11 @@ async function convertHtmlImagesToBase64(html: string): Promise<string> {
         const newImgTag = fullImgTag.replace(imageUrl, base64Src);
         convertedHtml = convertedHtml.replace(fullImgTag, newImgTag);
         console.log(
-          `✅ Converted image to base64: ${imageUrl.substring(0, 50)}...`,
+          `âœ… Converted image to base64: ${imageUrl.substring(0, 50)}...`,
         );
       }
     } catch (error) {
-      console.warn(`⚠️ Failed to convert image ${imageUrl}:`, error);
+      console.warn(`âš ï¸ Failed to convert image ${imageUrl}:`, error);
     }
   }
 
@@ -4675,7 +4940,7 @@ async function convertImageUrlToBase64(imageUrl: string): Promise<string> {
       // Remove transformation parameters: /tr:w-800,h-600/ -> /
       cleanUrl = imageUrl.replace(/\/tr:[^/]+\//, "/");
       console.log(
-        `  🔧 Stripped ImageKit transforms: ${imageUrl} -> ${cleanUrl}`,
+        `  ðŸ”§ Stripped ImageKit transforms: ${imageUrl} -> ${cleanUrl}`,
       );
     }
     // 1. Parse request body
@@ -4696,7 +4961,7 @@ async function convertImageUrlToBase64(imageUrl: string): Promise<string> {
     }
 
     console.log(
-      `\n📄 GENERATING PDF for Order: ${orderId} ${
+      `\nðŸ“„ GENERATING PDF for Order: ${orderId} ${
         isManualDesign ? "(MANUAL DESIGN MODE)" : "(AUTO MODE)"
       }`,
     );
@@ -4705,12 +4970,12 @@ async function convertImageUrlToBase64(imageUrl: string): Promise<string> {
     // MANUAL MODE: Bypass Template Logic
     // ========================================
     if (isManualDesign && htmlOverride) {
-      console.log("🎨 Manual Design detected. Bypassing template generation.");
-      console.log("📝 HTML Content Length:", htmlOverride.length);
+      console.log("ðŸŽ¨ Manual Design detected. Bypassing template generation.");
+      console.log("ðŸ“ HTML Content Length:", htmlOverride.length);
 
       // Validate HTML slightly
       if (!htmlOverride.includes("<!DOCTYPE html>")) {
-        console.warn("⚠️ Manual HTML missing DOCTYPE, might cause issues.");
+        console.warn("âš ï¸ Manual HTML missing DOCTYPE, might cause issues.");
       }
 
       // Prepare filename
@@ -4731,7 +4996,7 @@ async function convertImageUrlToBase64(imageUrl: string): Promise<string> {
         },
       );
 
-      console.log("✅ PDF generated successfully via Manual Mode:", pdfUrl);
+      console.log("âœ… PDF generated successfully via Manual Mode:", pdfUrl);
 
       // Upload to Storage
       const { publicUrl } = await uploadPdfToStorage(
@@ -4765,7 +5030,7 @@ async function convertImageUrlToBase64(imageUrl: string): Promise<string> {
 
     // Initialize job tracking
     job = await createJob(supabaseClient, orderId);
-    console.log("✅ Job created:", job.id);
+    console.log("âœ… Job created:", job.id);
 
     const response = await fetch(cleanUrl);
     if (!response.ok) {
@@ -4807,7 +5072,7 @@ async function pollPdfCoJob(
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     console.log(
-      `📊 Polling PDF.co job ${jobId} (attempt ${attempt}/${maxAttempts})...`,
+      `ðŸ“Š Polling PDF.co job ${jobId} (attempt ${attempt}/${maxAttempts})...`,
     );
 
     const response = await fetch(`${PDFCO_JOB_STATUS_URL}?jobid=${jobId}`, {
@@ -4821,7 +5086,7 @@ async function pollPdfCoJob(
     const result = await response.json();
 
     if (result.status === "success" && result.url) {
-      console.log("✅ PDF.co job completed:", result.url);
+      console.log("âœ… PDF.co job completed:", result.url);
       return result.url;
     }
 
@@ -4857,7 +5122,7 @@ async function sendHtmlToPdfCo(
     grayscale?: boolean; // Convert to black & white for print versions
   } = {},
 ): Promise<string> {
-  console.log("📤 Sending HTML to PDF.co API...");
+  console.log("ðŸ“¤ Sending HTML to PDF.co API...");
   console.log("  Filename:", filename);
   console.log("  HTML length:", html.length);
   console.log("  Header length:", options.headerHtml?.length || 0);
@@ -4908,14 +5173,14 @@ async function sendHtmlToPdfCo(
     const footerHeightPx = parsePxValue(payload.footerheight, 80);
 
     if (topMarginPx > headerHeightPx + 40) {
-      console.warn("  ⚠️ Top margin is much larger than header height:", {
+      console.warn("  âš ï¸ Top margin is much larger than header height:", {
         topMarginPx,
         headerHeightPx,
       });
     }
 
     if (bottomMarginPx > footerHeightPx + 40) {
-      console.warn("  ⚠️ Bottom margin is much larger than footer height:", {
+      console.warn("  âš ï¸ Bottom margin is much larger than footer height:", {
         bottomMarginPx,
         footerHeightPx,
       });
@@ -4927,7 +5192,7 @@ async function sendHtmlToPdfCo(
   if (options.grayscale) {
     // Use CSS filter instead since PDF.co profiles format is complex
     // We'll inject grayscale CSS into the HTML instead
-    console.log("  🖨️ Grayscale mode requested - will apply via CSS filter");
+    console.log("  ðŸ–¨ï¸ Grayscale mode requested - will apply via CSS filter");
   }
 
   const response = await fetch(PDFCO_API_URL, {
@@ -4954,13 +5219,13 @@ async function sendHtmlToPdfCo(
 
   // Handle synchronous response
   if (result.url) {
-    console.log("✅ PDF generated synchronously:", result.url);
+    console.log("âœ… PDF generated synchronously:", result.url);
     return result.url;
   }
 
   // Handle async response (poll for completion)
   if (result.jobId) {
-    console.log("📋 PDF.co async job queued:", result.jobId);
+    console.log("ðŸ“‹ PDF.co async job queued:", result.jobId);
     return pollPdfCoJob(result.jobId, apiKey);
   }
 
@@ -5035,7 +5300,7 @@ async function fetchSectionContent(
     // Build map of placeholder_key -> final_content and placeholder_key -> section_name
     // Also build per-group map: test_group_id -> { placeholder_key -> content }
     // FIX: When multiple sections share the same placeholder_key (e.g. two "findings"
-    // sections), use a unique suffix (_2, _3, …) so every section gets its own entry
+    // sections), use a unique suffix (_2, _3, â€¦) so every section gets its own entry
     // instead of the later one silently overwriting the earlier one.
     const sectionContent: Record<string, string> = {};
     const sectionLabels: Record<string, string> = {};
@@ -5050,7 +5315,7 @@ async function fetchSectionContent(
         const imagesHtml = includeImages ? buildSectionImagesHtml(imageUrls) : "";
         const combined = [content.trim(), imagesHtml].filter(Boolean).join("\n\n");
         if (combined) {
-          // Determine a unique key: first occurrence keeps the base key, subsequent get _2, _3, …
+          // Determine a unique key: first occurrence keeps the base key, subsequent get _2, _3, â€¦
           keyCounters[baseKey] = (keyCounters[baseKey] || 0) + 1;
           const uniqueKey = keyCounters[baseKey] === 1 ? baseKey : `${baseKey}_${keyCounters[baseKey]}`;
 
@@ -5070,7 +5335,7 @@ async function fetchSectionContent(
         }
       }
     }
-    console.log(`📝 fetchSectionContent: ${data.length} row(s) → ${Object.keys(sectionContent).length} unique section(s): [${Object.keys(sectionContent).join(", ")}]`);
+    console.log(`ðŸ“ fetchSectionContent: ${data.length} row(s) â†’ ${Object.keys(sectionContent).length} unique section(s): [${Object.keys(sectionContent).join(", ")}]`);
 
     return { sectionContent, sectionLabels, sectionContentByGroup };
   } catch (err) {
@@ -5122,12 +5387,12 @@ function formatSectionContentToHtml(content: string): string {
 
       const lines = para.split(/\n/).map((line) => line.trim());
       const isBulletList = lines.length > 1 && lines.every((line) =>
-        /^[-•]\s+/.test(line)
+        /^[-â€¢]\s+/.test(line)
       );
 
       if (isBulletList) {
         const items = lines
-          .map((line) => line.replace(/^[-•]\s+/, ""))
+          .map((line) => line.replace(/^[-â€¢]\s+/, ""))
           .map((line) => renderMarkdownBold(line))
           .map((line) => `<li>${line}</li>`)
           .join("");
@@ -5254,7 +5519,7 @@ function injectSectionContent(
       found = true;
       injectedCount++;
       console.log(
-        `📝 Injected section "${rawKey}" via {{section:${rawKey}}} placeholder`,
+        `ðŸ“ Injected section "${rawKey}" via {{section:${rawKey}}} placeholder`,
       );
     } // Check simple format (e.g., {{impression}})
     else if (
@@ -5269,7 +5534,7 @@ function injectSectionContent(
       found = true;
       injectedCount++;
       console.log(
-        `📝 Injected section "${rawKey}" via {{${rawKey}}} placeholder`,
+        `ðŸ“ Injected section "${rawKey}" via {{${rawKey}}} placeholder`,
       );
     } // Check original placeholder (if key already includes section: prefix)
     else if (
@@ -5285,7 +5550,7 @@ function injectSectionContent(
       found = true;
       injectedCount++;
       console.log(
-        `📝 Injected section "${rawKey}" via {{${originalKey}}} placeholder`,
+        `ðŸ“ Injected section "${rawKey}" via {{${originalKey}}} placeholder`,
       );
     }
 
@@ -5296,7 +5561,7 @@ function injectSectionContent(
   }
 
   console.log(
-    `📝 Injected ${injectedCount} section(s) via placeholders, ${
+    `ðŸ“ Injected ${injectedCount} section(s) via placeholders, ${
       Object.keys(uninjectedSections).length
     } need fallback:`,
     Object.keys(sectionContent),
@@ -5333,7 +5598,7 @@ function generateFallbackSectionsHtml(
     .join("");
 
   console.log(
-    `📝 Generated fallback HTML for ${
+    `ðŸ“ Generated fallback HTML for ${
       Object.keys(uninjectedSections).length
     } section(s):`,
     Object.keys(uninjectedSections),
@@ -5404,7 +5669,7 @@ function formatClinicalSummary(text: string): string {
     '<div style="font-weight: bold; color: #1e40af; margin-top: 15px; margin-bottom: 8px; font-size: 14px;">$1</div>',
   );
 
-  // Convert bullet points • to proper HTML lists
+  // Convert bullet points â€¢ to proper HTML lists
   const lines = html.split("\n");
   let inList = false;
   const processedLines: string[] = [];
@@ -5412,7 +5677,7 @@ function formatClinicalSummary(text: string): string {
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i].trim();
 
-    if (line.startsWith("•")) {
+    if (line.startsWith("â€¢")) {
       if (!inList) {
         processedLines.push(
           '<ul style="margin: 8px 0; padding-left: 20px; list-style-type: disc;">',
@@ -5597,7 +5862,7 @@ function generateReportExtrasHtml(extras: {
         // New detailed format with explanations
         html += '<div style="margin-bottom: 15px;">';
         html +=
-          `<h3 style="margin: 0 0 8px 0; color: #16a34a; font-size: 14px; font-weight: bold;">✓ Normal Findings (${patientSummary.normal_findings_detailed.length} tests)</h3>`;
+          `<h3 style="margin: 0 0 8px 0; color: #16a34a; font-size: 14px; font-weight: bold;">âœ“ Normal Findings (${patientSummary.normal_findings_detailed.length} tests)</h3>`;
         for (const finding of patientSummary.normal_findings_detailed) {
           html +=
             '<div style="background: #f0fdf4; border: 1px solid #bbf7d0; border-radius: 6px; padding: 10px; margin-bottom: 8px;">';
@@ -5608,7 +5873,7 @@ function generateReportExtrasHtml(extras: {
               finding.test_name || "Test"
             }</span>`;
           html +=
-            `<span style="background: #dcfce7; color: #166534; padding: 2px 8px; border-radius: 10px; font-size: 11px;">✓ Normal</span>`;
+            `<span style="background: #dcfce7; color: #166534; padding: 2px 8px; border-radius: 10px; font-size: 11px;">âœ“ Normal</span>`;
           html += "</div>";
           if (finding.value) {
             html +=
@@ -5632,7 +5897,7 @@ function generateReportExtrasHtml(extras: {
         // Legacy simple format (array of strings)
         html += '<div style="margin-bottom: 15px;">';
         html +=
-          '<h3 style="margin: 0 0 8px 0; color: #16a34a; font-size: 14px; font-weight: bold;">✓ Normal Findings</h3>';
+          '<h3 style="margin: 0 0 8px 0; color: #16a34a; font-size: 14px; font-weight: bold;">âœ“ Normal Findings</h3>';
         html +=
           '<ul style="margin: 0; padding-left: 20px; font-size: 13px; line-height: 1.6; color: #1f2937;">';
         for (const finding of patientSummary.normal_findings) {
@@ -5643,7 +5908,7 @@ function generateReportExtrasHtml(extras: {
         // Summary text format
         html += '<div style="margin-bottom: 15px;">';
         html +=
-          '<h3 style="margin: 0 0 8px 0; color: #16a34a; font-size: 14px; font-weight: bold;">✓ Normal Findings</h3>';
+          '<h3 style="margin: 0 0 8px 0; color: #16a34a; font-size: 14px; font-weight: bold;">âœ“ Normal Findings</h3>';
         html +=
           `<p style="margin: 0; font-size: 13px; line-height: 1.5; color: #1f2937;">${patientSummary.normal_findings_summary}</p>`;
         html += "</div>";
@@ -5656,7 +5921,7 @@ function generateReportExtrasHtml(extras: {
       ) {
         html += '<div style="margin-bottom: 15px;">';
         html +=
-          '<h3 style="margin: 0 0 8px 0; color: #dc2626; font-size: 14px; font-weight: bold;">⚠ Areas Needing Attention</h3>';
+          '<h3 style="margin: 0 0 8px 0; color: #dc2626; font-size: 14px; font-weight: bold;">âš  Areas Needing Attention</h3>';
         for (const finding of patientSummary.abnormal_findings) {
           // Handle both string and object formats for abnormal findings
           if (typeof finding === "string") {
@@ -5685,11 +5950,11 @@ function generateReportExtrasHtml(extras: {
               ? "#dbeafe"
               : "#fef3c7";
             const statusLabel = status === "critical"
-              ? "⚠️ Critical"
+              ? "âš ï¸ Critical"
               : status === "high"
-              ? "↑ High"
+              ? "â†‘ High"
               : status === "low"
-              ? "↓ Low"
+              ? "â†“ Low"
               : "Abnormal";
 
             html += `<div style="background: ${statusBg}; border: 1px solid ${
@@ -5724,12 +5989,12 @@ function generateReportExtrasHtml(extras: {
             }
             if (finding.trend) {
               const trendEmoji = finding.trend === "improving"
-                ? "📈"
+                ? "ðŸ“ˆ"
                 : finding.trend === "worsening"
-                ? "📉"
+                ? "ðŸ“‰"
                 : finding.trend === "stable"
-                ? "➡️"
-                : "🆕";
+                ? "âž¡ï¸"
+                : "ðŸ†•";
               const trendColor = finding.trend === "improving"
                 ? "#16a34a"
                 : finding.trend === "worsening"
@@ -5753,7 +6018,7 @@ function generateReportExtrasHtml(extras: {
         html +=
           '<div style="margin-bottom: 15px; background: #fef2f2; padding: 12px; border-radius: 6px; border-left: 4px solid #dc2626;">';
         html +=
-          `<h3 style="margin: 0 0 8px 0; color: #dc2626; font-size: 14px; font-weight: bold;">📋 ${
+          `<h3 style="margin: 0 0 8px 0; color: #dc2626; font-size: 14px; font-weight: bold;">ðŸ“‹ ${
             patientSummary.needs_consultation
               ? "Doctor Consultation Recommended"
               : "Recommendation"
@@ -5767,7 +6032,7 @@ function generateReportExtrasHtml(extras: {
       if (patientSummary.health_tips && patientSummary.health_tips.length > 0) {
         html += '<div style="margin-bottom: 10px;">';
         html +=
-          '<h3 style="margin: 0 0 8px 0; color: #0891b2; font-size: 14px; font-weight: bold;">💡 Health Tips</h3>';
+          '<h3 style="margin: 0 0 8px 0; color: #0891b2; font-size: 14px; font-weight: bold;">ðŸ’¡ Health Tips</h3>';
         html +=
           '<ul style="margin: 0; padding-left: 20px; font-size: 13px; line-height: 1.6; color: #1f2937;">';
         for (const tip of patientSummary.health_tips) {
@@ -5781,7 +6046,7 @@ function generateReportExtrasHtml(extras: {
         html +=
           '<div style="margin-bottom: 10px; background: linear-gradient(135deg, #fdf2f8 0%, #fce7f3 100%); padding: 12px; border-radius: 6px; border: 1px solid #fbcfe8;">';
         html +=
-          `<p style="margin: 0; font-size: 13px; line-height: 1.5; color: #be185d; font-style: italic; text-align: center;">💖 ${patientSummary.summary_message}</p>`;
+          `<p style="margin: 0; font-size: 13px; line-height: 1.5; color: #be185d; font-style: italic; text-align: center;">ðŸ’– ${patientSummary.summary_message}</p>`;
         html += "</div>";
       }
 
@@ -5836,10 +6101,10 @@ function applyLetterheadImageTransform(url: string): string {
     pathParts.splice(insertIndex, 0, "tr:w-1240,h-1754,c-force,q-75,f-jpg"); // FIX: was w-2480,h-3508,q-95,f-png
     urlObj.pathname = pathParts.join("/");
 
-    console.log("📸 Applied letterhead ImageKit transform: 1240x1754 q75 jpg (reduced from 2480x3508 q95 png)");
+    console.log("ðŸ“¸ Applied letterhead ImageKit transform: 1240x1754 q75 jpg (reduced from 2480x3508 q95 png)");
     return urlObj.toString();
   } catch (e) {
-    console.log("⚠️ Could not apply letterhead transform:", e);
+    console.log("âš ï¸ Could not apply letterhead transform:", e);
     return url;
   }
 }
@@ -5880,10 +6145,10 @@ function applyAttachmentImageTransformations(
     pathParts.splice(insertIndex, 0, `tr:w-${maxWidth},fo-auto,q-90`);
     urlObj.pathname = pathParts.join("/");
 
-    console.log(`📸 Applied ImageKit transform: w-${maxWidth} to attachment`);
+    console.log(`ðŸ“¸ Applied ImageKit transform: w-${maxWidth} to attachment`);
     return urlObj.toString();
   } catch (e) {
-    console.log("⚠️ Could not apply transformations to attachment URL:", e);
+    console.log("âš ï¸ Could not apply transformations to attachment URL:", e);
     return url;
   }
 }
@@ -5955,7 +6220,7 @@ async function uploadPdfToStorage(
   variant: PdfVariant = "final",
   maxRetries: number = 3,
 ): Promise<{ path: string; publicUrl: string }> {
-  console.log("📥 Downloading PDF from PDF.co...");
+  console.log("ðŸ“¥ Downloading PDF from PDF.co...");
 
   // Download PDF with retry logic
   let pdfBuffer: ArrayBuffer | null = null;
@@ -5963,7 +6228,7 @@ async function uploadPdfToStorage(
 
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     try {
-      console.log(`  📥 Download attempt ${attempt}/${maxRetries}...`);
+      console.log(`  ðŸ“¥ Download attempt ${attempt}/${maxRetries}...`);
 
       // Add timeout to prevent hanging connections
       const controller = new AbortController();
@@ -5984,12 +6249,12 @@ async function uploadPdfToStorage(
       }
 
       pdfBuffer = await pdfResponse.arrayBuffer();
-      console.log(`  ✅ Download successful: ${pdfBuffer.byteLength} bytes`);
+      console.log(`  âœ… Download successful: ${pdfBuffer.byteLength} bytes`);
       break; // Success, exit retry loop
     } catch (err) {
       lastError = err instanceof Error ? err : new Error(String(err));
       console.warn(
-        `  ⚠️ Download attempt ${attempt} failed:`,
+        `  âš ï¸ Download attempt ${attempt} failed:`,
         lastError.message,
       );
 
@@ -5997,7 +6262,7 @@ async function uploadPdfToStorage(
         // Wait before retry with longer delays for PDF.co to finalize
         // PDF.co sometimes needs time to make files available
         const waitTime = Math.min(2000 * attempt, 10000); // 2s, 4s, 6s, 8s, 10s (all variants)
-        console.log(`  ⏳ Waiting ${waitTime}ms before retry...`);
+        console.log(`  â³ Waiting ${waitTime}ms before retry...`);
         await new Promise((resolve) => setTimeout(resolve, waitTime));
       }
     }
@@ -6006,7 +6271,7 @@ async function uploadPdfToStorage(
   if (!pdfBuffer) {
     if (pdfUrl) {
       console.warn(
-        `⚠️ FINAL FALLBACK: Failed to download PDF after ${maxRetries} attempts but PDF.co URL exists. Using temporary URL.`,
+        `âš ï¸ FINAL FALLBACK: Failed to download PDF after ${maxRetries} attempts but PDF.co URL exists. Using temporary URL.`,
       );
       return {
         path: "",
@@ -6027,7 +6292,7 @@ async function uploadPdfToStorage(
   const storageFileName = `${orderId}_${timestamp}${suffix}.pdf`;
 
   console.log(
-    "📤 Uploading PDF to Supabase Storage (reports bucket):",
+    "ðŸ“¤ Uploading PDF to Supabase Storage (reports bucket):",
     storageFileName,
   );
 
@@ -6047,8 +6312,8 @@ async function uploadPdfToStorage(
   // Get public URL (using custom domain if configured)
   const publicUrl = getPublicStorageUrl("reports", storageFileName);
 
-  console.log("✅ PDF uploaded to storage:", publicUrl);
-  console.log("📡 Using custom domain:", !!CUSTOM_REPORTS_DOMAIN);
+  console.log("âœ… PDF uploaded to storage:", publicUrl);
+  console.log("ðŸ“¡ Using custom domain:", !!CUSTOM_REPORTS_DOMAIN);
 
   return {
     path: storageFileName,
@@ -6063,11 +6328,11 @@ async function uploadPdfToStorage(
 serve(async (req) => {
   // Top-level try-catch to ensure CORS headers are ALWAYS returned
   try {
-    console.log("📥 Incoming request:", req.method, req.url);
+    console.log("ðŸ“¥ Incoming request:", req.method, req.url);
 
     if (req.method === "OPTIONS") {
-      console.log("📋 Handling OPTIONS preflight request");
-      console.log("📋 CORS headers:", corsHeaders);
+      console.log("ðŸ“‹ Handling OPTIONS preflight request");
+      console.log("ðŸ“‹ CORS headers:", corsHeaders);
       return new Response(null, {
         status: 200,
         headers: corsHeaders,
@@ -6104,15 +6369,31 @@ serve(async (req) => {
           .maybeSingle()
         : { data: null };
       const orderReportSettings = (orderSettingsRow as any)?.report_settings || {};
+      // Priority: request body â†’ per-order setting â†’ "standard"
+      // Lab-level default (compactPrint.defaultMode) is applied further down after
+      // pdfSettings is loaded (line ~6996), for webhook/auto-generation paths.
       const requestedPrintLayoutMode = requestBody.printLayoutMode ?? orderReportSettings?.printLayoutMode;
       const printLayoutMode = normalizePrintLayoutMode(requestedPrintLayoutMode);
 
+      // Compact planner overrides from the Order Settings UI compact page planner
+      const compactGroupOrderOverride: string[] | null = Array.isArray(requestBody.compactGroupOrder)
+        ? (requestBody.compactGroupOrder as unknown[]).map(String).filter(Boolean)
+        : null;
+      const compactPageAssignmentsOverride: Record<string, number> | null =
+        requestBody.compactPageAssignments && typeof requestBody.compactPageAssignments === "object" && !Array.isArray(requestBody.compactPageAssignments)
+          ? (requestBody.compactPageAssignments as Record<string, number>)
+          : null;
+      const compactMaxClubbedAnalytesOverride: number | null =
+        typeof requestBody.compactMaxClubbedAnalytes === "number" && requestBody.compactMaxClubbedAnalytes > 0
+          ? requestBody.compactMaxClubbedAnalytes
+          : null;
+
       console.log(
-        "═══════════════════════════════════════════════════════════",
+        "â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•",
       );
-      console.log("📄 PDF AUTO-GENERATION (SERVER-SIDE)");
+      console.log("ðŸ“„ PDF AUTO-GENERATION (SERVER-SIDE)");
       console.log(
-        "═══════════════════════════════════════════════════════════",
+        "â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•",
       );
       console.log("Order ID:", orderId);
       console.log("Is Draft:", !!isDraft);
@@ -6122,7 +6403,7 @@ serve(async (req) => {
       console.log("Triggered By User ID:", triggeredByUserId || "N/A");
       console.log(
         "PDF.co API Key:",
-        PDFCO_API_KEY ? "✅ Present" : "❌ MISSING",
+        PDFCO_API_KEY ? "âœ… Present" : "âŒ MISSING",
       );
 
       if (!orderId) {
@@ -6143,7 +6424,7 @@ serve(async (req) => {
       // ========================================
       if (isManualDesign && htmlOverride) {
         console.log(
-          "🎨 Manual Design detected. Bypassing template generation.",
+          "ðŸŽ¨ Manual Design detected. Bypassing template generation.",
         );
 
         const filename = `Report_${orderId}_${new Date().getTime()}.pdf`;
@@ -6161,7 +6442,7 @@ serve(async (req) => {
           },
         );
 
-        console.log("✅ PDF generated successfully via Manual Mode:", pdfUrl);
+        console.log("âœ… PDF generated successfully via Manual Mode:", pdfUrl);
 
         // Upload to Storage
         const { publicUrl } = await uploadPdfToStorage(
@@ -6187,8 +6468,10 @@ serve(async (req) => {
       // ========================================
       // PRE-CHECK: Order Readiness (Panel Status)
       // ========================================
-      if (!isDraft) {
-        console.log("\n🔍 Pre-check: Verifying order readiness...");
+      // Compact print is always a deliberate manual action from the UI and writes to
+      // print_pdf_url (not pdf_url), so it must never be blocked by panel readiness.
+      if (!isDraft && printLayoutMode !== "compact") {
+        console.log("\nðŸ” Pre-check: Verifying order readiness...");
         const { data: readinessData, error: readinessError } =
           await supabaseClient
             .from("v_result_panel_status")
@@ -6197,20 +6480,20 @@ serve(async (req) => {
 
         if (readinessError) {
           console.warn(
-            "⚠️ Could not verify panel status (view might be missing), proceeding with caution:",
+            "âš ï¸ Could not verify panel status (view might be missing), proceeding with caution:",
             readinessError.message,
           );
         } else if (readinessData) {
           const isReady = readinessData.length > 0 &&
             readinessData.every((r: any) => r.panel_ready);
           console.log(
-            `  → Panel status: ${isReady ? "✅ READY" : "⏳ NOT READY"}`,
+            `  â†’ Panel status: ${isReady ? "âœ… READY" : "â³ NOT READY"}`,
             readinessData,
           );
 
           if (!isReady) {
             console.log(
-              "⛔ Order is not ready for final report. Skipping auto-generation.",
+              "â›” Order is not ready for final report. Skipping auto-generation.",
             );
 
             // If there's an existing queue item, update it to failed/skipped so it doesn't get stuck
@@ -6253,7 +6536,7 @@ serve(async (req) => {
       // ========================================
       // Step 1: Get or Create Job from Queue
       // ========================================
-      console.log("\n📋 Step 1: Fetching/creating job in queue...");
+      console.log("\nðŸ“‹ Step 1: Fetching/creating job in queue...");
 
       // First, try to get existing job
       let { data: job, error: jobError } = await supabaseClient
@@ -6265,7 +6548,7 @@ serve(async (req) => {
       // If no job exists, create one (for manual/direct Edge function calls)
       if (!job) {
         console.log(
-          "ℹ️ No queue entry found, fetching lab_id and creating entry...",
+          "â„¹ï¸ No queue entry found, fetching lab_id and creating entry...",
         );
 
         // Get lab_id from the order
@@ -6277,7 +6560,7 @@ serve(async (req) => {
 
         if (orderError || !orderData?.lab_id) {
           console.error(
-            "❌ Failed to fetch lab_id for order:",
+            "âŒ Failed to fetch lab_id for order:",
             orderError?.message,
           );
           return new Response(
@@ -6310,7 +6593,7 @@ serve(async (req) => {
 
         if (upsertError) {
           console.error(
-            "❌ Failed to upsert queue entry:",
+            "âŒ Failed to upsert queue entry:",
             upsertError?.message,
           );
           return new Response(
@@ -6327,17 +6610,17 @@ serve(async (req) => {
 
         job = upsertData;
         console.log(
-          "✅ Created/updated queue entry:",
+          "âœ… Created/updated queue entry:",
           job.id,
           "for lab:",
           orderData.lab_id,
         );
       }
 
-      // If job exists but is completed, reset it to pending for regeneration
+      // If job exists but is completed, check if we can return cached or must regenerate
       if (job.status === "completed") {
         console.log(
-          "♻️ Job already completed, checking if PDF still exists...",
+          "â™»ï¸ Job already completed, checking if PDF still exists...",
         );
 
         // Check if the PDF still exists in reports table
@@ -6349,9 +6632,11 @@ serve(async (req) => {
             .eq("report_type", "final")
             .maybeSingle();
 
-        if (existingReport && existingReport.pdf_url) {
+        // Return cached only for standard (non-compact) requests when a final PDF exists.
+        // Compact print always regenerates so the new page assignments are applied.
+        if (existingReport && existingReport.pdf_url && printLayoutMode !== "compact") {
           console.log(
-            "✅ Final PDF already exists in reports table, returning existing URL",
+            "âœ… Final PDF already exists in reports table, returning existing URL",
           );
           return new Response(
             JSON.stringify({
@@ -6369,8 +6654,12 @@ serve(async (req) => {
           );
         }
 
-        // PDF doesn't exist, reset queue to regenerate
-        console.log("⚠️ PDF missing from reports table, regenerating...");
+        // PDF missing or compact print â†’ reset queue to regenerate
+        console.log(
+          printLayoutMode === "compact"
+            ? "ðŸ”„ Compact print requested â€” regenerating with updated page plan..."
+            : "âš ï¸ PDF missing from reports table, regenerating...",
+        );
         const { data: resetJob, error: resetError } = await supabaseClient
           .from("pdf_generation_queue")
           .update({
@@ -6385,16 +6674,42 @@ serve(async (req) => {
           .single();
 
         if (resetError) {
-          console.error("❌ Failed to reset job status:", resetError?.message);
+          console.error("âŒ Failed to reset job status:", resetError?.message);
         } else {
           job = resetJob;
-          console.log("✅ Job reset to pending");
+          console.log("âœ… Job reset to pending");
+        }
+      }
+
+      // Reset failed/skipped/error jobs to pending so the atomic claim below succeeds.
+      // These statuses occur when a previous attempt was blocked (e.g. panel readiness)
+      // or errored out; the caller is explicitly retrying so we should let it through.
+      if (job.status === "failed" || job.status === "skipped" || job.status === "error") {
+        console.log(`â™»ï¸ Job is in '${job.status}' state â€” resetting to pending for retry`);
+        const { data: resetJob, error: resetError } = await supabaseClient
+          .from("pdf_generation_queue")
+          .update({
+            status: "pending",
+            error_message: null,
+            retry_count: 0,
+            progress_stage: null,
+            progress_percent: 0,
+          })
+          .eq("id", job.id)
+          .select()
+          .single();
+
+        if (resetError) {
+          console.error("âŒ Failed to reset failed job:", resetError?.message);
+        } else {
+          job = resetJob;
+          console.log("âœ… Failed/skipped job reset to pending");
         }
       }
 
       // Prevent duplicate processing - if already processing, return early
       if (job.status === "processing") {
-        console.log("⏳ Job already processing, skipping duplicate request");
+        console.log("â³ Job already processing, skipping duplicate request");
         return new Response(
           JSON.stringify({
             message: "Already processing",
@@ -6408,7 +6723,7 @@ serve(async (req) => {
         );
       }
 
-      console.log("✅ Job found:", {
+      console.log("âœ… Job found:", {
         id: job.id,
         status: job.status,
         labId: job.lab_id,
@@ -6417,7 +6732,7 @@ serve(async (req) => {
       // ========================================
       // Step 2: Mark as Processing (Atomic Update)
       // ========================================
-      console.log("\n📝 Step 2: Marking job as processing...");
+      console.log("\nðŸ“ Step 2: Marking job as processing...");
 
       // Use atomic update with status check to prevent race conditions
       const { data: updatedJob, error: updateError } = await supabaseClient
@@ -6435,7 +6750,7 @@ serve(async (req) => {
 
       // If update didn't find a pending job, another process got it first
       if (updateError || !updatedJob) {
-        console.log("⏳ Job was claimed by another process, skipping");
+        console.log("â³ Job was claimed by another process, skipping");
         return new Response(
           JSON.stringify({
             message: "Job claimed by another process",
@@ -6451,14 +6766,14 @@ serve(async (req) => {
       // ========================================
       // Step 3: Get Template Context (RPC)
       // ========================================
-      console.log("\n📊 Step 3: Fetching template context via RPC...");
+      console.log("\nðŸ“Š Step 3: Fetching template context via RPC...");
       const { data: context, error: contextError } = await supabaseClient.rpc(
         "get_report_template_context",
         { p_order_id: orderId },
       );
 
       if (contextError || !context) {
-        console.error("❌ Context fetch failed:", contextError?.message);
+        console.error("âŒ Context fetch failed:", contextError?.message);
         await failJob(
           supabaseClient,
           job.id,
@@ -6478,10 +6793,10 @@ serve(async (req) => {
 
       // RPC returns nested structure: context.patient.name, context.order.sampleId, etc.
       console.log(
-        "✅ Context fetched (full structure):",
+        "âœ… Context fetched (full structure):",
         JSON.stringify(context, null, 2).substring(0, 2000),
       );
-      console.log("✅ Context summary:", {
+      console.log("âœ… Context summary:", {
         patientName: context.patient?.name ||
           context.placeholderValues?.patientName,
         patientId: context.patientId,
@@ -6504,7 +6819,7 @@ serve(async (req) => {
       // For section-only groups, saved report-section content is a valid result
       // even when there are zero analyte rows in context.analytes.
       if (!context.analytes || context.analytes.length === 0) {
-        console.warn("⚠️ No analytes found in context, checking for section-only report content...");
+        console.warn("âš ï¸ No analytes found in context, checking for section-only report content...");
 
         let hasSectionOnlyContent = false;
         try {
@@ -6514,7 +6829,7 @@ serve(async (req) => {
             .eq("order_id", orderId);
 
           if (resultError) {
-            console.warn("⚠️ Failed to fetch result ids for section-only validation:", resultError.message);
+            console.warn("âš ï¸ Failed to fetch result ids for section-only validation:", resultError.message);
           } else {
             const resultIds = (resultRows || []).map((row: any) => row.id).filter(Boolean);
             if (resultIds.length > 0) {
@@ -6553,11 +6868,11 @@ serve(async (req) => {
             }
           }
         } catch (sectionValidationError) {
-          console.warn("⚠️ Section-only validation failed:", sectionValidationError);
+          console.warn("âš ï¸ Section-only validation failed:", sectionValidationError);
         }
 
         if (!hasSectionOnlyContent) {
-          console.error("❌ No analytes or section-only content found in context");
+          console.error("âŒ No analytes or section-only content found in context");
           await failJob(
             supabaseClient,
             job.id,
@@ -6578,13 +6893,13 @@ serve(async (req) => {
         a.value != null && a.value !== ""
       );
       if (analytesWithValues.length === 0) {
-        console.warn("⚠️ WARNING: All analytes have empty values!");
+        console.warn("âš ï¸ WARNING: All analytes have empty values!");
       }
 
       // ========================================
       // Step 3a: Filter out canceled tests
       // ========================================
-      console.log("\n🚫 Step 3a: Filtering canceled tests...");
+      console.log("\nðŸš« Step 3a: Filtering canceled tests...");
 
       // Get canceled test_group_ids from order_tests
       const { data: canceledTests } = await supabaseClient
@@ -6599,7 +6914,7 @@ serve(async (req) => {
 
       if (canceledTestGroupIds.size > 0) {
         console.log(
-          `📋 Found ${canceledTestGroupIds.size} canceled test group(s):`,
+          `ðŸ“‹ Found ${canceledTestGroupIds.size} canceled test group(s):`,
           Array.from(canceledTestGroupIds),
         );
 
@@ -6621,34 +6936,83 @@ serve(async (req) => {
         }
 
         console.log(
-          `✅ Filtered analytes: ${originalCount} → ${context.analytes.length} (removed ${
+          `âœ… Filtered analytes: ${originalCount} â†’ ${context.analytes.length} (removed ${
             originalCount - context.analytes.length
           } from canceled tests)`,
         );
       } else {
-        console.log("✅ No canceled tests found - including all analytes");
+        console.log("âœ… No canceled tests found - including all analytes");
       }
 
-      // Deduplicate analytes by (test_group_id, analyte_id) — guards against
+      // Deduplicate analytes by (test_group_id, analyte_id) â€” guards against
       // duplicate result_values rows from multiple results records for same test group
-      {
-        const seen = new Set<string>();
-        const deduped: any[] = [];
-        for (const a of (context.analytes || [])) {
-          const key = `${a.test_group_id ?? ""}|${a.analyte_id ?? ""}`;
+	      {
+	        const seen = new Set<string>();
+	        const deduped: any[] = [];
+	        for (const a of (context.analytes || [])) {
+	          const identity = getAnalyteIdentityIds(a)[0] || a.parameter || a.name || "";
+	          const key = `${a.test_group_id ?? a.testGroupId ?? ""}|${identity}`;
           if (!seen.has(key)) {
             seen.add(key);
             deduped.push(a);
           }
         }
         if (deduped.length < (context.analytes?.length ?? 0)) {
-          console.log(`⚠️ Removed ${(context.analytes?.length ?? 0) - deduped.length} duplicate analyte(s) from context`);
-          context.analytes = deduped;
-        }
-      }
+          console.log(`âš ï¸ Removed ${(context.analytes?.length ?? 0) - deduped.length} duplicate analyte(s) from context`);
+	          context.analytes = deduped;
+	        }
+	      }
 
-      // ========================================
-      // Step 3a.1: Enrich section content with image URLs (ecopy only)
+	      // Enrich analytes with per-test-group display options, such as
+	      // same-row sibling display for Differential % + Absolute Count.
+	      try {
+	        const groupIdsForDisplayOptions = [
+	          ...new Set((context.analytes || []).map((a: any) => a.test_group_id || a.testGroupId).filter(Boolean)),
+	        ];
+	        if (groupIdsForDisplayOptions.length > 0) {
+	          const { data: tgaDisplayRows, error: tgaDisplayError } = await supabaseClient
+	            .from("test_group_analytes")
+	            .select("test_group_id, analyte_id, lab_analyte_id, report_display_options")
+	            .in("test_group_id", groupIdsForDisplayOptions);
+
+	          if (tgaDisplayError) {
+	            console.warn("âš ï¸ Failed to load analyte report display options:", tgaDisplayError.message);
+	          } else {
+		            const optionsByKey = new Map<string, any>();
+		            let configuredSameRowCount = 0;
+		            for (const row of tgaDisplayRows || []) {
+		              const options = row.report_display_options || {};
+		              if (options?.sameRowSiblingAnalyteId) configuredSameRowCount += 1;
+		              for (const id of getAnalyteIdentityIds(row)) {
+		                optionsByKey.set(`${row.test_group_id}|${id}`, options);
+		              }
+		            }
+		            let enrichedSameRowCount = 0;
+		            context.analytes = (context.analytes || []).map((a: any) => {
+		              const groupId = a.test_group_id || a.testGroupId || "";
+		              const matchedOptions = getAnalyteIdentityIds(a)
+		                .map((id) => optionsByKey.get(`${groupId}|${id}`))
+		                .find(Boolean);
+		              if (matchedOptions?.sameRowSiblingAnalyteId) enrichedSameRowCount += 1;
+		              return {
+		                ...a,
+		                report_display_options: matchedOptions || a.report_display_options || {},
+		              };
+		            });
+		            console.log("[basic-template] report display options loaded:", {
+		              groups: groupIdsForDisplayOptions.length,
+		              rows: tgaDisplayRows?.length || 0,
+		              configuredSameRowCount,
+		              enrichedSameRowCount,
+		            });
+	          }
+	        }
+	      } catch (displayOptionsError) {
+	        console.warn("âš ï¸ Unexpected error enriching report display options:", displayOptionsError);
+	      }
+
+	      // ========================================
+	      // Step 3a.1: Enrich section content with image URLs (ecopy only)
       // ========================================
       try {
         const { data: resultRows, error: resultError } = await supabaseClient
@@ -6658,7 +7022,7 @@ serve(async (req) => {
 
         if (resultError) {
           console.warn(
-            "⚠️ Failed to fetch result ids for section images:",
+            "âš ï¸ Failed to fetch result ids for section images:",
             resultError.message,
           );
         } else {
@@ -6696,7 +7060,7 @@ serve(async (req) => {
           }
         }
       } catch (err) {
-        console.warn("⚠️ Section image enrichment failed:", err);
+        console.warn("âš ï¸ Section image enrichment failed:", err);
       }
 
       await updateProgress(
@@ -6710,7 +7074,7 @@ serve(async (req) => {
       // Step 3b: Enhance Analytes with Flag Determination
       // ========================================
       console.log(
-        "\n🏷️ Step 3b: Enhancing analytes with flag determination...",
+        "\nðŸ·ï¸ Step 3b: Enhancing analytes with flag determination...",
       );
       const patientGender = context.patient?.gender ||
         context.placeholderValues?.gender;
@@ -6745,7 +7109,7 @@ serve(async (req) => {
           a.flag && a.flag.trim()
         ).length;
         console.log(
-          `✅ Flag determination complete: ${flaggedCount}/${context.analytes.length} analytes have flags`,
+          `âœ… Flag determination complete: ${flaggedCount}/${context.analytes.length} analytes have flags`,
         );
       }
 
@@ -6759,7 +7123,7 @@ serve(async (req) => {
       // ========================================
       // Step 4: Get Lab Template & Settings
       // ========================================
-      console.log("\n🎨 Step 4: Fetching lab templates & settings...");
+      console.log("\nðŸŽ¨ Step 4: Fetching lab templates & settings...");
 
       // Get all templates for this lab
       const { data: allTemplates, error: templateError } = await supabaseClient
@@ -6772,7 +7136,7 @@ serve(async (req) => {
       );
 
       console.log(
-        "📋 Available templates:",
+        "ðŸ“‹ Available templates:",
         templatesWithHtml.map((t: any) => ({
           name: t.template_name,
           testGroupId: t.test_group_id || "none",
@@ -6791,7 +7155,7 @@ serve(async (req) => {
       // ========================================
       // Step 5: Get Lab Settings (Header/Footer/PDF Settings/Watermark)
       // ========================================
-      console.log("\n⚙️ Step 5: Fetching lab settings...");
+      console.log("\nâš™ï¸ Step 5: Fetching lab settings...");
       const { data: labSettings, error: labSettingsError } = await supabaseClient
         .from("labs")
         .select(`
@@ -6815,7 +7179,7 @@ serve(async (req) => {
         .single();
 
       if (labSettingsError) {
-        console.error("  ❌ Lab settings query error:", labSettingsError.message);
+        console.error("  âŒ Lab settings query error:", labSettingsError.message);
       }
 
       // Fetch custom patient field configs for this lab (for dynamic PDF fields)
@@ -6826,7 +7190,7 @@ serve(async (req) => {
         .order('sort_order');
 
       const pdfLetterheadMode = labSettings?.pdf_letterhead_mode || 'background';
-      console.log("  📋 PDF Letterhead Mode:", pdfLetterheadMode);
+      console.log("  ðŸ“‹ PDF Letterhead Mode:", pdfLetterheadMode);
 
       // Variables for both modes
       let letterheadUrl: string | null = null;
@@ -6835,15 +7199,15 @@ serve(async (req) => {
       if (pdfLetterheadMode === 'header_footer') {
         // MODE: Separate Header/Footer Images
         // Fetch header and footer separately, convert to base64 for PDF.co native header/footer
-        console.log("  🖼️ Fetching SEPARATE header/footer images (header_footer mode)...");
+        console.log("  ðŸ–¼ï¸ Fetching SEPARATE header/footer images (header_footer mode)...");
         const { headerUrl, footerUrl } = await fetchHeaderFooterImages(
           supabaseClient,
           orderId,
           job.lab_id,
         );
 
-        console.log("  📍 Header URL:", headerUrl ? "FOUND" : "NOT FOUND");
-        console.log("  📍 Footer URL:", footerUrl ? "FOUND" : "NOT FOUND");
+        console.log("  ðŸ“ Header URL:", headerUrl ? "FOUND" : "NOT FOUND");
+        console.log("  ðŸ“ Footer URL:", footerUrl ? "FOUND" : "NOT FOUND");
 
         // Prefer optimized ImageKit URLs for native PDF.co header/footer rendering.
         // Large base64 data URIs can fail when branding images are wide/full-bleed banners.
@@ -6861,10 +7225,10 @@ serve(async (req) => {
         let headerSrc = optimizedHeaderUrl;
         let footerSrc = optimizedFooterUrl;
 
-        console.log("  🖼️ Header source strategy:", headerUrl?.includes('ik.imagekit.io')
+        console.log("  ðŸ–¼ï¸ Header source strategy:", headerUrl?.includes('ik.imagekit.io')
           ? "optimized-imagekit-url"
           : "original-url-or-base64");
-        console.log("  🖼️ Footer source strategy:", footerUrl?.includes('ik.imagekit.io')
+        console.log("  ðŸ–¼ï¸ Footer source strategy:", footerUrl?.includes('ik.imagekit.io')
           ? "optimized-imagekit-url"
           : "original-url-or-base64");
 
@@ -6873,10 +7237,10 @@ serve(async (req) => {
           if (headerBase64) {
             headerSrc = headerBase64;
             console.log(headerUrl.includes('ik.imagekit.io')
-              ? "  ✅ Header optimized via ImageKit and converted to base64"
-              : "  ✅ Header converted to base64");
+              ? "  âœ… Header optimized via ImageKit and converted to base64"
+              : "  âœ… Header converted to base64");
           } else {
-            console.log("  ⚠️ Header base64 failed, using URL fallback");
+            console.log("  âš ï¸ Header base64 failed, using URL fallback");
           }
         }
 
@@ -6885,10 +7249,10 @@ serve(async (req) => {
           if (footerBase64) {
             footerSrc = footerBase64;
             console.log(footerUrl.includes('ik.imagekit.io')
-              ? "  ✅ Footer optimized via ImageKit and converted to base64"
-              : "  ✅ Footer converted to base64");
+              ? "  âœ… Footer optimized via ImageKit and converted to base64"
+              : "  âœ… Footer converted to base64");
           } else {
-            console.log("  ⚠️ Footer base64 failed, using URL fallback");
+            console.log("  âš ï¸ Footer base64 failed, using URL fallback");
           }
         }
 
@@ -6903,18 +7267,18 @@ serve(async (req) => {
           footerHtml: footerSrc ? buildFooterHtml(footerSrc, footerHeight, sideMargins) : '',
         };
 
-        console.log("  ✅ Header/Footer mode configured:",
+        console.log("  âœ… Header/Footer mode configured:",
           "header:", headerFooterHtml.headerHtml.length, "chars,",
           "footer:", headerFooterHtml.footerHtml.length, "chars");
-        console.log("  ↔️ Header/Footer bleed margins:", sideMargins);
+        console.log("  â†”ï¸ Header/Footer bleed margins:", sideMargins);
 
-        // letterheadUrl stays null — no background image in this mode
+        // letterheadUrl stays null â€” no background image in this mode
       } else {
         // MODE: Full-page Background (default/current behavior)
         // FETCH LETTERHEAD BACKGROUND IMAGE (Full-page background approach)
         // Priority: B2B Account > Location > Lab
-        console.log("  🖼️ Fetching letterhead background image (background mode)...");
-        console.log("  📍 Order ID:", orderId, "| Lab ID:", job.lab_id);
+        console.log("  ðŸ–¼ï¸ Fetching letterhead background image (background mode)...");
+        console.log("  ðŸ“ Order ID:", orderId, "| Lab ID:", job.lab_id);
         const letterheadBackgroundUrl = await fetchLetterheadBackgroundForOrder(
           supabaseClient,
           orderId,
@@ -6927,16 +7291,16 @@ serve(async (req) => {
           : null;
 
         console.log(
-          "  🎨 Letterhead Background URL:",
+          "  ðŸŽ¨ Letterhead Background URL:",
           letterheadUrl || "NOT FOUND",
         );
         if (letterheadUrl) {
           console.log(
-            "  ✅ Using letterhead background:",
+            "  âœ… Using letterhead background:",
             letterheadUrl,
           );
         } else {
-          console.log("  ⚠️ No letterhead background found, using plain layout");
+          console.log("  âš ï¸ No letterhead background found, using plain layout");
         }
       }
 
@@ -6957,7 +7321,7 @@ serve(async (req) => {
       // ========================================
       // Step 5b: Get Signatory Info (Approver fallback to Lab Default)
       // ========================================
-      console.log("\n✍️ Step 5b: Fetching signatory information...");
+      console.log("\nâœï¸ Step 5b: Fetching signatory information...");
 
       interface SignatoryInfo {
         signatoryName: string;
@@ -6989,7 +7353,7 @@ serve(async (req) => {
           } catch (e) {
             // If URL parsing fails, return as-is
             console.log(
-              "    → Could not apply transformations to signature URL",
+              "    â†’ Could not apply transformations to signature URL",
             );
           }
         }
@@ -7077,12 +7441,12 @@ serve(async (req) => {
             verifierName = (orderApprover.users as any)?.name;
             verifierRole = (orderApprover.users as any)?.role;
             verifierDepartment = (orderApprover.users as any)?.department;
-            console.log("  → Verifier found via orders.approved_by");
+            console.log("  â†’ Verifier found via orders.approved_by");
           }
         }
 
         console.log(
-          "  → Final Verifier ID:",
+          "  â†’ Final Verifier ID:",
           verifierUserId ? `${verifierName} (${verifierUserId})` : "None",
         );
 
@@ -7112,7 +7476,7 @@ serve(async (req) => {
               if (variants?.optimized) {
                 sigUrl = variants.optimized;
                 console.log(
-                  "  ✅ Using optimized variant (bg removed):",
+                  "  âœ… Using optimized variant (bg removed):",
                   sigUrl,
                 );
               }
@@ -7123,13 +7487,13 @@ serve(async (req) => {
               sigUrl = applySignatureTransformations(
                 userSignature.imagekit_url,
               );
-              console.log("  ✅ Using imagekit_url with transforms");
+              console.log("  âœ… Using imagekit_url with transforms");
             }
 
             // Final fallback to file_url
             if (!sigUrl && userSignature.file_url) {
               sigUrl = userSignature.file_url;
-              console.log("  ✅ Using file_url fallback");
+              console.log("  âœ… Using file_url fallback");
             }
 
             if (sigUrl) {
@@ -7142,13 +7506,13 @@ serve(async (req) => {
                 signatoryImageUrl: sigUrl,
               };
               console.log(
-                "  ✅ Using verifier signature:",
+                "  âœ… Using verifier signature:",
                 signatoryInfo.signatoryName,
               );
             } else {
               // Verifier exists but has no signature - use their name but get lab default signature
               console.log(
-                "  → Verifier has no signature, using name with lab default signature",
+                "  â†’ Verifier has no signature, using name with lab default signature",
               );
               signatoryInfo.signatoryName = verifierName ||
                 "Authorized Signatory";
@@ -7158,7 +7522,7 @@ serve(async (req) => {
           } else {
             // Verifier exists but has no signature entry
             console.log(
-              "  → No signature entry for verifier, using name with lab default signature",
+              "  â†’ No signature entry for verifier, using name with lab default signature",
             );
             signatoryInfo.signatoryName = verifierName ||
               "Authorized Signatory";
@@ -7169,7 +7533,7 @@ serve(async (req) => {
 
         // If no verifier signature or no verifier, fall back to lab default
         if (!signatoryInfo.signatoryImageUrl) {
-          console.log("  → Falling back to lab default signature...");
+          console.log("  â†’ Falling back to lab default signature...");
 
           // Get lab default signature from branding assets (asset_type = 'signature')
           const { data: labSignature } = await supabaseClient
@@ -7208,7 +7572,7 @@ serve(async (req) => {
                   metadata.signatory_designation;
               }
             }
-            console.log("  ✅ Using lab default signature");
+            console.log("  âœ… Using lab default signature");
           } else {
             // Try to find ANY user's default signature in this lab as last resort
             const { data: anyUserSig } = await supabaseClient
@@ -7232,7 +7596,7 @@ serve(async (req) => {
                   : anyUserSig.variants;
                 if (variants?.optimized) {
                   sigUrl = variants.optimized;
-                  console.log("  ✅ Using optimized variant (bg removed)");
+                  console.log("  âœ… Using optimized variant (bg removed)");
                 }
               }
 
@@ -7253,10 +7617,10 @@ serve(async (req) => {
               ) {
                 signatoryInfo.signatoryName = anyUserSig.signature_name;
               }
-              console.log("  ✅ Using fallback user default signature");
+              console.log("  âœ… Using fallback user default signature");
             } else {
               console.log(
-                "  ⚠️ No default signature found - trying any active signature as final resort",
+                "  âš ï¸ No default signature found - trying any active signature as final resort",
               );
               // FINAL RESORT: Get ANY active signature for this lab
               const { data: desperateSig } = await supabaseClient
@@ -7280,7 +7644,7 @@ serve(async (req) => {
                   if (variants?.optimized) {
                     sigUrl = variants.optimized;
                     console.log(
-                      "  ✅ Using optimized variant (bg removed) - FINAL RESORT",
+                      "  âœ… Using optimized variant (bg removed) - FINAL RESORT",
                     );
                   }
                 }
@@ -7305,19 +7669,19 @@ serve(async (req) => {
                   signatoryInfo.signatoryName = desperateSig.signature_name;
                 }
                 console.log(
-                  "  ✅ Using ANY active signature found (FINAL RESORT)",
+                  "  âœ… Using ANY active signature found (FINAL RESORT)",
                 );
               } else {
-                console.log("  ❌ Absolutely no signature found for this lab");
+                console.log("  âŒ Absolutely no signature found for this lab");
               }
             }
           }
         }
       } catch (sigError) {
-        console.error("  ❌ Error fetching signatory info:", sigError);
+        console.error("  âŒ Error fetching signatory info:", sigError);
       }
 
-      console.log("  → Final signatory:", {
+      console.log("  â†’ Final signatory:", {
         name: signatoryInfo.signatoryName,
         designation: signatoryInfo.signatoryDesignation,
         hasImage: !!signatoryInfo.signatoryImageUrl,
@@ -7334,7 +7698,7 @@ serve(async (req) => {
       // Step 6: Get Report Extras (Multiple Sources)
       // ========================================
       console.log(
-        "\n📈 Step 6: Fetching report extras from multiple sources...",
+        "\nðŸ“ˆ Step 6: Fetching report extras from multiple sources...",
       );
 
       // 6a. Get from report_extras table
@@ -7359,7 +7723,7 @@ serve(async (req) => {
         .select("test_code, name, associated_test, boundaries, svg_data")
         .eq("order_id", orderId)
         .order("created_at", { ascending: true });
-      console.log(`📊 Analyzer graphs fetched: ${analyzerGraphRows?.length ?? 0} rows`, analyzerGraphError ? `Error: ${analyzerGraphError.message}` : "OK");
+      console.log(`ðŸ“Š Analyzer graphs fetched: ${analyzerGraphRows?.length ?? 0} rows`, analyzerGraphError ? `Error: ${analyzerGraphError.message}` : "OK");
 
       // 6c. Get from reports table (ai_doctor_summary, include_trend_graphs)
       const { data: reportRecord } = await supabaseClient
@@ -7401,7 +7765,7 @@ serve(async (req) => {
             unit: a.unit,
             generated_at: a.image_generated_at || new Date().toISOString(),
           }));
-          console.log(`📊 Converted ${trendChartsFromOrder.length} trend analytes from trend_graph_data (${trendChartsFromOrder.filter(c => c.image_url).length} with image_url)`);
+          console.log(`ðŸ“Š Converted ${trendChartsFromOrder.length} trend analytes from trend_graph_data (${trendChartsFromOrder.filter(c => c.image_url).length} with image_url)`);
         }
       }
 
@@ -7446,7 +7810,7 @@ serve(async (req) => {
             try {
               context[field] = JSON.parse(context[field]);
             } catch (e) {
-              console.warn(`⚠️ Failed to parse ${field} JSON:`, e);
+              console.warn(`âš ï¸ Failed to parse ${field} JSON:`, e);
             }
           }
         }
@@ -7458,7 +7822,7 @@ serve(async (req) => {
         context.ai_patient_summary &&
         context.ai_patient_summary.abnormal_findings
       ) {
-        console.log("  → Normalizing AI patient summary findings...");
+        console.log("  â†’ Normalizing AI patient summary findings...");
         context.ai_patient_summary.abnormal_findings = context
           .ai_patient_summary.abnormal_findings.map((f: any) => {
             // Determine the best name for this finding (handle all possible field names)
@@ -7489,7 +7853,7 @@ serve(async (req) => {
           });
       }
 
-      console.log("✅ Report extras merged into context:", {
+      console.log("âœ… Report extras merged into context:", {
         hasTrendCharts: !!(context.trend_charts?.length),
         hasTrendGraphData: !!context.trend_graph_data,
         hasClinicalSummary: !!context.clinical_summary,
@@ -7510,7 +7874,7 @@ serve(async (req) => {
       // ========================================
       // Step 7: Get Attachments
       // ========================================
-      console.log("\n📎 Step 7: Fetching attachments...");
+      console.log("\nðŸ“Ž Step 7: Fetching attachments...");
       const { data: attachments } = await supabaseClient
         .from("attachments")
         .select("*")
@@ -7518,12 +7882,12 @@ serve(async (req) => {
         .eq("related_id", orderId)
         .eq("tag", "include_in_report");
 
-      console.log("✅ Attachments found:", attachments?.length || 0);
+      console.log("âœ… Attachments found:", attachments?.length || 0);
 
       // ========================================
       // Step 7c: Get Branding Pages (Front/Back)
       // ========================================
-      console.log("\n🎨 Step 7c: Fetching front/back pages...");
+      console.log("\nðŸŽ¨ Step 7c: Fetching front/back pages...");
       const { frontPage, lastPage } = await fetchFrontBackPages(
         supabaseClient,
         job.lab_id,
@@ -7531,10 +7895,10 @@ serve(async (req) => {
 
       // Note: Using letterhead background instead of separate header/footer
       if (letterheadUrl) {
-        console.log("✅ Using letterhead background");
+        console.log("âœ… Using letterhead background");
       }
-      if (frontPage) console.log("✅ Using custom front page");
-      if (lastPage) console.log("✅ Using custom last page");
+      if (frontPage) console.log("âœ… Using custom front page");
+      if (lastPage) console.log("âœ… Using custom last page");
 
       await updateProgress(
         supabaseClient,
@@ -7546,7 +7910,7 @@ serve(async (req) => {
       // ========================================
       // Step 8: Render HTML Template (Multi-Test Support)
       // ========================================
-      console.log("\n🔧 Step 8: Rendering HTML template...");
+      console.log("\nðŸ”§ Step 8: Rendering HTML template...");
 
       // Initialize bodyHtml with front page if available
       // We add a specific class to handle page breaks
@@ -7572,7 +7936,7 @@ serve(async (req) => {
         analytesByGroup.size,
       );
 
-      console.log("📊 Test group analysis:", {
+      console.log("ðŸ“Š Test group analysis:", {
         contextTestGroupIds,
         analytesByGroupKeys: Array.from(analytesByGroup.keys()),
         effectiveGroupCount,
@@ -7580,11 +7944,11 @@ serve(async (req) => {
 
       // Fetch test group names + per-group PDF style overrides
       const testGroupNames = new Map<string, string>();
-      const testGroupStyles = new Map<string, string>(); // groupId → 'beautiful'|'classic'
-      const testGroupPrintOptions = new Map<string, Record<string, unknown>>(); // groupId → print_options JSONB
-      const testGroupInterpretations = new Map<string, string>(); // groupId → group_interpretation HTML
-      const testGroupCodes = new Map<string, string>(); // groupId → test_groups.code
-      const testGroupSampleTypes = new Map<string, string>(); // groupId → sample_type
+      const testGroupStyles = new Map<string, string>(); // groupId â†’ 'beautiful'|'classic'
+      const testGroupPrintOptions = new Map<string, Record<string, unknown>>(); // groupId â†’ print_options JSONB
+      const testGroupInterpretations = new Map<string, string>(); // groupId â†’ group_interpretation HTML
+      const testGroupCodes = new Map<string, string>(); // groupId â†’ test_groups.code
+      const testGroupSampleTypes = new Map<string, string>(); // groupId â†’ sample_type
       const testGroupIdsToFetch = [
         ...new Set(
           [...contextTestGroupIds, ...analytesByGroup.keys()].filter((id) =>
@@ -7642,7 +8006,7 @@ serve(async (req) => {
         }
 
         console.log(
-          "📋 Test group names fetched:",
+          "ðŸ“‹ Test group names fetched:",
           Object.fromEntries(testGroupNames),
         );
       }
@@ -7651,7 +8015,7 @@ serve(async (req) => {
       let compactPrintPlan: CompactPrintPlan | null = null;
       let orderedGroupIdsForPrint = [...contextTestGroupIds];
       let orderedAnalytesByGroupForPrint = analytesByGroup;
-      // Map of groupId → printOrder, used by the render loop to suppress page breaks between equal-priority groups
+      // Map of groupId â†’ printOrder, used by the render loop to suppress page breaks between equal-priority groups
       const printOrderByGroupId = new Map<string, number>();
 
       if (testGroupIdsToFetch.length > 0) {
@@ -7798,18 +8162,85 @@ serve(async (req) => {
         orderedGroupIdsForPrint = compactPrintPlan?.orderedGroupIds?.length
           ? compactPrintPlan.orderedGroupIds
           : descriptors.map((item) => item.groupId);
+
+        // Apply manual overrides from the Order Settings UI compact page planner (Bug 1 fix)
+        if (printLayoutMode === "compact" && (compactGroupOrderOverride?.length || compactPageAssignmentsOverride)) {
+          const knownGroupIds = new Set(descriptors.map((d) => d.groupId));
+          const baseOrder = compactGroupOrderOverride?.filter((id) => knownGroupIds.has(id)) ?? orderedGroupIdsForPrint;
+          // Append any groups not listed in the override (safety net)
+          const overrideGroupIds = [
+            ...baseOrder,
+            ...orderedGroupIdsForPrint.filter((id) => !baseOrder.includes(id)),
+          ];
+
+          if (compactPageAssignmentsOverride) {
+            // Build a cluster plan from the manual page-number assignments
+            const pageMap = new Map<number, string[]>();
+            for (const groupId of overrideGroupIds) {
+              const page = Math.max(1, Math.round(Number(compactPageAssignmentsOverride[groupId] ?? 1)));
+              if (!pageMap.has(page)) pageMap.set(page, []);
+              pageMap.get(page)!.push(groupId);
+            }
+            const sortedPages = [...pageMap.keys()].sort((a, b) => a - b);
+            compactPrintPlan = {
+              layoutMode: "compact",
+              source: "manual",
+              orderedGroupIds: overrideGroupIds,
+              clusters: sortedPages.map((page, index) => ({
+                id: `cluster_${index + 1}`,
+                groupIds: pageMap.get(page)!,
+                reason: `Page ${page} â€“ manual assignment from Order Settings compact planner.`,
+              })),
+              notes: ["Compact plan applied from Order Settings UI manual page assignments."],
+            };
+            // Update printOrderByGroupId so the render loop can detect same-page groups
+            // and suppress min-height. Without this, all groups have printOrder=0 (DB default)
+            // and the clubbed-group check always fails â†’ min-height:780px pushes clubbed groups off-page.
+            for (const groupId of overrideGroupIds) {
+              const page = Math.max(1, Math.round(Number(compactPageAssignmentsOverride[groupId] ?? 1)));
+              printOrderByGroupId.set(groupId, page);
+            }
+          } else {
+            // Only order changed, keep existing cluster structure but re-map to new order
+            compactPrintPlan = {
+              ...(compactPrintPlan || { clusters: [] }),
+              layoutMode: "compact",
+              source: "manual",
+              orderedGroupIds: overrideGroupIds,
+              notes: [...(compactPrintPlan?.notes || []), "Group order overridden from Order Settings UI."],
+            };
+          }
+          orderedGroupIdsForPrint = overrideGroupIds;
+          console.log("âœ… Applied Order Settings compact override:", {
+            groupOrder: orderedGroupIdsForPrint,
+            clusters: compactPrintPlan?.clusters?.length ?? 0,
+            source: "manual",
+          });
+        }
+
+        // Sync printOrderByGroupId from cluster plan so the render loop can
+        // detect same-page (clubbed) groups and suppress min-height on them.
+        // This covers AI planner, deterministic planner, and manual override paths.
+        if (compactPrintPlan?.clusters?.length) {
+          for (let ci = 0; ci < compactPrintPlan.clusters.length; ci++) {
+            for (const gid of compactPrintPlan.clusters[ci].groupIds) {
+              printOrderByGroupId.set(gid, ci + 1);
+            }
+          }
+        }
+
         reorderContextByGroupIds(context, orderedGroupIdsForPrint);
         contextTestGroupIds = context.testGroupIds || orderedGroupIdsForPrint;
         orderedAnalytesByGroupForPrint = buildOrderedAnalytesByGroup(analytesByGroup, orderedGroupIdsForPrint);
 
-        console.log("ðŸ“ Group report priorities:", descriptors.map((d) => ({
+        console.log("Ã°Å¸â€œÂ Group report priorities:", descriptors.map((d) => ({
           groupId: d.groupId,
           groupName: d.groupName,
           reportPriority: d.reportPriority,
           printOrder: d.printOrder,
           manualOrderIndex: d.manualOrderIndex ?? null,
         })));
-        console.log("ðŸ“ Compact print planning:", {
+        console.log("Ã°Å¸â€œÂ Compact print planning:", {
           requestedMode: printLayoutMode,
           resolvedMode: compactPrintPlan?.layoutMode || "standard",
           source: compactPrintPlan?.source || "deterministic",
@@ -7862,7 +8293,7 @@ serve(async (req) => {
         return { html, css };
       };
 
-      console.log("📌 Template split summary:", {
+      console.log("ðŸ“Œ Template split summary:", {
         layoutTemplates: layoutTemplatesWithHtml.length,
         interpretationTemplates: interpretationTemplatesWithHtml.length,
       });
@@ -7873,7 +8304,7 @@ serve(async (req) => {
 
         // If this test group has a forced style override, skip custom template entirely
         if (testGroupStyles.has(testGroupId)) {
-          console.log(`🎨 Test group ${testGroupId} has style override '${testGroupStyles.get(testGroupId)}' — skipping custom template`);
+          console.log(`ðŸŽ¨ Test group ${testGroupId} has style override '${testGroupStyles.get(testGroupId)}' â€” skipping custom template`);
           return null;
         }
 
@@ -7907,7 +8338,7 @@ serve(async (req) => {
         // This follows "User Request" to look for {{signatoryName}} and inject there.
         if (sigUrl && sigName) {
           const imgHtml =
-            `<img src="${sigUrl}" alt="Signature" style="display:block; max-height:40px; margin-bottom:2px; margin-top:2px;" />`;
+            `<img src="${sigUrl}" alt="" style="display:block; max-height:40px; margin-bottom:2px; margin-top:2px;" onerror="this.style.display='none'" />`;
           // Wrap name in span to separate it from block image, though block image forces break.
           sigName = `${imgHtml}<span>${sigName}</span>`;
         }
@@ -7928,7 +8359,7 @@ serve(async (req) => {
           orderDate: (() => {
             const raw = baseContext.order?.orderDate || baseContext.meta?.orderDate || "";
             const m = raw.match(/^(\d{4})-(\d{2})-(\d{2})/);
-            return m ? `${m[3]}-${m[2]}-${m[1]}` : raw; // ISO → DD-MM-YYYY to match approvedAt format
+            return m ? `${m[3]}-${m[2]}-${m[1]}` : raw; // ISO â†’ DD-MM-YYYY to match approvedAt format
           })(),
           collectionDate: baseContext.order?.sampleCollectedAtFormatted ||
             baseContext.order?.sampleCollectedAt || "",
@@ -7958,7 +8389,7 @@ serve(async (req) => {
           verifyUrl: verifyUrl,
           qr_code: `<img src="https://api.qrserver.com/v1/create-qr-code/?size=100x100&data=${encodeURIComponent(verifyUrl)}" alt="Verify Report" style="width:80px;height:80px;" />`,
 
-          // Barcode image for report header — inline SVG (no external API dependency)
+          // Barcode image for report header â€” inline SVG (no external API dependency)
           barcode_image: (() => {
             const barcodeVal = baseContext.order?.sampleBarcode || baseContext.sampleBarcode || baseContext.order?.sampleId || baseContext.sampleId || orderId || "";
             if (!barcodeVal) return "";
@@ -7978,7 +8409,7 @@ serve(async (req) => {
         return {
           ...baseContext,
           ...reportExtras,
-          ...baseContext.placeholderValues, // ✅ CRITICAL: Spread RPC-provided placeholders to root
+          ...baseContext.placeholderValues, // âœ… CRITICAL: Spread RPC-provided placeholders to root
           ...analytePlaceholders, // Add locally generated placeholders (fallbacks)
           ...flatAliases, // Add flat aliases
           verifyUrl: verifyUrl, // QR code URL
@@ -8063,7 +8494,7 @@ serve(async (req) => {
           // No custom template found - use default template
           const resolvedStyle = (singleGroupId && testGroupStyles.get(singleGroupId)) || labSettings?.default_template_style || 'beautiful';
           console.log(
-            `⚠️ No custom template found for lab, using default template (style: ${resolvedStyle})`,
+            `âš ï¸ No custom template found for lab, using default template (style: ${resolvedStyle})`,
           );
           renderedHtml = generateDefaultTemplateHtml(
             context,
@@ -8092,15 +8523,15 @@ serve(async (req) => {
           renderedHtml = injectQrCode(renderedHtml, defaultVerifyUrl);
 
           console.log(
-            "✅ Generated default template HTML, length:",
+            "âœ… Generated default template HTML, length:",
             renderedHtml.length,
           );
         } else {
-          console.log("✅ Using single template:", template.template_name);
+          console.log("âœ… Using single template:", template.template_name);
           renderedHtml = renderTemplate(template.gjs_html, fullContext);
 
-          // Inject signature image if template doesn't have one
-          if (signatoryInfo.signatoryImageUrl) {
+          // Inject signature image if template doesn't have one (unless showSignature is false)
+          if (signatoryInfo.signatoryImageUrl && (singlePrintOptions as any)?.showSignature !== false) {
             renderedHtml = injectSignatureImage(
               renderedHtml,
               signatoryInfo.signatoryImageUrl,
@@ -8126,14 +8557,14 @@ serve(async (req) => {
             renderedHtml += renderedInterpretation.html;
             interpretationCss = renderedInterpretation.css;
             console.log(
-              "✅ Appended interpretation-only templates (single group):",
+              "âœ… Appended interpretation-only templates (single group):",
               singleInterpretationTemplates.map((t: any) => t.template_name),
             );
           }
         }
 
         console.log(
-          "🔧 About to call buildPdfBodyDocumentV2 with letterhead:",
+          "ðŸ”§ About to call buildPdfBodyDocumentV2 with letterhead:",
           letterheadUrl || "NONE",
         );
 
@@ -8153,11 +8584,11 @@ serve(async (req) => {
           verifyUrl,
         );
         console.log(
-          "✅ buildPdfBodyDocumentV2 returned, HTML length:",
+          "âœ… buildPdfBodyDocumentV2 returned, HTML length:",
           bodyHtml.length,
         );
         console.log(
-          "🔍 Checking if letterhead is in returned HTML:",
+          "ðŸ” Checking if letterhead is in returned HTML:",
           bodyHtml.includes("page-bg") ? "YES (page-bg div found)" : "NO",
         );
         // CRITICAL: Do NOT save bodyHtml to rawHtmlForPrint if we are using V2/letterhead logic.
@@ -8165,7 +8596,7 @@ serve(async (req) => {
         // rawHtmlForPrint = bodyHtml
       } else {
         // Multi Group Logic
-        console.log("🔀 Multi-test group rendering...");
+        console.log("ðŸ”€ Multi-test group rendering...");
         const renderedSections: string[] = [];
         let firstGroupTemplate = null;
         const multiInterpretationCssChunks: string[] = [];
@@ -8189,7 +8620,7 @@ serve(async (req) => {
             ...analytesByGroup.keys(),
             ...sectionContentByGroupForRender.keys(),
           ]));
-        console.log(`🔀 Groups to render: ${JSON.stringify(groupsToRender)}`);
+        console.log(`ðŸ”€ Groups to render: ${JSON.stringify(groupsToRender)}`);
 
         // Build histogramsByGroupId: assign each analyzer histogram to its test group section.
         // Matching priority: (1) associated_test === test_groups.code, (2) group name contains
@@ -8220,7 +8651,7 @@ serve(async (req) => {
                 histogramsByGroupId.get(targetId)!.push(row);
               }
             }
-            console.log(`📊 histogramsByGroupId built: ${[...histogramsByGroupId.entries()].map(([k,v])=>`${k}:${v.length}`).join(', ')}`);
+            console.log(`ðŸ“Š histogramsByGroupId built: ${[...histogramsByGroupId.entries()].map(([k,v])=>`${k}:${v.length}`).join(', ')}`);
           }
         }
 
@@ -8244,7 +8675,7 @@ serve(async (req) => {
           }
 
           console.log(
-            `🔧 Rendering test group: ${testGroupId} with ${groupAnalytes.length} analyte(s)`,
+            `ðŸ”§ Rendering test group: ${testGroupId} with ${groupAnalytes.length} analyte(s)`,
           );
 
           // Skip if no analytes for this group
@@ -8255,7 +8686,7 @@ serve(async (req) => {
 
           if (groupAnalytes.length === 0 && !hasGroupedSections) {
             console.log(
-              `⚠️ No analytes found for test group: ${testGroupId}, skipping`,
+              `âš ï¸ No analytes found for test group: ${testGroupId}, skipping`,
             );
             continue;
           }
@@ -8272,7 +8703,7 @@ serve(async (req) => {
           let useGenericTemplate = false;
 
           if (testGroupStyles.has(testGroupId)) {
-            console.log(`🎨 Test group ${testGroupId} has style override '${testGroupStyles.get(testGroupId)}' — skipping custom template`);
+            console.log(`ðŸŽ¨ Test group ${testGroupId} has style override '${testGroupStyles.get(testGroupId)}' â€” skipping custom template`);
             useGenericTemplate = true;
           } else {
             groupTemplate = templatesWithHtml.find((t: { test_group_id?: string; is_interpretation_only?: boolean; [key: string]: unknown }) =>
@@ -8285,20 +8716,31 @@ serve(async (req) => {
 
           if (!groupTemplate && !useGenericTemplate) {
             console.log(
-              `⚠️ No specific template for ${testGroupId}, will use generic table template`,
+              `âš ï¸ No specific template for ${testGroupId}, will use generic table template`,
             );
             // Don't use selectTemplate fallback - it would use another test group's template
             // Instead, flag to use generic template for this group's analytes
             useGenericTemplate = true;
           } else if (groupTemplate) {
             console.log(
-              `✅ Found specific template for ${testGroupId}: ${groupTemplate.template_name}`,
+              `âœ… Found specific template for ${testGroupId}: ${groupTemplate.template_name}`,
             );
           }
 
           const groupFullContext = prepareFullContext(groupContext);
           let renderedHtml = "";
           let bodyContent = "";
+
+          // Pre-compute same-page flags (used in both template paths for QR/signature suppression)
+          const _earlyGroupPrintOrder = printOrderByGroupId.get(testGroupId) ?? 999;
+          const _earlyGroupsArr = groupsToRender as string[];
+          const _earlyGroupIdx = _earlyGroupsArr.indexOf(testGroupId);
+          const _earlyNextGId = _earlyGroupIdx >= 0 ? _earlyGroupsArr[_earlyGroupIdx + 1] : undefined;
+          const _earlyNextGPrintOrder = _earlyNextGId ? (printOrderByGroupId.get(_earlyNextGId) ?? 999) : null;
+          const _earlyIsSamePageAsNext = _earlyNextGPrintOrder !== null &&
+            _earlyNextGPrintOrder !== 0 &&
+            _earlyNextGPrintOrder !== 999 &&
+            _earlyNextGPrintOrder === _earlyGroupPrintOrder;
 
           if (groupTemplate?.gjs_html && !useGenericTemplate) {
             if (!firstGroupTemplate) firstGroupTemplate = groupTemplate;
@@ -8308,8 +8750,9 @@ serve(async (req) => {
               groupFullContext,
             );
 
-            // Inject signature image if template doesn't have one
-            if (signatoryInfo.signatoryImageUrl) {
+            // Inject signature image if template doesn't have one (unless showSignature is false)
+            const _groupShowSig = testGroupPrintOptions.get(testGroupId)?.showSignature;
+            if (signatoryInfo.signatoryImageUrl && _groupShowSig !== false) {
               renderedHtml = injectSignatureImage(
                 renderedHtml,
                 signatoryInfo.signatoryImageUrl,
@@ -8319,11 +8762,14 @@ serve(async (req) => {
             }
 
             // Inject QR code for verification (next to signature area)
-            const groupVerifyUrl = groupFullContext.verifyUrl ||
-              `https://app.limsapp.in/verify?id=${
-                encodeURIComponent(context.sampleId || orderId || "")
-              }`;
-            renderedHtml = injectQrCode(renderedHtml, groupVerifyUrl);
+            // Skip when another group follows on the same compact page
+            if (!_earlyIsSamePageAsNext) {
+              const groupVerifyUrl = groupFullContext.verifyUrl ||
+                `https://app.limsapp.in/verify?id=${
+                  encodeURIComponent(context.sampleId || orderId || "")
+                }`;
+              renderedHtml = injectQrCode(renderedHtml, groupVerifyUrl);
+            }
 
             // Extract body content
             const bodyMatch = renderedHtml.match(
@@ -8335,7 +8781,7 @@ serve(async (req) => {
             const testName = testGroupNames.get(testGroupId) ||
               groupAnalytes[0]?.test_name || "Test Results";
             console.log(
-              `🔧 Generating generic table template for test group: ${testGroupId} (${testName}) with ${groupAnalytes.length} analyte(s)`,
+              `ðŸ”§ Generating generic table template for test group: ${testGroupId} (${testName}) with ${groupAnalytes.length} analyte(s)`,
             );
             const singleGroupMap = new Map<string, any[]>();
             singleGroupMap.set(testGroupId, groupAnalytes);
@@ -8344,7 +8790,7 @@ serve(async (req) => {
               ? groupSectionContent
               : (sectionContentByGroupForRender.size === 0 && renderedSections.length === 0 ? groupFullContext?.sectionContent : undefined);
             // Suppress min-height when this group shares a non-zero printOrder with its
-            // neighbour (same-priority pair flows on one page — min-height would push the
+            // neighbour (same-priority pair flows on one page â€” min-height would push the
             // second group off the page even though the page-break is suppressed).
             const _groupPrintOrder = printOrderByGroupId.get(testGroupId) ?? 999;
             const _isSamePageAsPrev = renderedSections.length > 0 &&
@@ -8367,7 +8813,7 @@ serve(async (req) => {
               if (_gst) (_mergedGroupOpts as any)._sampleType = _gst;
             }
             const _groupPrintOptions = _suppressMinHeight
-              ? { ..._mergedGroupOpts, _isCompact: true }
+              ? { ..._mergedGroupOpts, _isCompact: true, _suppressPatientHeader: _isSamePageAsPrev, _suppressSignature: _isSamePageAsNext }
               : (Object.keys(_mergedGroupOpts).length > 0 ? _mergedGroupOpts : undefined);
 
             renderedHtml = generateDefaultTemplateHtml(
@@ -8390,11 +8836,14 @@ serve(async (req) => {
             renderedHtml = renderTemplate(renderedHtml, groupFullContext);
 
             // Inject QR code for verification (next to signature area)
-            const groupDefaultVerifyUrl = groupFullContext.verifyUrl ||
-              `https://app.limsapp.in/verify?id=${
-                encodeURIComponent(context.sampleId || orderId || "")
-              }`;
-            renderedHtml = injectQrCode(renderedHtml, groupDefaultVerifyUrl);
+            // Skip when signature is suppressed (group is not the last on its compact page)
+            if (!(_groupPrintOptions as any)?._suppressSignature) {
+              const groupDefaultVerifyUrl = groupFullContext.verifyUrl ||
+                `https://app.limsapp.in/verify?id=${
+                  encodeURIComponent(context.sampleId || orderId || "")
+                }`;
+              renderedHtml = injectQrCode(renderedHtml, groupDefaultVerifyUrl);
+            }
 
             bodyContent = renderedHtml;
           }
@@ -8413,18 +8862,18 @@ serve(async (req) => {
               multiInterpretationCssChunks.push(renderedInterpretation.css);
             }
             console.log(
-              `✅ Appended interpretation-only templates for ${testGroupId}:`,
+              `âœ… Appended interpretation-only templates for ${testGroupId}:`,
               groupInterpretationTemplates.map((t: any) => t.template_name),
             );
           }
 
-          // Add separator — skip page break when this group shares printOrder with the previous group
+          // Add separator â€” skip page break when this group shares printOrder with the previous group
           const testName = testGroupNames.get(testGroupId) ||
             groupAnalytes[0]?.test_name || groupTemplate?.template_name ||
             `Test Group ${renderedSections.length + 1}`;
           const currentPrintOrder = printOrderByGroupId.get(testGroupId) ?? 999;
           // samePageGroup=true only when groups share an EXPLICITLY configured non-zero
-          // print_order. printOrder=0 is the default (unset) value — treat each group
+          // print_order. printOrder=0 is the default (unset) value â€” treat each group
           // independently so they always get their own page.
           const samePageGroup = renderedSections.length > 0 &&
             prevRenderedPrintOrder !== null &&
@@ -8456,13 +8905,13 @@ serve(async (req) => {
           </div>
         `;
           renderedSections.push(sectionHtml);
-          console.log(`✅ Rendered section for ${testGroupId} (printOrder=${currentPrintOrder}, samePageGroup=${samePageGroup})`);
+          console.log(`âœ… Rendered section for ${testGroupId} (printOrder=${currentPrintOrder}, samePageGroup=${samePageGroup})`);
         }
 
         if (renderedSections.length === 0) {
           // No sections rendered from templates - use complete default template
           console.log(
-            "⚠️ No custom templates rendered, using complete default template",
+            "âš ï¸ No custom templates rendered, using complete default template",
           );
           fullContext = prepareFullContext(context);
           const defaultHtml = generateDefaultTemplateHtml(
@@ -8507,7 +8956,7 @@ serve(async (req) => {
           multiInterpretationCssChunks.join("\n"),
         ].filter(Boolean).join("\n");
         console.log(
-          "✅ Merged multiple templates" + (template
+          "âœ… Merged multiple templates" + (template
             ? ` using base: ${template.template_name}`
             : " using default template"),
         );
@@ -8515,7 +8964,7 @@ serve(async (req) => {
         mergedPrintOptions = labPrintOptions; // lift to outer scope for print version
         const dynamicCss = generateDynamicCss(pdfSettings, labPrintOptions ?? undefined);
         console.log(
-          "🔧 About to call buildPdfBodyDocumentV2 (multi-template) with letterhead:",
+          "ðŸ”§ About to call buildPdfBodyDocumentV2 (multi-template) with letterhead:",
           letterheadUrl || "NONE",
         );
 
@@ -8530,11 +8979,11 @@ serve(async (req) => {
           verifyUrl,
         );
         console.log(
-          "✅ buildPdfBodyDocumentV2 returned, HTML length:",
+          "âœ… buildPdfBodyDocumentV2 returned, HTML length:",
           bodyHtml.length,
         );
         console.log(
-          "🔍 Checking if letterhead is in returned HTML:",
+          "ðŸ” Checking if letterhead is in returned HTML:",
           bodyHtml.includes("page-bg") ? "YES (page-bg div found)" : "NO",
         );
         rawHtmlForPrint = bodyHtml; // Save for print version
@@ -8559,7 +9008,7 @@ serve(async (req) => {
       if (watermarkSettings.enabled && watermarkSettings.imageUrl) {
         const watermarkHtml = generateWatermarkHtml(watermarkSettings);
         bodyHtml = bodyHtml.replace("<main", `${watermarkHtml}<main`);
-        console.log("✅ Watermark injected");
+        console.log("âœ… Watermark injected");
       }
 
       // Inject report extras (trends, clinical summary, AI summaries)
@@ -8567,7 +9016,7 @@ serve(async (req) => {
       const extrasHtml = generateReportExtrasHtml(reportExtras);
       if (extrasHtml) {
         bodyHtml = bodyHtml.replace("</main>", `${extrasHtml}</main>`);
-        console.log("✅ Report extras injected inside main content");
+        console.log("âœ… Report extras injected inside main content");
       }
 
       // Inject attachments
@@ -8575,7 +9024,7 @@ serve(async (req) => {
         const attachmentsHtml = generateAttachmentsHtml(attachments);
         if (attachmentsHtml) {
           bodyHtml = bodyHtml.replace("</main>", `${attachmentsHtml}</main>`);
-          console.log("✅ Attachments injected:", attachments.length);
+          console.log("âœ… Attachments injected:", attachments.length);
         }
       }
 
@@ -8585,10 +9034,10 @@ serve(async (req) => {
           "</body>",
           `<div class="report-last-page" style="page-break-before: always; width: 100vw; height: 100vh; margin: 0; padding: 0;">${lastPage}</div></body>`,
         );
-        console.log("✅ Last page injected");
+        console.log("âœ… Last page injected");
       }
 
-      console.log("✅ HTML rendered:", { length: bodyHtml.length });
+      console.log("âœ… HTML rendered:", { length: bodyHtml.length });
 
       await updateProgress(
         supabaseClient,
@@ -8601,7 +9050,7 @@ serve(async (req) => {
       // Step 9: SKIP Base64 Conversion (PDF.co can fetch images directly)
       // ========================================
       console.log(
-        "\n🖼️ Step 9: Skipping base64 conversion (PDF.co will fetch images directly from URLs)...",
+        "\nðŸ–¼ï¸ Step 9: Skipping base64 conversion (PDF.co will fetch images directly from URLs)...",
       );
 
       // No conversion needed - PDF.co can fetch from ImageKit URLs directly
@@ -8611,7 +9060,7 @@ serve(async (req) => {
       const processedFooter = "";
 
       console.log(
-        "✅ Using direct image URLs (faster, no base64 conversion needed)",
+        "âœ… Using direct image URLs (faster, no base64 conversion needed)",
       );
 
       await updateProgress(
@@ -8625,7 +9074,7 @@ serve(async (req) => {
       // Step 10: Generate PDFs via PDF.co API (PARALLEL)
       // ========================================
       console.log(
-        "\n📤 Step 10: Calling PDF.co API (parallel eCopy + Print)...",
+        "\nðŸ“¤ Step 10: Calling PDF.co API (parallel eCopy + Print)...",
       );
       const pdfStartTime = Date.now();
 
@@ -8638,7 +9087,7 @@ serve(async (req) => {
         // Letterhead Mode: 0px all margins (background full bleed), side padding handled by CSS
         margins = `0px 0px 0px 0px`;
         console.log(
-          "📄 Letterhead detected: Forcing 0px all margins for API, using CSS padding for content.",
+          "ðŸ“„ Letterhead detected: Forcing 0px all margins for API, using CSS padding for content.",
         );
       } else if (pdfSettings?.margins) {
         // Standard Mode: Use saved margins
@@ -8675,7 +9124,6 @@ serve(async (req) => {
             ?.sectionContentNoImages || (fullContext as any)?.sectionContent || {};
           const compactPrintContext = {
             ...fullContext,
-            ...context,
             ...printSectionContent,
             testGroupIds: orderedGroupIdsForPrint,
             sectionContent: printSectionContent,
@@ -8690,52 +9138,88 @@ serve(async (req) => {
           };
           const compactPrintOptions = {
             ...(mergedPrintOptions || {}),
-            baseFontSize: Math.min(
-              Number((mergedPrintOptions as any)?.baseFontSize || 11),
-              11,
-            ),
+            baseFontSize: Number((mergedPrintOptions as any)?.baseFontSize || 14),
             alternateRows: false,
             _isCompact: true,
           };
           effectivePrintOptionsForCss = compactPrintOptions;
 
-          let compactRenderedHtml = generateDefaultTemplateHtml(
-            compactPrintContext,
-            testGroupNames,
-            orderedAnalytesByGroupForPrint,
-            signatoryInfo,
-            printSectionContent,
-            true,
-            compactPrintConfig.compactTemplateStyle,
-            labSettings?.show_methodology ?? true,
-            false,
-            labSettings?.report_patient_info_config,
-            compactPrintOptions,
-            customPatientFieldConfigs ?? [],
-            undefined,
-            testGroupInterpretations,
-            (fullContext as any)?.sectionLabels,
-          );
-          compactRenderedHtml = renderTemplate(
-            compactRenderedHtml,
-            compactPrintContext,
-          );
-          compactRenderedHtml = injectQrCode(
-            compactRenderedHtml,
-            printVerifyUrl,
-          );
-          compactRenderedHtml = addFlagClassesToHtml(compactRenderedHtml);
+          const emptySignatory = { signatoryName: "", signatoryDesignation: "", signatoryImageUrl: "" };
 
-          printHtml = buildPdfBodyDocumentV2(
-            compactRenderedHtml,
-            "",
-            null,
-            pdfSettings,
-            printVerifyUrl,
-          );
-          console.log(
-            "✅ Built compact print HTML from validated compact plan",
-          );
+          // Per-group rendering â€” mirrors the eCopy path exactly:
+          // page-break-before between groups on different pages, no break for same-page groups,
+          // patient header / title bar suppressed for subsequent groups on the same page,
+          // signature / QR suppressed for non-last groups on the same page.
+          {
+            const printGroupIds = orderedGroupIdsForPrint.filter(
+              (id) => (orderedAnalytesByGroupForPrint.get(id)?.length ?? 0) > 0
+            );
+            const lastGroupId = printGroupIds.at(-1);
+            const printSectionParts: string[] = [];
+            let printPrevPageNum: number | null = null;
+
+            for (const groupId of printGroupIds) {
+              const groupAnalytes = orderedAnalytesByGroupForPrint.get(groupId) ?? [];
+              const groupPageNum = printOrderByGroupId.get(groupId) ?? 999;
+
+              const isSamePageAsPrev = printPrevPageNum !== null &&
+                groupPageNum !== 0 && groupPageNum !== 999 &&
+                groupPageNum === printPrevPageNum;
+
+              const groupIdx = printGroupIds.indexOf(groupId);
+              const nextGroupId = groupIdx >= 0 ? printGroupIds[groupIdx + 1] : undefined;
+              const nextPageNum = nextGroupId ? (printOrderByGroupId.get(nextGroupId) ?? 999) : null;
+              const isSamePageAsNext = nextPageNum !== null &&
+                nextPageNum !== 0 && nextPageNum !== 999 &&
+                nextPageNum === groupPageNum;
+
+              const isLastGroup = groupId === lastGroupId;
+              // Last group on its page = no following group shares the same page number
+              const isLastOnPage = !isSamePageAsNext;
+
+              const groupPrintOptions = {
+                ...compactPrintOptions,
+                _suppressPatientHeader: isSamePageAsPrev,
+                _suppressSignature: !isLastOnPage,
+              };
+
+              const groupAnalyteMap = new Map([[groupId, groupAnalytes]]);
+              const groupCtx = { ...compactPrintContext, testGroupIds: [groupId] };
+
+              let groupHtml = generateDefaultTemplateHtml(
+                groupCtx,
+                testGroupNames,
+                groupAnalyteMap,
+                signatoryInfo,                          // every page's last group shows signature
+                isLastGroup ? printSectionContent : {}, // sections only on absolute last page
+                isLastGroup,
+                compactPrintConfig.compactTemplateStyle,
+                labSettings?.show_methodology ?? true,
+                false,
+                labSettings?.report_patient_info_config,
+                groupPrintOptions,
+                customPatientFieldConfigs ?? [],
+                undefined,
+                testGroupInterpretations,
+                (fullContext as any)?.sectionLabels,
+              );
+              groupHtml = renderTemplate(groupHtml, compactPrintContext);
+              if (isLastOnPage) {
+                groupHtml = injectQrCode(groupHtml, printVerifyUrl);
+              }
+
+              const pageBreakStyle = !isSamePageAsPrev && printSectionParts.length > 0
+                ? 'style="page-break-before: always; break-before: page;"'
+                : '';
+              printSectionParts.push(`<div ${pageBreakStyle}>${groupHtml}</div>`);
+              printPrevPageNum = groupPageNum;
+            }
+
+            let compactRenderedHtml = printSectionParts.join('');
+            compactRenderedHtml = addFlagClassesToHtml(compactRenderedHtml);
+            printHtml = buildPdfBodyDocumentV2(compactRenderedHtml, "", null, pdfSettings, printVerifyUrl);
+            console.log(`âœ… Built compact print HTML per-group (${printSectionParts.length} groups, plan-aware page breaks)`);
+          }
         } else if (rawHtmlForPrint) {
           // rawHtmlForPrint contains the full E-Copy HTML with letterhead styles and spacers
           // For print version, we need to extract just the CONTENT and rebuild with null letterhead
@@ -8749,7 +9233,7 @@ serve(async (req) => {
           if (mainContentMatch) {
             const extractedContent = mainContentMatch[1];
             console.log(
-              "✅ Extracted main content from rawHtmlForPrint, length:",
+              "âœ… Extracted main content from rawHtmlForPrint, length:",
               extractedContent.length,
             );
 
@@ -8763,12 +9247,12 @@ serve(async (req) => {
               printVerifyUrl,
             );
             console.log(
-              "✅ Rebuilt print HTML without letterhead, with QR code",
+              "âœ… Rebuilt print HTML without letterhead, with QR code",
             );
           } else {
             // Fallback: Try to strip letterhead elements manually
             console.log(
-              "⚠️ Could not extract main content, falling back to stripping approach",
+              "âš ï¸ Could not extract main content, falling back to stripping approach",
             );
             printHtml = rawHtmlForPrint;
 
@@ -8819,8 +9303,8 @@ serve(async (req) => {
               printTemplateContext,
             );
 
-            // Inject signature image if template doesn't have one (Critical for print version)
-            if (signatoryInfo.signatoryImageUrl) {
+            // Inject signature image if template doesn't have one (Critical for print version, unless showSignature is false)
+            if (signatoryInfo.signatoryImageUrl && (mergedPrintOptions as any)?.showSignature !== false) {
               printRenderedHtml = injectSignatureImage(
                 printRenderedHtml,
                 signatoryInfo.signatoryImageUrl,
@@ -8843,7 +9327,7 @@ serve(async (req) => {
             }
           } else {
             // No custom template - use default template
-            console.log("⚠️ Using default template for print version");
+            console.log("âš ï¸ Using default template for print version");
             const printSingleGroupId = context.testGroupIds?.[0];
             const printResolvedStyle = (printSingleGroupId && testGroupStyles.get(printSingleGroupId)) || labSettings?.default_template_style || 'beautiful';
             printRenderedHtml = generateDefaultTemplateHtml(
@@ -8896,7 +9380,7 @@ serve(async (req) => {
             printVerifyUrl,
           );
           console.log(
-            "✅ Built print HTML without gjs_css, with QR code (clean print mode)",
+            "âœ… Built print HTML without gjs_css, with QR code (clean print mode)",
           );
 
           // Skip section content injection for print fallback path.
@@ -8972,7 +9456,7 @@ serve(async (req) => {
 
         // SKIP: Convert images to base64 (PDF.co can fetch directly)
         // printHtml = await convertHtmlImagesToBase64(printHtml)
-        console.log("✅ Print HTML ready (using direct image URLs)");
+        console.log("âœ… Print HTML ready (using direct image URLs)");
 
         // Inject print-optimized CSS (grayscale, simplified colors)
         // REFINED: Don't nuke ALL backgrounds (protects table headers)
@@ -9056,7 +9540,7 @@ serve(async (req) => {
         </style>
       `;
         printHtml = printHtml.replace("</head>", `${printCss}</head>`);
-        console.log("✅ Print CSS injected (grayscale + clean styling)");
+        console.log("âœ… Print CSS injected (grayscale + clean styling)");
 
         printHtmlPrepared = printHtml;
       }
@@ -9064,22 +9548,22 @@ serve(async (req) => {
       // ========================================
       // PARALLEL PDF Generation - eCopy + Print simultaneously
       // ========================================
-      console.log("📤 Preparing to send HTML to PDF.co...");
-      console.log("  � PDF Mode:", pdfLetterheadMode);
-      console.log("  📄 Processed body length:", processedBody.length);
+      console.log("ðŸ“¤ Preparing to send HTML to PDF.co...");
+      console.log("  ï¿½ PDF Mode:", pdfLetterheadMode);
+      console.log("  ðŸ“„ Processed body length:", processedBody.length);
       if (pdfLetterheadMode === 'header_footer') {
-        console.log("  🖼️ Header HTML length:", headerFooterHtml.headerHtml.length);
-        console.log("  🖼️ Footer HTML length:", headerFooterHtml.footerHtml.length);
+        console.log("  ðŸ–¼ï¸ Header HTML length:", headerFooterHtml.headerHtml.length);
+        console.log("  ðŸ–¼ï¸ Footer HTML length:", headerFooterHtml.footerHtml.length);
       } else {
         console.log(
-          "  🔍 Checking for letterhead in HTML:",
-          processedBody.includes("page-bg") ? "✅ FOUND (page-bg)" : "❌ NOT FOUND",
+          "  ðŸ” Checking for letterhead in HTML:",
+          processedBody.includes("page-bg") ? "âœ… FOUND (page-bg)" : "âŒ NOT FOUND",
         );
         console.log(
-          "  🔍 Checking for letterhead URL in HTML:",
+          "  ðŸ” Checking for letterhead URL in HTML:",
           processedBody.includes("background-image")
-            ? "✅ FOUND"
-            : "❌ NOT FOUND",
+            ? "âœ… FOUND"
+            : "âŒ NOT FOUND",
         );
       }
 
@@ -9091,7 +9575,7 @@ serve(async (req) => {
 
       if (isHeaderFooterMode) {
         console.log(
-          "  🧾 Native PDF.co header/footer payload:",
+          "  ðŸ§¾ Native PDF.co header/footer payload:",
           hasNativeHeaderFooterAssets ? "ENABLED" : "DISABLED (missing header or footer image)",
         );
       }
@@ -9168,10 +9652,10 @@ serve(async (req) => {
       ]);
 
       console.log(
-        `✅ PDFs generated in ${Date.now() - pdfStartTime}ms (parallel)`,
+        `âœ… PDFs generated in ${Date.now() - pdfStartTime}ms (parallel)`,
       );
-      console.log("  eCopy URL:", pdfCoUrl ? "✓" : "✗");
-      console.log("  Print URL:", printPdfCoUrl ? "✓" : "skipped");
+      console.log("  eCopy URL:", pdfCoUrl ? "âœ“" : "âœ—");
+      console.log("  Print URL:", printPdfCoUrl ? "âœ“" : "skipped");
 
       await updateProgress(
         supabaseClient,
@@ -9184,7 +9668,7 @@ serve(async (req) => {
       // Step 11: Upload PDFs to Storage (PARALLEL)
       // ========================================
       console.log(
-        "\n📦 Step 11: Uploading PDFs to Supabase Storage (parallel)...",
+        "\nðŸ“¦ Step 11: Uploading PDFs to Supabase Storage (parallel)...",
       );
       const uploadStartTime = Date.now();
 
@@ -9213,7 +9697,7 @@ serve(async (req) => {
           "print",
           5,
         ).catch((err) => {
-          console.warn("⚠️ Print upload failed (non-fatal):", err.message);
+          console.warn("âš ï¸ Print upload failed (non-fatal):", err.message);
           return null;
         })
         : Promise.resolve(null);
@@ -9230,7 +9714,7 @@ serve(async (req) => {
       // before giving up and keeping the temp URL as last resort
       if (eCopyResult.path === "" && pdfCoUrl) {
         console.warn(
-          "⚠️ eCopy fell back to temp URL — waiting 15s then attempting one final retry...",
+          "âš ï¸ eCopy fell back to temp URL â€” waiting 15s then attempting one final retry...",
         );
         await new Promise((resolve) => setTimeout(resolve, 15000));
         try {
@@ -9247,26 +9731,26 @@ serve(async (req) => {
           if (retryResult.path !== "") {
             storageUrl = retryResult.publicUrl;
             console.log(
-              "✅ Final delayed retry succeeded — eCopy saved to storage:",
+              "âœ… Final delayed retry succeeded â€” eCopy saved to storage:",
               storageUrl,
             );
           } else {
             console.warn(
-              "⚠️ Final delayed retry also returned temp URL — keeping temp URL as last resort:",
+              "âš ï¸ Final delayed retry also returned temp URL â€” keeping temp URL as last resort:",
               storageUrl,
             );
           }
         } catch (retryErr) {
           console.warn(
-            "⚠️ Final delayed retry threw — keeping temp URL as last resort:",
+            "âš ï¸ Final delayed retry threw â€” keeping temp URL as last resort:",
             retryErr instanceof Error ? retryErr.message : String(retryErr),
           );
-          // storageUrl already holds the temp URL — leave it unchanged
+          // storageUrl already holds the temp URL â€” leave it unchanged
         }
       }
 
       console.log(
-        `✅ PDFs uploaded in ${Date.now() - uploadStartTime}ms (parallel)`,
+        `âœ… PDFs uploaded in ${Date.now() - uploadStartTime}ms (parallel)`,
       );
       console.log("  eCopy:", storageUrl);
       console.log("  Print:", printStorageUrl || "none");
@@ -9281,7 +9765,7 @@ serve(async (req) => {
       // ========================================
       // Step 12: Update Database Records
       // ========================================
-      console.log("\n💾 Step 12: Updating database records...");
+      console.log("\nðŸ’¾ Step 12: Updating database records...");
 
       const now = new Date().toISOString();
 
@@ -9305,7 +9789,7 @@ serve(async (req) => {
         "";
 
       if (!patientId) {
-        console.error("❌ Missing patient_id - cannot create report record");
+        console.error("âŒ Missing patient_id - cannot create report record");
         console.error("Context patient sources:", {
           contextPatientId: context.patientId,
           patientObjectId: context.patient?.id,
@@ -9313,11 +9797,11 @@ serve(async (req) => {
         });
         // Don't throw - continue without creating report record, PDF is still generated
         console.warn(
-          "⚠️ Skipping report record creation due to missing patient_id",
+          "âš ï¸ Skipping report record creation due to missing patient_id",
         );
       }
 
-      console.log("📋 Report record data:", {
+      console.log("ðŸ“‹ Report record data:", {
         orderId,
         patientId,
         doctorName,
@@ -9339,9 +9823,12 @@ serve(async (req) => {
             .maybeSingle();
 
         // Fields to update (for existing record)
+        // Compact mode: save eCopy to compact_ecopy_url â€” never overwrite pdf_url (standard eCopy).
+        // Standard mode: save eCopy to pdf_url as usual.
         const updateFields = {
-          pdf_url: storageUrl,
-          pdf_generated_at: now,
+          ...(printLayoutMode !== "compact"
+            ? { pdf_url: storageUrl, pdf_generated_at: now }
+            : { compact_ecopy_url: storageUrl, compact_ecopy_generated_at: now }),
           status: "completed",
           report_status: "completed",
           report_type: isDraft ? "draft" : "final",
@@ -9375,9 +9862,9 @@ serve(async (req) => {
             .eq("id", reportIdForNotif);
 
           if (updateError) {
-            console.error("⚠️ Report update error:", updateError);
+            console.error("âš ï¸ Report update error:", updateError);
           } else {
-            console.log("✅ Updated existing report record with all fields");
+            console.log("âœ… Updated existing report record with all fields");
           }
         } else {
           const { data: newReport, error: insertError } = await supabaseClient
@@ -9387,12 +9874,12 @@ serve(async (req) => {
             .single();
 
           if (insertError) {
-            console.error("⚠️ Report insert error:", insertError);
+            console.error("âš ï¸ Report insert error:", insertError);
             console.error("Insert data:", insertFields);
           } else {
             reportIdForNotif = newReport.id;
             console.log(
-              "✅ Created new report record with all fields, ID:",
+              "âœ… Created new report record with all fields, ID:",
               reportIdForNotif,
             );
           }
@@ -9411,7 +9898,7 @@ serve(async (req) => {
         .eq("id", job.id);
 
       if (completeError) {
-        console.error("⚠️ Failed to mark job as completed:", completeError);
+        console.error("âš ï¸ Failed to mark job as completed:", completeError);
         // Try again with simpler update
         const { error: retryError } = await supabaseClient
           .from("pdf_generation_queue")
@@ -9419,18 +9906,18 @@ serve(async (req) => {
           .eq("id", job.id);
 
         if (retryError) {
-          console.error("❌ Retry also failed:", retryError);
+          console.error("âŒ Retry also failed:", retryError);
         } else {
-          console.log("✅ Job marked complete on retry");
+          console.log("âœ… Job marked complete on retry");
         }
       } else {
-        console.log("✅ Job marked as COMPLETED in queue");
+        console.log("âœ… Job marked as COMPLETED in queue");
       }
 
       // ====== AUTO-TRIGGER WHATSAPP NOTIFICATIONS ======
       // Trigger if we have a valid report ID
       if (patientId && reportIdForNotif) {
-        console.log("📲 Checking WhatsApp auto-send settings...");
+        console.log("ðŸ“² Checking WhatsApp auto-send settings...");
         try {
           // Fetch lab notification settings
           const { data: notifSettings } = await supabaseClient
@@ -9443,7 +9930,7 @@ serve(async (req) => {
             notifSettings?.auto_send_report_to_patient ||
             notifSettings?.auto_send_report_to_doctor
           ) {
-            console.log("📲 Auto-send enabled, fetching recipient details...");
+            console.log("ðŸ“² Auto-send enabled, fetching recipient details...");
 
             const parseMinutes = (
               timeStr: string | null | undefined,
@@ -9458,13 +9945,13 @@ serve(async (req) => {
             const utcNow = Date.now();
             const istDate = new Date(utcNow + IST_OFFSET_MS);
             const currentMinutes = istDate.getUTCHours() * 60 + istDate.getUTCMinutes();
-            console.log(`⏰ Time check: UTC=${new Date(utcNow).toISOString()}, IST=${istDate.toISOString()}, currentMinutes=${currentMinutes}`);
+            console.log(`â° Time check: UTC=${new Date(utcNow).toISOString()}, IST=${istDate.toISOString()}, currentMinutes=${currentMinutes}`);
             const startMinutes = parseMinutes(notifSettings.send_window_start, "09:00:00");
             const endMinutes = parseMinutes(notifSettings.send_window_end, "21:00:00");
             const withinWindow = startMinutes <= endMinutes
               ? (currentMinutes >= startMinutes && currentMinutes <= endMinutes)
               : (currentMinutes >= startMinutes || currentMinutes <= endMinutes);
-            console.log(`⏰ Window: ${startMinutes}-${endMinutes}, current=${currentMinutes}, within=${withinWindow}`);
+            console.log(`â° Window: ${startMinutes}-${endMinutes}, current=${currentMinutes}, within=${withinWindow}`);
 
             const requiredStatus =
               String(notifSettings.send_report_on_status || "Completed").toLowerCase();
@@ -9477,7 +9964,7 @@ serve(async (req) => {
               String(reportForStatus?.report_status || reportForStatus?.status || "")
                 .toLowerCase();
             const statusMatches = currentStatus === requiredStatus;
-            console.log(`📋 Status check: required=${requiredStatus}, current=${currentStatus}, matches=${statusMatches}`);
+            console.log(`ðŸ“‹ Status check: required=${requiredStatus}, current=${currentStatus}, matches=${statusMatches}`);
 
             // Calculate next window start in IST, convert to UTC for scheduled_for
             const [startHour, startMinute] =
@@ -9490,7 +9977,7 @@ serve(async (req) => {
             const nextWindowStart = new Date(nextIst.getTime() - IST_OFFSET_MS);
 
             const canAttemptImmediate = withinWindow && statusMatches;
-            console.log(`🚦 canAttemptImmediate=${canAttemptImmediate} (window=${withinWindow}, status=${statusMatches})`);
+            console.log(`ðŸš¦ canAttemptImmediate=${canAttemptImmediate} (window=${withinWindow}, status=${statusMatches})`);
             const shouldQueueOutsideWindow = notifSettings.queue_outside_window !== false;
             const deferredScheduledFor = withinWindow
               ? new Date().toISOString()
@@ -9549,11 +10036,11 @@ serve(async (req) => {
                   whatsappUserId = triggeringUser.whatsapp_user_id;
                   whatsappUserName = triggeringUser.name;
                   console.log(
-                    `✅ [Priority 1] Using triggering user's WhatsApp: ${whatsappUserName}`,
+                    `âœ… [Priority 1] Using triggering user's WhatsApp: ${whatsappUserName}`,
                   );
                 } else {
                   console.log(
-                    `⚠️ Triggering user (${
+                    `âš ï¸ Triggering user (${
                       triggeringUser?.name || triggeredByUserId
                     }) has no whatsapp_user_id - checking location...`,
                   );
@@ -9563,7 +10050,7 @@ serve(async (req) => {
               // Priority 2: Location-based routing (find user assigned to order's location)
               if (!whatsappUserId && order.location_id) {
                 console.log(
-                  `🔍 Checking for location-based WhatsApp user for location: ${order.location_id}`,
+                  `ðŸ” Checking for location-based WhatsApp user for location: ${order.location_id}`,
                 );
 
                 // Find users assigned to this location with WhatsApp connected
@@ -9587,11 +10074,11 @@ serve(async (req) => {
                   whatsappUserId = locationUser.whatsapp_user_id;
                   whatsappUserName = locationUser.name;
                   console.log(
-                    `✅ [Priority 2] Using location-based WhatsApp: ${whatsappUserName} (${locationUser.role}) at location ${order.location_id}`,
+                    `âœ… [Priority 2] Using location-based WhatsApp: ${whatsappUserName} (${locationUser.role}) at location ${order.location_id}`,
                   );
                 } else {
                   console.log(
-                    `⚠️ No users with WhatsApp found for location: ${order.location_id}`,
+                    `âš ï¸ No users with WhatsApp found for location: ${order.location_id}`,
                   );
                 }
               }
@@ -9601,13 +10088,13 @@ serve(async (req) => {
                 whatsappUserId = lab.whatsapp_user_id;
                 whatsappUserName = lab.name;
                 console.log(
-                  `✅ [Priority 3] Using lab-level WhatsApp fallback: ${lab.name}`,
+                  `âœ… [Priority 3] Using lab-level WhatsApp fallback: ${lab.name}`,
                 );
               }
 
               if (!whatsappUserId) {
                 console.warn(
-                  "⚠️ No whatsapp_user_id configured - notifications will be queued only",
+                  "âš ï¸ No whatsapp_user_id configured - notifications will be queued only",
                 );
               }
 
@@ -9624,7 +10111,7 @@ serve(async (req) => {
               ): Promise<boolean> => {
                 if (!whatsappUserId) {
                   console.log(
-                    "⏭️ Skipping immediate send - no whatsapp_user_id configured",
+                    "â­ï¸ Skipping immediate send - no whatsapp_user_id configured",
                   );
                   return false;
                 }
@@ -9632,7 +10119,7 @@ serve(async (req) => {
                 try {
                   // Use lab's country code (already fetched)
                   const countryCode = lab?.country_code || "+91"; // Default to India
-                  console.log("🌍 Using country code:", countryCode);
+                  console.log("ðŸŒ Using country code:", countryCode);
 
                   let cleanPhone = phone.replace(/\D/g, "");
 
@@ -9663,7 +10150,7 @@ serve(async (req) => {
                   }
 
                   console.log(
-                    `📤 Sending WhatsApp to ${formattedPhone} via Netlify function`,
+                    `ðŸ“¤ Sending WhatsApp to ${formattedPhone} via Netlify function`,
                   );
 
                   // Extract filename from URL
@@ -9682,7 +10169,7 @@ serve(async (req) => {
                   };
 
                   console.log(
-                    "📋 Request payload:",
+                    "ðŸ“‹ Request payload:",
                     JSON.stringify(requestBody, null, 2),
                   );
 
@@ -9696,7 +10183,7 @@ serve(async (req) => {
 
                   if (!response.ok) {
                     console.error(
-                      `❌ Netlify function error: ${response.status} ${response.statusText}`,
+                      `âŒ Netlify function error: ${response.status} ${response.statusText}`,
                     );
                     console.error(`   Response: ${responseText}`);
                     return false;
@@ -9704,15 +10191,15 @@ serve(async (req) => {
 
                   try {
                     const result = JSON.parse(responseText);
-                    console.log(`✅ WhatsApp sent successfully:`, result);
+                    console.log(`âœ… WhatsApp sent successfully:`, result);
                   } catch {
                     console.log(
-                      `✅ WhatsApp sent successfully (raw response): ${responseText}`,
+                      `âœ… WhatsApp sent successfully (raw response): ${responseText}`,
                     );
                   }
                   return true;
                 } catch (error) {
-                  console.error(`❌ WhatsApp send exception:`, error);
+                  console.error(`âŒ WhatsApp send exception:`, error);
                   return false;
                 }
               };
@@ -9726,7 +10213,7 @@ serve(async (req) => {
                   .eq("order_id", orderId)
                   .maybeSingle();
                 if (dueStatus?.has_due) {
-                  console.log("⛔ Auto-send blocked — order has outstanding balance:", orderId);
+                  console.log("â›” Auto-send blocked â€” order has outstanding balance:", orderId);
                   blockedByDue = true;
                 }
               }
@@ -9767,16 +10254,16 @@ serve(async (req) => {
                       .replace(/\[LabEmail\]/gi, ""); // Not fetched in this context
 
                     console.log(
-                      "✅ Using WhatsApp template for patient message",
+                      "âœ… Using WhatsApp template for patient message",
                     );
                   } else {
                     console.log(
-                      "ℹ️ No WhatsApp template found, using default message",
+                      "â„¹ï¸ No WhatsApp template found, using default message",
                     );
                   }
                 } catch (templateError) {
                   console.error(
-                    "⚠️ Error fetching WhatsApp template:",
+                    "âš ï¸ Error fetching WhatsApp template:",
                     templateError,
                   );
                 }
@@ -9808,7 +10295,7 @@ serve(async (req) => {
                     })
                     .eq("id", reportIdForNotif);
                   console.log(
-                    "✅ WhatsApp sent to patient:",
+                    "âœ… WhatsApp sent to patient:",
                     order.patients.phone,
                   );
                 } else {
@@ -9835,10 +10322,10 @@ serve(async (req) => {
                           ? `Waiting for report status ${notifSettings.send_report_on_status || "Completed"}`
                           : (withinWindow ? "Initial send failed" : "Outside send window"),
                       });
-                    console.log("📥 Patient notification queued for retry");
+                    console.log("ðŸ“¥ Patient notification queued for retry");
                   } else {
                     console.log(
-                      "⏭️ Skipping patient notification: outside send window and queue disabled",
+                      "â­ï¸ Skipping patient notification: outside send window and queue disabled",
                     );
                   }
                 }
@@ -9861,9 +10348,9 @@ serve(async (req) => {
 
                 if (includeClinicalSummary && clinicalSummary) {
                   doctorMessage +=
-                    `\n\n📋 Clinical Summary:\n${clinicalSummary}`;
+                    `\n\nðŸ“‹ Clinical Summary:\n${clinicalSummary}`;
                   console.log(
-                    "📋 Including AI clinical summary in doctor message",
+                    "ðŸ“‹ Including AI clinical summary in doctor message",
                   );
                 }
 
@@ -9890,7 +10377,7 @@ serve(async (req) => {
                     })
                     .eq("id", reportIdForNotif);
                   console.log(
-                    "✅ WhatsApp sent to doctor:",
+                    "âœ… WhatsApp sent to doctor:",
                     order.doctors.phone,
                   );
                 } else {
@@ -9917,42 +10404,43 @@ serve(async (req) => {
                           ? `Waiting for report status ${notifSettings.send_report_on_status || "Completed"}`
                           : (withinWindow ? "Initial send failed" : "Outside send window"),
                       });
-                    console.log("📥 Doctor notification queued for retry");
+                    console.log("ðŸ“¥ Doctor notification queued for retry");
                   } else {
                     console.log(
-                      "⏭️ Skipping doctor notification: outside send window and queue disabled",
+                      "â­ï¸ Skipping doctor notification: outside send window and queue disabled",
                     );
                   }
                 }
               }
             }
           } else {
-            console.log("📲 Auto-send not enabled for this lab");
+            console.log("ðŸ“² Auto-send not enabled for this lab");
           }
         } catch (waError) {
-          console.error("⚠️ WhatsApp notification error (non-fatal):", waError);
+          console.error("âš ï¸ WhatsApp notification error (non-fatal):", waError);
           // Don't fail the PDF generation if notifications fail
         }
       }
       // ====== END WHATSAPP NOTIFICATIONS ======
 
       console.log(
-        "═══════════════════════════════════════════════════════════",
+        "â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•",
       );
-      console.log("✅ PDF GENERATION COMPLETE");
+      console.log("âœ… PDF GENERATION COMPLETE");
       console.log("eCopy URL:", storageUrl);
       console.log("Print URL:", printStorageUrl || "Not generated");
       console.log("Job ID:", job.id);
       console.log(
-        "═══════════════════════════════════════════════════════════",
+        "â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•",
       );
 
       return new Response(
         JSON.stringify({
           success: true,
           status: "completed",
-          pdfUrl: storageUrl,
+          pdfUrl: printLayoutMode !== "compact" ? storageUrl : null,
           printPdfUrl: printStorageUrl,
+          compactEcopyUrl: printLayoutMode === "compact" ? storageUrl : null,
           storagePath: eCopyResult.path,
           jobId: job.id,
           orderId,
@@ -9965,11 +10453,11 @@ serve(async (req) => {
       );
     } catch (error) {
       console.error(
-        "═══════════════════════════════════════════════════════════",
+        "â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•",
       );
-      console.error("❌ PDF GENERATION ERROR:", error);
+      console.error("âŒ PDF GENERATION ERROR:", error);
       console.error(
-        "═══════════════════════════════════════════════════════════",
+        "â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•",
       );
 
       return new Response(
@@ -9986,7 +10474,7 @@ serve(async (req) => {
     }
   } catch (topError) {
     // Top-level error handler - ensures CORS headers are ALWAYS returned
-    console.error("❌ TOP-LEVEL ERROR (before main logic):", topError);
+    console.error("âŒ TOP-LEVEL ERROR (before main logic):", topError);
     return new Response(
       JSON.stringify({
         error: "Request processing failed",
@@ -10058,7 +10546,7 @@ function groupAnalytesByTestGroup(
   // try to match them or distribute evenly
   if (ungroupedAnalytes.length > 0 && contextTestGroupIds.length > 0) {
     console.log(
-      `⚠️ ${ungroupedAnalytes.length} analytes without test_group_id, attempting to match with ${contextTestGroupIds.length} context groups`,
+      `âš ï¸ ${ungroupedAnalytes.length} analytes without test_group_id, attempting to match with ${contextTestGroupIds.length} context groups`,
     );
 
     // Ensure all context test group IDs have entries

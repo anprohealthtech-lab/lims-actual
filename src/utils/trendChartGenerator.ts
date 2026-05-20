@@ -20,6 +20,24 @@ const isCriticalFlag = (flag: string | null | undefined) =>
   flag &&
   (flag.toLowerCase() === "c" || flag.toLowerCase().includes("critical"));
 
+const getPointStatus = (
+  value: number,
+  flag: string | null | undefined,
+  referenceRange: ReferenceRangeBounds,
+): "high" | "low" | "normal" => {
+  if (isHighFlag(flag) || isCriticalFlag(flag)) return "high";
+  if (isLowFlag(flag)) return "low";
+  if (referenceRange.max !== null && value > referenceRange.max) return "high";
+  if (referenceRange.min !== null && value < referenceRange.min) return "low";
+  return "normal";
+};
+
+const getPointColor = (status: "high" | "low" | "normal") => {
+  if (status === "high") return "#ef4444";
+  if (status === "low") return "#3b82f6";
+  return "#22c55e";
+};
+
 export interface TrendDataPoint {
   order_date: string;
   value: string | number;
@@ -291,25 +309,18 @@ export const generateTrendSVG = (
       }" fill="rgba(34, 197, 94, 0.15)" stroke="none"/>`;
   }
 
-  // Data points
-  const points = numericData.map((d, i) => {
-    const color = isHighFlag(d.flag)
-      ? "#ef4444"
-      : isLowFlag(d.flag)
-      ? "#3b82f6"
-      : "#22c55e";
-    return `<circle cx="${xScale(i)}" cy="${
-      yScale(d.numericValue)
-    }" r="5" fill="${color}" stroke="white" stroke-width="2"/>`;
-  }).join("");
+	  // Data points
+	  const points = numericData.map((d, i) => {
+	    const color = getPointColor(getPointStatus(d.numericValue, d.flag, refRange));
+	    return `<circle cx="${xScale(i)}" cy="${
+	      yScale(d.numericValue)
+	    }" r="3.5" fill="${color}" stroke="white" stroke-width="1.5"/>`;
+	  }).join("");
 
-  // Value labels
-  const labels = numericData.map((d, i) => {
-    const color = isHighFlag(d.flag)
-      ? "#ef4444"
-      : isLowFlag(d.flag)
-      ? "#3b82f6"
-      : "#374151";
+	  // Value labels
+	  const labels = numericData.map((d, i) => {
+	    const status = getPointStatus(d.numericValue, d.flag, refRange);
+	    const color = status === "normal" ? "#374151" : getPointColor(status);
     return `<text x="${xScale(i)}" y="${
       yScale(d.numericValue) - 10
     }" text-anchor="middle" fill="${color}" font-size="11" font-weight="600">${d.numericValue}</text>`;

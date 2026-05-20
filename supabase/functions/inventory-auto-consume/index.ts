@@ -144,6 +144,22 @@ Deno.serve(async (req) => {
       throw tgError
     }
 
+    const { data: explicitItemRows, error: explicitItemError } = await supabase
+      .from('inventory_test_mapping')
+      .select('item_id')
+      .eq('lab_id', labId)
+      .eq('is_active', true)
+
+    if (explicitItemError) {
+      throw explicitItemError
+    }
+
+    const explicitlyMappedItemIds = new Set(
+      (explicitItemRows || [])
+        .map((row: any) => row.item_id)
+        .filter(Boolean),
+    )
+
     const mappedByItem = new Map<string, ConsumptionCandidate>()
     const analyteItemIds = new Set<string>()
 
@@ -219,6 +235,7 @@ Deno.serve(async (req) => {
     for (const rawItem of scopedItems || []) {
       const item = rawItem as any
       if (mappedByItem.has(item.id)) continue
+      if (explicitlyMappedItemIds.has(item.id)) continue
 
       const packContains = item.pack_contains && item.pack_contains > 0
         ? Number(item.pack_contains)

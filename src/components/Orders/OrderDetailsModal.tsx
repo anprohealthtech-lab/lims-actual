@@ -31,7 +31,8 @@ import {
   Printer,
   ImageIcon,
   FileText as FileIcon,
-  Eye,
+	  Eye,
+	  EyeOff,
   Trash2,
   Maximize2,
   ExternalLink,
@@ -103,7 +104,9 @@ interface ExtractedValue {
   formula_variables?: string[] | string | null;
   verify_note?: string; // Re-run request note from verifier
   is_rerun?: boolean; // Indicates this is a re-run request
-  ai_color_observation?: string; // Color strip: observed pad color + reason for selected value
+	  ai_color_observation?: string; // Color strip: observed pad color + reason for selected value
+	  is_hidden_from_report?: boolean;
+	  hidden_reason?: string;
 }
 
 interface Order {
@@ -159,14 +162,18 @@ interface TestGroupResult {
     is_calculated?: boolean;
     formula?: string | null;
     formula_variables?: string[] | string | null;
-    existing_result?: {
-      id: string;
-      value: string;
-      status: string;
-      unit?: string;
-      reference_range?: string;
-      verified_at?: string;
-    } | null;
+	      existing_result?: {
+	        id: string;
+	        value: string;
+	        status: string;
+	        unit?: string;
+	        reference_range?: string;
+	        verified_at?: string;
+	        flag?: string;
+	        verify_note?: string;
+	        is_hidden_from_report?: boolean;
+	        hidden_reason?: string;
+	      } | null;
   }[];
 }
 
@@ -765,9 +772,11 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
             expected_value_flag_map: analyte.expected_value_flag_map || {},
             expected_value_codes: analyte.expected_value_codes || {},
             value_type: analyte.value_type || undefined,
-            verify_note: isRerun && existingResult?.verify_note ? existingResult.verify_note : undefined,
-            is_rerun: isRerun,
-          };
+	            verify_note: isRerun && existingResult?.verify_note ? existingResult.verify_note : undefined,
+	            is_rerun: isRerun,
+	            is_hidden_from_report: !!existingResult?.is_hidden_from_report,
+	            hidden_reason: existingResult?.hidden_reason || "",
+	          };
         });
       console.log('📋 Seeded manualValues:', seed);
       setManualValues(seed);
@@ -1005,11 +1014,13 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
               reference_range,
               flag,
               analyte_id,
-              order_test_group_id,
-              order_test_id,
-              verify_status,
-              verify_note
-            )
+	              order_test_group_id,
+	              order_test_id,
+	              verify_status,
+	              verify_note,
+	              is_hidden_from_report,
+	              hidden_reason
+	            )
           )
         `
         )
@@ -2879,6 +2890,8 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
       lookup.set('gender_female', patientGender === 'Female' ? 1 : 0);
       lookup.set('gender', patientGender === 'Male' ? 1 : 0);
     }
+    const RECALC_MATH_BUILTINS = new Set(['math', 'pow', 'abs', 'sqrt', 'min', 'max', 'ceil', 'floor', 'round', 'log', 'exp']);
+
     for (const tg of testGroups) {
       for (const a of tg.analytes) {
         if (a.is_calculated) continue;
@@ -2889,6 +2902,7 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
           if ((a as any).lab_analyte_id) lookup.set((a as any).lab_analyte_id, num);
           lookup.set(a.name.toLowerCase(), num);
           lookup.set(toVariableSlug(a.name), num);
+          if ((a as any).code) lookup.set(String((a as any).code).toLowerCase(), num);
         }
       }
     }
@@ -2906,11 +2920,16 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
     return values.map(v => {
       if (!v.is_calculated || !v.formula) return v;
 
-      let formula = v.formula.trim();
+      // Normalize math syntax before token scanning.
+      let formula = v.formula.trim()
+        .replace(/\bpow\s*\(/g, 'Math.pow(')
+        .replace(/\^/g, '**');
+
       const analyteRef = testGroups.flatMap(tg => tg.analytes).find(a => a.id === v.analyte_id || a.name === v.parameter);
       const vars = parseVars(analyteRef?.formula_variables ?? null);
       const analyteSliceDeps = getPreferredDepsForCalculated(calcDeps, v.analyte_id, v.lab_analyte_id);
 
+      // Phase 1: replace formula_variables — don't return early on miss.
       for (const variable of vars) {
         const key = variable.toLowerCase();
         const dep = analyteSliceDeps.find(d => d.variable_name.toLowerCase() === key);
@@ -2934,11 +2953,24 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
           }
         }
 
-        if (val === undefined) return v; // missing source — keep old value
-        formula = formula.replace(new RegExp(`\\b${variable}\\b`, "g"), String(val));
+        if (val !== undefined) {
+          formula = formula.replace(new RegExp(`\\b${variable}\\b`, "g"), String(val));
+        }
       }
 
-      if (!/^[0-9+\-*/().\s]+$/.test(formula)) return v;
+      // Phase 2: resolve remaining alphabetic tokens (handles code/alias mismatches).
+      const remainingTokens = formula.match(/\b[A-Za-z_][A-Za-z0-9_]*\b/g) || [];
+      for (const token of remainingTokens) {
+        if (RECALC_MATH_BUILTINS.has(token.toLowerCase())) continue;
+        const tokenKey = token.toLowerCase();
+        const dep = analyteSliceDeps.find(d => d.variable_name.toLowerCase() === tokenKey);
+        let val: number | undefined = dep?.source_lab_analyte_id ? lookup.get(dep.source_lab_analyte_id) : undefined;
+        if (val === undefined && dep) val = lookup.get(dep.source_analyte_id);
+        if (val === undefined) val = lookup.get(tokenKey);
+        if (val === undefined) return v; // keep old value
+        formula = formula.replace(new RegExp(`\\b${token}\\b`, "g"), String(val));
+      }
+
       try {
         // eslint-disable-next-line no-new-func
         const computed = Function(`"use strict"; return (${formula});`)();
@@ -3044,7 +3076,7 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
     };
   }, [manualValues, testGroups, calcDeps, getPreferredDepsForCalculated]);
 
-  const handleManualValueChange = React.useCallback((index: number, field: keyof ExtractedValue, value: string) => {
+	  const handleManualValueChange = React.useCallback((index: number, field: keyof ExtractedValue, value: string) => {
     setManualValues((prev) => {
       const updated = prev.map((item, i) => {
         if (i !== index) return item;
@@ -3055,7 +3087,21 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
       if (field === "value") return recomputeCalculatedValues(updated);
       return updated;
     });
-  }, [recomputeCalculatedValues]);
+	  }, [recomputeCalculatedValues]);
+
+	  const toggleManualValueHidden = React.useCallback((index: number) => {
+	    setManualValues((prev) =>
+	      prev.map((item, i) => {
+	        if (i !== index) return item;
+	        const nextHidden = !item.is_hidden_from_report;
+	        return {
+	          ...item,
+	          is_hidden_from_report: nextHidden,
+	          hidden_reason: nextHidden ? (item.hidden_reason || "Hidden from report") : "",
+	        };
+	      })
+	    );
+	  }, []);
 
   // Popout input helpers
   const openPopoutInput = (
@@ -3132,7 +3178,9 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
 
   const handleSaveDraft = async () => {
     const actionableRows = manualValues.filter((v) => !v.is_calculated);
-    const validResults = actionableRows.filter((v) => v.value && typeof v.value === 'string' && v.value.trim() !== "");
+	    const validResults = actionableRows.filter((v) =>
+	      (v.value && typeof v.value === 'string' && v.value.trim() !== "") || v.is_hidden_from_report
+	    );
     if (!validResults.length) {
       alert("Please enter at least one test result before saving draft.");
       return;
@@ -3246,7 +3294,9 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
             order_id: order.id,
             test_group_id: testGroup.test_group_id,
             lab_id: userLabId,
-            verify_status: 'pending',
+	            verify_status: r.is_hidden_from_report ? 'approved' : 'pending',
+	            is_hidden_from_report: !!r.is_hidden_from_report,
+	            hidden_reason: r.is_hidden_from_report ? (r.hidden_reason || "Hidden from report") : null,
             ...(testGroup.order_test_group_id && { order_test_group_id: testGroup.order_test_group_id }),
             ...(testGroup.order_test_id && { order_test_id: testGroup.order_test_id }),
           };
@@ -3291,9 +3341,11 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
     }
   };
 
-  const handleSubmitResults = async () => {
-    const actionableRows = manualValues.filter((v) => !v.is_calculated);
-    const validResults = actionableRows.filter((v) => v.value && typeof v.value === 'string' && v.value.trim() !== "");
+	  const handleSubmitResults = async () => {
+	    const actionableRows = manualValues.filter((v) => !v.is_calculated);
+	    const validResults = actionableRows.filter((v) =>
+	      (v.value && typeof v.value === 'string' && v.value.trim() !== "") || v.is_hidden_from_report
+	    );
     const savedScrollTop = modalScrollRef.current?.scrollTop ?? 0;
 
     // If only calculated rows are pending (no manual-entry analytes), allow workflow to continue.
@@ -3504,6 +3556,8 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
       //   1. source_analyte_id key in valueLookup  (UUID — always unique)
       //   2. variable_name key  (lowercased)        (dep-based fallback)
       //   3. analyte name / code keys               (legacy / no-dep fallback)
+      const EVAL_MATH_BUILTINS = new Set(['math', 'pow', 'abs', 'sqrt', 'min', 'max', 'ceil', 'floor', 'round', 'log', 'exp']);
+
       const evaluateCalculatedValue = (
         analyte: TestGroupResult["analytes"][number],
         valueLookup: Map<string, number>,
@@ -3513,48 +3567,60 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
         if (!formula) return "";
 
         const variables = parseFormulaVariables(analyte.formula_variables);
-        if (variables.length === 0) return "";
 
-        let resolved = formula;
+        // Normalize math syntax before token scanning.
+        let resolved = formula
+          .replace(/\bpow\s*\(/g, 'Math.pow(')
+          .replace(/\^/g, '**');
+
+        const analyteDepSlice = deps.filter(
+          (d) =>
+            (analyte.lab_analyte_id && d.calculated_lab_analyte_id === analyte.lab_analyte_id) ||
+            (!d.calculated_lab_analyte_id && d.calculated_analyte_id === analyte.id)
+        );
+
+        // Phase 1: replace variables from formula_variables — don't return early on miss.
         for (const variable of variables) {
           const variableKey = String(variable || "").trim().toLowerCase();
-          if (!variableKey) return "";
+          if (!variableKey) continue;
 
-          // 1. UUID-based lookup via analyte_dependencies
-          const dep = deps.find(
-            (d) =>
-              d.variable_name.toLowerCase() === variableKey &&
-              (
-                (analyte.lab_analyte_id && d.calculated_lab_analyte_id === analyte.lab_analyte_id) ||
-                (!d.calculated_lab_analyte_id && d.calculated_analyte_id === analyte.id)
-              )
-          );
+          const dep = analyteDepSlice.find((d) => d.variable_name.toLowerCase() === variableKey);
           let variableValue: number | undefined =
             dep?.source_lab_analyte_id ? valueLookup.get(dep.source_lab_analyte_id) : undefined;
 
           if (variableValue === undefined)
             variableValue = dep ? valueLookup.get(dep.source_analyte_id) : undefined;
 
-          // 2. Direct key match (name / code / variable_name already in map)
           if (variableValue === undefined)
             variableValue = valueLookup.get(variableKey);
 
-          // 3. Substring fallback (legacy)
           if (variableValue === undefined) {
             const fallbackMatch = Array.from(valueLookup.entries()).find(
               ([key]) =>
-                typeof key === 'string' && key.length <= 20 && // avoid UUID substring matches
+                typeof key === 'string' && key.length <= 20 &&
                 (key === variableKey || key.includes(variableKey) || variableKey.includes(key))
             );
             variableValue = fallbackMatch?.[1];
           }
 
-          if (variableValue === undefined) return "";
-          const escapedVar = String(variable).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-          resolved = resolved.replace(new RegExp(`\\b${escapedVar}\\b`, "g"), String(variableValue));
+          if (variableValue !== undefined) {
+            const escapedVar = String(variable).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+            resolved = resolved.replace(new RegExp(`\\b${escapedVar}\\b`, "g"), String(variableValue));
+          }
         }
 
-        if (!/^[0-9+\-*/().\s]+$/.test(resolved)) return "";
+        // Phase 2: resolve remaining alphabetic tokens (handles code/alias mismatches).
+        const remainingTokens = resolved.match(/\b[A-Za-z_][A-Za-z0-9_]*\b/g) || [];
+        for (const token of remainingTokens) {
+          if (EVAL_MATH_BUILTINS.has(token.toLowerCase())) continue;
+          const tokenKey = token.toLowerCase();
+          const dep = analyteDepSlice.find((d) => d.variable_name.toLowerCase() === tokenKey);
+          let val: number | undefined = dep?.source_lab_analyte_id ? valueLookup.get(dep.source_lab_analyte_id) : undefined;
+          if (val === undefined && dep) val = valueLookup.get(dep.source_analyte_id);
+          if (val === undefined) val = valueLookup.get(tokenKey);
+          if (val === undefined) return "";
+          resolved = resolved.replace(new RegExp(`\\b${token}\\b`, "g"), String(val));
+        }
 
         try {
           const computed = Function(`"use strict"; return (${resolved});`)();
@@ -3596,12 +3662,14 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
               parameter: a.name,
               value: manual?.value?.trim() ? manual.value : calculatedValue,
               unit: manual?.unit || a.units || "",
-              reference: manual?.reference || a.reference_range || "",
-              flag: manual?.flag,
-              is_calculated: true,
-            };
-          })
-          .filter((row) => hasMeaningfulTextValue(row.value));
+	              reference: manual?.reference || a.reference_range || "",
+	              flag: manual?.flag,
+	              is_calculated: true,
+	              is_hidden_from_report: !!manual?.is_hidden_from_report,
+	              hidden_reason: manual?.hidden_reason || "",
+	            };
+	          })
+	          .filter((row) => hasMeaningfulTextValue(row.value) || row.is_hidden_from_report);
 
         const rowsToPersist = [...testGroupResults, ...calculatedRowsForGroup].reduce<ExtractedValue[]>((acc, row) => {
           if (!acc.some((r) => r.analyte_id === row.analyte_id || r.parameter === row.parameter)) {
@@ -3692,10 +3760,13 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
             value: r.value && r.value.trim() !== "" ? r.value : null,
             unit: r.unit || "",
             reference_range: r.reference || "",
-            flag: autoFlag || null,
-            flag_source: hasUserFlag ? 'manual' : (autoFlag ? 'auto_numeric' : undefined),
-            is_auto_calculated: !!r.is_calculated,
-            order_id: order.id,
+	            flag: autoFlag || null,
+	            flag_source: hasUserFlag ? 'manual' : (autoFlag ? 'auto_numeric' : undefined),
+	            is_auto_calculated: !!r.is_calculated,
+	            verify_status: r.is_hidden_from_report ? 'approved' : 'pending',
+	            is_hidden_from_report: !!r.is_hidden_from_report,
+	            hidden_reason: r.is_hidden_from_report ? (r.hidden_reason || "Hidden from report") : null,
+	            order_id: order.id,
             test_group_id: testGroup.test_group_id,
             lab_id: userLabId,
             ...(testGroup.order_test_group_id && { order_test_group_id: testGroup.order_test_group_id }),
@@ -4179,17 +4250,18 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
                 <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Parameter</th>
                 <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Value</th>
                 <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Unit</th>
-                <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Reference Range</th>
-                <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Flag</th>
-              </tr>
+	                <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Reference Range</th>
+	                <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Flag</th>
+	                <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Report</th>
+	              </tr>
             </thead>
             <tbody className="bg-white divide-y divide-gray-200">
               {testGroupValues.map((value) => {
                 const globalIndex = manualValues.findIndex((v) => v.parameter === value.parameter);
                 return (
-                  <tr key={value.parameter} className={`hover:bg-gray-50 ${value.is_calculated ? 'bg-blue-50/40' : ''}`}>
+	                  <tr key={value.parameter} className={`hover:bg-gray-50 ${value.is_hidden_from_report ? 'bg-slate-50 text-slate-500' : value.is_calculated ? 'bg-blue-50/40' : ''}`}>
                     {/* Parameter Name */}
-                    <td className="px-4 py-3 min-w-[200px]">
+                    <td className="px-4 py-3 w-[220px] max-w-[260px] overflow-hidden">
                       <div className="font-medium text-gray-900">
                         {value.parameter}
                         {value.is_calculated && (
@@ -4197,11 +4269,16 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
                             CALC
                           </span>
                         )}
-                        {value.is_rerun && (
-                          <span className="ml-2 inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-orange-100 text-orange-800">
-                            RE-RUN
-                          </span>
-                        )}
+	                        {value.is_rerun && (
+	                          <span className="ml-2 inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-orange-100 text-orange-800">
+	                            RE-RUN
+	                          </span>
+	                        )}
+	                        {value.is_hidden_from_report && (
+	                          <span className="ml-2 inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-slate-200 text-slate-700">
+	                            hidden
+	                          </span>
+	                        )}
                       </div>
                       {value.verify_note && (
                         <div className="mt-1 text-xs text-orange-600 bg-orange-50 px-2 py-1 rounded">
@@ -4212,8 +4289,8 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
                         const debugInfo = getCalculatedDebugInfo(value);
                         if (!debugInfo?.formula) return null;
                         return (
-                          <div className="mt-1.5 text-xs bg-blue-50 border border-blue-100 rounded p-1.5 space-y-0.5">
-                            <div className="font-mono text-blue-700 mb-1 truncate" title={debugInfo.formula}>
+                          <div className="mt-1.5 text-xs bg-blue-50 border border-blue-100 rounded p-1.5 space-y-0.5 overflow-hidden">
+                            <div className="font-mono text-blue-700 mb-1 break-all" title={debugInfo.formula}>
                               f: {debugInfo.formula}
                             </div>
                             {debugInfo.hasDependencies && debugInfo.missing.length > 0 && (
@@ -4227,10 +4304,10 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
                                 const sourceName = dep.sourceName;
                                 const sourceManual = { value: dep.value };
                                 return (
-                                  <div key={dep.variable} className={`flex items-center gap-1 ${hasValue ? 'text-green-700' : 'text-red-600'}`}>
+                                  <div key={dep.variable} className={`flex flex-wrap items-center gap-1 ${hasValue ? 'text-green-700' : 'text-red-600'}`}>
                                     <span>{hasValue ? '✓' : '✗'}</span>
-                                    <span className="font-mono font-medium">{dep.variable}</span>
-                                    <span className="text-gray-500">→ {sourceName}</span>
+                                    <span className="font-mono font-medium break-all">{dep.variable}</span>
+                                    <span className="text-gray-500 break-all">→ {sourceName}</span>
                                     {hasValue && <span className="font-semibold">= {sourceManual?.value}</span>}
                                     {!hasValue && <span className="italic">(no value yet)</span>}
                                   </div>
@@ -4367,8 +4444,8 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
                     </td>
 
                     {/* ✅ Keep Flag as Select (no pop-out needed) */}
-                    <td className="px-4 py-3 min-w-[120px]">
-                      <select
+	                    <td className="px-4 py-3 min-w-[120px]">
+	                      <select
                         value={value.flag || ""}
                         onChange={(e) => handleManualValueChange(globalIndex, "flag", e.target.value)}
                         className="w-full px-2 py-1 border border-gray-300 rounded focus:outline-none focus:ring-1 focus:ring-blue-500"
@@ -4378,15 +4455,29 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
                             {option.label}
                           </option>
                         ))}
-                      </select>
-                    </td>
-                  </tr>
+	                      </select>
+	                    </td>
+	                    <td className="px-4 py-3 min-w-[90px]">
+	                      <button
+	                        type="button"
+	                        onClick={() => toggleManualValueHidden(globalIndex)}
+	                        className={`inline-flex items-center justify-center rounded-lg border px-2.5 py-1.5 text-xs transition-colors ${
+	                          value.is_hidden_from_report
+	                            ? 'border-slate-400 bg-slate-100 text-slate-700'
+	                            : 'border-gray-200 bg-white text-gray-500 hover:bg-gray-50'
+	                        }`}
+	                        title={value.is_hidden_from_report ? 'Show this analyte on report' : 'Hide this analyte from report'}
+	                      >
+	                        <EyeOff className="h-3.5 w-3.5" />
+	                      </button>
+	                    </td>
+	                  </tr>
                 );
               })}
 
 	              {testGroupValues.length === 0 && (
 	                <tr>
-	                  <td colSpan={5} className="px-4 py-6 text-sm text-gray-500 text-center">
+		                  <td colSpan={6} className="px-4 py-6 text-sm text-gray-500 text-center">
 	                    {testGroup.is_section_only
 	                      ? "This is a section-only test group. Fill the report sections below."
 	                      : "All analytes for this test group are already submitted or verified."}

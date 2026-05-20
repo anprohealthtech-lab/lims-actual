@@ -62,6 +62,8 @@ interface Analyte {
   expected_normal_values?: string[];
   // Map of dropdown value → flag code (e.g. {"Reactive":"A","Non-Reactive":""})
   expected_value_flag_map?: Record<string, string>;
+  // Display name for PDF override
+  display_name?: string | null;
 }
 
 const DEFAULT_FLAG_OPTIONS: FlagOption[] = [
@@ -106,6 +108,8 @@ const AnalyteForm: React.FC<AnalyteFormProps> = ({ onClose, onSubmit, analyte, a
     description: analyte?.description || '',
     // Dropdown options for qualitative values
     expectedNormalValues: analyte?.expected_normal_values?.join('\n') || '',
+    // Display name for PDF override
+    displayName: analyte?.display_name || '',
   });
 
   // State for source analyte picker (calculated parameters)
@@ -389,6 +393,8 @@ const AnalyteForm: React.FC<AnalyteFormProps> = ({ onClose, onSubmit, analyte, a
         : [],
       // Dropdown value → flag mapping
       expected_value_flag_map: expectedValueFlagMap,
+      // Display name for PDF override
+      display_name: formData.displayName || null,
     });
   };
 
@@ -570,6 +576,19 @@ const AnalyteForm: React.FC<AnalyteFormProps> = ({ onClose, onSubmit, analyte, a
               </div>
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">
+                  Display Name <span className="text-gray-400 font-normal">(PDF override, optional)</span>
+                </label>
+                <input
+                  type="text"
+                  name="displayName"
+                  value={formData.displayName}
+                  onChange={handleChange}
+                  placeholder="e.g., Serum Cholesterol (shown in reports)"
+                  className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">
                   Category *
                 </label>
                 <select
@@ -663,17 +682,27 @@ const AnalyteForm: React.FC<AnalyteFormProps> = ({ onClose, onSubmit, analyte, a
             <div className="mt-4">
               <label className="block text-sm font-medium text-gray-700 mb-1">
                 Expected Values (Dropdown Options)
+                {(formData.value_type === 'qualitative' || formData.value_type === 'semi_quantitative') && (
+                  <span className="text-red-500 ml-1">*</span>
+                )}
               </label>
               <textarea
                 name="expectedNormalValues"
                 rows={4}
                 value={formData.expectedNormalValues}
                 onChange={handleChange}
-                placeholder="Enter one value per line, e.g.:&#10;Negative&#10;Positive&#10;Reactive&#10;Non-Reactive"
+                placeholder={
+                  formData.value_type === 'semi_quantitative'
+                    ? "Enter one value per line, e.g.:\nNil\nTrace\n1+\n2+\n3+\n4+"
+                    : "Enter one value per line, e.g.:\nNegative\nPositive\nReactive\nNon-Reactive"
+                }
                 className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
               />
               <p className="text-xs text-gray-500 mt-1">
-                For qualitative analytes (HIV, Blood Group, etc.). Enter one option per line. When set, users will see a dropdown instead of free text input.
+                {formData.value_type === 'qualitative' && 'For qualitative analytes: Positive/Negative, Reactive/Non-Reactive, Blood Groups (A, B, AB, O), etc.'}
+                {formData.value_type === 'semi_quantitative' && 'For semi-quantitative: Nil/Trace/1+/2+/3+/4+ (urinalysis), pH levels, titer values, etc.'}
+                {formData.value_type === 'numeric' && 'Optional for numeric analytes. Leave empty for free-form number entry.'}
+                {formData.value_type === 'descriptive' && 'Optional for descriptive analytes. Usually left empty for free-text entry.'}
               </p>
               {formData.expectedNormalValues && (
                 <div className="mt-2 flex flex-wrap gap-2">

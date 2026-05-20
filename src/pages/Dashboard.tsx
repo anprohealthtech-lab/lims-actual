@@ -50,6 +50,8 @@ import PhlebotomistSelector from "../components/Users/PhlebotomistSelector";
 import { SampleTypeIndicator } from "../components/Common/SampleTypeIndicator";
 import { SampleCollectionTracker } from "../components/Samples/SampleCollectionTracker";
 import BookingQueue from "../components/Dashboard/BookingQueue";
+import { useQZTray } from "../contexts/QZTrayContext";
+import * as qzTrayService from "../utils/qzTrayService";
 
 /* ===========================
    Types
@@ -238,6 +240,7 @@ type CardOrder = {
 
 const Dashboard: React.FC = () => {
   const { user, blockSendOnDue } = useAuth();
+  const { settings: qzSettings, connect: qzConnect } = useQZTray();
 
   const [orders, setOrders] = useState<CardOrder[]>([]);
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
@@ -261,6 +264,10 @@ const Dashboard: React.FC = () => {
   const [processingBooking, setProcessingBooking] = useState<any>(null); // State for booking being processed
   const [selectedOrder, setSelectedOrder] = useState<CardOrder | null>(null);
 
+  // Auto-open collection modal after order creation
+  const [pendingAutoCollectOrderId, setPendingAutoCollectOrderId] = useState<string | null>(null);
+  const [autoOpenCollectModal, setAutoOpenCollectModal] = useState(false);
+
   // State for invoice modal
   const [showInvoiceModal, setShowInvoiceModal] = useState(false);
   const [invoiceOrderId, setInvoiceOrderId] = useState<string | null>(null);
@@ -273,6 +280,7 @@ const Dashboard: React.FC = () => {
   // const { generatePDF } = usePDFGeneration(); // Currently unused
   const [isSendingReport, setIsSendingReport] = useState<string | null>(null);
   const [isSendingInvoice, setIsSendingInvoice] = useState<string | null>(null);
+  const [printingReportId, setPrintingReportId] = useState<string | null>(null);
 
   // dashboard counters
   const [summary, setSummary] = useState({
@@ -293,6 +301,34 @@ const Dashboard: React.FC = () => {
     fetchOrders();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [dateFrom, dateTo, allDates]);
+
+  // Load auto_open_collection_modal setting once
+  // eslint-disable-next-line no-console
+  useEffect(() => {
+    database.getCurrentUserLabId().then(async (labId) => {
+      if (!labId) { console.debug('[AutoCollect] No labId found'); return; }
+      const { data, error } = await supabase
+        .from('labs')
+        .select('auto_open_collection_modal')
+        .eq('id', labId)
+        .single();
+      console.debug('[AutoCollect] DB row:', data, 'error:', error);
+      const enabled = !!data?.auto_open_collection_modal;
+      console.debug('[AutoCollect] Setting autoOpenCollectModal =', enabled);
+      if (enabled) setAutoOpenCollectModal(true);
+    });
+  }, []);
+
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.altKey && e.key === 'n') {
+        e.preventDefault();
+        setShowOrderForm(true);
+      }
+    };
+    document.addEventListener('keydown', handleKeyDown);
+    return () => document.removeEventListener('keydown', handleKeyDown);
+  }, []);
 
   // Read daily sequence (prefer order_number; fallback to tail of sample_id)
   const getDailySeq = (o: CardOrder) => {
@@ -883,13 +919,25 @@ id,
     setShowCollectionModal(true);
   };
 
+  useEffect(() => {
+    if (!pendingAutoCollectOrderId) return;
+
+    const order = orders.find((o) => o.id === pendingAutoCollectOrderId);
+    if (!order) return;
+
+    setPendingAutoCollectOrderId(null);
+    handleOpenCollectionModal(order);
+  }, [pendingAutoCollectOrderId, orders]);
+
   const handleSaveCollection = async () => {
     if (!collectionOrder) return;
 
     try {
-      if (selectedPhlebotomistId) {
-        await database.orders.markSampleCollected(collectionOrder.id, selectedPhlebotomistName || undefined, selectedPhlebotomistId);
-      }
+      await database.orders.markSampleCollected(
+        collectionOrder.id,
+        selectedPhlebotomistName || undefined,
+        selectedPhlebotomistId || undefined,
+      );
       await database.orders.checkAndUpdateStatus(collectionOrder.id);
       setShowCollectionModal(false);
       fetchOrders();
@@ -1448,6 +1496,57 @@ id,
     } catch (error) {
       console.error("Error printing invoice:", error);
       alert("Failed to load invoice for printing. Please try again.");
+    }
+  };
+
+  const handlePrintReport = async (order: CardOrder) => {
+    const pdfUrl = order.report_print_url || order.report_url;
+    console.debug('[QZ][ReportPrint] dashboard print clicked', {
+      orderId: order.id,
+      patientName: order.patient_name,
+      reportUrl: order.report_url,
+      reportPrintUrl: order.report_print_url,
+      selectedPdfUrl: pdfUrl,
+      configuredPrinter: qzSettings.reportPrinterName,
+      qzConnected: qzTrayService.isConnected(),
+    });
+
+    if (!pdfUrl) {
+      console.warn('[QZ][ReportPrint] print blocked: no report PDF URL', { orderId: order.id });
+      alert("Report PDF not generated yet.");
+      return;
+    }
+
+    if (!qzSettings.reportPrinterName) {
+      console.warn('[QZ][ReportPrint] print blocked: report printer is not configured', { orderId: order.id });
+      alert("Report Printer is not configured in Workflow Settings.");
+      return;
+    }
+
+    try {
+      setPrintingReportId(order.id);
+
+      if (!qzTrayService.isConnected()) {
+        console.debug('[QZ][ReportPrint] QZ not connected, attempting connect', { orderId: order.id });
+        await qzConnect();
+      }
+
+      console.debug('[QZ][ReportPrint] sending PDF to QZ', {
+        orderId: order.id,
+        printerName: qzSettings.reportPrinterName,
+        pdfUrl,
+      });
+      await qzTrayService.printPDFFromUrl(qzSettings.reportPrinterName, pdfUrl);
+      console.debug('[QZ][ReportPrint] print command completed', {
+        orderId: order.id,
+        printerName: qzSettings.reportPrinterName,
+        pdfUrl,
+      });
+    } catch (error: any) {
+      console.error("QZ report print failed:", error);
+      alert(error?.message || "Failed to print report via QZ Tray.");
+    } finally {
+      setPrintingReportId(null);
     }
   };
 
@@ -2480,15 +2579,15 @@ id,
 
                                 {o.report_url && (
                                   <button
-                                    onClick={(e) => {
+                                    onClick={async (e) => {
                                       e.stopPropagation();
-                                      if (o.report_print_url) window.open(o.report_print_url, "_blank");
-                                      else window.open(o.report_url!, "_blank");
+                                      await handlePrintReport(o);
                                     }}
-                                    className="inline-flex items-center justify-center px-2 py-1.5 text-sm font-medium rounded-lg text-white bg-emerald-700 hover:bg-emerald-800 transition-colors"
-                                    title={o.report_print_url ? "Print PDF (print version)" : "Print (opens report PDF)"}
+                                    disabled={printingReportId === o.id}
+                                    className="inline-flex items-center justify-center px-2 py-1.5 text-sm font-medium rounded-lg text-white bg-emerald-700 hover:bg-emerald-800 disabled:bg-emerald-300 disabled:cursor-not-allowed transition-colors"
+                                    title={o.report_print_url ? "Print report via QZ Tray" : "Print report PDF via QZ Tray"}
                                   >
-                                    <Printer className="h-4 w-4" />
+                                    {printingReportId === o.id ? "..." : <Printer className="h-4 w-4" />}
                                   </button>
                                 )}
 
@@ -2743,11 +2842,19 @@ id,
           <OrderForm
             initialBookingData={processingBooking}
             onClose={() => {
-              setProcessingBooking(null); // Clear processing booking
+              setProcessingBooking(null);
               setShowOrderForm(false);
               fetchOrders();
             }}
             onSubmit={handleAddOrder}
+            onOrderCreated={autoOpenCollectModal ? (orderId) => {
+              console.debug('[AutoCollect] onOrderCreated fired, orderId:', orderId, '| autoOpenCollectModal:', autoOpenCollectModal);
+              setShowOrderForm(false);
+              setProcessingBooking(null);
+              setPendingAutoCollectOrderId(orderId);
+              console.debug('[AutoCollect] pending collection order set, dashboard modal will open after refresh');
+              fetchOrders();
+            } : undefined}
           />
         )
       }
@@ -2856,6 +2963,7 @@ id,
                   <SampleCollectionTracker
                     orderId={collectionOrder.id}
                     collectedById={selectedPhlebotomistId || undefined}
+                    showFinishButton={false}
                     onSampleCollected={() => {
                       fetchOrders();
                     }}

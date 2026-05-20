@@ -120,7 +120,7 @@ Return ONLY valid JSON with no additional text.`
         },
         body: JSON.stringify({
           model: 'claude-haiku-4-5-20251001',
-          max_tokens: 15000,
+          max_tokens: 20000,
           messages: messages,
           temperature: 0.7
         })
@@ -288,11 +288,21 @@ REQUIREMENTS:
 10. If an analyte is derived (e.g., VLDL from LDL/5), mark it as calculated and provide formula/formula_variables.
 11. If user prompt specifies low/optimal/high style ranges, encode that in reference_range text and keep interpretation_low/normal/high clinically meaningful.
 12. Set analyte.value_type carefully:
-   - numeric: measurable numbers like Hemoglobin, Glucose
-   - qualitative: Positive/Negative, Reactive/Non-Reactive, Present/Absent
-   - semi_quantitative: Trace/1+/2+/3+/4+ or Mild/Moderate/Severe
-   - descriptive: microscopy comments, morphology, culture remarks, narrative observations
-13. If value_type is qualitative or semi_quantitative, populate expected_normal_values with the valid choices.
+   - numeric: measurable numbers like Hemoglobin, Glucose, Bilirubin. expected_normal_values = []
+   - qualitative: categorical results. Examples:
+     * Pregnancy test: ["Positive", "Negative"]
+     * Serology: ["Reactive", "Non-Reactive"]
+     * Blood group: ["A", "B", "AB", "O"]
+     * Rh factor: ["Positive", "Negative"]
+     * Malaria: ["Positive", "Negative", "Pf", "Pv", "Mixed"]
+   - semi_quantitative: graded/ordered results. Examples:
+     * Urinalysis (Ketones, Protein, Glucose, Blood, Bilirubin, Urobilinogen, Leukocytes): ["Nil", "Trace", "1+", "2+", "3+", "4+"]
+     * Urine pH: ["5.0", "5.5", "6.0", "6.5", "7.0", "7.5", "8.0", "8.5"]
+     * Urine Specific Gravity: ["1.000", "1.005", "1.010", "1.015", "1.020", "1.025", "1.030"]
+     * Inflammation: ["None", "Mild", "Moderate", "Severe"]
+     * Widal titer: ["<1:20", "1:20", "1:40", "1:80", "1:160", "1:320"]
+   - descriptive: microscopy comments, morphology, culture remarks. expected_normal_values = []
+13. If value_type is qualitative or semi_quantitative, ALWAYS populate expected_normal_values with the valid choices as shown in examples above.
 14. For qualitative, semi_quantitative, or descriptive analytes, unit should usually be an empty string unless a real measurement unit truly applies.
 
 CONTEXT:

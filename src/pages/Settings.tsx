@@ -140,20 +140,31 @@ interface LabSettings {
     layout: 'table' | 'inline';
     fields: string[];
   } | null;
-  print_options?: {
-    tableBorders?: boolean;
-    flagColumn?: boolean;
-    flagAsterisk?: boolean;
-    flagAsteriskCritical?: boolean;
-    headerBackground?: string;
-    alternateRows?: boolean;
-    baseFontSize?: number;
-    showSampleType?: boolean;
-  } | null;
+	  print_options?: {
+	    tableBorders?: boolean;
+	    flagColumn?: boolean;
+	    flagAsterisk?: boolean;
+	    flagAsteriskCritical?: boolean;
+	    headerBackground?: string;
+	    alternateRows?: boolean;
+	    baseFontSize?: number;
+	    showSampleType?: boolean;
+	    testNameBold?: boolean;
+	    testNameAlignment?: 'left' | 'center' | 'right';
+	    boldAllValues?: boolean;
+	    boldAbnormalValues?: boolean;
+	    calcMarker?: 'asterisk' | 'cal' | 'none';
+	    sectionHeaderInline?: boolean;
+	    flagSymbol?: 'none' | 'before' | 'after';
+	    showFlagLegend?: boolean;
+	    testGroupTitlePosition?: 'below_headers' | 'above_headers_center' | 'above_headers_left';
+	    qrHorizontalOffset?: number;
+	  } | null;
   _pdf_layout_settings_raw?: Record<string, unknown> | null;
   barcode_printer_name?: string | null;
   report_printer_name?: string | null;
   auto_collect_on_registration?: boolean;
+  auto_open_collection_modal?: boolean;
   auto_print_barcode_on_order?: boolean;
   auto_print_report_on_approval?: boolean;
 }
@@ -638,6 +649,7 @@ const Settings: React.FC = () => {
             barcode_printer_name: (labData as any).barcode_printer_name ?? null,
             report_printer_name: (labData as any).report_printer_name ?? null,
             auto_collect_on_registration: (labData as any).auto_collect_on_registration ?? false,
+            auto_open_collection_modal: (labData as any).auto_open_collection_modal ?? false,
             auto_print_barcode_on_order: (labData as any).auto_print_barcode_on_order ?? false,
             auto_print_report_on_approval: (labData as any).auto_print_report_on_approval ?? false,
           });
@@ -959,6 +971,7 @@ const Settings: React.FC = () => {
         barcode_printer_name: labSettings.barcode_printer_name || null,
         report_printer_name: labSettings.report_printer_name || null,
         auto_collect_on_registration: labSettings.auto_collect_on_registration ?? false,
+        auto_open_collection_modal: labSettings.auto_open_collection_modal ?? false,
         auto_print_barcode_on_order: labSettings.auto_print_barcode_on_order ?? false,
         auto_print_report_on_approval: labSettings.auto_print_report_on_approval ?? false,
         pdf_layout_settings: {
@@ -2825,18 +2838,33 @@ const Settings: React.FC = () => {
                       <p className="text-xs text-gray-500 mb-3">
                         For labs that collect samples at the front desk (walk-in). When enabled, every new order is automatically marked as <strong>Sample Collected</strong> at the time of registration — bypassing the separate collection step. Barcode can be printed immediately.
                       </p>
-                      <label className="flex items-center cursor-pointer gap-3">
-                        <input
-                          type="checkbox"
-                          checked={labSettings.auto_collect_on_registration ?? false}
-                          onChange={(e) => setLabSettings(prev => prev ? { ...prev, auto_collect_on_registration: e.target.checked } : prev)}
-                          className="h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded"
-                        />
-                        <div>
-                          <span className="text-sm font-medium text-gray-800">Auto-collect at registration</span>
-                          <p className="text-xs text-gray-400 mt-0.5">Marks sample as collected when the order is created. No separate "Sample Collection" step required.</p>
-                        </div>
-                      </label>
+                      <div className="space-y-3">
+                        <label className="flex items-center cursor-pointer gap-3">
+                          <input
+                            type="checkbox"
+                            checked={labSettings.auto_collect_on_registration ?? false}
+                            onChange={(e) => setLabSettings(prev => prev ? { ...prev, auto_collect_on_registration: e.target.checked } : prev)}
+                            className="h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded"
+                          />
+                          <div>
+                            <span className="text-sm font-medium text-gray-800">Auto-collect at registration</span>
+                            <p className="text-xs text-gray-400 mt-0.5">Marks sample as collected when the order is created. No separate "Sample Collection" step required.</p>
+                          </div>
+                        </label>
+
+                        <label className="flex items-center cursor-pointer gap-3">
+                          <input
+                            type="checkbox"
+                            checked={labSettings.auto_open_collection_modal ?? false}
+                            onChange={(e) => setLabSettings(prev => prev ? { ...prev, auto_open_collection_modal: e.target.checked } : prev)}
+                            className="h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded"
+                          />
+                          <div>
+                            <span className="text-sm font-medium text-gray-800">Auto-open collection modal after order creation</span>
+                            <p className="text-xs text-gray-400 mt-0.5">Immediately opens the Collect Sample dialog after each order is saved — ideal for front-desk walk-in labs that need to print barcodes on the spot.</p>
+                          </div>
+                        </label>
+                      </div>
                     </div>
 
                     {/* QZ Tray Auto-Print */}

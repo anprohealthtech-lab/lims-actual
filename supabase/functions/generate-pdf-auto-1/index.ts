@@ -714,7 +714,7 @@ function injectSignatureImage(html: string, signatoryImageUrl: string, signatory
   // Build complete signature block with image and text
   const signatureBlockHtml = `
     <div style="margin-top: 10px;">
-      <img src="${signatoryImageUrl}" alt="Signature" style="display:block;max-height:40px;max-width:120px;width:auto;height:auto;object-fit:contain;margin-top:5px;margin-bottom:0px;" />
+      <img src="${signatoryImageUrl}" alt="" style="display:block;max-height:40px;max-width:120px;width:auto;height:auto;object-fit:contain;margin-top:5px;margin-bottom:0px;" onerror="this.style.display='none'" />
       ${signatoryName ? `<p style="margin-top:8px;margin-bottom:4px;font-weight:600;font-size:14px;">${signatoryName}</p>` : ''}
       ${signatoryDesignation ? `<p style="margin-top:0;color:#64748b;font-size:12px;">${signatoryDesignation}</p>` : ''}
     </div>
@@ -3056,7 +3056,7 @@ serve(async (req) => {
       // Logic to inject signature image directly into the name placeholder
       // This follows "User Request" to look for {{signatoryName}} and inject there.
       if (sigUrl && sigName) {
-           const imgHtml = `<img src="${sigUrl}" alt="Signature" style="display:block; max-height:40px; margin-bottom:2px; margin-top:2px;" />`;
+           const imgHtml = `<img src="${sigUrl}" alt="" style="display:block; max-height:40px; margin-bottom:2px; margin-top:2px;" onerror="this.style.display='none'" />`;
            // Wrap name in span to separate it from block image, though block image forces break.
            sigName = `${imgHtml}<span>${sigName}</span>`; 
       }

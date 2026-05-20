@@ -266,13 +266,13 @@ const Inventory: React.FC = () => {
             <Mic className="h-4 w-4 mr-2" />
             Voice
           </button>
-          <button
-            onClick={() => setShowMappingWizard(true)}
-            className="inline-flex items-center px-4 py-2 bg-gradient-to-r from-indigo-600 to-purple-600 text-white rounded-lg hover:from-indigo-700 hover:to-purple-700 transition-colors"
-          >
-            <Wand2 className="h-4 w-4 mr-2" />
-            AI Mapping
-          </button>
+	          <button
+	            onClick={() => setShowMappingWizard(true)}
+	            className="inline-flex items-center px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition-colors"
+	          >
+	            <Wand2 className="h-4 w-4 mr-2" />
+	            Test Mapping
+	          </button>
           <button
             onClick={() => setShowPdfUpload(true)}
             className="inline-flex items-center px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 transition-colors"

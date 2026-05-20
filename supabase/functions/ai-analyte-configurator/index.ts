@@ -71,7 +71,7 @@ Return ONLY valid JSON with no additional text.`
       },
       body: JSON.stringify({
         model: 'claude-haiku-4-5-20251001',
-        max_tokens: 4000,
+        max_tokens: 8000,
         messages: [{ role: 'user', content: fullPrompt }],
         temperature: 0.3,
       }),
@@ -164,10 +164,26 @@ AI PROCESSING TYPE GUIDE:
 - MANUAL_ENTRY_NO_VISION: values entered manually, no image capture
 
 VALUE TYPE GUIDE:
-- numeric: measurable quantity with a number (e.g. Hemoglobin, Glucose)
-- qualitative: categorical result (e.g. Positive/Negative, Reactive/Non-Reactive)
-- semi_quantitative: graded result (e.g. 1+/2+/3+, Trace/Mild/Moderate/Severe)
-- descriptive: free text (e.g. morphology comments, culture results)
+- numeric: measurable quantity with a number (e.g. Hemoglobin, Glucose, Bilirubin). unit should be set (mg/dL, g/dL, etc.). expected_normal_values should be empty array [].
+- qualitative: categorical result with discrete options. Examples:
+  * Pregnancy test: expected_normal_values = ["Positive", "Negative"]
+  * Serology: expected_normal_values = ["Reactive", "Non-Reactive"]
+  * Blood group: expected_normal_values = ["A", "B", "AB", "O"]
+  * Rh factor: expected_normal_values = ["Positive", "Negative"]
+  * Malaria: expected_normal_values = ["Positive", "Negative", "Pf", "Pv", "Mixed"]
+  unit should usually be empty string "".
+- semi_quantitative: graded result with ordered levels. Examples:
+  * Urinalysis (Ketones, Protein, Glucose, Blood, Bilirubin, Urobilinogen, Leukocytes, Nitrite): expected_normal_values = ["Nil", "Trace", "1+", "2+", "3+", "4+"]
+  * Urine pH: expected_normal_values = ["5.0", "5.5", "6.0", "6.5", "7.0", "7.5", "8.0", "8.5"]
+  * Urine Specific Gravity: expected_normal_values = ["1.000", "1.005", "1.010", "1.015", "1.020", "1.025", "1.030"]
+  * Inflammation grade: expected_normal_values = ["None", "Mild", "Moderate", "Severe"]
+  * ASO titer: expected_normal_values = ["<200", "200", "400", "800", "1600"]
+  * Widal titer: expected_normal_values = ["<1:20", "1:20", "1:40", "1:80", "1:160", "1:320"]
+  unit should usually be empty string "" unless measurement applies.
+- descriptive: free text for morphology, microscopy, culture reports. expected_normal_values = []. unit = "".
+
+CATEGORY OPTIONS:
+Hematology, Biochemistry, Serology, Endocrinology, Coagulation, Urinalysis, Microbiology, Immunology, Molecular Biology, Histopathology, Cytology, Allergy, Tumor Markers, Vitamins & Minerals, Cardiac, Lipid Profile, Liver Function, Kidney Function, Thyroid, Diabetes, Drug Monitoring, Hormones, Electrolytes, Blood Gas, General
 
 Be clinically accurate. Use standard SI or conventional units as appropriate for the analyte.`
 }

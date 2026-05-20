@@ -167,17 +167,40 @@ Deno.serve(async (req: Request) => {
         plan_started_at: new Date().toISOString(),
         active_upto: new Date(Date.now() + 5 * 24 * 60 * 60 * 1000).toISOString(), // 5 days from now
         // Default PDF settings
-        pdf_layout_settings: {
-          headerTextColor: 'white',
-          resultColors: {
-            high: '#dc2626',
-            low: '#2563eb',
-            critical: '#7c2d12',
-            abnormal: '#ea580c',
-            normal: '#16a34a'
-          }
-        }
-      })
+	        pdf_layout_settings: {
+	          headerTextColor: 'white',
+	          printOptions: {
+	            baseFontSize: 14,
+	            flagSymbol: 'before',
+	            showFlagLegend: false,
+	            flagAsterisk: false,
+	            flagAsteriskCritical: false,
+	            testNameBold: false,
+	            testNameAlignment: 'left',
+	            boldAllValues: false,
+	            boldAbnormalValues: true,
+		            calcMarker: 'cal',
+		            sectionHeaderInline: true,
+		            testGroupTitlePosition: 'above_headers_center',
+		            qrHorizontalOffset: 0,
+		            basicColumnWidths: {
+		              standard: [36, 24, 12, 28],
+		              sibling: [30, 14, 8, 16, 16, 16],
+		            },
+		          },
+	          resultColors: {
+	            enabled: true,
+	            high: '#dc2626',
+	            low: '#000000',
+	            critical: '#7c2d12',
+	            abnormal: '#ea580c',
+	            normal: '#16a34a'
+	          }
+	        },
+	        default_template_style: 'basic',
+	        show_methodology: true,
+	        show_interpretation: false,
+	      })
       .select()
       .single();
 

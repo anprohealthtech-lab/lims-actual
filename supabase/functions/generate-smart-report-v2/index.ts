@@ -417,7 +417,7 @@ function buildFirstPageHtml(ctx: FirstPageContext, letterheadUrl: string | null)
     ${ctx.signatoryImageUrl ? `
     <div class="signatory-section">
       <div class="signatory-box">
-        <img src="${ctx.signatoryImageUrl}" alt="Signature" class="signature-img" />
+        <img src="${ctx.signatoryImageUrl}" alt="" class="signature-img" onerror="this.style.display='none'" />
         <div class="signatory-name">${ctx.signatoryName || 'Authorized Signatory'}</div>
       </div>
     </div>

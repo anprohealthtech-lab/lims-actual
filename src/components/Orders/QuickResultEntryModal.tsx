@@ -5,7 +5,7 @@
 
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import ReactDOM from "react-dom";
-import { X, Save, CheckCircle, ChevronDown, Loader2, RefreshCw } from "lucide-react";
+import { X, Save, CheckCircle, ChevronDown, Loader2, RefreshCw, EyeOff } from "lucide-react";
 import { supabase, database } from "../../utils/supabase";
 import { useAuth } from "../../contexts/AuthContext";
 import { calculateFlag, calculateFlagsForResults } from "../../utils/flagCalculation";
@@ -33,6 +33,8 @@ interface AnalyteRow {
   formula_variables?: string[] | string | null;
   verify_note?: string;
   is_rerun?: boolean;
+  is_hidden_from_report?: boolean;
+  hidden_reason?: string;
 }
 
 interface TestGroup {
@@ -60,9 +62,11 @@ interface TestGroup {
       unit?: string;
       reference_range?: string;
       flag?: string;
-      verify_note?: string;
-      verify_status?: string;
-      analyte_name?: string;
+	      verify_note?: string;
+	      verify_status?: string;
+	      is_hidden_from_report?: boolean;
+	      hidden_reason?: string;
+	      analyte_name?: string;
       parameter?: string;
     } | null;
   }[];
@@ -80,6 +84,7 @@ interface QuickResultEntryModalProps {
   };
   onClose: () => void;
   onSubmitted: () => void;
+  showAutoVerifyOption?: boolean;
 }
 
 // ─── Constants ───────────────────────────────────────────────────────────────
@@ -117,6 +122,9 @@ const parseFormulaVars = (fv: string[] | string | null | undefined): string[] =>
   try { return JSON.parse(fv).filter(Boolean); } catch { return []; }
 };
 
+// Math function names that appear in formulas after normalization — skip during Phase 2 token scan.
+const FORMULA_MATH_BUILTINS = new Set(['math', 'pow', 'abs', 'sqrt', 'min', 'max', 'ceil', 'floor', 'round', 'log', 'exp']);
+
 // Derives a short variable slug from an analyte name (mirrors SimpleAnalyteEditor logic).
 // Used as a fallback lookup key so formulas still resolve even if the dependency
 // was linked to a different analyte UUID with the same name.
@@ -147,28 +155,44 @@ const toVariableSlug = (name: string): string => {
   analyteId: string,
   labAnalyteId?: string | null,
 ): string {
-  let resolved = formula.trim();
+  // Normalize math syntax first so 'pow'/'Math' tokens are handled before Phase 2 scanning.
+  let resolved = formula.trim()
+    .replace(/\bpow\s*\(/g, 'Math.pow(')
+    .replace(/\^/g, '**');
+
   const analyteSliceDeps = deps.filter(d =>
     (labAnalyteId && d.calculated_lab_analyte_id === labAnalyteId) ||
     (!d.calculated_lab_analyte_id && d.calculated_analyte_id === analyteId)
   );
 
+  // Phase 1: replace variables listed in formula_variables.
+  // Does NOT return early on a missing var — formula text may use different token names (e.g. analyte codes)
+  // that are resolved in Phase 2 below.
   for (const variable of vars) {
     const key = variable.toLowerCase();
     const dep = analyteSliceDeps.find(d => d.variable_name.toLowerCase() === key);
     let val: number | undefined = dep?.source_lab_analyte_id ? valueLookup.get(dep.source_lab_analyte_id) : undefined;
     if (val === undefined) val = dep ? valueLookup.get(dep.source_analyte_id) : undefined;
     if (val === undefined) val = valueLookup.get(key);
-    if (val === undefined) return "";
-    resolved = resolved.replace(new RegExp(`\\b${variable}\\b`, "g"), String(val));
+    if (val !== undefined) {
+      resolved = resolved.replace(new RegExp(`\\b${variable}\\b`, "g"), String(val));
+    }
   }
 
-  // Normalize formula for plain-JS eval:
-  // 1. pow(x,y) → Math.pow(x,y)  (mathjs syntax not valid in JS)
-  // 2. x^y     → x**y            (^ is XOR in JS, not exponentiation)
-  resolved = resolved
-    .replace(/\bpow\s*\(/g, 'Math.pow(')
-    .replace(/\^/g, '**');
+  // Phase 2: resolve any remaining alphabetic tokens in the formula.
+  // Handles mismatches where formula text uses analyte codes (e.g. SERCRE) that differ
+  // from the formula_variables/dep variable names (e.g. CREAT1).
+  const remainingTokens = resolved.match(/\b[A-Za-z_][A-Za-z0-9_]*\b/g) || [];
+  for (const token of remainingTokens) {
+    if (FORMULA_MATH_BUILTINS.has(token.toLowerCase())) continue;
+    const tokenKey = token.toLowerCase();
+    const dep = analyteSliceDeps.find(d => d.variable_name.toLowerCase() === tokenKey);
+    let val: number | undefined = dep?.source_lab_analyte_id ? valueLookup.get(dep.source_lab_analyte_id) : undefined;
+    if (val === undefined && dep) val = valueLookup.get(dep.source_analyte_id);
+    if (val === undefined) val = valueLookup.get(tokenKey);
+    if (val === undefined) return "";
+    resolved = resolved.replace(new RegExp(`\\b${token}\\b`, "g"), String(val));
+  }
 
   try {
     // eslint-disable-next-line no-new-func
@@ -190,8 +214,9 @@ const getGroupKey = (tg: Pick<TestGroup, "test_group_id" | "order_test_group_id"
 
 // ─── Component ───────────────────────────────────────────────────────────────
 
-const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, onClose, onSubmitted }) => {
+const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, onClose, onSubmitted, showAutoVerifyOption = true }) => {
   const { user } = useAuth();
+  const [autoVerifyOnSubmit, setAutoVerifyOnSubmit] = useState(false);
 
     type DepRow = { calculated_analyte_id: string; calculated_lab_analyte_id?: string | null; source_analyte_id: string; source_lab_analyte_id?: string | null; variable_name: string };
 
@@ -263,7 +288,7 @@ const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, on
           ),
           results(
             id, order_test_group_id, order_test_id, test_group_id,
-            result_values(analyte_id, analyte_name, parameter, value, unit, reference_range, flag, verify_note, verify_status)
+	            result_values(analyte_id, analyte_name, parameter, value, unit, reference_range, flag, verify_note, verify_status, is_hidden_from_report, hidden_reason)
           )
         `)
         .eq("id", order.id)
@@ -462,7 +487,8 @@ const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, on
           }
           const envDefaultValue: string = la?.default_value || "";
           const isRerun = !!(a.existing_result?.verify_note && String(a.existing_result.verify_note).toUpperCase().includes("RE-RUN"));
-          const hasExisting = hasMeaningfulTextValue(a.existing_result?.value) && !isRerun;
+	          const isHiddenExisting = !!a.existing_result?.is_hidden_from_report;
+	          const hasExisting = (hasMeaningfulTextValue(a.existing_result?.value) || isHiddenExisting) && !isRerun;
           // Pre-fill default only for new (unsaved) results
           const prefillValue = hasExisting
             ? a.existing_result!.value
@@ -485,11 +511,13 @@ const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, on
             default_value: envDefaultValue,
             // Mark as default-prefilled so the UI can style it differently
             is_default: !hasExisting && !isRerun && !!envDefaultValue,
-            formula: la?.formula ?? a.formula ?? null,
-            formula_variables: la?.formula_variables ?? a.formula_variables ?? null,
-            verify_note: isRerun ? a.existing_result?.verify_note || "" : "",
-            is_rerun: isRerun,
-          };
+	            formula: la?.formula ?? a.formula ?? null,
+	            formula_variables: la?.formula_variables ?? a.formula_variables ?? null,
+	            verify_note: isRerun ? a.existing_result?.verify_note || "" : "",
+	            is_rerun: isRerun,
+	            is_hidden_from_report: isHiddenExisting,
+	            hidden_reason: a.existing_result?.hidden_reason || "",
+	          };
         })
       );
 
@@ -535,6 +563,16 @@ const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, on
           lookup.set(toVariableSlug(r.parameter), num);
         }
       }
+      // Also seed by analyte code so formula variables using codes (e.g. SERCRE, CREAT1) resolve correctly.
+      for (const tg of merged) {
+        for (const a of tg.analytes) {
+          if (a.is_calculated) continue;
+          if (!(a as any).code) continue;
+          const existingVal = a.existing_result?.value;
+          const num = toNumber(existingVal ?? "");
+          if (num !== null) lookup.set(String((a as any).code).toLowerCase(), num);
+        }
+      }
       const flatWithCalc = flat.map(r => {
         if (!r.is_calculated || !r.formula || r.is_existing) return r;
         const vars = parseFormulaVars(r.formula_variables);
@@ -555,6 +593,18 @@ const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, on
 
   const setRowField = useCallback((idx: number, field: keyof AnalyteRow, value: string) => {
     setRows(prev => prev.map((r, i) => i !== idx ? r : { ...r, [field]: value }));
+  }, []);
+
+  const toggleHiddenFromReport = useCallback((idx: number) => {
+    setRows(prev => prev.map((r, i) => {
+      if (i !== idx) return r;
+      const nextHidden = !r.is_hidden_from_report;
+      return {
+        ...r,
+        is_hidden_from_report: nextHidden,
+        hidden_reason: nextHidden ? (r.hidden_reason || "Hidden from report") : "",
+      };
+    }));
   }, []);
 
   const handleValueBlur = useCallback((idx: number, value: string) => {
@@ -594,6 +644,7 @@ const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, on
             if ((a as any).lab_analyte_id) lookup.set((a as any).lab_analyte_id, num);
             lookup.set(a.name.toLowerCase(), num);
             lookup.set(toVariableSlug(a.name), num);
+            if ((a as any).code) lookup.set(String((a as any).code).toLowerCase(), num);
           }
         }
       }
@@ -646,6 +697,7 @@ const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, on
             if ((a as any).lab_analyte_id) lookup.set((a as any).lab_analyte_id, num);
             lookup.set(a.name.toLowerCase(), num);
             lookup.set(toVariableSlug(a.name), num);
+            if ((a as any).code) lookup.set(String((a as any).code).toLowerCase(), num);
           }
         }
       }
@@ -794,13 +846,22 @@ const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, on
   // ── Save Draft ──────────────────────────────────────────────────────────────
 
   const handleSaveDraft = async () => {
-    const valid = rows.filter(r => !r.is_calculated && r.value.trim());
+	    const valid = rows.filter(r => !r.is_calculated && (r.value.trim() || r.is_hidden_from_report));
     if (!valid.length) { setMessage({ text: "Enter at least one value before saving.", type: "error" }); return; }
 
     setSaving(true);
     setMessage(null);
     try {
-      const resultValues = valid.map(r => ({ parameter: r.parameter, value: r.value.replace(/,/g, ''), unit: r.unit, reference_range: r.reference, flag: r.flag, value_type: r.value_type }));
+	      const resultValues = valid.map(r => ({
+	        parameter: r.parameter,
+	        value: r.value.replace(/,/g, ''),
+	        unit: r.unit,
+	        reference_range: r.reference,
+	        flag: r.flag,
+	        value_type: r.value_type,
+	        is_hidden_from_report: !!r.is_hidden_from_report,
+	        hidden_reason: r.is_hidden_from_report ? (r.hidden_reason || "Hidden from report") : null,
+	      }));
       const withFlags = calculateFlagsForResults(resultValues);
 
       const payload = {
@@ -833,7 +894,7 @@ const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, on
   // ── Submit ──────────────────────────────────────────────────────────────────
 
   const handleSubmit = async () => {
-    const valid = rows.filter(r => !r.is_calculated && r.value.trim());
+	    const valid = rows.filter(r => !r.is_calculated && (r.value.trim() || r.is_hidden_from_report));
     const hasSections = sectionEditorRefs.current.size > 0;
     if (!valid.length && !hasSections) { setMessage({ text: "Enter at least one value before submitting.", type: "error" }); return; }
 
@@ -854,6 +915,8 @@ const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, on
 
       const existingByKey = new Map<string, string>();
       const existingStatusByKey = new Map<string, string>();
+      const savedResultIds = new Set<string>();
+      const verifiedAt = new Date().toISOString();
       const isLockedStatus = (status: string | null, verificationStatus: string | null) =>
         ['Approved', 'Reviewed', 'Reported', 'approved', 'verified'].includes(status || '') ||
         ['verified'].includes(verificationStatus || '');
@@ -923,11 +986,11 @@ const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, on
         }
 
         // Determine rows to persist: manual entries + calculated
-        const manualForGroup = workingRows.filter(r =>
-          !r.is_calculated &&
-          r.value.trim() &&
-          tg.analytes.some(a => a.id === r.analyte_id)
-        );
+	        const manualForGroup = workingRows.filter(r =>
+	          !r.is_calculated &&
+	          (r.value.trim() || r.is_hidden_from_report) &&
+	          tg.analytes.some(a => a.id === r.analyte_id)
+	        );
 
         const calcForGroup: AnalyteRow[] = tg.analytes
           .filter(a => !!a.is_calculated)
@@ -935,20 +998,22 @@ const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, on
             const vars = parseFormulaVars(a.formula_variables);
             const calcVal = a.formula ? evalFormula(a.formula, vars, valueLookup, deps, a.id) : "";
             const existingRow = workingRows.find(r => r.analyte_id === a.id);
-            return {
-              analyte_id: a.id,
-              lab_analyte_id: a.lab_analyte_id || null,
-              parameter: a.name,
-              value: existingRow?.value?.trim() ? existingRow.value : calcVal,
-              unit: existingRow?.unit || a.units || "",
-              reference: existingRow?.reference || a.reference_range || "",
-              flag: existingRow?.flag || "",
-              is_calculated: true,
-              expected_normal_values: [],
-              expected_value_flag_map: {},
-            };
-          })
-          .filter(r => hasMeaningfulTextValue(r.value));
+	            return {
+	              analyte_id: a.id,
+	              lab_analyte_id: a.lab_analyte_id || null,
+	              parameter: a.name,
+	              value: existingRow?.value?.trim() ? existingRow.value : calcVal,
+	              unit: existingRow?.unit || a.units || "",
+	              reference: existingRow?.reference || a.reference_range || "",
+	              flag: existingRow?.flag || "",
+	              is_calculated: true,
+	              is_hidden_from_report: !!existingRow?.is_hidden_from_report,
+	              hidden_reason: existingRow?.hidden_reason || "",
+	              expected_normal_values: [],
+	              expected_value_flag_map: {},
+	            };
+	          })
+	          .filter(r => hasMeaningfulTextValue(r.value) || r.is_hidden_from_report);
 
         // Merge: prefer manual, add calc, dedup
         const toPersist = [...manualForGroup, ...calcForGroup].reduce<AnalyteRow[]>((acc, r) => {
@@ -971,12 +1036,14 @@ const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, on
               patient_id: safeUuid(order.patient_id),
               patient_name: order.patient_name,
               test_name: tg.test_group_name,
-              status: "pending_verification",
               entered_by: currentUser?.email || "Unknown",
               entered_date: new Date().toISOString().split("T")[0],
               test_group_id: tg.test_group_id,
               lab_id: userLabId,
               extracted_by_ai: false,
+              status: autoVerifyOnSubmit ? "Reviewed" : "pending_verification",
+              verification_status: autoVerifyOnSubmit ? "verified" : "pending_verification",
+              ...(autoVerifyOnSubmit && { verified_at: verifiedAt, verified_by: currentUser?.id || null }),
               ...(tg.order_test_group_id && { order_test_group_id: tg.order_test_group_id }),
               ...(tg.order_test_id && { order_test_id: tg.order_test_id }),
             }, { onConflict: "order_id,test_name", ignoreDuplicates: false })
@@ -988,6 +1055,7 @@ const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, on
           const savedLocked = isLockedStatus(saved.status, saved.verification_status) ? 'LOCKED' : saved.status;
           existingStatusByKey.set(groupKey, savedLocked);
         }
+        if (resultRowId) savedResultIds.add(resultRowId);
 
         // For locked results (already approved/verified/reported), only insert truly
         // missing analytes — do not delete/overwrite existing result_values.
@@ -1022,10 +1090,17 @@ const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, on
               value: rawVal || null,
               unit: r.unit || "",
               reference_range: r.reference || "",
-              flag: autoFlag || null,
-              flag_source: r.flag ? "manual" : (autoFlag ? "auto_numeric" : undefined),
-              is_auto_calculated: r.is_calculated,
-              order_id: order.id,
+	              flag: autoFlag || null,
+	              flag_source: r.flag ? "manual" : (autoFlag ? "auto_numeric" : undefined),
+	              is_auto_calculated: r.is_calculated,
+              verify_status: (r.is_hidden_from_report || autoVerifyOnSubmit) ? "approved" : "pending",
+              verified: r.is_hidden_from_report || autoVerifyOnSubmit,
+              verified_by: (r.is_hidden_from_report || autoVerifyOnSubmit) ? (currentUser?.id || null) : null,
+              verified_at: (r.is_hidden_from_report || autoVerifyOnSubmit) ? verifiedAt : null,
+              verify_note: r.is_hidden_from_report ? (r.hidden_reason || "Hidden from report") : (autoVerifyOnSubmit ? "Auto-verified during result entry." : null),
+              is_hidden_from_report: !!r.is_hidden_from_report,
+              hidden_reason: r.is_hidden_from_report ? (r.hidden_reason || "Hidden from report") : null,
+	              order_id: order.id,
               test_group_id: tg.test_group_id,
               lab_id: userLabId,
               ...(tg.order_test_group_id && { order_test_group_id: tg.order_test_group_id }),
@@ -1038,7 +1113,16 @@ const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, on
           // Unlock the result row so a fresh report can be generated with complete data
           await supabase
             .from("results")
-            .update({ is_locked: false, locked_reason: null })
+            .update({
+              is_locked: false,
+              locked_reason: null,
+              ...(autoVerifyOnSubmit && {
+                status: "Reviewed",
+                verification_status: "verified",
+                verified_at: verifiedAt,
+                verified_by: currentUser?.id || null,
+              }),
+            })
             .eq("id", resultRowId!);
 
           continue;
@@ -1092,10 +1176,17 @@ const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, on
           value: rawVal || null,
           unit: r.unit || "",
           reference_range: r.reference || "",
-          flag: autoFlag || null,
-          flag_source: r.flag ? "manual" : (autoFlag ? "auto_numeric" : undefined),
-          is_auto_calculated: r.is_calculated,
-          order_id: order.id,
+	          flag: autoFlag || null,
+	          flag_source: r.flag ? "manual" : (autoFlag ? "auto_numeric" : undefined),
+	          is_auto_calculated: r.is_calculated,
+          verify_status: (r.is_hidden_from_report || autoVerifyOnSubmit) ? "approved" : "pending",
+          verified: r.is_hidden_from_report || autoVerifyOnSubmit,
+          verified_by: (r.is_hidden_from_report || autoVerifyOnSubmit) ? (currentUser?.id || null) : null,
+          verified_at: (r.is_hidden_from_report || autoVerifyOnSubmit) ? verifiedAt : null,
+          verify_note: r.is_hidden_from_report ? (r.hidden_reason || "Hidden from report") : (autoVerifyOnSubmit ? "Auto-verified during result entry." : null),
+          is_hidden_from_report: !!r.is_hidden_from_report,
+          hidden_reason: r.is_hidden_from_report ? (r.hidden_reason || "Hidden from report") : null,
+	          order_id: order.id,
           test_group_id: tg.test_group_id,
           lab_id: userLabId,
           ...(tg.order_test_group_id && { order_test_group_id: tg.order_test_group_id }),
@@ -1130,7 +1221,22 @@ const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, on
         .map(r => r.current?.save());
       await Promise.all(sectionSaves);
 
-      setMessage({ text: "Results saved!", type: "success" });
+      if (autoVerifyOnSubmit && savedResultIds.size > 0) {
+        const { error: resultVerifyError } = await supabase
+          .from("results")
+          .update({
+            status: "Reviewed",
+            verification_status: "verified",
+            verified_at: verifiedAt,
+            verified_by: currentUser?.id || null,
+          })
+          .in("id", Array.from(savedResultIds));
+        if (resultVerifyError) throw resultVerifyError;
+      }
+
+      await database.orders.checkAndUpdateStatus(order.id);
+
+      setMessage({ text: autoVerifyOnSubmit ? "Results saved and auto-verified!" : "Results saved!", type: "success" });
       onSubmitted();
       onClose();
     } catch (err: any) {
@@ -1144,7 +1250,8 @@ const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, on
   // ── Render ──────────────────────────────────────────────────────────────────
 
   const isEditableRow = (r: AnalyteRow) => !r.is_existing || !!r.is_rerun;
-  const filledCount = rows.filter(r => !r.is_calculated && isEditableRow(r) && r.value.trim()).length;
+	  const filledCount = rows.filter(r => !r.is_calculated && isEditableRow(r) && (r.value.trim() || r.is_hidden_from_report)).length;
+	  const hiddenCount = rows.filter(r => !r.is_calculated && isEditableRow(r) && r.is_hidden_from_report).length;
   const totalInputable = rows.filter(r => !r.is_calculated && isEditableRow(r)).length;
   const existingCount = rows.filter(r => !r.is_calculated && r.is_existing && !r.is_rerun).length;
 
@@ -1176,9 +1283,14 @@ const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, on
           </div>
           <div className="flex items-center gap-3">
             {/* Progress pill */}
-            <span className="text-sm bg-white/20 px-3 py-1 rounded-full font-medium">
-              {filledCount}/{totalInputable} entered
-            </span>
+	            <span className="text-sm bg-white/20 px-3 py-1 rounded-full font-medium">
+	              {filledCount}/{totalInputable} handled
+	            </span>
+	            {hiddenCount > 0 && (
+	              <span className="text-xs bg-white/10 px-2 py-1 rounded-full text-green-100">
+	                {hiddenCount} hidden
+	              </span>
+	            )}
             {existingCount > 0 && (
               <span className="text-xs bg-white/10 px-2 py-1 rounded-full text-green-200">
                 {existingCount} saved
@@ -1223,13 +1335,14 @@ const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, on
                   </div>
                 )}
 
-                <table className="w-full text-sm">
+                <table className="w-full text-sm table-fixed">
                   <thead className="sticky top-0 bg-gray-50 border-b z-10">
                     <tr>
-                      <th className="px-4 py-2 text-left text-xs font-semibold text-gray-600 w-[38%]">Analyte</th>
-                      <th className="px-4 py-2 text-left text-xs font-semibold text-gray-600 w-[26%]">Value</th>
-                      <th className="px-4 py-2 text-left text-xs font-semibold text-gray-600 w-[14%]">Unit</th>
-                      <th className="px-4 py-2 text-left text-xs font-semibold text-gray-600 w-[22%]">Flag</th>
+	                      <th className="px-4 py-2 text-left text-xs font-semibold text-gray-600 w-[34%]">Analyte</th>
+	                      <th className="px-4 py-2 text-left text-xs font-semibold text-gray-600 w-[26%]">Value</th>
+	                      <th className="px-4 py-2 text-left text-xs font-semibold text-gray-600 w-[14%]">Unit</th>
+	                      <th className="px-4 py-2 text-left text-xs font-semibold text-gray-600 w-[18%]">Flag</th>
+	                      <th className="px-4 py-2 text-left text-xs font-semibold text-gray-600 w-[8%]">Report</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -1245,25 +1358,30 @@ const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, on
                       const flagLabel = flagOptions.find(f => f.value === row.flag);
                       const flagColor = row.flag === "" ? "text-green-700" : row.flag?.includes("critical") ? "text-red-700 font-semibold" : row.flag === "H" || row.flag === "L" ? "text-orange-600 font-medium" : "text-gray-700";
                       // Row bg: default-prefilled = amber tint, manually entered = green tint, blank = plain
-                      const rowBg = isDefault ? "bg-amber-50/50" : hasDraftValue ? "bg-green-50/40" : "hover:bg-blue-50/30";
+	                      const rowBg = row.is_hidden_from_report
+	                        ? "bg-slate-50 text-slate-500"
+	                        : isDefault ? "bg-amber-50/50" : hasDraftValue ? "bg-green-50/40" : "hover:bg-blue-50/30";
 
                       return (
                         <tr key={row.analyte_id} className={`border-b transition-colors ${rowBg}`}>
 
                           {/* Analyte name + ref range hint */}
-                          <td className="px-4 py-2.5">
+                          <td className="px-4 py-2.5 overflow-hidden">
                             <span className={`font-medium ${isCalc ? "text-blue-700" : "text-gray-800"}`}>{row.parameter}</span>
                             {isCalc && <span className="ml-1.5 text-xs text-blue-400 italic">auto</span>}
                             {isDefault && <span className="ml-1.5 text-xs text-amber-600 bg-amber-100 px-1 py-0.5 rounded">default</span>}
-                            {row.is_rerun && (
-                              <span className="ml-1.5 text-xs text-orange-700 bg-orange-100 px-1.5 py-0.5 rounded font-medium">RE-RUN</span>
-                            )}
+	                            {row.is_rerun && (
+	                              <span className="ml-1.5 text-xs text-orange-700 bg-orange-100 px-1.5 py-0.5 rounded font-medium">RE-RUN</span>
+	                            )}
+	                            {row.is_hidden_from_report && (
+	                              <span className="ml-1.5 text-xs text-slate-600 bg-slate-200 px-1.5 py-0.5 rounded font-medium">hidden</span>
+	                            )}
                             {row.reference && (
                               <div className="text-xs text-gray-400 mt-0.5">{row.reference}</div>
                             )}
                             {isCalc && calcDebugInfo?.formula && (
-                              <div className="mt-1 text-[11px] bg-blue-50 border border-blue-100 rounded px-2 py-1 space-y-0.5">
-                                <div className="font-mono text-blue-700 truncate" title={calcDebugInfo.formula}>
+                              <div className="mt-1 text-[11px] bg-blue-50 border border-blue-100 rounded px-2 py-1 space-y-0.5 overflow-hidden">
+                                <div className="font-mono text-blue-700 break-all" title={calcDebugInfo.formula}>
                                   f: {calcDebugInfo.formula}
                                 </div>
                                 {calcDebugInfo.hasDependencies && calcDebugInfo.missing.length > 0 && (
@@ -1400,8 +1518,8 @@ const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, on
                           {/* Unit (read-only) */}
                           <td className="px-4 py-2 text-gray-500 text-sm">{row.unit || "—"}</td>
 
-                          {/* Flag select */}
-                          <td className="px-4 py-2">
+	                          {/* Flag select */}
+	                          <td className="px-4 py-2">
                             {isCalc ? (
                               <span className={`text-sm ${flagColor}`}>{flagLabel?.label || "—"}</span>
                             ) : (
@@ -1414,9 +1532,23 @@ const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, on
                                   <option key={opt.value} value={opt.value}>{opt.label}</option>
                                 ))}
                               </select>
-                            )}
-                          </td>
-                        </tr>
+	                            )}
+	                          </td>
+	                          <td className="px-4 py-2">
+	                            <button
+	                              type="button"
+	                              onClick={() => toggleHiddenFromReport(globalIdx)}
+	                              className={`inline-flex items-center justify-center rounded border px-2 py-1 text-xs transition-colors ${
+	                                row.is_hidden_from_report
+	                                  ? "border-slate-400 bg-slate-100 text-slate-700"
+	                                  : "border-gray-200 bg-white text-gray-500 hover:bg-gray-50"
+	                              }`}
+	                              title={row.is_hidden_from_report ? "Show this analyte on report" : "Hide this analyte from report"}
+	                            >
+	                              <EyeOff className="h-3.5 w-3.5" />
+	                            </button>
+	                          </td>
+	                        </tr>
                       );
                     })}
                   </tbody>
@@ -1447,6 +1579,23 @@ const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, on
                 {message.type === "success" ? <CheckCircle className="inline h-4 w-4 mr-1" /> : null}
                 {message.text}
               </span>
+            )}
+            {showAutoVerifyOption && (
+              <label className="mt-2 flex max-w-xl items-start gap-2 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs text-emerald-800">
+                <input
+                  type="checkbox"
+                  className="mt-0.5 h-4 w-4 rounded border-emerald-300"
+                  checked={autoVerifyOnSubmit}
+                  onChange={(e) => setAutoVerifyOnSubmit(e.target.checked)}
+                  disabled={saving || submitting || loading}
+                />
+                <span>
+                  Auto-verify after submit
+                  <span className="ml-1 text-emerald-700">
+                    Saved result values will be approved immediately and the order status will refresh.
+                  </span>
+                </span>
+              </label>
             )}
           </div>
           <div className="flex gap-2">

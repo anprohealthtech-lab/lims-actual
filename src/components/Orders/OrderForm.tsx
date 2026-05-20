@@ -117,15 +117,23 @@ interface AccountPrice {
 interface OrderFormProps {
   onClose: () => void;
   onSubmit: (orderData: any) => void;
+  onOrderCreated?: (orderId: string) => void;
   preSelectedPatientId?: string;
   initialBookingData?: any;
 }
 
-const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPatientId, initialBookingData }) => {
+const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPatientId, initialBookingData, onOrderCreated }) => {
   const { autoPrintBarcode } = useQZTray();
   // Masters
   const [doctors, setDoctors] = useState<Doctor[]>([]);
   const searchInputRef = useRef<HTMLInputElement>(null);
+  const patientInputRef = useRef<HTMLInputElement>(null);
+  const doctorInputRef = useRef<HTMLInputElement>(null);
+  const locationInputRef = useRef<HTMLInputElement>(null);
+  const accountInputRef = useRef<HTMLInputElement>(null);
+  const clinicalNotesRef = useRef<HTMLTextAreaElement>(null);
+  const modalScrollRef = useRef<HTMLDivElement>(null);
+  const newPatientModalRef = useRef<HTMLDivElement>(null);
   const [locations, setLocations] = useState<Location[]>([]);
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [patients, setPatients] = useState<Patient[]>([]);
@@ -200,6 +208,10 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
 
   // Searches / dropdown visibility
   const [patientSearch, setPatientSearch] = useState<string>('');
+  const [highlightedPatientIndex, setHighlightedPatientIndex] = useState<number>(-1);
+  const [highlightedDoctorIndex, setHighlightedDoctorIndex] = useState<number>(-1);
+  const [highlightedLocationIndex, setHighlightedLocationIndex] = useState<number>(-1);
+  const [highlightedAccountIndex, setHighlightedAccountIndex] = useState<number>(-1);
   const [doctorSearch, setDoctorSearch] = useState<string>('Self / Walk-in');
   const [locationSearch, setLocationSearch] = useState<string>('');
   const [accountSearch, setAccountSearch] = useState<string>('');
@@ -1036,6 +1048,7 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
   // Handlers
   const onPickPatient = (p: Patient) => {
     setSelectedPatient(p);
+    setPatientSearch('');
     setShowPatientDropdown(false);
     // Prefill defaults
     if (p.default_doctor_id) {
@@ -1047,6 +1060,8 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
     }
     if (p.default_location_id) setSelectedLocation(p.default_location_id);
     if (p.default_payment_type) setPaymentType(p.default_payment_type);
+    // Auto-advance focus to test search
+    setTimeout(() => searchInputRef.current?.focus(), 50);
   };
 
   const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -1429,6 +1444,12 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
             }
           })
           .catch(() => {});
+
+        // Notify parent to auto-open collection modal (setting: auto_open_collection_modal)
+        console.debug('[AutoCollect] onOrderCreated prop present?', !!onOrderCreated, '| newOrderId:', newOrderId);
+        if (onOrderCreated) {
+          onOrderCreated(newOrderId);
+        }
       }
 
       // Auto-create invoice and payment if discount or payment is provided
@@ -1825,6 +1846,7 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
     : 0;
   const finalAmount = Math.max(0, totalAmount + collectionCharge + extraChargesTotal - discountAmount - loyaltyDiscountAmount);
   const balanceDue = finalAmount - amountPaid;
+  const isMonthlyBillingAccount = !!(selectedAccount && accounts.find(a => a.id === selectedAccount)?.billing_mode === 'monthly');
 
   useEffect(() => {
     if (!takeFullPayment) return;
@@ -1861,10 +1883,73 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
     fetchLoyalty();
   }, [selectedPatient?.id]);
 
+  // Auto-focus patient search on mount
+  useEffect(() => {
+    setTimeout(() => patientInputRef.current?.focus(), 100);
+  }, []);
+
+  // Focus trap for Add New Patient modal
+  useEffect(() => {
+    if (!showNewPatientModal) return;
+    const modal = newPatientModalRef.current;
+    if (!modal) return;
+
+    const FOCUSABLE = 'input:not([disabled]), select:not([disabled]), textarea:not([disabled]), button:not([disabled]), [tabindex]:not([tabindex="-1"])';
+
+    // Focus first field on open
+    const first = modal.querySelector<HTMLElement>(FOCUSABLE);
+    setTimeout(() => first?.focus(), 50);
+
+    const trap = (e: KeyboardEvent) => {
+      if (e.key !== 'Tab') return;
+      const focusable = Array.from(modal.querySelectorAll<HTMLElement>(FOCUSABLE));
+      if (focusable.length === 0) return;
+      const firstEl = focusable[0];
+      const lastEl = focusable[focusable.length - 1];
+      if (e.shiftKey) {
+        if (document.activeElement === firstEl) { e.preventDefault(); lastEl.focus(); }
+      } else {
+        if (document.activeElement === lastEl) { e.preventDefault(); firstEl.focus(); }
+      }
+    };
+
+    document.addEventListener('keydown', trap);
+    return () => document.removeEventListener('keydown', trap);
+  }, [showNewPatientModal]);
+
+  // Alt+P: open Add Patient modal when no patient selected
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.altKey && e.key.toLowerCase() === 'p' && !selectedPatient) {
+        e.preventDefault();
+        npResetNameFields();
+        setNewPatient({ name: '', age: '', age_unit: 'years', gender: 'Male', phone: '', email: '', dob: '' });
+        setShowNewPatientModal(true);
+      }
+    };
+    document.addEventListener('keydown', handler);
+    return () => document.removeEventListener('keydown', handler);
+  }, [selectedPatient]);
 
   return ReactDOM.createPortal(
-    <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
-      <div className="bg-white rounded-lg shadow-xl w-full max-w-5xl max-h-[92vh] overflow-y-auto">
+    <div
+      className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4"
+      onKeyDown={(e) => {
+        const scrollable = modalScrollRef.current;
+        if (!scrollable) return;
+        const active = document.activeElement as HTMLElement | null;
+        // Only intercept if no input/select/textarea is focused (let them handle their own keys)
+        const isInputFocused = active && ['INPUT', 'TEXTAREA', 'SELECT'].includes(active.tagName);
+        if (isInputFocused) return;
+        if (e.key === 'ArrowDown') { e.preventDefault(); scrollable.scrollBy({ top: 80, behavior: 'smooth' }); }
+        else if (e.key === 'ArrowUp') { e.preventDefault(); scrollable.scrollBy({ top: -80, behavior: 'smooth' }); }
+        else if (e.key === 'PageDown') { e.preventDefault(); scrollable.scrollBy({ top: scrollable.clientHeight * 0.8, behavior: 'smooth' }); }
+        else if (e.key === 'PageUp') { e.preventDefault(); scrollable.scrollBy({ top: -scrollable.clientHeight * 0.8, behavior: 'smooth' }); }
+        else if (e.key === 'End') { e.preventDefault(); scrollable.scrollTo({ top: scrollable.scrollHeight, behavior: 'smooth' }); }
+        else if (e.key === 'Home') { e.preventDefault(); scrollable.scrollTo({ top: 0, behavior: 'smooth' }); }
+      }}
+    >
+      <div ref={modalScrollRef} className="bg-white rounded-lg shadow-xl w-full max-w-5xl max-h-[92vh] overflow-y-auto">
         {/* Header */}
         <div className="flex items-center justify-between p-6 border-b border-gray-200">
           <h2 className="text-xl font-semibold text-gray-900">Create New Order</h2>
@@ -1905,111 +1990,7 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
             </div>
           )}
 
-          {/* 🚀 TRF Upload Section - AT TOP */}
-          <section className="space-y-3 bg-gradient-to-r from-purple-50 to-blue-50 p-4 rounded-lg border-2 border-dashed border-purple-300">
-            <div className="flex items-center gap-2 mb-2">
-              <Sparkles className="h-5 w-5 text-purple-600" />
-              <h3 className="text-lg font-medium text-gray-900">AI-Powered TRF Extraction</h3>
-              <span className="text-xs bg-purple-100 text-purple-700 px-2 py-0.5 rounded-full font-medium">
-                Quick Start
-              </span>
-            </div>
-            <p className="text-sm text-gray-600 mb-3">
-              Upload a Test Request Form to automatically extract patient info, doctor details, and test selections
-            </p>
-
-            <div className="space-y-3">
-              <input
-                type="file"
-                id="trf-upload-top"
-                accept="image/*,.pdf"
-                onChange={handleFileChange}
-                className="hidden"
-              />
-              <label
-                htmlFor="trf-upload-top"
-                className="block cursor-pointer border-2 border-dashed border-purple-300 bg-white rounded-lg p-6 text-center hover:border-purple-400 hover:bg-purple-50 transition-colors"
-              >
-                {processingTRF && trfProgress ? (
-                  <>
-                    <Loader className="w-8 h-8 text-purple-600 mb-2 mx-auto animate-spin" />
-                    <span className="text-sm font-medium text-purple-700">
-                      {trfProgress.stage || 'Processing TRF...'}
-                    </span>
-                    {trfProgress.progress !== undefined && (
-                      <div className="mt-2 max-w-xs mx-auto">
-                        <div className="h-2 bg-gray-200 rounded-full overflow-hidden">
-                          <div
-                            className="h-full bg-purple-600 transition-all duration-300"
-                            style={{ width: `${trfProgress.progress}%` }}
-                          />
-                        </div>
-                        <span className="text-xs text-gray-600 mt-1 block">
-                          {Math.round(trfProgress.progress || 0)}%
-                        </span>
-                      </div>
-                    )}
-                  </>
-                ) : processingTRF ? (
-                  <div className="flex flex-col items-center">
-                    <Loader className="w-8 h-8 text-purple-600 mb-2 animate-spin" />
-                    <span className="text-sm font-medium text-purple-700">Initializing...</span>
-                  </div>
-                ) : trfExtraction?.success ? (
-                  <>
-                    <CheckCircle className="w-8 h-8 text-green-600 mb-2 mx-auto" />
-                    <span className="text-sm font-medium text-green-700">
-                      TRF Processed Successfully!
-                    </span>
-                    <span className="text-xs text-gray-600 mt-1 block">
-                      {testRequestFile?.name}
-                    </span>
-                    <button
-                      type="button"
-                      onClick={() => setShowTRFReview(true)}
-                      className="mt-3 px-4 py-2 bg-purple-600 text-white rounded-md hover:bg-purple-700 font-medium text-sm flex items-center gap-2 mx-auto"
-                    >
-                      <Sparkles className="w-4 h-4" />
-                      Review Extracted Data
-                    </button>
-                  </>
-                ) : (
-                  <>
-                    <Upload className="w-10 h-10 text-purple-500 mb-3 mx-auto" />
-                    <span className="text-base font-medium text-gray-700 flex items-center justify-center gap-2">
-                      <Sparkles className="w-5 h-5 text-purple-500" />
-                      {testRequestFile ? testRequestFile.name : 'Click to Upload TRF or Drag & Drop'}
-                    </span>
-                    <span className="text-xs text-gray-500 mt-2 block">
-                      Supports: JPG, PNG, PDF (Max 10MB)
-                    </span>
-                    <span className="text-xs text-purple-600 mt-1 block font-medium">
-                      ⚡ Auto-extracts patient, doctor, and test details
-                    </span>
-                  </>
-                )}
-              </label>
-
-              {/* Unmatched Tests Warning */}
-              {trfUnmatchedTests.length > 0 && (
-                <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-3">
-                  <div className="flex items-start gap-2">
-                    <AlertTriangle className="w-5 h-5 text-yellow-600 flex-shrink-0 mt-0.5" />
-                    <div>
-                      <p className="text-sm font-medium text-yellow-800">
-                        ⚠ {trfUnmatchedTests.length} tests need manual selection
-                      </p>
-                      <p className="text-xs text-yellow-700 mt-1">
-                        {trfUnmatchedTests.join(', ')}
-                      </p>
-                    </div>
-                  </div>
-                </div>
-              )}
-            </div>
-          </section>
-
-          {/* Validation Errors Display */}
+          {/* ── Validation Errors ── */}
           {validationErrors.length > 0 && (
             <div className="bg-red-50 border-2 border-red-200 rounded-lg p-4 space-y-2">
               <div className="flex items-center gap-2 text-red-800 font-semibold">
@@ -2024,7 +2005,7 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
             </div>
           )}
 
-          {/* Loading Overlay */}
+          {/* ── Submitting overlay ── */}
           {isSubmitting && (
             <div className="bg-blue-50 border-2 border-blue-200 rounded-lg p-4">
               <div className="flex items-center gap-3">
@@ -2040,92 +2021,148 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
             </div>
           )}
 
-          {/* Patient Section */}
-          <section className="space-y-3 pb-6">
-            <h3 className="text-lg font-medium text-gray-900 flex items-center gap-2">
-              <User className="h-5 w-5" />
-              Patient Information
-            </h3>
+          {/* ── Patient + Add + AI Upload — compact top row ── */}
+          <section className="space-y-2">
+            {/* Hidden file input for AI TRF */}
+            <input
+              type="file"
+              id="trf-upload-top"
+              accept="image/*,.pdf"
+              onChange={handleFileChange}
+              className="hidden"
+            />
 
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4" style={{ minHeight: '320px' }}>
-              <div className="relative">
-                <label className="block text-sm font-medium text-gray-700 mb-1">
-                  Select Patient *
-                </label>
-                <div className="relative">
-                  <div className="flex items-center gap-2">
-                    <div className="relative flex-1">
-                      <Search className="w-4 h-4 text-gray-400 absolute left-2 top-2.5 pointer-events-none z-10" />
-                      <input
-                        type="text"
-                        value={patientSearch}
-                        onChange={(e) => {
-                          setPatientSearch(e.target.value);
-                          setShowPatientDropdown(true);
-                        }}
-                        onFocus={() => setShowPatientDropdown(true)}
-                        onKeyDown={(e) => {
-                          if (e.key === 'Tab') e.preventDefault();
-                        }}
-                        onBlur={() => setTimeout(() => setShowPatientDropdown(false), 200)}
-                        placeholder="Search by name, phone, or ID…"
-                        className="w-full pl-8 pr-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 relative z-0"
-                      />
-                      {showPatientDropdown && filteredPatients.length > 0 && (
-                        <div className="absolute z-[100] w-full mt-1 bg-white border border-gray-300 rounded-lg shadow-2xl max-h-64 overflow-y-auto">
-                          {filteredPatients.map((p) => (
-                            <button
-                              key={p.id}
-                              type="button"
-                              onClick={() => onPickPatient(p)}
-                              className="w-full px-4 py-3 text-left hover:bg-blue-50 border-b border-gray-100 last:border-b-0 transition-colors"
-                            >
-                              <div className="font-semibold text-gray-900 text-sm">{p.name}</div>
-                              <div className="text-xs text-gray-600 mt-0.5">
-                                {formatAge(p.age, p.age_unit)}, {p.gender ?? '-'} • {p.phone ?? '-'} • ID: {p.id.slice(-8)}
-                                {searchablePatientFields.map(field => {
-                                  const val = (p as any).custom_fields?.[field.field_key];
-                                  return val ? <span key={field.field_key}> • {field.label}: {val}</span> : null;
-                                })}
-                              </div>
-                            </button>
-                          ))}
-                        </div>
-                      )}
-                    </div>
-
-                    {!selectedPatient && (
-                      <button
-                        type="button"
-                        onClick={() => { npResetNameFields(); setNewPatient({ name: '', age: '', age_unit: 'years', gender: 'Male', phone: '', email: '', dob: '' }); setShowNewPatientModal(true); }}
-                        className="px-3 py-2 text-sm bg-blue-50 text-blue-700 rounded-md hover:bg-blue-100 whitespace-nowrap"
-                      >
-                        <span className="inline-flex items-center gap-1">
-                          <Plus className="h-4 w-4" /> Add Patient
-                        </span>
-                      </button>
-                    )}
-                  </div>
-                </div>
+            {selectedPatient ? (
+              /* Selected chip */
+              <div className="flex items-center gap-2 px-3 py-2 bg-blue-50 border border-blue-200 rounded-lg text-sm">
+                <User className="h-3.5 w-3.5 text-blue-500 shrink-0" />
+                <span className="font-medium text-blue-900">{selectedPatient.name}</span>
+                <span className="text-blue-600 text-xs">
+                  {formatAge(selectedPatient.age, selectedPatient.age_unit)}, {selectedPatient.gender ?? '-'}
+                  {selectedPatient.phone ? ` · ${selectedPatient.phone}` : ''}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => { setSelectedPatient(null); setPatientSearch(''); setTimeout(() => patientInputRef.current?.focus(), 50); }}
+                  className="ml-auto flex items-center gap-1 text-xs text-blue-500 hover:text-red-600 transition-colors px-2 py-0.5 rounded hover:bg-red-50"
+                >
+                  <X className="w-3 h-3" /> Change
+                </button>
               </div>
-
-              {selectedPatient && (
-                <div className="bg-blue-50 border border-blue-200 rounded-lg p-3">
-                  <div className="text-sm">
-                    <div className="font-medium text-blue-900">{selectedPatient.name}</div>
-                    <div className="text-blue-700">
-                      {formatAge(selectedPatient.age, selectedPatient.age_unit)}, {selectedPatient.gender ?? '-'}
+            ) : (
+              /* Search row: [patient search] [Add Patient] [AI TRF] */
+              <div className="flex items-center gap-2">
+                <div className="relative flex-1">
+                  <Search className="w-4 h-4 text-gray-400 absolute left-2 top-2.5 pointer-events-none z-10" />
+                  <input
+                    ref={patientInputRef}
+                    type="text"
+                    value={patientSearch}
+                    onChange={(e) => { setPatientSearch(e.target.value); setHighlightedPatientIndex(-1); setShowPatientDropdown(true); }}
+                    onFocus={() => setShowPatientDropdown(true)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'ArrowDown') {
+                        e.preventDefault();
+                        setHighlightedPatientIndex(i => Math.min(i + 1, filteredPatients.length - 1));
+                        setShowPatientDropdown(true);
+                      } else if (e.key === 'ArrowUp') {
+                        e.preventDefault();
+                        setHighlightedPatientIndex(i => Math.max(i - 1, 0));
+                      } else if ((e.key === 'Enter' || e.key === ' ') && (highlightedPatientIndex >= 0 || filteredPatients.length === 1)) {
+                        e.preventDefault();
+                        const idx = highlightedPatientIndex >= 0 ? highlightedPatientIndex : 0;
+                        onPickPatient(filteredPatients[idx]);
+                        setHighlightedPatientIndex(-1);
+                      } else if (e.key === 'Tab') {
+                        if (highlightedPatientIndex >= 0 || filteredPatients.length === 1) {
+                          e.preventDefault();
+                          const idx = highlightedPatientIndex >= 0 ? highlightedPatientIndex : 0;
+                          onPickPatient(filteredPatients[idx]);
+                          setHighlightedPatientIndex(-1);
+                        } else {
+                          setShowPatientDropdown(false);
+                          searchInputRef.current?.focus();
+                        }
+                      } else if (e.key === 'Escape') {
+                        setShowPatientDropdown(false);
+                        setHighlightedPatientIndex(-1);
+                      }
+                    }}
+                    onBlur={() => setTimeout(() => { setShowPatientDropdown(false); setHighlightedPatientIndex(-1); }, 200)}
+                    placeholder="Search patient by name, phone, or ID…"
+                    className="w-full pl-8 pr-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  />
+                  {showPatientDropdown && filteredPatients.length > 0 && (
+                    <div className="absolute z-[100] w-full mt-1 bg-white border border-gray-300 rounded-lg shadow-2xl max-h-64 overflow-y-auto">
+                      {filteredPatients.map((p, idx) => (
+                        <button
+                          key={p.id}
+                          type="button"
+                          onClick={() => { onPickPatient(p); setHighlightedPatientIndex(-1); }}
+                          className={`w-full px-4 py-3 text-left border-b border-gray-100 last:border-b-0 transition-colors ${
+                            idx === highlightedPatientIndex ? 'bg-blue-100' : 'hover:bg-blue-50'
+                          }`}
+                        >
+                          <div className="font-semibold text-gray-900 text-sm">{p.name}</div>
+                          <div className="text-xs text-gray-600 mt-0.5">
+                            {formatAge(p.age, p.age_unit)}, {p.gender ?? '-'} • {p.phone ?? '-'} • ID: {p.id.slice(-8)}
+                            {searchablePatientFields.map(field => {
+                              const val = (p as any).custom_fields?.[field.field_key];
+                              return val ? <span key={field.field_key}> • {field.label}: {val}</span> : null;
+                            })}
+                          </div>
+                        </button>
+                      ))}
                     </div>
-                    {selectedPatient.phone && (
-                      <div className="text-blue-700">Phone: {selectedPatient.phone}</div>
-                    )}
-                    {selectedPatient.email && (
-                      <div className="text-blue-700">Email: {selectedPatient.email}</div>
-                    )}
-                  </div>
+                  )}
                 </div>
-              )}
-            </div>
+
+                {/* Add Patient */}
+                <button
+                  type="button"
+                  onClick={() => { npResetNameFields(); setNewPatient({ name: '', age: '', age_unit: 'years', gender: 'Male', phone: '', email: '', dob: '' }); setShowNewPatientModal(true); }}
+                  className="px-3 py-2 text-sm bg-blue-50 text-blue-700 border border-blue-200 rounded-md hover:bg-blue-100 whitespace-nowrap flex items-center gap-1"
+                  title="Add new patient (Alt+P)"
+                >
+                  <Plus className="h-4 w-4" /> Add
+                </button>
+
+                {/* AI TRF Upload — compact */}
+                {processingTRF ? (
+                  <div className="flex items-center gap-1.5 px-3 py-2 bg-purple-50 border border-purple-200 rounded-md text-xs text-purple-700 whitespace-nowrap">
+                    <Loader className="w-3.5 h-3.5 animate-spin" />
+                    {trfProgress?.stage ?? 'Processing…'}
+                    {trfProgress?.progress !== undefined && ` ${Math.round(trfProgress.progress)}%`}
+                  </div>
+                ) : trfExtraction?.success ? (
+                  <button
+                    type="button"
+                    onClick={() => setShowTRFReview(true)}
+                    className="flex items-center gap-1.5 px-3 py-2 bg-green-50 border border-green-200 rounded-md text-xs text-green-700 hover:bg-green-100 whitespace-nowrap"
+                  >
+                    <CheckCircle className="w-3.5 h-3.5" /> Review TRF
+                  </button>
+                ) : (
+                  <label
+                    htmlFor="trf-upload-top"
+                    className="flex items-center gap-1.5 px-3 py-2 bg-purple-50 border border-purple-200 rounded-md text-xs text-purple-700 hover:bg-purple-100 cursor-pointer whitespace-nowrap"
+                    title="Upload TRF to auto-fill patient, doctor and tests"
+                  >
+                    <Sparkles className="w-3.5 h-3.5" /> AI TRF
+                  </label>
+                )}
+              </div>
+            )}
+
+            {/* TRF unmatched tests warning */}
+            {trfUnmatchedTests.length > 0 && (
+              <div className="bg-yellow-50 border border-yellow-200 rounded-lg px-3 py-2 flex items-start gap-2 text-xs">
+                <AlertTriangle className="w-4 h-4 text-yellow-600 shrink-0 mt-0.5" />
+                <span className="text-yellow-800">
+                  <strong>{trfUnmatchedTests.length} tests need manual selection:</strong> {trfUnmatchedTests.join(', ')}
+                </span>
+              </div>
+            )}
           </section>
 
           {/* Test Selection */}
@@ -2200,9 +2237,14 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
                           if (match) handleToggleTest(match.id);
                         } else if (e.key === 'Backspace' && !testSearch && selectedTests.length > 0) {
                           handleToggleTest(selectedTests[selectedTests.length - 1]);
+                        } else if (e.key === 'Escape') {
+                          e.preventDefault();
+                          setShowTestList(false);
+                          setTestSearch('');
+                          setTimeout(() => doctorInputRef.current?.focus(), 50);
                         }
                       }}
-                      onFocus={() => setShowTestList(true)}
+                      onFocus={(e) => { setShowTestList(true); e.currentTarget.closest('section')?.scrollIntoView({ behavior: 'smooth', block: 'nearest' }); }}
                       className="w-full pl-6 text-sm outline-none bg-transparent py-0.5 placeholder-gray-400"
                     />
                   </div>
@@ -2598,19 +2640,54 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
                 <div className="flex gap-2">
                   <div className="relative flex-1">
                   <input
+                    ref={doctorInputRef}
                     type="text"
                     placeholder="Search doctor or leave as Self…"
                     value={doctorSearch}
                     onChange={(e) => {
                       setDoctorSearch(e.target.value);
+                      setHighlightedDoctorIndex(-1);
                       setShowDoctorDropdown(true);
                     }}
-                    onFocus={(e) => { e.target.select(); setShowDoctorDropdown(true); }}
+                    onFocus={(e) => { e.target.select(); setShowDoctorDropdown(true); e.currentTarget.closest('section')?.scrollIntoView({ behavior: 'smooth', block: 'start' }); }}
                     onKeyDown={(e) => {
-                      if (e.key === 'Tab') e.preventDefault();
+                      // total items = Self (index 0) + filteredDoctors
+                      const total = 1 + filteredDoctors.length;
+                      if (e.key === 'ArrowDown') {
+                        e.preventDefault();
+                        setShowDoctorDropdown(true);
+                        setHighlightedDoctorIndex(i => Math.min(i + 1, total - 1));
+                      } else if (e.key === 'ArrowUp') {
+                        e.preventDefault();
+                        setHighlightedDoctorIndex(i => Math.max(i - 1, 0));
+                      } else if (e.key === 'Enter' || e.key === ' ' || e.key === 'Tab') {
+                        const onlyOne = filteredDoctors.length === 1 && highlightedDoctorIndex < 0;
+                        if (highlightedDoctorIndex >= 0 || onlyOne) {
+                          e.preventDefault();
+                          const idx = onlyOne ? 1 : highlightedDoctorIndex;
+                          if (idx === 0) {
+                            setSelectedDoctor('SELF'); setDoctorSearch('Self / Walk-in');
+                          } else {
+                            const doc = filteredDoctors[idx - 1];
+                            setSelectedDoctor(doc.id); setDoctorSearch(doc.name);
+                          }
+                          setShowDoctorDropdown(false);
+                          setHighlightedDoctorIndex(-1);
+                          setTimeout(() => locationInputRef.current?.focus(), 50);
+                        } else if (e.key === 'Tab') {
+                          e.preventDefault();
+                          setShowDoctorDropdown(false);
+                          setTimeout(() => locationInputRef.current?.focus(), 50);
+                        }
+                      } else if (e.key === 'Escape') {
+                        setShowDoctorDropdown(false);
+                        setHighlightedDoctorIndex(-1);
+                        setTimeout(() => locationInputRef.current?.focus(), 50);
+                      }
                     }}
                     onBlur={() => setTimeout(() => {
                       setShowDoctorDropdown(false);
+                      setHighlightedDoctorIndex(-1);
                       // Only reset to Self/Walk-in if the search field was completely emptied
                       // Do NOT reset when selectedDoctor is SELF but user typed a search query
                       // (they may just be searching for a doctor to pick)
@@ -2633,15 +2710,16 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
                           setSelectedDoctor('SELF');
                           setDoctorSearch('Self / Walk-in');
                           setShowDoctorDropdown(false);
+                          setTimeout(() => locationInputRef.current?.focus(), 50);
                         }}
                         className={`w-full px-4 py-2 text-left transition-colors border-b border-gray-100 ${
-                          selectedDoctor === 'SELF' ? 'bg-blue-50' : 'hover:bg-gray-50'
+                          highlightedDoctorIndex === 0 ? 'bg-blue-100' : selectedDoctor === 'SELF' ? 'bg-blue-50' : 'hover:bg-gray-50'
                         }`}
                       >
                         <div className="font-medium text-gray-700">Self / Walk-in</div>
                         <div className="text-xs text-gray-400">No referring doctor</div>
                       </button>
-                      {filteredDoctors.map((doctor) => (
+                      {filteredDoctors.map((doctor, idx) => (
                         <button
                           key={doctor.id}
                           type="button"
@@ -2649,9 +2727,11 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
                             setSelectedDoctor(doctor.id);
                             setDoctorSearch(doctor.name);
                             setShowDoctorDropdown(false);
+                            setHighlightedDoctorIndex(-1);
+                            setTimeout(() => locationInputRef.current?.focus(), 50);
                           }}
                           className={`w-full px-4 py-2 text-left transition-colors ${
-                            selectedDoctor === doctor.id ? 'bg-blue-50' : 'hover:bg-blue-50'
+                            highlightedDoctorIndex === idx + 1 ? 'bg-blue-100' : selectedDoctor === doctor.id ? 'bg-blue-50' : 'hover:bg-blue-50'
                           }`}
                         >
                           <div className="font-medium text-gray-900">{doctor.name}</div>
@@ -2692,20 +2772,46 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
                 </label>
                 <div className="relative">
                   <input
+                    ref={locationInputRef}
                     type="text"
                     placeholder="Search location…"
                     value={locationSearch}
                     onChange={(e) => {
                       setLocationSearch(e.target.value);
+                      setHighlightedLocationIndex(-1);
                       setShowLocationDropdown(true);
                     }}
-                    onFocus={() => setShowLocationDropdown(true)}
-                    onBlur={() => setTimeout(() => setShowLocationDropdown(false), 200)}
+                    onFocus={(e) => { setShowLocationDropdown(true); e.currentTarget.closest('section')?.scrollIntoView({ behavior: 'smooth', block: 'start' }); }}
+                    onKeyDown={(e) => {
+                      if (e.key === 'ArrowDown') {
+                        e.preventDefault();
+                        setShowLocationDropdown(true);
+                        setHighlightedLocationIndex(i => Math.min(i + 1, filteredLocations.length - 1));
+                      } else if (e.key === 'ArrowUp') {
+                        e.preventDefault();
+                        setHighlightedLocationIndex(i => Math.max(i - 1, 0));
+                      } else if ((e.key === 'Enter' || e.key === ' ' || e.key === 'Tab') && (highlightedLocationIndex >= 0 || filteredLocations.length === 1)) {
+                        e.preventDefault();
+                        const idx = highlightedLocationIndex >= 0 ? highlightedLocationIndex : 0;
+                        const loc = filteredLocations[idx];
+                        setSelectedLocation(loc.id); setLocationSearch(loc.name);
+                        setShowLocationDropdown(false); setHighlightedLocationIndex(-1);
+                        setTimeout(() => accountInputRef.current?.focus(), 50);
+                      } else if (e.key === 'Tab') {
+                        e.preventDefault();
+                        setShowLocationDropdown(false);
+                        setTimeout(() => accountInputRef.current?.focus(), 50);
+                      } else if (e.key === 'Escape') {
+                        setShowLocationDropdown(false); setHighlightedLocationIndex(-1);
+                        setTimeout(() => accountInputRef.current?.focus(), 50);
+                      }
+                    }}
+                    onBlur={() => setTimeout(() => { setShowLocationDropdown(false); setHighlightedLocationIndex(-1); }, 200)}
                     className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
                   />
                   {showLocationDropdown && filteredLocations.length > 0 && (
                     <div className="absolute z-[100] w-full mt-1 bg-white border border-gray-300 rounded-lg shadow-2xl max-h-48 overflow-y-auto">
-                      {filteredLocations.map((location) => (
+                      {filteredLocations.map((location, idx) => (
                         <button
                           key={location.id}
                           type="button"
@@ -2713,8 +2819,12 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
                             setSelectedLocation(location.id);
                             setLocationSearch(location.name);
                             setShowLocationDropdown(false);
+                            setHighlightedLocationIndex(-1);
+                            setTimeout(() => accountInputRef.current?.focus(), 50);
                           }}
-                          className="w-full px-4 py-2 text-left hover:bg-blue-50 flex items-center gap-2 transition-colors"
+                          className={`w-full px-4 py-2 text-left flex items-center gap-2 transition-colors ${
+                            highlightedLocationIndex === idx ? 'bg-blue-100' : 'hover:bg-blue-50'
+                          }`}
                         >
                           <Building className="w-4 h-4 text-gray-400" />
                           <div>
@@ -2738,20 +2848,52 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
                 </label>
                 <div className="relative">
                   <input
+                    ref={accountInputRef}
                     type="text"
                     placeholder="Search account (hospital / corporate / insurer)…"
                     value={accountSearch}
                     onChange={(e) => {
                       setAccountSearch(e.target.value);
+                      setHighlightedAccountIndex(-1);
                       setShowAccountDropdown(true);
                     }}
-                    onFocus={() => setShowAccountDropdown(true)}
-                    onBlur={() => setTimeout(() => setShowAccountDropdown(false), 200)}
+                    onFocus={(e) => {
+                      setShowAccountDropdown(true);
+                      e.currentTarget.closest('section')?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.key === 'ArrowDown') {
+                        e.preventDefault();
+                        setShowAccountDropdown(true);
+                        setHighlightedAccountIndex(i => Math.min(i + 1, filteredAccounts.length - 1));
+                      } else if (e.key === 'ArrowUp') {
+                        e.preventDefault();
+                        setHighlightedAccountIndex(i => Math.max(i - 1, 0));
+                      } else if ((e.key === 'Enter' || e.key === ' ' || e.key === 'Tab') && (highlightedAccountIndex >= 0 || filteredAccounts.length === 1)) {
+                        e.preventDefault();
+                        const idx = highlightedAccountIndex >= 0 ? highlightedAccountIndex : 0;
+                        const acc = filteredAccounts[idx];
+                        setSelectedAccount(acc.id); setAccountSearch(acc.name);
+                        setShowAccountDropdown(false); setHighlightedAccountIndex(-1);
+                        setTimeout(() => {
+                          clinicalNotesRef.current?.focus();
+                          clinicalNotesRef.current?.closest('section')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                        }, 50);
+                      } else if (e.key === 'Tab' || e.key === 'Escape') {
+                        e.preventDefault();
+                        setShowAccountDropdown(false); setHighlightedAccountIndex(-1);
+                        setTimeout(() => {
+                          clinicalNotesRef.current?.focus();
+                          clinicalNotesRef.current?.closest('section')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                        }, 50);
+                      }
+                    }}
+                    onBlur={() => setTimeout(() => { setShowAccountDropdown(false); setHighlightedAccountIndex(-1); }, 200)}
                     className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
                   />
                   {showAccountDropdown && filteredAccounts.length > 0 && (
                     <div className="absolute z-[100] w-full mt-1 bg-white border border-gray-300 rounded-lg shadow-2xl max-h-48 overflow-y-auto">
-                      {filteredAccounts.map((account) => (
+                      {filteredAccounts.map((account, idx) => (
                         <button
                           key={account.id}
                           type="button"
@@ -2759,8 +2901,11 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
                             setSelectedAccount(account.id);
                             setAccountSearch(account.name);
                             setShowAccountDropdown(false);
+                            setHighlightedAccountIndex(-1);
                           }}
-                          className="w-full px-4 py-2 text-left hover:bg-blue-50 flex items-center gap-2 transition-colors"
+                          className={`w-full px-4 py-2 text-left flex items-center gap-2 transition-colors ${
+                            highlightedAccountIndex === idx ? 'bg-blue-100' : 'hover:bg-blue-50'
+                          }`}
                         >
                           <Briefcase className="w-4 h-4 text-gray-400" />
                           <div>
@@ -2959,10 +3104,12 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
           <section>
             <label className="block text-sm font-medium text-gray-700 mb-1">Clinical Notes</label>
             <textarea
+              ref={clinicalNotesRef}
               value={notes}
               onChange={(e) => setNotes(e.target.value)}
               rows={3}
               placeholder="Any special instructions or clinical notes…"
+              onFocus={(e) => e.currentTarget.closest('section')?.scrollIntoView({ behavior: 'smooth', block: 'start' })}
               className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
             />
           </section>
@@ -3130,8 +3277,8 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
                 </div>
               </div>
 
-              {/* Payment Collection */}
-              <div className="border-t pt-3">
+              {/* Payment Collection — hidden for monthly billing accounts */}
+              {!isMonthlyBillingAccount && <div className="border-t pt-3">
                 <label className="block text-sm font-medium text-gray-700 mb-2">Collect Payment (Optional)</label>
                 <div className="grid grid-cols-2 gap-3">
                   <div>
@@ -3194,7 +3341,7 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
                 <p className="text-xs text-gray-500 mt-2">
                   💡 Leave empty to collect payment later via invoice
                 </p>
-              </div>
+              </div>}
             </section>
           )}
 
@@ -3324,11 +3471,29 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
 
       {/* New Patient Modal */}
       {showNewPatientModal && (
-        <div className="fixed inset-0 bg-black bg-opacity-40 flex items-center justify-center z-50 p-4">
-          <div className="bg-white rounded-lg shadow-xl w-full max-w-lg">
+        <div
+          className="fixed inset-0 bg-black bg-opacity-40 flex items-center justify-center z-50 p-4"
+          onKeyDown={(e) => {
+            if (e.key === 'Escape') {
+              setShowNewPatientModal(false);
+              setNewPatientCustomFields({});
+              npResetNameFields();
+              setTimeout(() => patientInputRef.current?.focus(), 50);
+            }
+          }}
+        >
+          <div ref={newPatientModalRef} className="bg-white rounded-lg shadow-xl w-full max-w-lg">
             <div className="flex items-center justify-between p-4 border-b border-gray-200">
               <h3 className="text-lg font-semibold text-gray-900">Add New Patient</h3>
-              <button onClick={() => setShowNewPatientModal(false)} className="text-gray-400 hover:text-gray-600">
+              <button
+                onClick={() => {
+                  setShowNewPatientModal(false);
+                  setNewPatientCustomFields({});
+                  npResetNameFields();
+                  setTimeout(() => patientInputRef.current?.focus(), 50);
+                }}
+                className="text-gray-400 hover:text-gray-600"
+              >
                 <X className="h-5 w-5" />
               </button>
             </div>
@@ -3376,11 +3541,11 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
                   }
                   if (data) {
                     setPatients((prev) => [...prev, data]);
-                    setSelectedPatient(data);
                     setShowNewPatientModal(false);
                     setNewPatient({ name: '', age: '', age_unit: 'years', gender: 'Male', phone: '', email: '', dob: '' });
                     setNewPatientCustomFields({});
                     npResetNameFields();
+                    onPickPatient(data); // selects patient + advances focus to test search
                   }
                 } catch (err) {
                   console.error(err);
@@ -3411,6 +3576,7 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
                     <input
                       type="text"
                       required
+                      autoComplete="new-password"
                       placeholder="First Name *"
                       value={npFirstName}
                       onChange={e => setNpFirstName(e.target.value)}
@@ -3423,6 +3589,7 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
                     {patientFormSettings.show_middle_name && (
                       <input
                         type="text"
+                        autoComplete="new-password"
                         placeholder="Middle Name"
                         value={npMiddleName}
                         onChange={e => setNpMiddleName(e.target.value)}
@@ -3431,6 +3598,7 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
                     )}
                     <input
                       type="text"
+                      autoComplete="new-password"
                       placeholder="Last Name"
                       value={npLastName}
                       onChange={e => setNpLastName(e.target.value)}
@@ -3536,6 +3704,7 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
                   <input
                     type="tel"
                     required={patientFormSettings.phone_required}
+                    autoComplete="new-password"
                     value={newPatient.phone}
                     onChange={(e) => setNewPatient((p) => ({ ...p, phone: e.target.value }))}
                     className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm"
@@ -3549,6 +3718,7 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
                     <input
                       type="email"
                       required={patientFormSettings.email_required}
+                      autoComplete="new-password"
                       value={newPatient.email}
                       onChange={(e) => setNewPatient((p) => ({ ...p, email: e.target.value }))}
                       className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm"
@@ -3596,7 +3766,7 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
               <div className="flex items-center justify-end gap-3 pt-2">
                 <button
                   type="button"
-                  onClick={() => { setShowNewPatientModal(false); setNewPatientCustomFields({}); npResetNameFields(); }}
+                  onClick={() => { setShowNewPatientModal(false); setNewPatientCustomFields({}); npResetNameFields(); setTimeout(() => patientInputRef.current?.focus(), 50); }}
                   className="px-4 py-2 text-sm border border-gray-300 rounded-md hover:bg-gray-50"
                   disabled={creatingPatient}
                 >

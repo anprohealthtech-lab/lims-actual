@@ -4,16 +4,21 @@ export interface BasicPrintOptions {
   baseFontSize?: number;
   flagAsterisk?: boolean;
   flagAsteriskCritical?: boolean;
-  testNameBold?: boolean;          // default true
+  testNameBold?: boolean;          // default false
+  testNameAlignment?: 'left' | 'center' | 'right'; // default 'left'
   boldAllValues?: boolean;         // default true — all values font-weight 600; false = normal weight
   boldAbnormalValues?: boolean;    // default true — extra bold (700) for high/low; false = no extra bold
-  calcMarker?: 'asterisk' | 'cal' | 'none'; // default 'asterisk'
-  sectionHeaderInline?: boolean;   // default false = small-caps style; true = inline bold row like left screenshot
-  flagSymbol?: 'none' | 'before' | 'after'; // default 'none'; 'before' = separate flag column before value; 'after' = inline flag suffix
+  calcMarker?: 'asterisk' | 'cal' | 'none'; // default 'cal'
+  sectionHeaderInline?: boolean;   // default true = inline shaded row; false = small-caps label
+  flagSymbol?: 'none' | 'before' | 'after'; // default 'none'; 'before' = flag prefix inside result; 'after' = inline flag suffix
   showFlagLegend?: boolean;        // show H=High, L=Low legend below each group table
   resultColors?: { high?: string; low?: string; enabled?: boolean }; // custom flag colors (matches edge fn)
   testGroupTitlePosition?: 'below_headers' | 'above_headers_center' | 'above_headers_left';
   qrHorizontalOffset?: number;
+  basicColumnWidths?: {
+    standard?: number[];
+    sibling?: number[];
+  };
 }
 
 interface Props {
@@ -50,6 +55,38 @@ const SAMPLE_ANALYTES_BY_GROUP = new Map([
   ]],
 ]);
 const SAMPLE_GROUP_NAMES = new Map([['grp-cbc', 'Complete Blood Count (CBC)']]);
+const DEFAULT_BASIC_STANDARD_WIDTHS = [36, 24, 12, 28];
+const DEFAULT_BASIC_SIBLING_WIDTHS = [30, 14, 8, 16, 16, 16];
+
+function normalizeBasicColumnWidths(raw: unknown, fallback: number[], expectedLength: number): number[] {
+  if (!Array.isArray(raw) || raw.length !== expectedLength) return fallback;
+  const values = raw.map((value) => Number(value));
+  const total = values.reduce((sum, value) => sum + value, 0);
+  if (values.some((value) => !Number.isFinite(value) || value <= 0) || Math.abs(total - 100) > 0.5) {
+    return fallback;
+  }
+  return values;
+}
+
+function formatBasicWidth(value: number): string {
+  return `${Number(value.toFixed(2))}%`;
+}
+
+function editableBasicColumnWidths(raw: unknown, fallback: number[], expectedLength: number): number[] {
+  if (!Array.isArray(raw) || raw.length !== expectedLength) return fallback;
+  return raw.map((value, index) => {
+    const numeric = Number(value);
+    return Number.isFinite(numeric) && numeric > 0 ? numeric : fallback[index];
+  });
+}
+
+function withCalculatedLastWidth(widths: number[]): number[] {
+  if (widths.length < 2) return widths;
+  const lastIndex = widths.length - 1;
+  const leading = widths.slice(0, lastIndex);
+  const leadingTotal = leading.reduce((sum, width) => sum + width, 0);
+  return [...leading, Math.max(1, Number((100 - leadingTotal).toFixed(2)))];
+}
 
 // ── Exact port of groupAnalytesBySectionHeading from edge fn ─────────────────
 function groupAnalytesBySectionHeading(analytes: any[]): { heading: string | null; analytes: any[] }[] {
@@ -91,20 +128,22 @@ function buildBasicHtml(
   showInterpretation: boolean,
   printOptions: BasicPrintOptions,
 ): string {
-  const basePx  = Math.max(8, Math.min(24, printOptions.baseFontSize ?? 11));
+  const basePx  = Math.max(8, Math.min(24, printOptions.baseFontSize ?? 14));
   const smallPx = Math.max(7, basePx - 3);
   const titlePx = basePx + 2;
   const sigPx   = basePx + 1;
-  const testNameWeight = (printOptions.testNameBold ?? true) ? '600' : 'normal';
-  const calcMarker = printOptions.calcMarker ?? 'asterisk';
-  const boldAllValues = printOptions.boldAllValues ?? true;
+  const testNameWeight = (printOptions.testNameBold ?? false) ? '600' : 'normal';
+  const testNameAlignment = printOptions.testNameAlignment ?? 'left';
+  const calcMarker = printOptions.calcMarker ?? 'cal';
+  const boldAllValues = printOptions.boldAllValues ?? false;
   const boldAbnormal = printOptions.boldAbnormalValues ?? true;
-  const sectionHeaderInline = printOptions.sectionHeaderInline ?? false;
+  const sectionHeaderInline = printOptions.sectionHeaderInline ?? true;
   const flagSymbol = printOptions.flagSymbol ?? 'none';
   const showFlagLegend = printOptions.showFlagLegend ?? false;
-  const testGroupTitlePosition = printOptions.testGroupTitlePosition ?? 'below_headers';
+  const testGroupTitlePosition = printOptions.testGroupTitlePosition ?? 'above_headers_center';
   const qrHorizontalOffset = Math.max(0, Math.min(80, printOptions.qrHorizontalOffset ?? 0));
-  const colCount = flagSymbol === 'before' ? 5 : 4;
+  const colCount = 4;
+  const standardColumnWidths = normalizeBasicColumnWidths(printOptions.basicColumnWidths?.standard, DEFAULT_BASIC_STANDARD_WIDTHS, 4);
   const highColor = printOptions.resultColors?.enabled ? (printOptions.resultColors?.high ?? '#dc2626') : '#dc2626';
   const lowColor  = printOptions.resultColors?.enabled ? (printOptions.resultColors?.low  ?? '#000')    : '#000';
 
@@ -221,27 +260,14 @@ function buildBasicHtml(
   vertical-align: middle !important;
 }
 
-${flagSymbol === 'before' ? `
-.basic-report-template .tbl-results thead th:nth-child(1) { width: 44% !important; text-align: left !important; }
-.basic-report-template .tbl-results thead th:nth-child(2) { width: 7% !important; text-align: center !important; }
-.basic-report-template .tbl-results thead th:nth-child(3) { width: 14% !important; text-align: right !important; }
-.basic-report-template .tbl-results thead th:nth-child(4) { width: 10% !important; text-align: left !important; }
-.basic-report-template .tbl-results thead th:nth-child(5) { width: 25% !important; text-align: right !important; }
-.basic-report-template .tbl-results tbody td:nth-child(1) { width: 44% !important; text-align: left !important; color: #111 !important; }
-.basic-report-template .tbl-results tbody td:nth-child(2) { width: 7% !important; text-align: center !important; font-weight: 700 !important; }
-.basic-report-template .tbl-results tbody td:nth-child(3) { width: 14% !important; text-align: right !important; }
-.basic-report-template .tbl-results tbody td:nth-child(4) { width: 10% !important; text-align: left !important; color: #444 !important; white-space: nowrap !important; }
-.basic-report-template .tbl-results tbody td:nth-child(5) { width: 25% !important; text-align: right !important; color: #666 !important; }
-` : `
-.basic-report-template .tbl-results thead th:nth-child(1) { width: 50% !important; text-align: left !important; }
-.basic-report-template .tbl-results thead th:nth-child(2) { width: 15% !important; text-align: right !important; }
-.basic-report-template .tbl-results thead th:nth-child(3) { width: 10% !important; text-align: left !important; }
-.basic-report-template .tbl-results thead th:nth-child(4) { width: 25% !important; text-align: right !important; }
-.basic-report-template .tbl-results tbody td:nth-child(1) { width: 50% !important; text-align: left !important; color: #111 !important; }
-.basic-report-template .tbl-results tbody td:nth-child(2) { width: 15% !important; text-align: right !important; }
-.basic-report-template .tbl-results tbody td:nth-child(3) { width: 10% !important; text-align: left !important; color: #444 !important; white-space: nowrap !important; }
-.basic-report-template .tbl-results tbody td:nth-child(4) { width: 25% !important; text-align: right !important; color: #666 !important; }
-`}
+.basic-report-template .tbl-results thead th:nth-child(1) { width: ${formatBasicWidth(standardColumnWidths[0])} !important; text-align: ${testNameAlignment} !important; }
+.basic-report-template .tbl-results thead th:nth-child(2) { width: ${formatBasicWidth(standardColumnWidths[1])} !important; text-align: right !important; }
+.basic-report-template .tbl-results thead th:nth-child(3) { width: ${formatBasicWidth(standardColumnWidths[2])} !important; text-align: left !important; }
+.basic-report-template .tbl-results thead th:nth-child(4) { width: ${formatBasicWidth(standardColumnWidths[3])} !important; text-align: left !important; }
+.basic-report-template .tbl-results tbody td:nth-child(1) { width: ${formatBasicWidth(standardColumnWidths[0])} !important; text-align: ${testNameAlignment} !important; color: #111 !important; }
+.basic-report-template .tbl-results tbody td:nth-child(2) { width: ${formatBasicWidth(standardColumnWidths[1])} !important; text-align: right !important; }
+.basic-report-template .tbl-results tbody td:nth-child(3) { width: ${formatBasicWidth(standardColumnWidths[2])} !important; text-align: left !important; color: #444 !important; white-space: nowrap !important; }
+.basic-report-template .tbl-results tbody td:nth-child(4) { width: ${formatBasicWidth(standardColumnWidths[3])} !important; text-align: left !important; color: #666 !important; }
 
 .basic-report-template .tbl-results td {
   border: none !important;
@@ -515,19 +541,18 @@ ${flagSymbol === 'before' ? `
         ${!groupTitleBelowHeaders ? `
           <div class="${groupTitleClass}" style="font-size:${basePx + 1}px;">${groupName}</div>
           ${specimenText}
-        ` : ''}
-        <table class="tbl-results">
-          <thead>
-            <tr>
-              <th style="font-size:${basePx}px;">TEST NAME</th>
-              ${flagSymbol === 'before' ? `<th style="font-size:${basePx}px;">FLAG</th>` : ''}
-              <th style="font-size:${basePx}px;">VALUE</th>
-              <th style="font-size:${basePx}px;">UNITS</th>
-              <th style="font-size:${basePx}px;">Bio. Ref. Interval</th>
-            </tr>
-          </thead>
-          <tbody>
-            ${groupTitleBelowHeaders ? `
+		        ` : ''}
+		        <table class="tbl-results">
+		          <thead>
+		            <tr>
+		              <th style="font-size:${basePx}px;">TEST NAME</th>
+		              <th style="font-size:${basePx}px;">VALUE</th>
+		              <th style="font-size:${basePx}px;">UNITS</th>
+		              <th style="font-size:${basePx}px;">Bio. Ref. Interval</th>
+		            </tr>
+		          </thead>
+		          <tbody>
+		            ${groupTitleBelowHeaders ? `
             <tr class="main-group-row">
               <td colspan="${colCount}">
                 <div class="center-title" style="font-size:${basePx + 1}px;">${groupName}</div>
@@ -588,7 +613,9 @@ ${flagSymbol === 'before' ? `
           return '';
         })();
 
-        const displayValue = flagSymbol === 'after' && flagSymbolText
+        const displayValue = flagSymbol === 'before' && flagSymbolText
+          ? `<span style="display:inline-block;min-width:${basePx * 1.15}px;text-align:center;font-weight:700;margin-right:4px;">${flagSymbolText}</span>${value + asteriskSuffix}`
+          : flagSymbol === 'after' && flagSymbolText
           ? `${value + asteriskSuffix} <span style="font-weight:700;">${flagSymbolText}</span>`
           : value + asteriskSuffix;
 
@@ -619,7 +646,6 @@ ${flagSymbol === 'before' ? `
                   </div>
                   ${showMethodology && analyte.method ? `<div class="test-method" style="font-size:${smallPx}px;">${analyte.method}</div>` : ''}
                 </td>
-                ${flagSymbol === 'before' ? `<td class="${valClass}" style="font-size:${basePx}px; text-align:center;">${flagSymbolText}</td>` : ''}
                 <td class="${valClass}" style="font-size:${basePx}px;">${displayValue}</td>
                 <td style="text-align:left; vertical-align:top; font-size:${basePx}px; color:#444;">${unit}</td>
                 <td style="text-align:right; vertical-align:top; font-size:${smallPx + 1}px; color:#666;">${refRange}</td>
@@ -721,6 +747,25 @@ function Row({ label, hint, children }: { label: string; hint?: string; children
 export default function BasicTemplateFormatBuilder({ printOptions, showMethodology, showInterpretation, onChange }: Props) {
   const setPO = (patch: Partial<BasicPrintOptions>) =>
     onChange({ printOptions: { ...printOptions, ...patch } });
+  const standardWidths = withCalculatedLastWidth(editableBasicColumnWidths(printOptions.basicColumnWidths?.standard, DEFAULT_BASIC_STANDARD_WIDTHS, 4));
+  const siblingWidths = withCalculatedLastWidth(editableBasicColumnWidths(printOptions.basicColumnWidths?.sibling, DEFAULT_BASIC_SIBLING_WIDTHS, 6));
+  const setColumnWidth = (kind: 'standard' | 'sibling', index: number, value: number) => {
+    const current = kind === 'standard' ? standardWidths : siblingWidths;
+    const lastIndex = current.length - 1;
+    if (index === lastIndex) return;
+    const otherLeadingTotal = current
+      .slice(0, lastIndex)
+      .reduce((sum, width, widthIndex) => widthIndex === index ? sum : sum + width, 0);
+    const cappedValue = Math.max(1, Math.min(Number(value) || 1, 99 - otherLeadingTotal));
+    const next = current.map((width, widthIndex) => widthIndex === index ? cappedValue : width);
+    next[lastIndex] = Number((100 - next.slice(0, lastIndex).reduce((sum, width) => sum + width, 0)).toFixed(2));
+    setPO({
+      basicColumnWidths: {
+        ...(printOptions.basicColumnWidths || {}),
+        [kind]: next,
+      },
+    });
+  };
 
   const html = useMemo(
     () => buildBasicHtml(SAMPLE_GROUP_NAMES, SAMPLE_ANALYTES_BY_GROUP, showMethodology, showInterpretation, printOptions),
@@ -737,17 +782,17 @@ export default function BasicTemplateFormatBuilder({ printOptions, showMethodolo
       <div className="flex flex-col lg:flex-row divide-y lg:divide-y-0 lg:divide-x divide-gray-200">
 
         {/* Settings */}
-        <div className="lg:w-72 shrink-0 p-4 space-y-0.5">
+	        <div className="lg:w-72 shrink-0 p-4 space-y-0.5 overflow-y-auto" style={{ maxHeight: 600 }}>
           <Row label="Base Font Size" hint="8 – 24 px">
             <div className="flex items-center gap-2">
               <input
                 type="range" min={8} max={24} step={1}
-                value={printOptions.baseFontSize ?? 11}
+                value={printOptions.baseFontSize ?? 14}
                 onChange={(e) => setPO({ baseFontSize: Number(e.target.value) })}
                 className="w-24 accent-indigo-600"
               />
               <span className="w-6 text-sm font-mono font-semibold text-gray-700">
-                {printOptions.baseFontSize ?? 11}
+                {printOptions.baseFontSize ?? 14}
               </span>
             </div>
           </Row>
@@ -758,17 +803,28 @@ export default function BasicTemplateFormatBuilder({ printOptions, showMethodolo
             <Toggle checked={showInterpretation} onChange={(v) => onChange({ showInterpretation: v })} />
           </Row>
           <Row label="Test Name Bold" hint="Bold test names (off = normal weight)">
-            <Toggle checked={printOptions.testNameBold ?? true} onChange={(v) => setPO({ testNameBold: v })} />
+            <Toggle checked={printOptions.testNameBold ?? false} onChange={(v) => setPO({ testNameBold: v })} />
+          </Row>
+          <Row label="Test Name Align" hint="Horizontal alignment of test name column">
+            <select
+              value={printOptions.testNameAlignment ?? 'left'}
+              onChange={(e) => setPO({ testNameAlignment: e.target.value as 'left' | 'center' | 'right' })}
+              className="text-sm border border-gray-300 rounded px-2 py-1 bg-white"
+            >
+              <option value="left">Left</option>
+              <option value="center">Center</option>
+              <option value="right">Right</option>
+            </select>
           </Row>
           <Row label="Bold All Values" hint="All result values semi-bold (off = normal weight)">
-            <Toggle checked={printOptions.boldAllValues ?? true} onChange={(v) => setPO({ boldAllValues: v })} />
+            <Toggle checked={printOptions.boldAllValues ?? false} onChange={(v) => setPO({ boldAllValues: v })} />
           </Row>
           <Row label="Bold Abnormal Values" hint="Extra bold for high/low values (off = normal weight)">
             <Toggle checked={printOptions.boldAbnormalValues ?? true} onChange={(v) => setPO({ boldAbnormalValues: v })} />
           </Row>
           <Row label="Calculated Marker" hint="How to mark auto-calculated fields">
             <select
-              value={printOptions.calcMarker ?? 'asterisk'}
+              value={printOptions.calcMarker ?? 'cal'}
               onChange={(e) => setPO({ calcMarker: e.target.value as 'asterisk' | 'cal' | 'none' })}
               className="text-sm border border-gray-300 rounded px-2 py-1 bg-white"
             >
@@ -779,7 +835,7 @@ export default function BasicTemplateFormatBuilder({ printOptions, showMethodolo
           </Row>
           <Row label="Section Header Style" hint="Small caps label vs inline shaded row">
             <select
-              value={printOptions.sectionHeaderInline ? 'inline' : 'label'}
+              value={(printOptions.sectionHeaderInline ?? true) ? 'inline' : 'label'}
               onChange={(e) => setPO({ sectionHeaderInline: e.target.value === 'inline' })}
               className="text-sm border border-gray-300 rounded px-2 py-1 bg-white"
             >
@@ -789,7 +845,7 @@ export default function BasicTemplateFormatBuilder({ printOptions, showMethodolo
           </Row>
           <Row label="Test Group Title" hint="Place panel name above headers or below them">
             <select
-              value={printOptions.testGroupTitlePosition ?? 'below_headers'}
+              value={printOptions.testGroupTitlePosition ?? 'above_headers_center'}
               onChange={(e) => setPO({ testGroupTitlePosition: e.target.value as BasicPrintOptions['testGroupTitlePosition'] })}
               className="text-sm border border-gray-300 rounded px-2 py-1 bg-white"
             >
@@ -811,6 +867,40 @@ export default function BasicTemplateFormatBuilder({ printOptions, showMethodolo
               </span>
             </div>
           </Row>
+	          <Row label="4-Col Widths" hint="Edit first 3; Ref auto-fills to 100">
+	            <div className="grid grid-cols-4 gap-1">
+	              {standardWidths.map((width, index) => (
+	                <input
+	                  key={`standard-width-${index}`}
+	                  type="number"
+	                  min={1}
+	                  max={97}
+	                  step={1}
+	                  value={width}
+	                  readOnly={index === standardWidths.length - 1}
+	                  onChange={(e) => setColumnWidth('standard', index, Number(e.target.value))}
+	                  className={`w-11 text-xs border border-gray-300 rounded px-1 py-0.5 text-right ${index === standardWidths.length - 1 ? 'bg-gray-100 text-gray-500' : ''}`}
+	                />
+	              ))}
+	            </div>
+	          </Row>
+	          <Row label="Sibling Widths" hint="Edit first 5; Abs Ref auto-fills">
+	            <div className="grid grid-cols-6 gap-1">
+	              {siblingWidths.map((width, index) => (
+	                <input
+	                  key={`sibling-width-${index}`}
+	                  type="number"
+	                  min={1}
+	                  max={95}
+	                  step={1}
+	                  value={width}
+	                  readOnly={index === siblingWidths.length - 1}
+	                  onChange={(e) => setColumnWidth('sibling', index, Number(e.target.value))}
+	                  className={`w-9 text-xs border border-gray-300 rounded px-1 py-0.5 text-right ${index === siblingWidths.length - 1 ? 'bg-gray-100 text-gray-500' : ''}`}
+	                />
+	              ))}
+            </div>
+          </Row>
           <Row label="Flag Symbol" hint="Show H/L symbol before or after value">
             <select
               value={printOptions.flagSymbol ?? 'none'}
@@ -818,7 +908,7 @@ export default function BasicTemplateFormatBuilder({ printOptions, showMethodolo
               className="text-sm border border-gray-300 rounded px-2 py-1 bg-white"
             >
               <option value="none">None</option>
-              <option value="before">Before value (column)</option>
+              <option value="before">Before value</option>
               <option value="after">After value (inline)</option>
             </select>
           </Row>

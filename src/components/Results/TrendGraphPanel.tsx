@@ -13,6 +13,35 @@ interface TrendGraphPanelProps {
   onIncludeInReportChange?: (include: boolean) => void;
 }
 
+const getAnalyteKey = (analyteId?: string | null, analyteName?: string | null) =>
+  (analyteId || analyteName || '').toString().trim().toLowerCase();
+
+const getPointStatus = (
+  point: TrendDataPoint,
+  referenceRange: TrendAnalyte['reference_range']
+): 'high' | 'low' | 'normal' => {
+  const flag = point.flag?.toString().trim().toLowerCase();
+  if (flag && ['h', 'high', 'c', 'critical', 'critical_h', 'critical_high'].includes(flag)) {
+    return 'high';
+  }
+  if (flag && ['l', 'low', 'critical_l', 'critical_low'].includes(flag)) {
+    return 'low';
+  }
+  if (Number.isFinite(referenceRange.max) && referenceRange.max > 0 && point.value > referenceRange.max) {
+    return 'high';
+  }
+  if (Number.isFinite(referenceRange.min) && point.value < referenceRange.min) {
+    return 'low';
+  }
+  return 'normal';
+};
+
+const getPointColor = (status: 'high' | 'low' | 'normal') => {
+  if (status === 'high') return '#ef4444';
+  if (status === 'low') return '#3b82f6';
+  return '#22c55e';
+};
+
 const TrendGraphPanel: React.FC<TrendGraphPanelProps> = ({
   orderId,
   patientId,
@@ -30,13 +59,45 @@ const TrendGraphPanel: React.FC<TrendGraphPanelProps> = ({
   const [localIncludeInReport, setLocalIncludeInReport] = useState(includeInReport);
   const [savingReportFlag, setSavingReportFlag] = useState(false);
   const [savedReportFlag, setSavedReportFlag] = useState(false);
-  const [hasLoadedOnce, setHasLoadedOnce] = useState(false); // Prevent multiple loads
 
-  // Load existing trend data on mount - only once per orderId
+  const selectableAnalytes = useMemo(() => {
+    const byKey = new Map<string, { key: string; analyteId?: string; name: string }>();
+
+    analyteNames?.forEach((name, index) => {
+      const analyteId = analyteIds[index];
+      const key = getAnalyteKey(analyteId, name);
+      if (key && !byKey.has(key)) {
+        byKey.set(key, { key, analyteId, name });
+      }
+    });
+
+    analyteIds.forEach((analyteId, index) => {
+      const name = analyteNames?.[index] || analyteId;
+      const key = getAnalyteKey(analyteId, name);
+      if (key && !byKey.has(key)) {
+        byKey.set(key, { key, analyteId, name });
+      }
+    });
+
+    trendData?.analytes?.forEach((analyte) => {
+      const key = getAnalyteKey(analyte.analyte_id, analyte.analyte_name);
+      if (key && !byKey.has(key)) {
+        byKey.set(key, {
+          key,
+          analyteId: analyte.analyte_id,
+          name: analyte.analyte_name,
+        });
+      }
+    });
+
+    return Array.from(byKey.values()).sort((a, b) => a.name.localeCompare(b.name));
+  }, [analyteIds, analyteNames, trendData]);
+
+  const [selectedAnalyteKeys, setSelectedAnalyteKeys] = useState<string[]>([]);
+  const [hasInitializedSelection, setHasInitializedSelection] = useState(false);
+
+  // Load existing trend data on mount and whenever the order changes
   useEffect(() => {
-    // Skip if already loaded for this orderId
-    if (hasLoadedOnce) return;
-    
     let isMounted = true;
     const loadExisting = async () => {
       setInitialLoading(true);
@@ -51,13 +112,17 @@ const TrendGraphPanel: React.FC<TrendGraphPanelProps> = ({
           if (result.data.include_in_report !== undefined) {
             setLocalIncludeInReport(result.data.include_in_report);
           }
+          const savedSelectedKeys = result.data.selected_analyte_keys;
+          if (Array.isArray(savedSelectedKeys)) {
+            setSelectedAnalyteKeys(savedSelectedKeys);
+            setHasInitializedSelection(true);
+          }
         }
       } catch (err) {
         console.error('Error loading trend data:', err);
       } finally {
         if (isMounted) {
           setInitialLoading(false);
-          setHasLoadedOnce(true);
         }
       }
     };
@@ -68,15 +133,48 @@ const TrendGraphPanel: React.FC<TrendGraphPanelProps> = ({
     };
   }, [orderId]); // Only depend on orderId, not on loadTrendData function
 
-  // Reset hasLoadedOnce when orderId changes
+  // Reset order-scoped UI state when orderId changes
   useEffect(() => {
-    setHasLoadedOnce(false);
+    setTrendData(null);
+    setHasExisting(false);
+    setSelectedAnalyteKeys([]);
+    setHasInitializedSelection(false);
   }, [orderId]);
 
   // Sync with parent state
   useEffect(() => {
     setLocalIncludeInReport(includeInReport);
   }, [includeInReport]);
+
+  useEffect(() => {
+    if (hasInitializedSelection || selectableAnalytes.length === 0) return;
+    setSelectedAnalyteKeys(selectableAnalytes.map((analyte) => analyte.key));
+    setHasInitializedSelection(true);
+  }, [selectableAnalytes, hasInitializedSelection]);
+
+  const selectedAnalytes = useMemo(
+    () => selectableAnalytes.filter((analyte) => selectedAnalyteKeys.includes(analyte.key)),
+    [selectableAnalytes, selectedAnalyteKeys]
+  );
+
+  const generatedSelectedKeys = useMemo(() => {
+    const generatedKeys = new Set(
+      trendData?.analytes?.map((analyte) => getAnalyteKey(analyte.analyte_id, analyte.analyte_name)) || []
+    );
+    return selectedAnalyteKeys.filter((key) => generatedKeys.has(key));
+  }, [selectedAnalyteKeys, trendData]);
+
+  const toggleAnalyteSelection = (key: string) => {
+    setHasInitializedSelection(true);
+    setSelectedAnalyteKeys((prev) =>
+      prev.includes(key) ? prev.filter((item) => item !== key) : [...prev, key]
+    );
+  };
+
+  const setAllAnalytesSelected = (selected: boolean) => {
+    setHasInitializedSelection(true);
+    setSelectedAnalyteKeys(selected ? selectableAnalytes.map((analyte) => analyte.key) : []);
+  };
 
   const handleIncludeInReportChange = async (include: boolean) => {
     setLocalIncludeInReport(include);
@@ -86,7 +184,8 @@ const TrendGraphPanel: React.FC<TrendGraphPanelProps> = ({
     setSavingReportFlag(true);
     setSavedReportFlag(false);
     try {
-      const { error: saveError } = await aiAnalysis.updateTrendIncludeInReport(orderId, include);
+      const keysForReport = generatedSelectedKeys.length > 0 ? generatedSelectedKeys : selectedAnalyteKeys;
+      const { error: saveError } = await aiAnalysis.updateTrendIncludeInReport(orderId, include, keysForReport);
       if (saveError) {
         console.error('Failed to save include in report flag:', saveError);
       } else {
@@ -109,8 +208,17 @@ const TrendGraphPanel: React.FC<TrendGraphPanelProps> = ({
 
   const handleGenerateAndSave = async () => {
     clearError();
+    if (selectedAnalytes.length === 0) {
+      return;
+    }
     setGenerating(true);
-    const result = await generateAndSaveTrends(orderId, patientId, analyteIds, analyteNames);
+    const result = await generateAndSaveTrends(
+      orderId,
+      patientId,
+      selectedAnalytes.map((analyte) => analyte.analyteId).filter(Boolean) as string[],
+      selectedAnalytes.map((analyte) => analyte.name),
+      selectedAnalytes.map((analyte) => analyte.key)
+    );
 
     if (result.success && result.data) {
       setTrendData(result.data);
@@ -206,7 +314,7 @@ const TrendGraphPanel: React.FC<TrendGraphPanelProps> = ({
           
           <button
             onClick={handleGenerateAndSave}
-            disabled={generating || analyteIds.length === 0}
+            disabled={generating || selectedAnalytes.length === 0}
             className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
           >
             {generating ? (
@@ -224,6 +332,56 @@ const TrendGraphPanel: React.FC<TrendGraphPanelProps> = ({
         <div className="flex items-center gap-2 p-3 bg-red-50 border border-red-200 rounded-lg mb-4">
           <AlertCircle className="w-5 h-5 text-red-600 flex-shrink-0" />
           <p className="text-sm text-red-700">{error}</p>
+        </div>
+      )}
+
+      {selectableAnalytes.length > 0 && (
+        <div className="mb-4 rounded-lg border border-gray-200 bg-gray-50 p-3">
+          <div className="flex flex-wrap items-center justify-between gap-3 mb-3">
+            <div>
+              <p className="text-sm font-semibold text-gray-800">Select analytes for trend</p>
+              <p className="text-xs text-gray-500">
+                {selectedAnalytes.length} of {selectableAnalytes.length} selected
+              </p>
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setAllAnalytesSelected(true)}
+                className="text-xs font-medium text-blue-700 hover:text-blue-800"
+              >
+                Select all
+              </button>
+              <span className="text-gray-300">|</span>
+              <button
+                type="button"
+                onClick={() => setAllAnalytesSelected(false)}
+                className="text-xs font-medium text-gray-600 hover:text-gray-800"
+              >
+                Clear
+              </button>
+            </div>
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
+            {selectableAnalytes.map((analyte) => (
+              <label
+                key={analyte.key}
+                className={`flex items-center gap-2 rounded-md border px-3 py-2 text-sm cursor-pointer transition-colors ${
+                  selectedAnalyteKeys.includes(analyte.key)
+                    ? 'border-blue-300 bg-blue-50 text-blue-800'
+                    : 'border-gray-200 bg-white text-gray-700 hover:bg-gray-100'
+                }`}
+              >
+                <input
+                  type="checkbox"
+                  checked={selectedAnalyteKeys.includes(analyte.key)}
+                  onChange={() => toggleAnalyteSelection(analyte.key)}
+                  className="w-4 h-4 text-blue-600 rounded border-gray-300 focus:ring-blue-500"
+                />
+                <span className="truncate">{analyte.name}</span>
+              </label>
+            ))}
+          </div>
         </div>
       )}
 
@@ -404,25 +562,25 @@ const TrendLineChart: React.FC<{
               vectorEffect="non-scaling-stroke"
             />
             
-            {/* Data Points */}
-            {dataPoints.map((point, idx) => {
-              const { x, y } = getPointPosition(point, idx);
-              const isHigh = point.flag === 'H' || point.flag === 'C';
-              const isLow = point.flag === 'L';
-              const color = isHigh ? '#ef4444' : isLow ? '#3b82f6' : '#22c55e';
-              
-              return (
-                <g key={idx}>
-                  <circle
-                    cx={x}
-                    cy={y}
-                    r="4"
-                    fill={color}
-                    stroke="white"
-                    strokeWidth="1.5"
-                    vectorEffect="non-scaling-stroke"
-                    className="cursor-pointer"
-                  />
+	            {/* Data Points */}
+	            {dataPoints.map((point, idx) => {
+	              const { x, y } = getPointPosition(point, idx);
+	              const status = getPointStatus(point, analyte.reference_range);
+	              const color = getPointColor(status);
+
+	              return (
+	                <g key={idx}>
+	                  <ellipse
+	                    cx={x}
+	                    cy={y}
+	                    rx="0.75"
+	                    ry="2.4"
+	                    fill={color}
+	                    stroke="white"
+	                    strokeWidth="0.8"
+	                    vectorEffect="non-scaling-stroke"
+	                    className="cursor-pointer"
+	                  />
                 </g>
               );
             })}
@@ -446,13 +604,16 @@ const TrendLineChart: React.FC<{
               >
                 <div className="hidden group-hover:block absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-2 py-1 bg-gray-900 text-white text-xs rounded whitespace-nowrap z-10">
                   <div className="font-medium">{point.value} {analyte.unit}</div>
-                  <div className="text-gray-300">
-                    {displayDate.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })}
-                    {point.timestamp && ` ${displayDate.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}`}
-                  </div>
-                  {point.flag && <div className="text-yellow-300">Flag: {point.flag}</div>}
-                </div>
-              </div>
+	                  <div className="text-gray-300">
+	                    {displayDate.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })}
+	                    {point.timestamp && ` ${displayDate.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}`}
+	                  </div>
+	                  <div className={getPointStatus(point, analyte.reference_range) === 'high' ? 'text-red-300' : getPointStatus(point, analyte.reference_range) === 'low' ? 'text-blue-300' : 'text-green-300'}>
+	                    {getPointStatus(point, analyte.reference_range) === 'high' ? 'High' : getPointStatus(point, analyte.reference_range) === 'low' ? 'Low' : 'Normal'}
+	                    {point.flag ? ` (${point.flag})` : ''}
+	                  </div>
+	                </div>
+	              </div>
             );
           })}
         </div>

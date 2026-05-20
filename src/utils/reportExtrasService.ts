@@ -549,10 +549,12 @@ export const getReportExtrasForOrder = async (orderId: string): Promise<ReportEx
           dataPoints: Array<{ date: string; value: number; flag?: string; timestamp?: string }>;
           trend: string;
           image_url?: string;  // Pre-generated image URL
-          image_generated_at?: string;
-        }>;
-        include_in_report?: boolean;
-        images_generated_at?: string;
+	          image_generated_at?: string;
+	          selected_for_report?: boolean;
+	        }>;
+	        include_in_report?: boolean;
+	        selected_analyte_keys?: string[];
+	        images_generated_at?: string;
       };
 
       console.log('📊 Trend data parsed:', {
@@ -564,11 +566,19 @@ export const getReportExtrasForOrder = async (orderId: string): Promise<ReportEx
 
       // Only include if flag is true
       if (trendData.include_in_report && trendData.analytes && trendData.analytes.length > 0) {
-        const analytesWithImages = trendData.analytes.filter(a => a.image_url);
+	        const selectedKeys = (trendData.selected_analyte_keys || [])
+	          .map(key => key?.toString().trim().toLowerCase())
+	          .filter(Boolean);
+	        const selectedTrendAnalytes = trendData.analytes.filter(analyte => {
+	          const key = (analyte.analyte_id || analyte.analyte_name || '').toString().trim().toLowerCase();
+	          if (selectedKeys.length > 0) return selectedKeys.includes(key);
+	          return analyte.selected_for_report !== false;
+	        });
+	        const analytesWithImages = selectedTrendAnalytes.filter(a => a.image_url);
         console.log(`📊 Found ${trendData.analytes.length} trend analytes, ${analytesWithImages.length} with pre-generated images`);
         
         // Convert to TrendChartResult format for HTML generation
-        merged.trend_charts = trendData.analytes.map(analyte => ({
+	        merged.trend_charts = selectedTrendAnalytes.map(analyte => ({
           analyte_name: analyte.analyte_name,
           image_url: analyte.image_url || null,  // Use pre-generated image URL
           image_base64: null,

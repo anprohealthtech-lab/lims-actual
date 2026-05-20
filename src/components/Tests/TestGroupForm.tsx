@@ -4,6 +4,7 @@ import { X, Layers, TestTube, DollarSign, Clock, Settings, Plus, Search, AlertCi
 const CKEDITOR_VERSION = '47.1.0';
 const CKEDITOR_SCRIPT_URL = `https://cdn.ckeditor.com/ckeditor5/${CKEDITOR_VERSION}/ckeditor5.umd.js`;
 const CKEDITOR_CSS_URL = `https://cdn.ckeditor.com/ckeditor5/${CKEDITOR_VERSION}/ckeditor5.css`;
+const LINKED_CKEDITOR_TEMPLATE_VALUE = '__linked_ckeditor_template__';
 import { database, supabase } from '../../utils/supabase';
 import AnalyteForm from './AnalyteForm';
 import { SimpleAnalyteEditor } from '../TestGroups/SimpleAnalyteEditor';
@@ -66,6 +67,7 @@ interface TestGroup {
     headerBackground?: string;
     alternateRows?: boolean;
     baseFontSize?: number;
+    showSignature?: boolean;
   } | null;
   group_interpretation?: string | null;
   global_test_catalog_id?: string | null;
@@ -130,8 +132,30 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
   const [labMethodOptions, setLabMethodOptions] = useState<string[]>([]);
   const [newMethodValue, setNewMethodValue] = useState('');
   const [methodError, setMethodError] = useState<string | null>(null);
-  // Per-analyte metadata for sort_order, section_heading, and is_visible (keyed by analyte_id)
-  const [analyteMetadata, setAnalyteMetadata] = useState<Record<string, { sort_order: number; section_heading: string; is_visible: boolean }>>({});
+  const [labReportTemplates, setLabReportTemplates] = useState<Array<{
+    id: string;
+    template_name: string;
+    test_group_id?: string | null;
+    gjs_html?: string | null;
+    is_interpretation_only?: boolean | null;
+  }>>([]);
+  const [reportLayoutSelection, setReportLayoutSelection] = useState(
+    testGroup?.default_template_style || ''
+  );
+  type AnalyteReportDisplayOptions = {
+    sameRowSiblingAnalyteId?: string | null;
+    sameRowSiblingLabel?: string;
+    sameRowSiblingPosition?: 'right';
+    hiddenWhenRenderedAsSibling?: boolean;
+  };
+  type AnalyteMetadata = {
+    sort_order: number;
+    section_heading: string;
+    is_visible: boolean;
+    report_display_options?: AnalyteReportDisplayOptions;
+  };
+  // Per-analyte metadata for sort_order, section_heading, visibility, and report display options.
+  const [analyteMetadata, setAnalyteMetadata] = useState<Record<string, AnalyteMetadata>>({});
   // All analytes linked to this test group (including hidden/inactive lab_analytes)
   const [allLinkedAnalytes, setAllLinkedAnalytes] = useState<any[]>([]);
   const [showImportWizard, setShowImportWizard] = useState(false);
@@ -219,16 +243,41 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
           ? supabase.from('analyzer_connections').select('id, name, status').eq('lab_id', labId).order('name') as unknown as Promise<any>
           : Promise.resolve({ data: [], error: null }),
       ];
-      if (testGroup?.id) {
-        requests.push(
-          supabase
-            .from('test_group_analytes')
-            .select('analyte_id, lab_analyte_id, sort_order, section_heading, is_visible')
-            .eq('test_group_id', testGroup.id) as unknown as Promise<any>
-        );
-      }
+      const reportTemplatesPromise = labId
+        ? supabase
+            .from('lab_templates')
+            .select('id, template_name, test_group_id, gjs_html, is_interpretation_only')
+            .eq('lab_id', labId)
+            .eq('is_active', true)
+            .not('gjs_html', 'is', null)
+            .order('template_name') as unknown as Promise<any>
+        : Promise.resolve({ data: [], error: null });
+	      if (testGroup?.id) {
+	        requests.push(
+	          supabase
+	            .from('test_group_analytes')
+	            .select('analyte_id, lab_analyte_id, sort_order, section_heading, is_visible, report_display_options')
+	            .eq('test_group_id', testGroup.id) as unknown as Promise<any>
+	        );
+	      }
 
-      const [analytesRes, labsRes, analyzerRes, tgaRes] = await Promise.all(requests);
+      const [requestResults, reportTemplatesRes] = await Promise.all([
+        Promise.all(requests),
+        reportTemplatesPromise,
+      ]);
+      const [analytesRes, labsRes, analyzerRes, tgaRes] = requestResults;
+
+      if (reportTemplatesRes?.error) {
+        console.error('Error loading report templates:', reportTemplatesRes.error);
+      } else {
+        const templates = (reportTemplatesRes?.data || []).filter((template: any) =>
+          template?.gjs_html && !template?.is_interpretation_only
+        );
+        setLabReportTemplates(templates);
+        if (!testGroup?.default_template_style && testGroup?.id && templates.some((template: any) => template.test_group_id === testGroup.id)) {
+          setReportLayoutSelection(LINKED_CKEDITOR_TEMPLATE_VALUE);
+        }
+      }
 
       // Fetch all linked analytes with lab_analytes as source of truth.
       // lab_analytes is always the authoritative source for test-group-linked analytes.
@@ -372,17 +421,18 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
         setAnalyzerConnections(analyzerRes?.data || []);
       }
 
-      if (tgaRes && !tgaRes.error && tgaRes.data) {
-        const meta: Record<string, { sort_order: number; section_heading: string; is_visible: boolean }> = {};
-        for (const row of tgaRes.data) {
-          meta[row.analyte_id] = {
-            sort_order: row.sort_order ?? 0,
-            section_heading: row.section_heading ?? '',
-            is_visible: row.is_visible ?? true,
-          };
-        }
-        setAnalyteMetadata(meta);
-      }
+	      if (tgaRes && !tgaRes.error && tgaRes.data) {
+	        const meta: Record<string, AnalyteMetadata> = {};
+	        for (const row of tgaRes.data) {
+	          meta[row.analyte_id] = {
+	            sort_order: row.sort_order ?? 0,
+	            section_heading: row.section_heading ?? '',
+	            is_visible: row.is_visible ?? true,
+	            report_display_options: row.report_display_options || {},
+	          };
+	        }
+	        setAnalyteMetadata(meta);
+	      }
 
       if (allLinkedData.length > 0) {
         setAllLinkedAnalytes(allLinkedData);
@@ -624,7 +674,10 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
         default_outsourced_lab_id: formData.default_outsourced_lab_id || null,
         ref_range_ai_config: formData.ref_range_ai_config,
         required_patient_inputs: formData.required_patient_inputs,
-        default_template_style: formData.default_template_style || null,
+        default_template_style:
+          reportLayoutSelection === LINKED_CKEDITOR_TEMPLATE_VALUE
+            ? null
+            : formData.default_template_style || null,
         report_priority: formData.report_priority ? parseInt(formData.report_priority, 10) : null,
         print_options: formData.print_options || null,
         group_interpretation: formData.group_interpretation || null,
@@ -650,14 +703,76 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
     }));
   };
 
-  const handleAnalyteSelection = (analyteId: string) => {
-    setFormData(prev => ({
-      ...prev,
-      selectedAnalytes: prev.selectedAnalytes.includes(analyteId)
-        ? prev.selectedAnalytes.filter(id => id !== analyteId)
+	  const handleAnalyteSelection = (analyteId: string) => {
+	    setFormData(prev => ({
+	      ...prev,
+	      selectedAnalytes: prev.selectedAnalytes.includes(analyteId)
+	        ? prev.selectedAnalytes.filter(id => id !== analyteId)
         : [...prev.selectedAnalytes, analyteId]
-    }));
-  };
+	    }));
+	  };
+
+	  const updateSameRowSibling = (primaryId: string, siblingId: string) => {
+	    setAnalyteMetadata(prev => {
+	      const primary = prev[primaryId] || { sort_order: 0, section_heading: '', is_visible: true };
+	      const previousSiblingId = primary.report_display_options?.sameRowSiblingAnalyteId || '';
+	      const next: Record<string, AnalyteMetadata> = {
+	        ...prev,
+	        [primaryId]: {
+	          ...primary,
+	          report_display_options: siblingId
+	            ? {
+	                ...(primary.report_display_options || {}),
+	                sameRowSiblingAnalyteId: siblingId,
+	                sameRowSiblingLabel: primary.report_display_options?.sameRowSiblingLabel || 'Absolute Count',
+	                sameRowSiblingPosition: 'right',
+	              }
+	            : {
+	                ...(primary.report_display_options || {}),
+	                sameRowSiblingAnalyteId: null,
+	                sameRowSiblingLabel: '',
+	              },
+	        },
+	      };
+
+	      if (previousSiblingId && previousSiblingId !== siblingId && prev[previousSiblingId]) {
+	        const oldSibling = prev[previousSiblingId];
+	        next[previousSiblingId] = {
+	          ...oldSibling,
+	          report_display_options: {
+	            ...(oldSibling.report_display_options || {}),
+	            hiddenWhenRenderedAsSibling: false,
+	          },
+	        };
+	      }
+
+	      for (const [id, meta] of Object.entries(prev)) {
+	        if (id !== primaryId && meta.report_display_options?.sameRowSiblingAnalyteId === siblingId) {
+	          next[id] = {
+	            ...meta,
+	            report_display_options: {
+	              ...(meta.report_display_options || {}),
+	              sameRowSiblingAnalyteId: null,
+	              sameRowSiblingLabel: '',
+	            },
+	          };
+	        }
+	      }
+
+	      if (siblingId) {
+	        const sibling = next[siblingId] || prev[siblingId] || { sort_order: 0, section_heading: '', is_visible: true };
+	        next[siblingId] = {
+	          ...sibling,
+	          report_display_options: {
+	            ...(sibling.report_display_options || {}),
+	            hiddenWhenRenderedAsSibling: true,
+	          },
+	        };
+	      }
+
+	      return next;
+	    });
+	  };
 
   // Provider-only controls: keep code in place but hidden from lab UI.
   const showProviderOnlyFields = false;
@@ -702,6 +817,11 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
       return oa - ob;
     });
   })();
+
+  const linkedCkeditorTemplates = testGroup?.id
+    ? labReportTemplates.filter((template) => template.test_group_id === testGroup.id)
+    : [];
+  const selectedLinkedCkeditorTemplate = linkedCkeditorTemplates[0] || null;
 
   return (
     <div className="fixed inset-0 bg-gray-600 bg-opacity-75 flex items-center justify-center p-4" style={{ zIndex: 99999 }}>
@@ -1194,20 +1314,34 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
 	                <label className="block text-sm font-medium text-gray-700 mb-1">
 	                  Report Layout Style
 	                </label>
-                <select
-                  name="default_template_style"
-                  value={formData.default_template_style}
-                  onChange={handleChange}
-                  className="w-full px-3 py-2 border border-amber-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-amber-500"
-                >
-                  <option value="">Lab Default</option>
-                  <option value="beautiful">Beautiful (3-Column Color Matrix)</option>
-                  <option value="classic">Classic (Plain Table)</option>
-                  <option value="basic">Basic (Old School - No Color)</option>
-                </select>
-                <p className="text-xs text-gray-500 mt-1">
-                  Forces this layout for this test group, overriding both the lab default and any linked custom template.
-                </p>
+                  <select
+                    name="default_template_style"
+                    value={reportLayoutSelection}
+                    onChange={(event) => {
+                      const value = event.target.value;
+                      setReportLayoutSelection(value);
+                      setFormData(prev => ({
+                        ...prev,
+                        default_template_style: value === LINKED_CKEDITOR_TEMPLATE_VALUE ? '' : value,
+                      }));
+                    }}
+                    className="w-full px-3 py-2 border border-amber-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-amber-500"
+                  >
+                    {selectedLinkedCkeditorTemplate ? (
+                      <option value={LINKED_CKEDITOR_TEMPLATE_VALUE}>
+                        CKEditor Template - {selectedLinkedCkeditorTemplate.template_name}
+                      </option>
+                    ) : null}
+                    <option value="">Lab Default{selectedLinkedCkeditorTemplate ? ' / auto template fallback' : ''}</option>
+                    <option value="beautiful">Beautiful (3-Column Color Matrix)</option>
+                    <option value="classic">Classic (Plain Table)</option>
+                    <option value="basic">Basic (Old School - No Color)</option>
+                  </select>
+                  <p className="text-xs text-gray-500 mt-1">
+                    {selectedLinkedCkeditorTemplate
+                      ? 'Choose CKEditor to use the linked template in generate-pdf-letterhead. Built-in styles override the linked template.'
+                      : 'No linked CKEditor template found for this test group. Built-in styles override any linked custom template.'}
+                  </p>
 
                 {/* Preview toggle */}
                 <button
@@ -1220,9 +1354,9 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
                 </button>
 
                 {/* Live report preview */}
-                {showReportPreview && (() => {
-                  const effectiveStyle = formData.default_template_style || 'beautiful';
-                  // Build preview analytes from selected analytes with dummy values
+                  {showReportPreview && (() => {
+                    const effectiveStyle = reportLayoutSelection || 'beautiful';
+                    // Build preview analytes from selected analytes with dummy values
                   const previewAnalytes = selectedAnalyteDetails.length > 0
                     ? selectedAnalyteDetails.map((a: any, i: number) => ({
                         parameter: a.name || a.parameter || 'Parameter',
@@ -1245,18 +1379,28 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
 
                   const printOpts = formData.print_options ?? {};
 
-                  return (
-                    <div className="mt-3">
-                      {effectiveStyle === 'basic' ? (
-                        <BasicTemplateFormatBuilder
-                          printOptions={printOpts}
-                          showMethodology={true}
+                    return (
+                      <div className="mt-3">
+                        {effectiveStyle === LINKED_CKEDITOR_TEMPLATE_VALUE ? (
+                          <div className="rounded-md border border-indigo-200 bg-indigo-50 p-3 text-sm text-indigo-800 flex items-start gap-2">
+                            <FileText className="h-4 w-4 mt-0.5 flex-shrink-0" />
+                            <div>
+                              <div className="font-medium">{selectedLinkedCkeditorTemplate?.template_name}</div>
+                              <div className="text-xs mt-1">
+                                This test group will use the linked CKEditor template during PDF letterhead generation.
+                              </div>
+                            </div>
+                          </div>
+                        ) : effectiveStyle === 'basic' ? (
+                          <BasicTemplateFormatBuilder
+                            printOptions={printOpts}
+                            showMethodology={true}
                           showInterpretation={false}
                           onChange={() => {}}
                         />
-                      ) : (
-                        <BuiltinTemplatePreview
-                          style={effectiveStyle as 'beautiful' | 'classic'}
+                        ) : (
+                          <BuiltinTemplatePreview
+                            style={effectiveStyle as 'beautiful' | 'classic'}
                           showMethodology={true}
                           showInterpretation={false}
                           printOptions={printOpts}
@@ -1295,6 +1439,7 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
                     { key: 'boldAbnormalValues', label: 'Bold Abnormal Values' },
                     { key: 'alternateRows', label: 'Alternate Row Shading' },
                     { key: 'showSampleType', label: 'Show Sample Type on Report' },
+                    { key: 'showSignature', label: 'Show Signature on Report' },
                   ] as { key: string; label: string; disabledWhen?: boolean }[]).map(({ key, label, disabledWhen }) => {
                     const opts = (formData.print_options || {}) as Record<string, unknown>;
                     const isSet = key in opts && opts[key] !== undefined;
@@ -1780,10 +1925,14 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
                 <p className="text-xs text-gray-500 mb-3">Set sort order and optional section sub-headings for PDF report grouping.</p>
                 <div className="space-y-2">
                   {selectedAnalyteDetails.map((analyte) => {
-                    const meta = analyteMetadata[analyte.id] || { sort_order: 0, section_heading: '', is_visible: true };
-                    const isHidden = !meta.is_visible;
-                    return (
-                      <div key={analyte.id} className={`p-2 rounded border shadow-sm ${isHidden ? 'bg-gray-50 border-gray-200 opacity-75' : 'bg-white border-green-100'}`}>
+	                    const meta = analyteMetadata[analyte.id] || { sort_order: 0, section_heading: '', is_visible: true, report_display_options: {} };
+	                    const isHidden = !meta.is_visible;
+	                    const reportOptions = meta.report_display_options || {};
+	                    const pairedWithName = selectedAnalyteDetails.find((item: any) =>
+	                      analyteMetadata[item.id]?.report_display_options?.sameRowSiblingAnalyteId === analyte.id
+	                    )?.name;
+	                    return (
+	                      <div key={analyte.id} className={`p-2 rounded border shadow-sm ${isHidden ? 'bg-gray-50 border-gray-200 opacity-75' : 'bg-white border-green-100'}`}>
                         <div className="flex items-center justify-between mb-1">
                           <div className="flex items-center gap-2">
                             {meta.sort_order > 0 && (
@@ -1794,10 +1943,13 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
                               {analyte.referenceRange ? `(${analyte.referenceRange})` : ''}
                               {analyte.unit ? ` [${analyte.unit}]` : ''}
                             </span>
-                            {isHidden && (
-                              <span className="text-xs bg-orange-100 text-orange-700 px-1.5 py-0.5 rounded font-medium">Hidden on Report</span>
-                            )}
-                          </div>
+	                            {isHidden && (
+	                              <span className="text-xs bg-orange-100 text-orange-700 px-1.5 py-0.5 rounded font-medium">Hidden on Report</span>
+	                            )}
+	                            {pairedWithName && (
+	                              <span className="text-xs bg-indigo-100 text-indigo-700 px-1.5 py-0.5 rounded font-medium">Same row with {pairedWithName}</span>
+	                            )}
+	                          </div>
                           <div className="flex items-center gap-1">
                             <button
                               type="button"
@@ -1848,7 +2000,7 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
                               className="w-14 text-xs border border-gray-300 rounded px-1 py-0.5 focus:outline-none focus:ring-1 focus:ring-blue-400"
                             />
                           </div>
-                          <div className="flex items-center gap-1 flex-1">
+	                          <div className="flex items-center gap-1 flex-1">
                             <label className="text-xs text-gray-500 whitespace-nowrap">Section Heading:</label>
                             <input
                               type="text"
@@ -1860,10 +2012,50 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
                               }))}
                               className="flex-1 text-xs border border-gray-300 rounded px-1 py-0.5 focus:outline-none focus:ring-1 focus:ring-blue-400"
                             />
-                          </div>
-                        </div>
-                      </div>
-                    );
+	                          </div>
+	                        </div>
+	                        <div className="flex gap-2 mt-2">
+	                          <div className="flex items-center gap-1 flex-1">
+	                            <label className="text-xs text-gray-500 whitespace-nowrap">Same Row Sibling:</label>
+	                            <select
+	                              value={reportOptions.sameRowSiblingAnalyteId || ''}
+	                              onChange={(e) => updateSameRowSibling(analyte.id, e.target.value)}
+	                              className="flex-1 text-xs border border-gray-300 rounded px-1 py-0.5 focus:outline-none focus:ring-1 focus:ring-blue-400"
+	                            >
+	                              <option value="">None</option>
+	                              {selectedAnalyteDetails
+	                                .filter((candidate: any) => candidate.id !== analyte.id)
+	                                .map((candidate: any) => (
+	                                  <option key={candidate.id} value={candidate.id}>
+	                                    {candidate.name}
+	                                  </option>
+	                                ))}
+	                            </select>
+	                          </div>
+	                          {reportOptions.sameRowSiblingAnalyteId && (
+	                            <div className="flex items-center gap-1 w-48">
+	                              <label className="text-xs text-gray-500 whitespace-nowrap">Label:</label>
+	                              <input
+	                                type="text"
+	                                value={reportOptions.sameRowSiblingLabel || 'Absolute Count'}
+	                                onChange={(e) => setAnalyteMetadata(prev => ({
+	                                  ...prev,
+	                                  [analyte.id]: {
+	                                    ...meta,
+	                                    report_display_options: {
+	                                      ...(reportOptions || {}),
+	                                      sameRowSiblingLabel: e.target.value,
+	                                      sameRowSiblingPosition: 'right',
+	                                    },
+	                                  },
+	                                }))}
+	                                className="w-full text-xs border border-gray-300 rounded px-1 py-0.5 focus:outline-none focus:ring-1 focus:ring-blue-400"
+	                              />
+	                            </div>
+	                          )}
+	                        </div>
+	                      </div>
+	                    );
                   })}
                 </div>
               </div>

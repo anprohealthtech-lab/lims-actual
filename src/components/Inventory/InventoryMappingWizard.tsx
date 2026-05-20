@@ -18,6 +18,7 @@ import {
   XCircle,
   Beaker,
   Settings2,
+  Trash2,
 } from 'lucide-react';
 import { supabase, database } from '../../utils/supabase';
 
@@ -81,20 +82,27 @@ const InventoryMappingWizard: React.FC<InventoryMappingWizardProps> = ({
   });
 
   // Items at different stages
+  const [allItems, setAllItems] = useState<InventoryItem[]>([]);
   const [pendingItems, setPendingItems] = useState<InventoryItem[]>([]);
   const [classifiedItems, setClassifiedItems] = useState<InventoryItem[]>([]);
   const [mappingSummaries, setMappingSummaries] = useState<MappingSummary[]>([]);
+  const [testMappings, setTestMappings] = useState<any[]>([]);
 
   // Context data
   const [testGroups, setTestGroups] = useState<TestGroup[]>([]);
   const [qcLots, setQCLots] = useState<QCLot[]>([]);
 
   // UI state
-  const [activeTab, setActiveTab] = useState<'overview' | 'classify' | 'map' | 'review'>('overview');
+  const [activeTab, setActiveTab] = useState<'overview' | 'manual' | 'classify' | 'map' | 'review'>('overview');
   const [loading, setLoading] = useState(true);
   const [processing, setProcessing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [results, setResults] = useState<any>(null);
+  const [savingManualMapping, setSavingManualMapping] = useState(false);
+  const [manualItemId, setManualItemId] = useState('');
+  const [manualMappingMode, setManualMappingMode] = useState<'specific' | 'universal'>('specific');
+  const [manualTestGroupId, setManualTestGroupId] = useState('');
+  const [manualQuantityPerUse, setManualQuantityPerUse] = useState<number>(1);
 
   // Selected items for batch operations
   const [selectedItems, setSelectedItems] = useState<Set<string>>(new Set());
@@ -120,6 +128,17 @@ const InventoryMappingWizard: React.FC<InventoryMappingWizardProps> = ({
         confirmed: items?.filter(i => i.ai_classification_status === 'confirmed').length || 0,
       };
       setStats(statusCounts);
+
+      // Load all active inventory items for manual mapping
+      const { data: activeItems, error: activeItemsError } = await supabase
+        .from('inventory_items')
+        .select('*')
+        .eq('lab_id', labId)
+        .eq('is_active', true)
+        .order('name');
+
+      if (activeItemsError) throw activeItemsError;
+      setAllItems(activeItems || []);
 
       // Load pending classification items
       const { data: pending, error: pendingError } = await supabase
@@ -157,6 +176,11 @@ const InventoryMappingWizard: React.FC<InventoryMappingWizardProps> = ({
 
       if (summaryError) throw summaryError;
       setMappingSummaries(summaries || []);
+
+      // Load explicit test mappings for manual review/delete
+      const { data: mappings, error: mappingsError } = await database.inventory.getTestMappings();
+      if (mappingsError) throw mappingsError;
+      setTestMappings(mappings || []);
 
       // Load test groups
       const { data: tg, error: tgError } = await supabase
@@ -308,6 +332,70 @@ const InventoryMappingWizard: React.FC<InventoryMappingWizardProps> = ({
     }
   };
 
+  const saveManualMapping = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setSavingManualMapping(true);
+    setError(null);
+    setResults(null);
+
+    try {
+      if (!manualItemId) throw new Error('Choose an inventory item');
+      if (manualQuantityPerUse <= 0) throw new Error('Quantity per use must be greater than 0');
+
+      if (manualMappingMode === 'universal') {
+        const { error: updateError } = await database.inventory.updateItem(manualItemId, {
+          consumption_scope: 'per_test' as any,
+          consumption_per_use: manualQuantityPerUse,
+        });
+        if (updateError) throw updateError;
+
+        setResults({
+          phase: 'manual',
+          message: 'Universal per-test consumption saved',
+        });
+      } else {
+        if (!manualTestGroupId) throw new Error('Choose a test for specific mapping');
+
+        const { error: createError } = await database.inventory.createTestMapping({
+          item_id: manualItemId,
+          test_group_id: manualTestGroupId,
+          quantity_per_test: manualQuantityPerUse,
+        });
+        if (createError) throw createError;
+
+        const selectedItem = allItems.find(i => i.id === manualItemId);
+        if (selectedItem?.consumption_scope !== 'per_test') {
+          await database.inventory.updateItem(manualItemId, {
+            consumption_scope: 'per_test' as any,
+            consumption_per_use: manualQuantityPerUse,
+          });
+        }
+
+        setResults({
+          phase: 'manual',
+          message: 'Specific test mapping saved',
+        });
+      }
+
+      setManualTestGroupId('');
+      await loadData();
+    } catch (err: any) {
+      setError(err.message || 'Failed to save mapping');
+    } finally {
+      setSavingManualMapping(false);
+    }
+  };
+
+  const deleteManualMapping = async (mappingId: string) => {
+    setError(null);
+    const { error: deleteError } = await database.inventory.deleteTestMapping(mappingId);
+    if (deleteError) {
+      setError(deleteError.message || 'Failed to delete mapping');
+      return;
+    }
+    await loadData();
+  };
+
   // Toggle item selection
   const toggleItemSelection = (itemId: string) => {
     const newSelection = new Set(selectedItems);
@@ -352,6 +440,11 @@ const InventoryMappingWizard: React.FC<InventoryMappingWizardProps> = ({
     }
   };
 
+  const specificallyMappedItemIds = new Set(testMappings.map((mapping) => mapping.item_id));
+  const universalPerTestItems = allItems.filter(
+    (item) => item.consumption_scope === 'per_test' && !specificallyMappedItemIds.has(item.id),
+  );
+
   return (
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
       <div className="bg-white rounded-xl shadow-xl max-w-6xl w-full max-h-[90vh] flex flex-col">
@@ -362,9 +455,9 @@ const InventoryMappingWizard: React.FC<InventoryMappingWizardProps> = ({
               <Wand2 className="h-5 w-5 text-indigo-600" />
             </div>
             <div>
-              <h2 className="text-lg font-semibold text-gray-900">AI Inventory Mapping Wizard</h2>
+              <h2 className="text-lg font-semibold text-gray-900">Inventory Test Mapping</h2>
               <p className="text-sm text-gray-500">
-                Automatically classify and map inventory items to tests
+                Map per-test inventory manually, or use AI-assisted mapping
               </p>
             </div>
           </div>
@@ -378,12 +471,13 @@ const InventoryMappingWizard: React.FC<InventoryMappingWizardProps> = ({
 
         {/* Tabs */}
         <div className="flex-none border-b border-gray-100 px-6 flex gap-1">
-          {[
-            { id: 'overview', label: 'Overview', icon: Layers },
-            { id: 'classify', label: 'Phase 1: Classify', icon: Sparkles, count: stats.pendingClassification },
-            { id: 'map', label: 'Phase 2: Map', icon: Link2, count: stats.pendingMapping },
-            { id: 'review', label: 'Review', icon: Eye, count: stats.mapped },
-          ].map((tab) => (
+            {[
+              { id: 'overview', label: 'Overview', icon: Layers },
+              { id: 'manual', label: 'Manual Mapping', icon: Settings2 },
+              { id: 'classify', label: 'AI Classify', icon: Sparkles, count: stats.pendingClassification },
+              { id: 'map', label: 'AI Map', icon: Wand2, count: stats.pendingMapping },
+              { id: 'review', label: 'Review', icon: Eye, count: testMappings.length || stats.mapped },
+            ].map((tab) => (
             <button
               key={tab.id}
               onClick={() => setActiveTab(tab.id as any)}
@@ -436,7 +530,9 @@ const InventoryMappingWizard: React.FC<InventoryMappingWizardProps> = ({
                     <span className="font-medium">
                       {results.phase === 'classification'
                         ? `Classified ${results.classified} items`
-                        : `Created ${results.total_mappings_created} mappings for ${results.items_processed} items`
+                        : results.phase === 'manual'
+                          ? results.message
+                          : `Created ${results.total_mappings_created} mappings for ${results.items_processed} items`
                       }
                     </span>
                   </div>
@@ -490,43 +586,50 @@ const InventoryMappingWizard: React.FC<InventoryMappingWizardProps> = ({
                     </div>
                   </div>
 
-                  {/* How It Works */}
-                  <div className="bg-gradient-to-br from-gray-50 to-indigo-50/30 rounded-xl p-6 border border-gray-200">
-                    <h3 className="font-semibold text-gray-900 mb-4">How AI Mapping Works</h3>
-                    <div className="grid md:grid-cols-3 gap-6">
-                      <div className="flex gap-3">
-                        <div className="flex-none w-8 h-8 bg-yellow-100 rounded-full flex items-center justify-center text-yellow-700 font-semibold">1</div>
-                        <div>
-                          <h4 className="font-medium text-gray-900">Phase 1: Classify</h4>
-                          <p className="text-sm text-gray-600 mt-1">
-                            AI analyzes item names and categorizes them as QC/Control, Test-Specific, or General
-                          </p>
-                        </div>
-                      </div>
-                      <div className="flex gap-3">
-                        <div className="flex-none w-8 h-8 bg-indigo-100 rounded-full flex items-center justify-center text-indigo-700 font-semibold">2</div>
-                        <div>
-                          <h4 className="font-medium text-gray-900">Phase 2: Map</h4>
-                          <p className="text-sm text-gray-600 mt-1">
-                            Test-specific items are matched to your actual tests with consumption rules
-                          </p>
-                        </div>
-                      </div>
-                      <div className="flex gap-3">
-                        <div className="flex-none w-8 h-8 bg-green-100 rounded-full flex items-center justify-center text-green-700 font-semibold">3</div>
-                        <div>
-                          <h4 className="font-medium text-gray-900">Review & Confirm</h4>
-                          <p className="text-sm text-gray-600 mt-1">
-                            Review AI suggestions, make adjustments, and confirm accurate mappings
-                          </p>
-                        </div>
-                      </div>
-                    </div>
-                  </div>
+	                  {/* How It Works */}
+	                  <div className="bg-gradient-to-br from-gray-50 to-indigo-50/30 rounded-xl p-6 border border-gray-200">
+	                    <h3 className="font-semibold text-gray-900 mb-4">Mapping Options</h3>
+	                    <div className="grid md:grid-cols-3 gap-6">
+	                      <div className="flex gap-3">
+	                        <div className="flex-none w-8 h-8 bg-blue-100 rounded-full flex items-center justify-center text-blue-700 font-semibold">1</div>
+	                        <div>
+	                          <h4 className="font-medium text-gray-900">Manual Specific</h4>
+	                          <p className="text-sm text-gray-600 mt-1">
+	                            Link an item to one selected test and set the quantity consumed per test.
+	                          </p>
+	                        </div>
+	                      </div>
+	                      <div className="flex gap-3">
+	                        <div className="flex-none w-8 h-8 bg-indigo-100 rounded-full flex items-center justify-center text-indigo-700 font-semibold">2</div>
+	                        <div>
+	                          <h4 className="font-medium text-gray-900">Universal Per-Test</h4>
+	                          <p className="text-sm text-gray-600 mt-1">
+	                            Use the item for every test when no specific test mapping exists for that item.
+	                          </p>
+	                        </div>
+	                      </div>
+	                      <div className="flex gap-3">
+	                        <div className="flex-none w-8 h-8 bg-green-100 rounded-full flex items-center justify-center text-green-700 font-semibold">3</div>
+	                        <div>
+	                          <h4 className="font-medium text-gray-900">AI Assisted</h4>
+	                          <p className="text-sm text-gray-600 mt-1">
+	                            Let AI classify items and suggest test mappings, then review them.
+	                          </p>
+	                        </div>
+	                      </div>
+	                    </div>
+	                  </div>
 
                   {/* Quick Actions */}
-                  <div className="flex gap-4">
-                    {stats.pendingClassification > 0 && (
+	                  <div className="flex gap-4">
+	                    <button
+	                      onClick={() => setActiveTab('manual')}
+	                      className="flex-1 inline-flex items-center justify-center gap-2 px-4 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
+	                    >
+	                      <Settings2 className="h-5 w-5" />
+	                      Create Manual Mapping
+	                    </button>
+	                    {stats.pendingClassification > 0 && (
                       <button
                         onClick={() => { setActiveTab('classify'); runClassification(); }}
                         disabled={processing}
@@ -547,11 +650,185 @@ const InventoryMappingWizard: React.FC<InventoryMappingWizardProps> = ({
                       </button>
                     )}
                   </div>
-                </div>
-              )}
+	                </div>
+	              )}
 
-              {/* Classify Tab (Phase 1) */}
-              {activeTab === 'classify' && (
+	              {/* Manual Mapping Tab */}
+	              {activeTab === 'manual' && (
+	                <div className="space-y-6">
+	                  <form onSubmit={saveManualMapping} className="border border-gray-200 rounded-xl p-5 space-y-4">
+	                    <div>
+	                      <h3 className="font-semibold text-gray-900">Create Mapping</h3>
+	                      <p className="text-sm text-gray-500 mt-1">
+	                        Use specific mapping for one test, or universal per-test use for items consumed by every test.
+	                      </p>
+	                    </div>
+
+	                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+	                      <div>
+	                        <label className="block text-sm font-medium text-gray-700 mb-1">
+	                          Inventory Item
+	                        </label>
+	                        <select
+	                          value={manualItemId}
+	                          onChange={(e) => setManualItemId(e.target.value)}
+	                          required
+	                          className="w-full px-3 py-2 border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+	                        >
+	                          <option value="">Choose item...</option>
+	                          {allItems.map((item) => (
+	                            <option key={item.id} value={item.id}>
+	                              {item.name}{item.code ? ` (${item.code})` : ''}
+	                            </option>
+	                          ))}
+	                        </select>
+	                      </div>
+
+	                      <div>
+	                        <label className="block text-sm font-medium text-gray-700 mb-1">
+	                          Mapping Mode
+	                        </label>
+	                        <select
+	                          value={manualMappingMode}
+	                          onChange={(e) => setManualMappingMode(e.target.value as 'specific' | 'universal')}
+	                          className="w-full px-3 py-2 border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+	                        >
+	                          <option value="specific">Specific test only</option>
+	                          <option value="universal">Universal per-test use</option>
+	                        </select>
+	                      </div>
+
+	                      {manualMappingMode === 'specific' && (
+	                        <div>
+	                          <label className="block text-sm font-medium text-gray-700 mb-1">
+	                            Test
+	                          </label>
+	                          <select
+	                            value={manualTestGroupId}
+	                            onChange={(e) => setManualTestGroupId(e.target.value)}
+	                            required
+	                            className="w-full px-3 py-2 border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+	                          >
+	                            <option value="">Choose test...</option>
+	                            {testGroups.map((test) => (
+	                              <option key={test.id} value={test.id}>
+	                                {test.name}{test.code ? ` (${test.code})` : ''}
+	                              </option>
+	                            ))}
+	                          </select>
+	                        </div>
+	                      )}
+
+	                      <div>
+	                        <label className="block text-sm font-medium text-gray-700 mb-1">
+	                          Quantity Per Test
+	                        </label>
+	                        <input
+	                          type="number"
+	                          value={manualQuantityPerUse}
+	                          onChange={(e) => setManualQuantityPerUse(Number(e.target.value))}
+	                          required
+	                          min="0.01"
+	                          step="0.01"
+	                          className="w-full px-3 py-2 border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+	                        />
+	                        <p className="text-xs text-gray-500 mt-1">
+	                          If Pack Contains is set on the item, this is treated as test uses before pack conversion.
+	                        </p>
+	                      </div>
+	                    </div>
+
+	                    <div className="flex justify-end">
+	                      <button
+	                        type="submit"
+	                        disabled={savingManualMapping}
+	                        className="inline-flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50"
+	                      >
+	                        {savingManualMapping ? <Loader2 className="h-4 w-4 animate-spin" /> : <Link2 className="h-4 w-4" />}
+	                        Save Mapping
+	                      </button>
+	                    </div>
+	                  </form>
+
+	                  <div className="border border-gray-200 rounded-xl overflow-hidden">
+	                    <div className="px-4 py-3 bg-gray-50 border-b border-gray-200 flex items-center justify-between">
+	                      <h3 className="font-medium text-gray-900">Specific Test Mappings</h3>
+	                      <span className="text-xs text-gray-500">{testMappings.length} mappings</span>
+	                    </div>
+	                    {testMappings.length === 0 ? (
+	                      <div className="px-4 py-8 text-center text-sm text-gray-500">
+	                        No specific test mappings yet.
+	                      </div>
+	                    ) : (
+	                      <table className="w-full">
+	                        <thead className="bg-gray-50">
+	                          <tr>
+	                            <th className="text-left text-xs font-medium text-gray-500 uppercase px-4 py-3">Item</th>
+	                            <th className="text-left text-xs font-medium text-gray-500 uppercase px-4 py-3">Test</th>
+	                            <th className="text-right text-xs font-medium text-gray-500 uppercase px-4 py-3">Qty/Test</th>
+	                            <th className="text-center text-xs font-medium text-gray-500 uppercase px-4 py-3">Action</th>
+	                          </tr>
+	                        </thead>
+	                        <tbody className="divide-y divide-gray-100">
+	                          {testMappings.map((mapping) => (
+	                            <tr key={mapping.id} className="hover:bg-gray-50">
+	                              <td className="px-4 py-3">
+	                                <div className="font-medium text-gray-900">{mapping.item?.name || 'Unknown item'}</div>
+	                                {mapping.item?.code && <div className="text-xs text-gray-500">{mapping.item.code}</div>}
+	                              </td>
+	                              <td className="px-4 py-3 text-sm text-gray-700">
+	                                {mapping.test_group?.name || mapping.analyte?.name || '-'}
+	                              </td>
+	                              <td className="px-4 py-3 text-sm text-gray-900 text-right">
+	                                {Number(mapping.quantity_per_test || 0)} {mapping.unit || mapping.item?.unit || ''}
+	                              </td>
+	                              <td className="px-4 py-3 text-center">
+	                                <button
+	                                  type="button"
+	                                  onClick={() => deleteManualMapping(mapping.id)}
+	                                  className="p-1.5 hover:bg-red-100 rounded-lg transition-colors"
+	                                  title="Remove mapping"
+	                                >
+	                                  <Trash2 className="h-4 w-4 text-red-600" />
+	                                </button>
+	                              </td>
+	                            </tr>
+	                          ))}
+	                        </tbody>
+	                      </table>
+	                    )}
+	                  </div>
+
+	                  <div className="border border-gray-200 rounded-xl overflow-hidden">
+	                    <div className="px-4 py-3 bg-gray-50 border-b border-gray-200 flex items-center justify-between">
+	                      <h3 className="font-medium text-gray-900">Universal Per-Test Items</h3>
+	                      <span className="text-xs text-gray-500">{universalPerTestItems.length} items</span>
+	                    </div>
+	                    {universalPerTestItems.length === 0 ? (
+	                      <div className="px-4 py-6 text-sm text-gray-500">
+	                        No universal per-test items configured.
+	                      </div>
+	                    ) : (
+	                      <div className="divide-y divide-gray-100">
+	                        {universalPerTestItems.map((item) => (
+	                          <div key={item.id} className="px-4 py-3 flex items-center justify-between">
+	                            <div>
+	                              <div className="font-medium text-gray-900">{item.name}</div>
+	                              {item.code && <div className="text-xs text-gray-500">{item.code}</div>}
+	                            </div>
+	                            <div className="text-sm text-gray-700">
+	                              {Number(item.consumption_per_use || 0)} / test
+	                            </div>
+	                          </div>
+	                        ))}
+	                      </div>
+	                    )}
+	                  </div>
+	                </div>
+	              )}
+
+	              {/* Classify Tab (Phase 1) */}
+	              {activeTab === 'classify' && (
                 <div className="space-y-4">
                   {/* Actions Bar */}
                   <div className="flex items-center justify-between">

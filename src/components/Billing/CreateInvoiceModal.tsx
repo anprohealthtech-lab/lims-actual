@@ -21,7 +21,7 @@ interface OrderTest {
   outsourced_lab_id?: string | null; // If test is outsourced
 }
 
-type DiscountSource = 'manual' | 'doctor' | 'location' | 'account';
+type DiscountSource = 'manual' | 'doctor' | 'location' | 'account' | 'account_fixed';
 interface DiscountInfo {
   type: 'percent' | 'flat';
   value: number;
@@ -265,7 +265,7 @@ const CreateInvoiceModal: React.FC<CreateInvoiceModalProps> = ({ orderId, onClos
         const originalPrice = toNum(test.price);
         const discountAmount = Math.max(0, originalPrice - fixedPrice);
 
-        if (discountAmount >= 0) {
+        if (discountAmount > 0) {
           newDiscounts[test.id] = {
             type: 'flat',
             value: discountAmount,
@@ -288,21 +288,24 @@ const CreateInvoiceModal: React.FC<CreateInvoiceModalProps> = ({ orderId, onClos
     setDiscounts(newDiscounts);
   };
 
+  const calcDiscountAmount = (baseAmount: number, discount?: Pick<DiscountInfo, 'type' | 'value'> | null) => {
+    if (!discount) return 0;
+    const base = Math.max(0, toNum(baseAmount));
+    const rawValue = Math.max(0, toNum(discount.value));
+    const amount = discount.type === 'percent'
+      ? base * Math.min(rawValue, 100) / 100
+      : Math.min(rawValue, base);
+    return Math.max(0, amount);
+  };
+
   const calcLineTotal = (test: OrderTest) => {
-    const disc = discounts[test.id];
-    let total = toNum(test.price);
-    if (disc) {
-      total = disc.type === 'percent' ? (total - total * toNum(disc.value) / 100) : (total - toNum(disc.value));
-    }
-    return Math.max(0, total);
+    const discountAmount = calcDiscountAmount(toNum(test.price), discounts[test.id]);
+    return Math.max(0, toNum(test.price) - discountAmount);
   };
 
   const calcChargeLineTotal = (charge: { id: string; amount: number }) => {
-    const d = chargeDiscounts[charge.id];
-    if (!d) return charge.amount;
-    return Math.max(0, d.type === 'percent'
-      ? charge.amount - charge.amount * toNum(d.value) / 100
-      : charge.amount - toNum(d.value));
+    const discountAmount = calcDiscountAmount(toNum(charge.amount), chargeDiscounts[charge.id]);
+    return Math.max(0, toNum(charge.amount) - discountAmount);
   };
 
   const calcTotals = () => {
@@ -312,7 +315,7 @@ const CreateInvoiceModal: React.FC<CreateInvoiceModalProps> = ({ orderId, onClos
     rows.forEach(t => {
       const d = discounts[t.id];
       if (!d) return;
-      totalDiscount += d.type === 'percent' ? (toNum(t.price) * toNum(d.value) / 100) : toNum(d.value);
+      totalDiscount += calcDiscountAmount(toNum(t.price), d);
     });
     if (globalDiscount) {
       totalDiscount += globalDiscount.type === 'percent' ? ((testSubtotal - totalDiscount) * toNum(globalDiscount.value) / 100) : toNum(globalDiscount.value);
@@ -323,7 +326,7 @@ const CreateInvoiceModal: React.FC<CreateInvoiceModalProps> = ({ orderId, onClos
     selectedCharges.forEach(c => {
       const d = chargeDiscounts[c.id];
       if (!d) return;
-      totalDiscount += d.type === 'percent' ? (toNum(c.amount) * toNum(d.value) / 100) : toNum(d.value);
+      totalDiscount += calcDiscountAmount(toNum(c.amount), d);
     });
     const subtotal = testSubtotal + chargesSubtotal;
     const total = Math.max(0, subtotal - totalDiscount);
@@ -331,10 +334,38 @@ const CreateInvoiceModal: React.FC<CreateInvoiceModalProps> = ({ orderId, onClos
   };
 
   const handleDiscountChange = (testId: string, type: 'percent' | 'flat', value: number, reason: string) => {
-    setDiscounts(prev => ({
-      ...prev,
-      [testId]: { type, value, reason, source: 'manual' }
-    }));
+    setDiscounts(prev => {
+      const next = { ...prev };
+      const normalizedValue = Math.max(0, toNum(value));
+      if (normalizedValue <= 0) {
+        delete next[testId];
+      } else {
+        next[testId] = {
+          type,
+          value: normalizedValue,
+          reason: reason.trim() || 'Manual discount',
+          source: 'manual'
+        };
+      }
+      return next;
+    });
+  };
+
+  const handleChargeDiscountChange = (chargeId: string, type: 'percent' | 'flat', value: number, reason: string) => {
+    setChargeDiscounts(prev => {
+      const next = { ...prev };
+      const normalizedValue = Math.max(0, toNum(value));
+      if (normalizedValue <= 0) {
+        delete next[chargeId];
+      } else {
+        next[chargeId] = {
+          type,
+          value: normalizedValue,
+          reason: reason.trim() || 'Manual discount'
+        };
+      }
+      return next;
+    });
   };
 
   const handleCreate = async () => {
@@ -410,6 +441,7 @@ const CreateInvoiceModal: React.FC<CreateInvoiceModalProps> = ({ orderId, onClos
       for (const test of rows) {
         const d = discounts[test.id];
         const lineTotal = calcLineTotal(test);
+        const discountAmount = calcDiscountAmount(toNum(test.price), d);
 
         // Get outsourced cost if applicable
         let outsourcedCost: number | null = null;
@@ -450,10 +482,10 @@ const CreateInvoiceModal: React.FC<CreateInvoiceModalProps> = ({ orderId, onClos
           price: toNum(test.price),
           quantity: 1,
           total: lineTotal,
-          discount_type: d?.type || null,
-          discount_value: d?.value || null,
-          discount_amount: toNum(test.price) - lineTotal,
-          discount_reason: d?.reason || null,
+          discount_type: discountAmount > 0 ? d?.type || null : null,
+          discount_value: discountAmount > 0 ? d?.value || null : null,
+          discount_amount: discountAmount,
+          discount_reason: discountAmount > 0 ? d?.reason || null : null,
           outsourced_lab_id: test.outsourced_lab_id || null,
           outsourced_cost: outsourcedCost,
           location_receivable: locationReceivable,
@@ -477,6 +509,7 @@ const CreateInvoiceModal: React.FC<CreateInvoiceModalProps> = ({ orderId, onClos
         const isCollectionCharge = (charge as any)._is_collection_charge === true;
         const d = chargeDiscounts[charge.id];
         const lineTotal = calcChargeLineTotal(charge);
+        const discountAmount = calcDiscountAmount(toNum(charge.amount), d);
         const { data: chargeItem } = await supabase.from('invoice_items').insert({
           lab_id,
           invoice_id: invoice.id,
@@ -486,10 +519,10 @@ const CreateInvoiceModal: React.FC<CreateInvoiceModalProps> = ({ orderId, onClos
           quantity: 1,
           total: lineTotal,
           item_type: 'lab_charge',
-          discount_type: d?.type || null,
-          discount_value: d?.value || null,
-          discount_amount: toNum(charge.amount) - lineTotal,
-          discount_reason: d?.reason || null,
+          discount_type: discountAmount > 0 ? d?.type || null : null,
+          discount_value: discountAmount > 0 ? d?.value || null : null,
+          discount_amount: discountAmount,
+          discount_reason: discountAmount > 0 ? d?.reason || null : null,
           is_shareable_with_doctor: charge.is_shareable_with_doctor,
           is_shareable_with_phlebotomist: charge.is_shareable_with_phlebotomist,
           order_id: orderId,
@@ -669,6 +702,7 @@ const CreateInvoiceModal: React.FC<CreateInvoiceModalProps> = ({ orderId, onClos
               const isExpanded = expandedPackages.has(test.id);
               const discount = discounts[test.id];
               const lineTotal = calcLineTotal(test);
+              const discountAmount = calcDiscountAmount(toNum(test.price), discount);
 
               return (
                 <div key={test.id} className="border-b">
@@ -723,7 +757,7 @@ const CreateInvoiceModal: React.FC<CreateInvoiceModalProps> = ({ orderId, onClos
 
                         <div className="text-right">
                           <div className="font-bold text-lg">₹{money(lineTotal)}</div>
-                          {discount && (
+                          {discountAmount > 0 && discount && (
                             <div className="text-sm text-green-600">
                               -{discount.type === 'percent' ? `${discount.value}%` : `₹${discount.value}`} ({discount.source})
                             </div>
@@ -758,7 +792,7 @@ const CreateInvoiceModal: React.FC<CreateInvoiceModalProps> = ({ orderId, onClos
                               value={discount?.type || 'percent'}
                               onChange={(e) => {
                                 const type = e.target.value as 'percent' | 'flat';
-                                handleDiscountChange(test.id, type, discount?.value || 0, discount?.reason || 'Manual discount');
+                                handleDiscountChange(test.id, type, discount?.value || 0, discount?.reason || '');
                               }}
                               className="w-full px-2 py-1 text-sm border rounded"
                             >
@@ -773,10 +807,10 @@ const CreateInvoiceModal: React.FC<CreateInvoiceModalProps> = ({ orderId, onClos
                               min="0"
                               max={discount?.type === 'percent' ? 100 : test.price}
                               step={discount?.type === 'percent' ? 1 : 0.01}
-                              value={discount?.value || 0}
+                              value={discount?.value ?? ''}
                               onChange={(e) => {
                                 const value = parseFloat(e.target.value) || 0;
-                                handleDiscountChange(test.id, discount?.type || 'percent', value, discount?.reason || 'Manual discount');
+                                handleDiscountChange(test.id, discount?.type || 'percent', value, discount?.reason || '');
                               }}
                               className="w-full px-2 py-1 text-sm border rounded"
                             />
@@ -785,7 +819,7 @@ const CreateInvoiceModal: React.FC<CreateInvoiceModalProps> = ({ orderId, onClos
                             <label className="block text-xs text-gray-600 mb-1">Reason</label>
                             <input
                               type="text"
-                              value={discount?.reason || 'Manual discount'}
+                              value={discount?.reason || ''}
                               onChange={(e) => {
                                 handleDiscountChange(test.id, discount?.type || 'percent', discount?.value || 0, e.target.value);
                               }}
@@ -817,6 +851,7 @@ const CreateInvoiceModal: React.FC<CreateInvoiceModalProps> = ({ orderId, onClos
                 const isSelected = selectedChargeIds.includes(charge.id);
                 const cd = chargeDiscounts[charge.id];
                 const lineTotal = calcChargeLineTotal(charge);
+                const chargeDiscountAmount = calcDiscountAmount(toNum(charge.amount), cd);
                 return (
                   <div key={charge.id} className={`p-4 ${isSelected ? 'bg-amber-50/40' : 'bg-white'} hover:bg-gray-50`}>
                     <div className="flex items-center justify-between">
@@ -843,7 +878,7 @@ const CreateInvoiceModal: React.FC<CreateInvoiceModalProps> = ({ orderId, onClos
                       </div>
                       <div className="text-right">
                         <div className="font-bold text-lg">₹{money(lineTotal)}</div>
-                        {cd && <div className="text-sm text-green-600">
+                        {chargeDiscountAmount > 0 && cd && <div className="text-sm text-green-600">
                           -{cd.type === 'percent' ? `${cd.value}%` : `₹${cd.value}`}
                         </div>}
                         {cd && <div className="text-sm text-gray-500">Original: ₹{money(charge.amount)}</div>}
@@ -857,10 +892,7 @@ const CreateInvoiceModal: React.FC<CreateInvoiceModalProps> = ({ orderId, onClos
                             <label className="block text-xs text-gray-600 mb-1">Discount Type</label>
                             <select
                               value={cd?.type || 'percent'}
-                              onChange={e => setChargeDiscounts(prev => ({
-                                ...prev,
-                                [charge.id]: { type: e.target.value as 'percent' | 'flat', value: cd?.value || 0, reason: cd?.reason || 'Discount' }
-                              }))}
+                              onChange={e => handleChargeDiscountChange(charge.id, e.target.value as 'percent' | 'flat', cd?.value || 0, cd?.reason || '')}
                               className="w-full px-2 py-1 text-sm border rounded"
                             >
                               <option value="percent">Percentage</option>
@@ -872,11 +904,8 @@ const CreateInvoiceModal: React.FC<CreateInvoiceModalProps> = ({ orderId, onClos
                             <input
                               type="number"
                               min="0"
-                              value={cd?.value || 0}
-                              onChange={e => setChargeDiscounts(prev => ({
-                                ...prev,
-                                [charge.id]: { type: cd?.type || 'percent', value: parseFloat(e.target.value) || 0, reason: cd?.reason || 'Discount' }
-                              }))}
+                              value={cd?.value ?? ''}
+                              onChange={e => handleChargeDiscountChange(charge.id, cd?.type || 'percent', parseFloat(e.target.value) || 0, cd?.reason || '')}
                               className="w-full px-2 py-1 text-sm border rounded"
                             />
                           </div>
@@ -885,10 +914,7 @@ const CreateInvoiceModal: React.FC<CreateInvoiceModalProps> = ({ orderId, onClos
                             <input
                               type="text"
                               value={cd?.reason || ''}
-                              onChange={e => setChargeDiscounts(prev => ({
-                                ...prev,
-                                [charge.id]: { type: cd?.type || 'percent', value: cd?.value || 0, reason: e.target.value }
-                              }))}
+                              onChange={e => handleChargeDiscountChange(charge.id, cd?.type || 'percent', cd?.value || 0, e.target.value)}
                               className="w-full px-2 py-1 text-sm border rounded"
                               placeholder="Discount reason"
                             />

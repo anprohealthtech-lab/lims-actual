@@ -141,6 +141,13 @@ export const QZTrayProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   }, []);
 
   const autoPrintBarcode = useCallback(async (data: BarcodeLabelData) => {
+    console.debug('[QZ][Context] autoPrintBarcode invoked', {
+      enabled: settings.autoPrintBarcodeOnOrder,
+      printerName: settings.barcodePrinterName,
+      sampleId: data.sampleId,
+      labelId: data.labelId,
+      connected: qzService.isConnected(),
+    });
     if (!settings.autoPrintBarcodeOnOrder) return;
     if (!settings.barcodePrinterName) {
       console.warn('[QZ] Auto-print barcode skipped: no barcode printer configured for this location.');
@@ -159,6 +166,12 @@ export const QZTrayProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   }, [settings]);
 
   const autoPrintReport = useCallback(async (pdfUrl: string) => {
+    console.debug('[QZ][Context] autoPrintReport invoked', {
+      enabled: settings.autoPrintReportOnApproval,
+      printerName: settings.reportPrinterName,
+      pdfUrl,
+      connected: qzService.isConnected(),
+    });
     if (!settings.autoPrintReportOnApproval) return;
     if (!settings.reportPrinterName) {
       console.warn('[QZ] Auto-print report skipped: no report printer configured for this location.');

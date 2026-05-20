@@ -944,6 +944,163 @@ export const BrandingSettings: React.FC = () => {
               </div>
             </div>
 
+            {/* Compact Print Settings */}
+            <div className="border-t border-gray-200 pt-6 mt-6">
+              <h4 className="text-md font-medium text-gray-900 mb-1">Compact Print Defaults</h4>
+              <p className="text-sm text-gray-500 mb-4">
+                Controls the default print mode and AI page-planning behaviour for the compact print PDF.
+              </p>
+
+              <div className="space-y-4">
+                {/* Default print mode */}
+                <div className="flex items-center justify-between p-3 bg-gray-50 rounded">
+                  <div>
+                    <label className="text-sm font-medium text-gray-700">Default Print Mode</label>
+                    <p className="text-xs text-gray-500 mt-0.5">Applied when no per-order override is set.</p>
+                  </div>
+                  <div className="inline-flex rounded-lg border border-gray-200 overflow-hidden">
+                    <button
+                      type="button"
+                      className={`px-4 py-2 text-sm ${(pdfSettings?.compactPrint?.defaultMode ?? 'standard') === 'standard' ? 'bg-blue-600 text-white' : 'bg-white text-gray-700 hover:bg-gray-50'}`}
+                      onClick={() => setPdfSettings({ ...pdfSettings, compactPrint: { ...(pdfSettings?.compactPrint || {}), defaultMode: 'standard' } })}
+                    >
+                      Standard
+                    </button>
+                    <button
+                      type="button"
+                      className={`px-4 py-2 text-sm border-l border-gray-200 ${(pdfSettings?.compactPrint?.defaultMode ?? 'standard') === 'compact' ? 'bg-emerald-600 text-white' : 'bg-white text-gray-700 hover:bg-gray-50'}`}
+                      onClick={() => setPdfSettings({ ...pdfSettings, compactPrint: { ...(pdfSettings?.compactPrint || {}), defaultMode: 'compact' } })}
+                    >
+                      Compact
+                    </button>
+                  </div>
+                </div>
+
+                {/* Auto compact print on approval */}
+                <div className="flex items-center justify-between p-3 bg-gray-50 rounded">
+                  <div>
+                    <label className="text-sm font-medium text-gray-700">Auto Compact Print on Approval</label>
+                    <p className="text-xs text-gray-500 mt-0.5">Automatically generate the compact print PDF when all results for an order are approved.</p>
+                  </div>
+                  <label className="relative inline-flex items-center cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={pdfSettings?.compactPrint?.autoOnApproval === true}
+                      onChange={(e) => setPdfSettings({ ...pdfSettings, compactPrint: { ...(pdfSettings?.compactPrint || {}), autoOnApproval: e.target.checked } })}
+                      className="sr-only peer"
+                    />
+                    <div className="w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-emerald-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:start-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-emerald-600"></div>
+                  </label>
+                </div>
+
+                {/* Enable compact print */}
+                <div className="flex items-center justify-between p-3 bg-gray-50 rounded">
+                  <label className="text-sm font-medium text-gray-700">Enable Compact Print Planner</label>
+                  <label className="relative inline-flex items-center cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={pdfSettings?.compactPrint?.enabled !== false}
+                      onChange={(e) => setPdfSettings({ ...pdfSettings, compactPrint: { ...(pdfSettings?.compactPrint || {}), enabled: e.target.checked } })}
+                      className="sr-only peer"
+                    />
+                    <div className="w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-emerald-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:start-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-emerald-600"></div>
+                  </label>
+                </div>
+
+                {/* AI planner */}
+                <div className="flex items-center justify-between p-3 bg-gray-50 rounded">
+                  <div>
+                    <label className="text-sm font-medium text-gray-700">AI Page Planner (Gemini)</label>
+                    <p className="text-xs text-gray-500 mt-0.5">Use AI to intelligently group test panels onto pages. Falls back to deterministic if unavailable.</p>
+                  </div>
+                  <label className="relative inline-flex items-center cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={pdfSettings?.compactPrint?.aiEnabled !== false}
+                      onChange={(e) => setPdfSettings({ ...pdfSettings, compactPrint: { ...(pdfSettings?.compactPrint || {}), aiEnabled: e.target.checked } })}
+                      className="sr-only peer"
+                    />
+                    <div className="w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-purple-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:start-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-purple-600"></div>
+                  </label>
+                </div>
+
+                {/* Compact template style */}
+                <div className="flex items-center justify-between p-3 bg-gray-50 rounded">
+                  <div>
+                    <label className="text-sm font-medium text-gray-700">Compact Template Style</label>
+                    <p className="text-xs text-gray-500 mt-0.5">Layout used when generating the compact print PDF.</p>
+                  </div>
+                  <select
+                    value={pdfSettings?.compactPrint?.templateStyle ?? 'basic'}
+                    onChange={(e) => setPdfSettings({ ...pdfSettings, compactPrint: { ...(pdfSettings?.compactPrint || {}), templateStyle: e.target.value } })}
+                    className="border border-gray-300 rounded-md px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500"
+                  >
+                    <option value="basic">Basic (Old School)</option>
+                    <option value="classic">Classic</option>
+                    <option value="beautiful">Beautiful</option>
+                  </select>
+                </div>
+
+                {/* Small group threshold */}
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-xs font-medium text-gray-500 mb-1">Small Group Threshold (analytes)</label>
+                    <input
+                      type="number"
+                      min={1} max={20}
+                      value={pdfSettings?.compactPrint?.smallGroupThreshold ?? 6}
+                      onChange={(e) => setPdfSettings({ ...pdfSettings, compactPrint: { ...(pdfSettings?.compactPrint || {}), smallGroupThreshold: Number(e.target.value) } })}
+                      className="block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm text-sm"
+                    />
+                    <p className="text-xs text-gray-400 mt-1">Groups with ≤ this many analytes are eligible to share a page.</p>
+                  </div>
+                  <div>
+                    <label className="block text-xs font-medium text-gray-500 mb-1">Max Analytes Per Cluster</label>
+                    <input
+                      type="number"
+                      min={2} max={40}
+                      value={pdfSettings?.compactPrint?.maxClusterAnalytes ?? 14}
+                      onChange={(e) => setPdfSettings({ ...pdfSettings, compactPrint: { ...(pdfSettings?.compactPrint || {}), maxClusterAnalytes: Number(e.target.value) } })}
+                      className="block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm text-sm"
+                    />
+                    <p className="text-xs text-gray-400 mt-1">Max combined analytes two groups can share on one page.</p>
+                  </div>
+                </div>
+
+                {/* Banned keywords */}
+                <div>
+                  <label className="block text-xs font-medium text-gray-500 mb-1">Banned Keywords (comma-separated)</label>
+                  <input
+                    type="text"
+                    placeholder="culture, microbiology, histopathology, biopsy"
+                    value={(pdfSettings?.compactPrint?.bannedKeywords ?? []).join(', ')}
+                    onChange={(e) => setPdfSettings({
+                      ...pdfSettings,
+                      compactPrint: {
+                        ...(pdfSettings?.compactPrint || {}),
+                        bannedKeywords: e.target.value.split(',').map((s: string) => s.trim()).filter(Boolean),
+                      }
+                    })}
+                    className="block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm text-sm"
+                  />
+                  <p className="text-xs text-gray-400 mt-1">Test names containing these words are never merged onto a shared page.</p>
+                </div>
+
+                {/* AI policy text */}
+                <div>
+                  <label className="block text-xs font-medium text-gray-500 mb-1">AI Planner Policy (optional)</label>
+                  <textarea
+                    rows={3}
+                    placeholder="e.g. Always keep CBC on its own page. Prefer to club Liver Function and Kidney Function together."
+                    value={pdfSettings?.compactPrint?.policyText ?? ''}
+                    onChange={(e) => setPdfSettings({ ...pdfSettings, compactPrint: { ...(pdfSettings?.compactPrint || {}), policyText: e.target.value } })}
+                    className="block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm text-sm"
+                  />
+                  <p className="text-xs text-gray-400 mt-1">Natural-language instructions sent to the AI planner. Leave blank to use the default policy.</p>
+                </div>
+              </div>
+            </div>
+
             <div className="flex justify-end pt-6 mt-6 border-t border-gray-200">
               <button
                 onClick={handleSavePdfSettings}

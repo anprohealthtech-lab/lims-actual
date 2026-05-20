@@ -24,6 +24,11 @@ dist-ssr
 *.sw?
 .env
 
+# QZ Tray signing private key - never commit
+qz-private-key.pem
+**/qz-private-key.pem
+/qz-certificate.pem
+
 # Check git status first
 # Then add and commit all changes
 

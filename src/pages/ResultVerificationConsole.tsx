@@ -25,7 +25,8 @@ import {
   Filter as FilterIcon,
   X,
   ChevronRight,
-  Eye,
+	  Eye,
+	  EyeOff,
   Expand,
   Minimize,
   FileImage,
@@ -41,7 +42,7 @@ import { supabase, database } from "../utils/supabase";
 import AttachmentSelector from "../components/Reports/AttachmentSelector";
 import OrderVerificationView from "./OrderVerificationView";
 import { useAIResultIntelligence, type VerifierSummaryResponse, type ClinicalSummaryResponse, type GeneratedInterpretation, type ResultValue, type DeltaCheckResponse } from "../hooks/useAIResultIntelligence";
-import { generateAndSaveTrendCharts, saveClinicalSummary } from "../utils/reportExtrasService";
+import { saveClinicalSummary } from "../utils/reportExtrasService";
 import TrendGraphPanel from "../components/Results/TrendGraphPanel";
 import AIResultSuggestionCard from "../components/Results/AIResultSuggestionCard";
 import SectionEditor, { type SectionEditorRef } from "../components/Results/SectionEditor";
@@ -92,7 +93,9 @@ type Analyte = {
   // Calculated parameter fields
   is_auto_calculated?: boolean;
   calculation_inputs?: Record<string, number>;
-  calculated_at?: string;
+	  calculated_at?: string;
+	  is_hidden_from_report?: boolean | null;
+	  hidden_reason?: string | null;
 };
 
 type CalcDebugHintsByResult = Record<string, Record<string, string[]>>;
@@ -774,7 +777,9 @@ const ResultVerificationConsole: React.FC = () => {
           "verified_at",
           "is_auto_calculated",
           "calculation_inputs",
-          "calculated_at",
+	          "calculated_at",
+	          "is_hidden_from_report",
+	          "hidden_reason",
         ].join(",")
       )
       .eq("result_id", result_id)
@@ -808,8 +813,10 @@ const ResultVerificationConsole: React.FC = () => {
             verified_at: null,
             is_auto_calculated: r.is_auto_calculated,
             calculation_inputs: r.calculation_inputs,
-            calculated_at: r.calculated_at,
-          })) as Analyte[];
+	            calculated_at: r.calculated_at,
+	            is_hidden_from_report: false,
+	            hidden_reason: null,
+	          })) as Analyte[];
           setRowsByResult((s) => ({ ...s, [result_id]: mapped }));
         }
       }
@@ -1147,22 +1154,7 @@ const ResultVerificationConsole: React.FC = () => {
 
         // Generate and save report extras (trends and clinical summary) if enabled
         try {
-          // Save trend charts if enabled and there are flagged analytes
-          if (includeTrendsInReport[row.order_id]) {
-            const flaggedAnalytes = list.filter(a => isAbnormalFlag(a.flag));
-            if (flaggedAnalytes.length > 0) {
-              console.log(`Generating trend charts for ${flaggedAnalytes.length} flagged analytes...`);
-              await generateAndSaveTrendCharts(
-                row.result_id,
-                row.order_id,
-                row.patient_id,
-                flaggedAnalytes.map(a => ({ name: a.parameter, flag: a.flag })),
-                true  // includeInReport
-              );
-            }
-          }
-
-          // Save clinical summary if enabled and exists
+	          // Save clinical summary if enabled and exists
           if (includeSummaryInReport[row.order_id] && aiClinicalSummary[row.order_id]) {
             console.log('Saving clinical summary to report extras...');
             const summaryResponse = aiClinicalSummary[row.order_id];
@@ -1682,24 +1674,31 @@ const ResultVerificationConsole: React.FC = () => {
     const cacheKey = `${row.patient_id}-${a.parameter}`;
     const hasTrend = trendData[cacheKey] && trendData[cacheKey].length > 0;
     const showAISuggestion = !!showAISuggestionMap[a.id];
-    const isEditing = editingAnalyteId === a.id;
-    const isRerunRequest = a.verify_note && a.verify_note.toUpperCase().includes("RE-RUN");
-    const debugMissing = calcDebugHints[a.result_id]?.[a.id] || [];
+	    const isEditing = editingAnalyteId === a.id;
+	    const isRerunRequest = a.verify_note && a.verify_note.toUpperCase().includes("RE-RUN");
+	    const isHidden = !!a.is_hidden_from_report;
+	    const debugMissing = calcDebugHints[a.result_id]?.[a.id] || [];
     const canVerify = canVerifyRow(row);
     const canUnapprove = canUnapproveResults;
 
     return (
       <>
-        <tr className={`hover:bg-blue-50 transition-colors ${a.is_auto_calculated ? 'bg-amber-50/50' : ''} ${isRerunRequest ? 'bg-orange-50' : ''}`}>
+	        <tr className={`hover:bg-blue-50 transition-colors ${isHidden ? 'bg-slate-50 text-slate-500' : a.is_auto_calculated ? 'bg-amber-50/50' : ''} ${isRerunRequest ? 'bg-orange-50' : ''}`}>
           <td className="px-4 py-4">
             <div className="flex items-center space-x-2">
               <div className="font-semibold text-gray-900">{a.parameter}</div>
-              {isRerunRequest && (
-                <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-orange-100 text-orange-800 border border-orange-200">
+	              {isRerunRequest && (
+	                <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-orange-100 text-orange-800 border border-orange-200">
                   <RefreshCcw className="h-3 w-3 mr-1" />
                   RE-RUN
-                </span>
-              )}
+	                </span>
+	              )}
+	              {isHidden && (
+	                <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-slate-200 text-slate-700 border border-slate-300">
+	                  <EyeOff className="h-3 w-3 mr-1" />
+	                  Hidden from report
+	                </span>
+	              )}
               {a.is_auto_calculated && (
                 <span
                   className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium border ${
@@ -1744,11 +1743,16 @@ const ResultVerificationConsole: React.FC = () => {
                 <Sparkles className="h-4 w-4" />
               </button>
             </div>
-            {isRerunRequest && a.verify_note && (
-              <div className="mt-1 text-xs text-orange-600 bg-orange-50 px-2 py-1 rounded border border-orange-200">
-                {a.verify_note}
-              </div>
-            )}
+	            {isRerunRequest && a.verify_note && (
+	              <div className="mt-1 text-xs text-orange-600 bg-orange-50 px-2 py-1 rounded border border-orange-200">
+	                {a.verify_note}
+	              </div>
+	            )}
+	            {isHidden && (
+	              <div className="mt-1 text-xs text-slate-500">
+	                {a.hidden_reason || "Will not print on final report"}
+	              </div>
+	            )}
             {a.is_auto_calculated && !a.value && (
               <div className="mt-1 text-xs text-red-600 bg-red-50 px-2 py-1 rounded border border-red-200">
                 Missing source values — enter all required analytes then click Recalculate
@@ -2490,7 +2494,7 @@ const ResultVerificationConsole: React.FC = () => {
               <TrendGraphPanel
                 orderId={row.order_id}
                 patientId={row.patient_id}
-                analyteIds={analytes.filter(a => a.analyte_id).map(a => a.analyte_id)}
+                analyteIds={analytes.map(a => a.analyte_id || '')}
                 analyteNames={analytes.map(a => a.parameter)}
                 includeInReport={includeTrendsInReport[row.order_id] ?? false}
                 onIncludeInReportChange={(include) => {

@@ -6,7 +6,7 @@ import { useEffect, useMemo, useState, useCallback, useRef } from 'react'
 import { supabase, database } from '../../utils/supabase'
 import { useAuth } from '../../contexts/AuthContext'
 import { calculateFlagsForResults } from '../../utils/flagCalculation'
-import { CheckCircle, AlertTriangle, Sparkles, Calculator } from 'lucide-react'
+import { CheckCircle, AlertTriangle, Sparkles, Calculator, EyeOff } from 'lucide-react'
 import { resolveReferenceRanges } from '../../utils/referenceRangeService'
 import { evaluate } from 'mathjs'
 import SectionEditor, { type SectionEditorRef } from '../Results/SectionEditor'
@@ -35,6 +35,8 @@ interface Analyte {
     reference_range?: string | null
     flag?: string | null
     verify_status?: string | null
+    is_hidden_from_report?: boolean | null
+    hidden_reason?: string | null
     result_status?: string | null
     result_verification_status?: string | null
   } | null
@@ -74,6 +76,8 @@ type Entry = {
   unit: string
   reference: string
   flag: FlagCode
+  is_hidden_from_report?: boolean
+  hidden_reason?: string | null
   // relationships
   test_group_id: string
   order_test_group_id: string | null
@@ -86,8 +90,10 @@ type Entry = {
 const hasExistingValue = (a: Analyte) =>
   !!a.existing_result && a.existing_result.value !== null && `${a.existing_result.value}`.trim() !== ''
 
+const isHiddenExisting = (a: Analyte) => !!a.existing_result?.is_hidden_from_report
+
 const isCompleted = (a: Analyte) => {
-  if (!hasExistingValue(a)) return false
+  if (!hasExistingValue(a) && !isHiddenExisting(a)) return false
 
   const resultStatus = `${a.existing_result?.result_status || ''}`.toLowerCase()
   const verificationStatus = `${a.existing_result?.result_verification_status || ''}`.toLowerCase()
@@ -144,6 +150,8 @@ export function ResultIntake({ order, onResultProcessed, showAutoVerifyOption = 
             unit: a.existing_result?.unit || a.units || a.unit || '',
             reference: a.existing_result?.reference_range ?? a.reference_range ?? '',
             flag: (a.existing_result?.flag as FlagCode) || '',
+            is_hidden_from_report: !!a.existing_result?.is_hidden_from_report,
+            hidden_reason: a.existing_result?.hidden_reason || null,
             test_group_id: tg.test_group_id,
             order_test_group_id: tg.order_test_group_id,
             order_test_id: tg.order_test_id,
@@ -311,6 +319,22 @@ export function ResultIntake({ order, onResultProcessed, showAutoVerifyOption = 
     setEntries(prev => ({ ...prev, [analyteId]: { ...prev[analyteId], ...patch } }))
   }
 
+  const toggleHiddenFromReport = (analyteId: string) => {
+    setEntries(prev => {
+      const current = prev[analyteId]
+      if (!current) return prev
+      const willHide = !current.is_hidden_from_report
+      return {
+        ...prev,
+        [analyteId]: {
+          ...current,
+          is_hidden_from_report: willHide,
+          hidden_reason: willHide ? (current.hidden_reason || 'Hidden from report') : null,
+        },
+      }
+    })
+  }
+
   const ensureResultForGroup = useCallback(async (
     tg: TestGroup,
     mode: 'draft' | 'submit' = 'draft',
@@ -445,7 +469,7 @@ export function ResultIntake({ order, onResultProcessed, showAutoVerifyOption = 
   // BLOCK 3D: Persist (Save Draft / Submit)
 
   const persist = async (mode: 'draft' | 'submit') => {
-    const activeEntries = Object.values(entries).filter(e => `${e.value}`.trim() !== '')
+    const activeEntries = Object.values(entries).filter(e => `${e.value}`.trim() !== '' || e.is_hidden_from_report)
     const groupsWithSectionEditors = order.test_groups.filter(tg => !!groupResultIds[tg.test_group_id])
     if (activeEntries.length === 0 && groupsWithSectionEditors.length === 0) {
       setToast('Please enter at least one result value.')
@@ -580,7 +604,9 @@ export function ResultIntake({ order, onResultProcessed, showAutoVerifyOption = 
         const withFlags = calculateFlagsForResults(forFlag)
 
         const values = list.map((v, i) => {
-          const resolvedFlag = (v.flag || withFlags[i]?.flag || '') || null;
+          const hidden = !!v.is_hidden_from_report;
+          const resolvedFlag = hidden ? null : ((v.flag || withFlags[i]?.flag || '') || null);
+          const verifiedAt = mode === 'submit' && (autoVerifyOnSubmit || hidden) ? new Date().toISOString() : null;
           return {
             result_id: savedResult.id,
             order_id: order.id,
@@ -590,11 +616,18 @@ export function ResultIntake({ order, onResultProcessed, showAutoVerifyOption = 
             lab_analyte_id: v.lab_analyte_id || null,
             analyte_name: v.analyte_name,
             parameter: v.analyte_name,
-            value: v.value,
+            value: `${v.value}`.trim() === '' ? null : v.value,
             unit: v.unit || '',
             reference_range: v.reference || '',
             flag: resolvedFlag,
-            ...(v.flag && { flag_source: 'manual' }),
+            verify_status: mode === 'submit' && (autoVerifyOnSubmit || hidden) ? 'approved' : 'pending',
+            verified: mode === 'submit' && (autoVerifyOnSubmit || hidden),
+            verified_by: verifiedAt ? (user?.id || null) : null,
+            verified_at: verifiedAt,
+            verify_note: hidden ? (v.hidden_reason || 'Hidden from report') : (autoVerifyOnSubmit && mode === 'submit' ? 'Auto-verified during corporate bulk result entry.' : null),
+            is_hidden_from_report: hidden,
+            hidden_reason: hidden ? (v.hidden_reason || 'Hidden from report') : null,
+            ...(v.flag && !hidden && { flag_source: 'manual' }),
             ...(v.order_test_group_id && { order_test_group_id: v.order_test_group_id }),
             ...(v.order_test_id && { order_test_id: v.order_test_id }),
           };
@@ -811,6 +844,7 @@ export function ResultIntake({ order, onResultProcessed, showAutoVerifyOption = 
                       <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase w-24">Unit</th>
                       <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase w-40">Reference</th>
                       <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase w-28">Flag</th>
+                      <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase w-24">Report</th>
                     </tr>
                   </thead>
                   <tbody className="bg-white divide-y divide-gray-100">
@@ -818,12 +852,21 @@ export function ResultIntake({ order, onResultProcessed, showAutoVerifyOption = 
                       const completedRow = isCompleted(analyte)
                       const entry = entries[analyte.id]
                       const isCalc = analyte.is_calculated && !!analyte.formula
+                      const hiddenFromReport = !!entry?.is_hidden_from_report || !!analyte.existing_result?.is_hidden_from_report
 
                       return (
-                        <tr key={analyte.id} className={completedRow ? 'bg-green-50/40' : isCalc ? 'bg-blue-50/40' : ''}>
+                        <tr key={analyte.id} className={hiddenFromReport ? 'bg-slate-50' : completedRow ? 'bg-green-50/40' : isCalc ? 'bg-blue-50/40' : ''}>
                         {/* Parameter */}
                         <td className="px-3 py-2 align-top">
-                          <div className="text-sm font-medium text-gray-900">{analyte.name}</div>
+                          <div className="flex flex-wrap items-center gap-2">
+                            <span className="text-sm font-medium text-gray-900">{analyte.name}</span>
+                            {hiddenFromReport && (
+                              <span className="inline-flex items-center gap-1 rounded-full bg-slate-200 px-2 py-0.5 text-[11px] font-medium text-slate-700">
+                                <EyeOff className="h-3 w-3" />
+                                Hidden
+                              </span>
+                            )}
+                          </div>
                           {analyte.code && (
                             <div className="text-xs text-gray-500">({analyte.code})</div>
                           )}
@@ -846,10 +889,10 @@ export function ResultIntake({ order, onResultProcessed, showAutoVerifyOption = 
                           {completedRow ? (
                             <input
                               disabled
-                              value={analyte.existing_result?.value ?? ''}
+                              value={hiddenFromReport && !analyte.existing_result?.value ? 'Hidden from report' : analyte.existing_result?.value ?? ''}
                               className="w-full px-2 py-1 bg-gray-100 border border-gray-200 rounded text-gray-600"
                             />
-                          ) : isCalc ? (
+                          ) : isCalc && !hiddenFromReport ? (
                             <input
                               disabled
                               value={entry?.value || ''}
@@ -860,8 +903,10 @@ export function ResultIntake({ order, onResultProcessed, showAutoVerifyOption = 
                             <input
                               value={entry?.value || ''}
                               onChange={(e) => updateEntry(analyte.id, { value: e.target.value })}
-                              placeholder="Enter value"
-                              className="w-full px-2 py-1 border border-gray-300 rounded focus:outline-none focus:ring-1 focus:ring-blue-500"
+                              placeholder={hiddenFromReport ? 'Optional' : 'Enter value'}
+                              className={`w-full px-2 py-1 border rounded focus:outline-none focus:ring-1 focus:ring-blue-500 ${
+                                hiddenFromReport ? 'border-slate-300 bg-slate-50 text-slate-700' : 'border-gray-300'
+                              }`}
                             />
                           )}
                         </td>
@@ -920,6 +965,32 @@ export function ResultIntake({ order, onResultProcessed, showAutoVerifyOption = 
                                 <option key={opt.value} value={opt.value}>{opt.label}</option>
                               ))}
                             </select>
+                          )}
+                        </td>
+                        <td className="px-3 py-2">
+                          {completedRow ? (
+                            hiddenFromReport ? (
+                              <span className="inline-flex items-center gap-1 rounded border border-slate-300 bg-slate-100 px-2 py-1 text-xs font-medium text-slate-700">
+                                <EyeOff className="h-3.5 w-3.5" />
+                                Hidden
+                              </span>
+                            ) : (
+                              <span className="text-xs text-gray-400">Shown</span>
+                            )
+                          ) : (
+                            <button
+                              type="button"
+                              onClick={() => toggleHiddenFromReport(analyte.id)}
+                              className={`inline-flex items-center justify-center rounded border px-2 py-1 text-xs font-medium transition-colors ${
+                                hiddenFromReport
+                                  ? 'border-slate-400 bg-slate-700 text-white hover:bg-slate-800'
+                                  : 'border-gray-300 bg-white text-gray-600 hover:bg-gray-50'
+                              }`}
+                              title={hiddenFromReport ? 'Hidden from report; click to show' : 'Hide this analyte from report'}
+                            >
+                              <EyeOff className="h-3.5 w-3.5" />
+                              <span className="ml-1">{hiddenFromReport ? 'Hidden' : 'Hide'}</span>
+                            </button>
                           )}
                         </td>
                         </tr>

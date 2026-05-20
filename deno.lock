@@ -1,5 +1,20 @@
 {
   "version": "5",
+  "specifiers": {
+    "jsr:@supabase/functions-js@^0.0.0-automated": "0.0.0-jsr-test.1",
+    "jsr:@supabase/supabase-js@2": "2.105.4"
+  },
+  "jsr": {
+    "@supabase/functions-js@0.0.0-jsr-test.1": {
+      "integrity": "b1b37924af1f0011b4753201e1585a37b030e996c6682492e02575eb27d902b2"
+    },
+    "@supabase/supabase-js@2.105.4": {
+      "integrity": "9917385444fbb10ed75652c01e7f5b3beda999caffcbc3e93f4f40c087a325a7",
+      "dependencies": [
+        "jsr:@supabase/functions-js"
+      ]
+    }
+  },
   "remote": {
     "https://deno.land/std@0.168.0/async/abortable.ts": "80b2ac399f142cc528f95a037a7d0e653296352d95c681e284533765961de409",
     "https://deno.land/std@0.168.0/async/deadline.ts": "2c2deb53c7c28ca1dda7a3ad81e70508b1ebc25db52559de6b8636c9278fd41f",
@@ -64,6 +79,7 @@
         "npm:@vitejs/plugin-react@^4.3.1",
         "npm:autoprefixer@^10.4.18",
         "npm:browser-image-compression@^2.0.2",
+        "npm:cross-env@^10.1.0",
         "npm:date-fns@^3.3.1",
         "npm:dotenv@^17.2.3",
         "npm:eslint-plugin-react-hooks@^5.1.0-rc.0",
@@ -83,6 +99,7 @@
         "npm:postcss@^8.4.35",
         "npm:qrcode.react@^4.2.0",
         "npm:qrcode@^1.5.4",
+        "npm:qz-tray@^2.2.6",
         "npm:react-dom@^18.3.1",
         "npm:react-router-dom@^6.22.0",
         "npm:react@^18.3.1",
@@ -94,10 +111,12 @@
         "npm:survey-react-ui@^1.9.131",
         "npm:tailwindcss@^3.4.1",
         "npm:ts-node@^10.9.2",
+        "npm:tsx@^4.21.0",
         "npm:typescript-eslint@^8.3.0",
         "npm:typescript@^5.5.3",
         "npm:use-debounce@10",
-        "npm:vite@^5.4.2"
+        "npm:vite@^5.4.2",
+        "npm:xlsx@~0.18.5"
       ]
     }
   }

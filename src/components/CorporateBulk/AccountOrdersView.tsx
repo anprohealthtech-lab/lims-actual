@@ -1,8 +1,9 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { supabase, database } from '../../utils/supabase';
-import { Download, FileDown, RefreshCw, Loader2, CheckCircle2, Clock, AlertCircle, ExternalLink, Filter, ClipboardEdit, Printer } from 'lucide-react';
+import { Download, FileDown, RefreshCw, Loader2, CheckCircle2, Clock, AlertCircle, ExternalLink, Filter, ClipboardEdit, Printer, Layers, FileSpreadsheet } from 'lucide-react';
 import QuickResultModal from './QuickResultModal';
 import QuickSendReport from '../WhatsApp/QuickSendReport';
+import BulkResultExcelModal from './BulkResultExcelModal';
 
 interface Account {
   id: string;
@@ -43,6 +44,7 @@ interface DownloadRequest {
   total_orders: number;
   processed_orders: number;
   error_message: string | null;
+  download_type: 'zip' | 'merged';
 }
 
 interface AccountOrdersViewProps {
@@ -64,7 +66,9 @@ const AccountOrdersView: React.FC<AccountOrdersViewProps> = ({ initialAccountId,
   const [downloadRequest, setDownloadRequest] = useState<DownloadRequest | null>(null);
   const [downloadPollInterval, setDownloadPollInterval] = useState<ReturnType<typeof setInterval> | null>(null);
   const [downloadLoading, setDownloadLoading] = useState(false);
+  const [mergeLoading, setMergeLoading] = useState(false);
   const [quickResultOrderId, setQuickResultOrderId] = useState<string | null>(null);
+  const [showBulkResultModal, setShowBulkResultModal] = useState(false);
 
   // Load lab_id and accounts on mount
   useEffect(() => {
@@ -215,13 +219,14 @@ const AccountOrdersView: React.FC<AccountOrdersViewProps> = ({ initialAccountId,
           total_orders: orderIds.length,
           status: 'pending',
           created_by: user!.id,
+          download_type: 'zip',
         })
         .select()
         .single();
 
       if (reqError || !reqData) throw new Error(reqError?.message || 'Failed to create download request');
 
-      setDownloadRequest(reqData);
+      setDownloadRequest({ ...reqData, download_type: 'zip' } as DownloadRequest);
 
       // Invoke edge function
       const { error: fnError } = await supabase.functions.invoke('bulk-pdf-zip', {
@@ -234,11 +239,11 @@ const AccountOrdersView: React.FC<AccountOrdersViewProps> = ({ initialAccountId,
       const interval = setInterval(async () => {
         const { data } = await supabase
           .from('bulk_pdf_download_requests')
-          .select('id, status, zip_url, total_orders, processed_orders, error_message')
+          .select('id, status, zip_url, total_orders, processed_orders, error_message, download_type')
           .eq('id', reqData.id)
           .single();
         if (data) {
-          setDownloadRequest(data);
+          setDownloadRequest(data as DownloadRequest);
           if (data.status === 'completed' || data.status === 'failed') {
             clearInterval(interval);
             setDownloadPollInterval(null);
@@ -251,6 +256,73 @@ const AccountOrdersView: React.FC<AccountOrdersViewProps> = ({ initialAccountId,
       alert(`Download failed: ${(err as Error).message}`);
     } finally {
       setDownloadLoading(false);
+    }
+  };
+
+  const startMergeDownload = async () => {
+    const orderIds = selectedOrderIds.size > 0
+      ? Array.from(selectedOrderIds)
+      : orders.filter((o) => o.has_report).map((o) => o.id);
+
+    if (orderIds.length === 0) {
+      alert('No orders with generated reports found. Please generate reports first.');
+      return;
+    }
+
+    setMergeLoading(true);
+    setDownloadRequest(null);
+
+    try {
+      const { data: { user } } = await supabase.auth.getUser();
+      const { data: userData } = await supabase.from('users').select('lab_id').eq('id', user!.id).single();
+
+      const { data: reqData, error: reqError } = await supabase
+        .from('bulk_pdf_download_requests')
+        .insert({
+          lab_id: userData!.lab_id,
+          account_id: selectedAccountId || null,
+          bulk_batch_id: selectedBatchId || null,
+          order_ids: orderIds,
+          date_from: dateFrom || null,
+          date_to: dateTo || null,
+          total_orders: orderIds.length,
+          status: 'pending',
+          created_by: user!.id,
+          download_type: 'merged',
+        })
+        .select()
+        .single();
+
+      if (reqError || !reqData) throw new Error(reqError?.message || 'Failed to create download request');
+
+      setDownloadRequest({ ...reqData, download_type: 'merged' });
+
+      const { error: fnError } = await supabase.functions.invoke('bulk-pdf-merge', {
+        body: { request_id: reqData.id },
+      });
+
+      if (fnError) throw new Error(fnError.message);
+
+      const interval = setInterval(async () => {
+        const { data } = await supabase
+          .from('bulk_pdf_download_requests')
+          .select('id, status, zip_url, total_orders, processed_orders, error_message, download_type')
+          .eq('id', reqData.id)
+          .single();
+        if (data) {
+          setDownloadRequest(data as DownloadRequest);
+          if (data.status === 'completed' || data.status === 'failed') {
+            clearInterval(interval);
+            setDownloadPollInterval(null);
+          }
+        }
+      }, 2000);
+      setDownloadPollInterval(interval);
+
+    } catch (err) {
+      alert(`Merge failed: ${(err as Error).message}`);
+    } finally {
+      setMergeLoading(false);
     }
   };
 
@@ -348,11 +420,29 @@ const AccountOrdersView: React.FC<AccountOrdersViewProps> = ({ initialAccountId,
           </button>
           <button
             onClick={startBulkDownload}
-            disabled={downloadLoading || orders.length === 0 || ordersWithReports === 0}
+            disabled={downloadLoading || mergeLoading || orders.length === 0 || ordersWithReports === 0}
             className="flex items-center gap-1.5 px-4 py-2 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50"
           >
             {downloadLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Download className="w-4 h-4" />}
             Download {effectiveSelectedCount > 0 ? `${effectiveSelectedCount} PDFs` : 'All PDFs'}
+          </button>
+          <button
+            onClick={startMergeDownload}
+            disabled={downloadLoading || mergeLoading || orders.length === 0 || ordersWithReports === 0}
+            className="flex items-center gap-1.5 px-4 py-2 text-sm bg-purple-600 text-white rounded-lg hover:bg-purple-700 disabled:opacity-50"
+            title="Merge all PDFs into one file for easy printing"
+          >
+            {mergeLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Layers className="w-4 h-4" />}
+            Download & Merge
+          </button>
+          <button
+            onClick={() => setShowBulkResultModal(true)}
+            disabled={selectedOrderIds.size === 0}
+            className="flex items-center gap-1.5 px-4 py-2 text-sm bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 disabled:opacity-50"
+            title="Upload results via Excel for selected orders"
+          >
+            <FileSpreadsheet className="w-4 h-4" />
+            Bulk Result Entry
           </button>
         </div>
       </div>
@@ -372,10 +462,14 @@ const AccountOrdersView: React.FC<AccountOrdersViewProps> = ({ initialAccountId,
           }
           <div className="flex-1">
             {downloadRequest.status === 'completed' && downloadRequest.zip_url
-              ? <span className="text-green-700">ZIP ready — {downloadRequest.processed_orders} PDFs</span>
+              ? <span className="text-green-700">
+                  {downloadRequest.download_type === 'merged' ? 'Merged PDF' : 'ZIP'} ready — {downloadRequest.processed_orders} PDFs
+                </span>
               : downloadRequest.status === 'failed'
               ? <span className="text-red-700">{downloadRequest.error_message || 'Download failed'}</span>
-              : <span className="text-blue-700">Preparing PDFs... {downloadRequest.processed_orders}/{downloadRequest.total_orders}</span>
+              : <span className="text-blue-700">
+                  {downloadRequest.download_type === 'merged' ? 'Merging' : 'Preparing'} PDFs... {downloadRequest.processed_orders}/{downloadRequest.total_orders}
+                </span>
             }
           </div>
           {downloadRequest.status === 'completed' && downloadRequest.zip_url && (
@@ -384,7 +478,8 @@ const AccountOrdersView: React.FC<AccountOrdersViewProps> = ({ initialAccountId,
               download
               className="flex items-center gap-1 px-3 py-1.5 bg-green-600 text-white rounded-lg text-xs hover:bg-green-700"
             >
-              <FileDown className="w-3.5 h-3.5" /> Download ZIP
+              <FileDown className="w-3.5 h-3.5" />
+              {downloadRequest.download_type === 'merged' ? 'Download Merged PDF' : 'Download ZIP'}
             </a>
           )}
         </div>
@@ -522,6 +617,16 @@ const AccountOrdersView: React.FC<AccountOrdersViewProps> = ({ initialAccountId,
         <QuickResultModal
           orderId={quickResultOrderId!}
           onClose={() => setQuickResultOrderId(null)}
+          onSaved={loadOrders}
+        />
+      )}
+
+      {/* Bulk Result Entry via Excel Modal */}
+      {showBulkResultModal && labId && (
+        <BulkResultExcelModal
+          orderIds={Array.from(selectedOrderIds)}
+          labId={labId}
+          onClose={() => setShowBulkResultModal(false)}
           onSaved={loadOrders}
         />
       )}

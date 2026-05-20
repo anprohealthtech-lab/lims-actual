@@ -47,7 +47,7 @@ import {
 } from "../hooks/useAIResultIntelligence";
 import { supabase, database, aiAnalysis, formatAge } from "../utils/supabase";
 import { runAIFlagAnalysis, analyzeAndSaveFlag } from "../utils/aiFlagAnalysis";
-import { generateAndSaveTrendCharts, saveClinicalSummary, toggleOrderSummaryInReport, saveClinicalSummaryOptions } from "../utils/reportExtrasService";
+import { saveClinicalSummary, toggleOrderSummaryInReport, saveClinicalSummaryOptions } from "../utils/reportExtrasService";
 import TrendGraphPanel from "../components/Results/TrendGraphPanel";
 import PatientSummaryModal from "../components/Results/PatientSummaryModal";
 import SectionEditor from "../components/Results/SectionEditor";
@@ -62,6 +62,8 @@ interface PanelRow {
   expected_analytes: number;
   entered_analytes: number;
   approved_analytes: number;
+  hidden_analytes?: number;
+  handled_analytes?: number;
   panel_ready: boolean;
   result_verification_status?: string | null;
   patient_id: string;
@@ -82,10 +84,13 @@ interface Analyte {
   flag_confidence?: number | null;
   ai_interpretation?: string | null;
   ai_audit_status?: 'pending' | 'confirmed' | 'overridden' | 'needs_review' | 'none' | 'approved' | 'rejected' | null;
+  is_auto_calculated?: boolean | null;
   verify_status: "pending" | "approved" | "rejected" | null;
   verify_note: string | null;
   verified_by: string | null;
   verified_at: string | null;
+  is_hidden_from_report?: boolean | null;
+  hidden_reason?: string | null;
 }
 
 interface Attachment {
@@ -108,9 +113,17 @@ interface OrderGroup {
     expected: number;
     entered: number;
     approved: number;
+    hidden: number;
+    handled: number;
     readyPanels: number;
   };
 }
+
+type OrderProgressTotals = {
+  expected: number;
+  entered: number;
+  approved: number;
+};
 
 interface OrderVerificationViewProps {
   onBackToPanel?: () => void;
@@ -133,6 +146,7 @@ const OrderVerificationView: React.FC<OrderVerificationViewProps> = ({ onBackToP
   const [q, setQ] = useState("");
   const [stateFilter, setStateFilter] = useState<StateFilter>("all");
   const [panels, setPanels] = useState<PanelRow[]>([]);
+  const [orderProgressTotalsById, setOrderProgressTotalsById] = useState<Record<string, OrderProgressTotals>>({});
   const [orderSortTimestampById, setOrderSortTimestampById] = useState<Record<string, number>>({});
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -181,6 +195,8 @@ const OrderVerificationView: React.FC<OrderVerificationViewProps> = ({ onBackToP
 
   // Quick preview state
   const [labPrintOptions, setLabPrintOptions] = useState<Record<string, unknown>>({});
+  const [labPdfLayoutSettings, setLabPdfLayoutSettings] = useState<Record<string, any>>({});
+  const [labSignatoryDefaults, setLabSignatoryDefaults] = useState<{ name: string; designation: string }>({ name: "", designation: "" });
   const [quickPreview, setQuickPreview] = useState<{ html: string; patientName: string } | null>(null);
   const [quickPreviewLoading, setQuickPreviewLoading] = useState<Record<string, boolean>>({});
   const previewIframeRef = useRef<HTMLIFrameElement>(null);
@@ -265,12 +281,19 @@ const OrderVerificationView: React.FC<OrderVerificationViewProps> = ({ onBackToP
         try {
           const { data: labData } = await supabase
             .from("labs")
-            .select("pdf_layout_settings")
+            .select("pdf_layout_settings, default_signatory_name, default_signatory_designation")
             .eq("id", labId)
             .single();
-          if (labData?.pdf_layout_settings?.printOptions) {
-            setLabPrintOptions(labData.pdf_layout_settings.printOptions as Record<string, unknown>);
+          if (labData?.pdf_layout_settings) {
+            setLabPdfLayoutSettings(labData.pdf_layout_settings as Record<string, any>);
+            if (labData.pdf_layout_settings.printOptions) {
+              setLabPrintOptions(labData.pdf_layout_settings.printOptions as Record<string, unknown>);
+            }
           }
+          setLabSignatoryDefaults({
+            name: labData?.default_signatory_name || "",
+            designation: labData?.default_signatory_designation || "",
+          });
         } catch { /* non-critical, preview will fall back to defaults */ }
       }
     };
@@ -304,6 +327,35 @@ const OrderVerificationView: React.FC<OrderVerificationViewProps> = ({ onBackToP
     } else {
       const basePanels = (data || []) as PanelRow[];
       const resultIds = Array.from(new Set(basePanels.map((row) => row.result_id).filter(Boolean)));
+      const baseOrderIds = Array.from(new Set(basePanels.map((row) => row.order_id).filter(Boolean)));
+
+      if (baseOrderIds.length > 0) {
+        const { data: progressRows, error: progressErr } = await supabase
+          .from("v_order_test_progress_enhanced")
+          .select("order_id, expected_analytes, entered_analytes, is_verified, panel_status")
+          .in("order_id", baseOrderIds);
+
+        if (progressErr) {
+          console.warn("Unable to load dashboard-style order progress totals:", progressErr);
+          setOrderProgressTotalsById({});
+        } else {
+          const totals: Record<string, OrderProgressTotals> = {};
+          (progressRows || []).forEach((row: any) => {
+            const orderId = row.order_id;
+            if (!orderId) return;
+            const expected = Number(row.expected_analytes || 0);
+            const entered = Math.min(Number(row.entered_analytes || 0), expected);
+            const verified = !!row.is_verified || row.panel_status === "Verified";
+            if (!totals[orderId]) totals[orderId] = { expected: 0, entered: 0, approved: 0 };
+            totals[orderId].expected += expected;
+            totals[orderId].entered += entered;
+            if (verified) totals[orderId].approved += entered;
+          });
+          setOrderProgressTotalsById(totals);
+        }
+      } else {
+        setOrderProgressTotalsById({});
+      }
 
       if (resultIds.length > 0) {
         const { data: resultStatuses } = await supabase
@@ -360,7 +412,7 @@ const OrderVerificationView: React.FC<OrderVerificationViewProps> = ({ onBackToP
     // Show analyte-backed panels once values are entered, and always allow
     // section-only panels because they are verified via report sections.
     const filtered = (panels || []).filter(row => {
-      if ((row?.entered_analytes || 0) === 0 && !row.is_section_only) return false;
+	      if ((row?.entered_analytes || 0) === 0 && (row?.handled_analytes || 0) === 0 && !row.is_section_only) return false;
 
       const matchesSearch = q
         ? (row.patient_name || "").toLowerCase().includes(q.toLowerCase()) ||
@@ -375,16 +427,16 @@ const OrderVerificationView: React.FC<OrderVerificationViewProps> = ({ onBackToP
           ? row.result_verification_status === "verified"
           : row.panel_ready;
       }
-      if (stateFilter === "pending") {
-        return row.is_section_only
-          ? row.result_verification_status !== "verified"
-          : (!row.panel_ready && row.approved_analytes === 0);
-      }
-      if (stateFilter === "partial") {
-        return row.is_section_only
-          ? false
-          : (!row.panel_ready && row.approved_analytes > 0);
-      }
+	      if (stateFilter === "pending") {
+	        return row.is_section_only
+	          ? row.result_verification_status !== "verified"
+	          : (!row.panel_ready && (row.handled_analytes || row.approved_analytes) === 0);
+	      }
+	      if (stateFilter === "partial") {
+	        return row.is_section_only
+	          ? false
+	          : (!row.panel_ready && (row.handled_analytes || row.approved_analytes) > 0);
+	      }
       return true;
     });
 
@@ -399,19 +451,23 @@ const OrderVerificationView: React.FC<OrderVerificationViewProps> = ({ onBackToP
           orderDate: row.order_date,
           sortTimestamp: orderSortTimestampById[row.order_id] ?? new Date(row.order_date).getTime(),
           panels: [],
-          stats: {
-            expected: 0,
-            entered: 0,
-            approved: 0,
-            readyPanels: 0
-          }
+	          stats: {
+	            expected: 0,
+	            entered: 0,
+	            approved: 0,
+	            hidden: 0,
+	            handled: 0,
+	            readyPanels: 0
+	          }
         };
       }
 
       bucket[row.order_id].panels.push(row);
-      bucket[row.order_id].stats.expected += row.expected_analytes;
-      bucket[row.order_id].stats.entered += row.entered_analytes;
-      bucket[row.order_id].stats.approved += row.approved_analytes;
+	      bucket[row.order_id].stats.expected += row.expected_analytes;
+	      bucket[row.order_id].stats.entered += row.entered_analytes;
+	      bucket[row.order_id].stats.approved += row.approved_analytes;
+	      bucket[row.order_id].stats.hidden += row.hidden_analytes || 0;
+	      bucket[row.order_id].stats.handled += row.handled_analytes || row.entered_analytes || 0;
       if (row.is_section_only ? row.result_verification_status === "verified" : row.panel_ready) {
         bucket[row.order_id].stats.readyPanels += 1;
       }
@@ -422,11 +478,20 @@ const OrderVerificationView: React.FC<OrderVerificationViewProps> = ({ onBackToP
       }
     });
 
+    Object.values(bucket).forEach(order => {
+      const dashboardTotals = orderProgressTotalsById[order.orderId];
+      if (!dashboardTotals) return;
+      order.stats.expected = dashboardTotals.expected;
+      order.stats.entered = Math.max(dashboardTotals.entered, order.stats.handled);
+      order.stats.approved = Math.max(order.stats.approved, dashboardTotals.approved);
+      order.stats.handled = Math.max(order.stats.handled, order.stats.entered);
+    });
+
     return Object.values(bucket).sort((a, b) => {
       if (b.sortTimestamp !== a.sortTimestamp) return b.sortTimestamp - a.sortTimestamp;
       return b.orderId.localeCompare(a.orderId);
     });
-  }, [panels, q, stateFilter, orderSortTimestampById]);
+  }, [panels, q, stateFilter, orderSortTimestampById, orderProgressTotalsById]);
 
   const stats = useMemo(() => {
     const totalOrders = groupByOrder.length;
@@ -444,7 +509,7 @@ const OrderVerificationView: React.FC<OrderVerificationViewProps> = ({ onBackToP
     const { data, error } = await supabase
       .from("result_values")
       .select(
-        "id,result_id,analyte_id,parameter,value,unit,reference_range,flag,flag_source,flag_confidence,ai_interpretation,ai_audit_status,verify_status,verify_note,verified_by,verified_at"
+	        "id,result_id,analyte_id,parameter,value,unit,reference_range,flag,flag_source,flag_confidence,ai_interpretation,ai_audit_status,verify_status,verify_note,verified_by,verified_at,is_hidden_from_report,hidden_reason"
       )
       .eq("result_id", resultId)
       .order("parameter", { ascending: true });
@@ -475,12 +540,14 @@ const OrderVerificationView: React.FC<OrderVerificationViewProps> = ({ onBackToP
           flag_source: row.flag_source,
           flag_confidence: row.flag_confidence,
           ai_interpretation: row.ai_interpretation,
-          ai_audit_status: null,
-          verify_status: "pending",
-          verify_note: null,
-          verified_by: null,
-          verified_at: null
-        })) as Analyte[];
+	          ai_audit_status: null,
+	          verify_status: "pending",
+	          verify_note: null,
+	          verified_by: null,
+	          verified_at: null,
+	          is_hidden_from_report: false,
+	          hidden_reason: null
+	        })) as Analyte[];
         setRowsByResult(prev => ({ ...prev, [resultId]: mapped }));
         return mapped;
       }
@@ -607,8 +674,13 @@ const OrderVerificationView: React.FC<OrderVerificationViewProps> = ({ onBackToP
   };
 
   const toggleOrder = async (orderId: string) => {
+    const isOpening = !openOrders[orderId];
     setOpenOrders(prev => ({ ...prev, [orderId]: !prev[orderId] }));
     if (!attachmentsByOrder[orderId]) await loadAttachments(orderId);
+    if (isOpening) {
+      const orderPanels = panels.filter(panel => panel.order_id === orderId);
+      await Promise.all(orderPanels.map(panel => ensureAnalytesLoaded(panel.result_id)));
+    }
   };
 
   const togglePanel = async (resultId: string) => {
@@ -705,19 +777,6 @@ const OrderVerificationView: React.FC<OrderVerificationViewProps> = ({ onBackToP
         ...prev,
         [panel.result_id]: (prev[panel.result_id] || []).map(analyte => ({ ...analyte, verify_status: "approved" }))
       }));
-
-      if (includeTrendsInReport[panel.order_id]) {
-        const flagged = analytes.filter(a => a.flag && getNormalizedFlag(a.flag) !== '');
-        if (flagged.length) {
-          await generateAndSaveTrendCharts(
-            panel.result_id,
-            panel.order_id,
-            panel.patient_id,
-            flagged.map(a => ({ name: a.parameter, flag: a.flag })),
-            true
-          );
-        }
-      }
 
       if (includeSummaryInReport[panel.order_id] && aiClinicalSummary[panel.order_id]) {
         const summary = aiClinicalSummary[panel.order_id];
@@ -893,24 +952,201 @@ const OrderVerificationView: React.FC<OrderVerificationViewProps> = ({ onBackToP
 
       const allResultIds = order.panels.map(p => p.result_id);
 
+      const fetchOrderForPreview = async () => {
+        const primary = await supabase
+          .from("orders")
+          .select("sample_id, doctor, report_settings")
+          .eq("id", order.orderId)
+          .single();
+
+        if (!primary.error) return primary;
+
+        console.warn("[QuickPreview] orders rich select failed, retrying without report_settings", {
+          orderId: order.orderId,
+          error: primary.error,
+        });
+
+        return supabase
+          .from("orders")
+          .select("sample_id, doctor")
+          .eq("id", order.orderId)
+          .single();
+      };
+
+      const fetchTestGroupAnalyteMetaForPreview = async () => {
+        if (groupIds.length === 0) return { data: [] as any[], error: null };
+
+        const primary = await supabase
+          .from("test_group_analytes")
+          .select("test_group_id, analyte_id, sort_order, section_heading, analytes(name)")
+          .in("test_group_id", groupIds);
+
+        if (!primary.error) return primary;
+
+        console.warn("[QuickPreview] test_group_analytes metadata select failed, retrying without analytes join", {
+          groupIds,
+          error: primary.error,
+        });
+
+        return supabase
+          .from("test_group_analytes")
+          .select("test_group_id, analyte_id, sort_order, section_heading")
+          .in("test_group_id", groupIds);
+      };
+
+      const fetchVerifierForPreview = async () => {
+        if (allResultIds.length === 0) return { data: null as any, error: null };
+
+        const rv = await supabase
+          .from("result_values")
+          .select("verified_by")
+          .in("result_id", allResultIds)
+          .not("verified_by", "is", null)
+          .limit(1)
+          .maybeSingle();
+
+        if (rv.error || !rv.data?.verified_by) {
+          if (rv.error) {
+            console.warn("[QuickPreview] verifier result_values lookup failed", {
+              resultIds: allResultIds,
+              error: rv.error,
+            });
+          }
+          return { data: null as any, error: rv.error };
+        }
+
+        const user = await supabase
+          .from("users")
+          .select("name, role")
+          .eq("id", rv.data.verified_by)
+          .maybeSingle();
+
+        if (user.error) {
+          console.warn("[QuickPreview] verifier user lookup failed", {
+            userId: rv.data.verified_by,
+            error: user.error,
+          });
+        }
+
+        return {
+          data: {
+            verified_by: rv.data.verified_by,
+            users: user.data || null,
+          },
+          error: user.error,
+        };
+      };
+
+      const applySignatureTransformations = (url: string): string => {
+        if (!url || !url.includes("ik.imagekit.io") || url.includes("tr=")) return url;
+        try {
+          const urlObj = new URL(url);
+          const pathParts = urlObj.pathname.split("/");
+          const insertIndex = pathParts.findIndex((part) => part && !part.includes(".")) + 1;
+          pathParts.splice(insertIndex, 0, "tr:fo-auto,e-removebg,t-true");
+          urlObj.pathname = pathParts.join("/");
+          return urlObj.toString();
+        } catch {
+          return url;
+        }
+      };
+
+      const getOptimizedSignatureUrl = (signature: any): string => {
+        const variants = typeof signature?.variants === "string"
+          ? (() => {
+              try { return JSON.parse(signature.variants); } catch { return {}; }
+            })()
+          : signature?.variants;
+        return variants?.optimized ||
+          (signature?.imagekit_url ? applySignatureTransformations(signature.imagekit_url) : "") ||
+          signature?.file_url ||
+          "";
+      };
+
+      const fetchSignatoryForPreview = async (verifierUserId?: string | null, verifierUser?: any) => {
+        const fallback = {
+          name: verifierUser?.name || labSignatoryDefaults.name || "Authorized Signatory",
+          designation: verifierUser?.role || labSignatoryDefaults.designation || "",
+          imageUrl: "",
+        };
+
+        if (!currentLabId) return fallback;
+
+        if (verifierUserId) {
+          const { data: userSignature, error } = await supabase
+            .from("lab_user_signatures")
+            .select("imagekit_url, file_url, signature_name, is_default, variants")
+            .eq("user_id", verifierUserId)
+            .eq("lab_id", currentLabId)
+            .eq("is_active", true)
+            .order("is_default", { ascending: false })
+            .limit(1)
+            .maybeSingle();
+
+          if (error) {
+            console.warn("[QuickPreview] verifier signature lookup failed", error);
+          }
+
+          const sigUrl = getOptimizedSignatureUrl(userSignature);
+          if (sigUrl) {
+            return {
+              name: userSignature?.signature_name || fallback.name,
+              designation: userSignature?.signature_name ? "" : fallback.designation,
+              imageUrl: sigUrl,
+            };
+          }
+        }
+
+        const { data: labSignature, error: labSigError } = await supabase
+          .from("lab_branding_assets")
+          .select("file_url, imagekit_url")
+          .eq("lab_id", currentLabId)
+          .eq("asset_type", "signature")
+          .eq("is_active", true)
+          .order("is_default", { ascending: false })
+          .limit(1)
+          .maybeSingle();
+
+        if (labSigError) {
+          console.warn("[QuickPreview] lab signature lookup failed", labSigError);
+        }
+
+        let sigUrl = labSignature?.imagekit_url
+          ? applySignatureTransformations(labSignature.imagekit_url)
+          : labSignature?.file_url || "";
+
+        if (!sigUrl) {
+          const { data: anyUserSignature, error: anySigError } = await supabase
+            .from("lab_user_signatures")
+            .select("imagekit_url, file_url, signature_name, is_default, variants")
+            .eq("lab_id", currentLabId)
+            .eq("is_active", true)
+            .order("is_default", { ascending: false })
+            .limit(1)
+            .maybeSingle();
+
+          if (anySigError) {
+            console.warn("[QuickPreview] fallback signature lookup failed", anySigError);
+          }
+
+          sigUrl = getOptimizedSignatureUrl(anyUserSignature);
+          if (sigUrl && anyUserSignature?.signature_name && !fallback.name) {
+            fallback.name = anyUserSignature.signature_name;
+          }
+        }
+
+        return { ...fallback, imageUrl: sigUrl };
+      };
+
       const [patientRes, orderRes, tgaRes, tgRes, sectionsRes, verifierRes] = await Promise.all([
         supabase
           .from("patients")
           .select("age, age_unit, gender, display_id")
           .eq("id", order.patientId)
           .single(),
-        supabase
-          .from("orders")
-          .select("sample_id, physician_name")
-          .eq("id", order.orderId)
-          .single(),
+        fetchOrderForPreview(),
         // section_heading + sort_order + is_auto_calculated from test_group_analytes
-        groupIds.length > 0
-          ? supabase
-              .from("test_group_analytes")
-              .select("test_group_id, analyte_id, sort_order, section_heading, analytes(name, is_auto_calculated)")
-              .in("test_group_id", groupIds)
-          : Promise.resolve({ data: [] as any[], error: null }),
+        fetchTestGroupAnalyteMetaForPreview(),
         // per-group print_options override
         groupIds.length > 0
           ? supabase
@@ -927,22 +1163,27 @@ const OrderVerificationView: React.FC<OrderVerificationViewProps> = ({ onBackToP
               .order("section_id")
           : Promise.resolve({ data: [] as any[], error: null }),
         // signatory: first verified_by user across all result_values
-        allResultIds.length > 0
-          ? supabase
-              .from("result_values")
-              .select("verified_by, users!result_values_verified_by_fkey(name, role)")
-              .in("result_id", allResultIds)
-              .not("verified_by", "is", null)
-              .limit(1)
-              .maybeSingle()
-          : Promise.resolve({ data: null as any, error: null }),
+        fetchVerifierForPreview(),
       ]);
+
+      [
+        ["patients", patientRes.error],
+        ["orders", orderRes.error],
+        ["test_group_analytes", tgaRes.error],
+        ["test_groups", tgRes.error],
+        ["result_section_content", sectionsRes.error],
+        ["verifier", verifierRes.error],
+      ].forEach(([label, error]) => {
+        if (error) {
+          console.warn(`[QuickPreview] ${label} query returned an error`, error);
+        }
+      });
 
       const ageFormatted = formatAge(patientRes.data?.age, patientRes.data?.age_unit);
       const gender = patientRes.data?.gender ?? "";
       const patientCode = patientRes.data?.display_id ?? "";
       const sampleId = orderRes.data?.sample_id ?? "";
-      const referredBy = orderRes.data?.physician_name ?? "";
+      const referredBy = orderRes.data?.doctor ?? "";
       const ageGender = [ageFormatted !== "N/A" ? ageFormatted : "", gender].filter(Boolean).join(" / ");
       const orderDate = order.orderDate
         ? new Date(order.orderDate).toLocaleDateString()
@@ -984,10 +1225,31 @@ const OrderVerificationView: React.FC<OrderVerificationViewProps> = ({ onBackToP
           return acc;
         }, []);
 
-      // Signatory
-      const verifierUser = (verifierRes.data as any)?.users;
-      const signatoryName = verifierUser?.name || "";
-      const signatoryDesignation = verifierUser?.role || "";
+	      // Signatory
+	      const verifierUser = (verifierRes.data as any)?.users;
+	      const verifierUserId = (verifierRes.data as any)?.verified_by || null;
+	      const previewSignatory = await fetchSignatoryForPreview(verifierUserId, verifierUser);
+	      const signatoryName = previewSignatory.name || "";
+	      const signatoryDesignation = previewSignatory.designation || "";
+	      const signatoryImageUrl = previewSignatory.imageUrl || "";
+	      const verificationUrl = `https://app.limsapp.in/verify?id=${encodeURIComponent(sampleId || order.orderId || "")}`;
+      const orderReportSettings = ((orderRes.data as any)?.report_settings || {}) as {
+        groupOrderOverrideEnabled?: boolean;
+        groupOrder?: string[];
+        printLayoutMode?: "standard" | "compact";
+        compactPageAssignments?: Record<string, number>;
+        compactMaxClubbedAnalytes?: number;
+      };
+      const labCompactPrint = (labPdfLayoutSettings?.compactPrint || {}) as Record<string, any>;
+      const printLayoutMode: "standard" | "compact" =
+        orderReportSettings.printLayoutMode === "compact" ||
+        labCompactPrint.defaultMode === "compact"
+          ? "compact"
+          : "standard";
+      const groupOrder = Array.isArray(orderReportSettings.groupOrder)
+        ? orderReportSettings.groupOrder
+        : [];
+      const groupOrderIndex = new Map(groupOrder.map((id, index) => [id, index]));
 
       // Build lookup: test_group_id → merged printOptions (lab-level overridden by group-level)
       const groupPrintOptions = new Map<string, Record<string, unknown>>();
@@ -1012,8 +1274,18 @@ const OrderVerificationView: React.FC<OrderVerificationViewProps> = ({ onBackToP
       }
 
       // 4. Build test groups with sorted + section-headed analytes
-      const testGroups = order.panels
-        .map(panel => {
+      const orderedPanels = [...order.panels].sort((a, b) => {
+        const aOrder = a.test_group_id && groupOrderIndex.has(a.test_group_id)
+          ? groupOrderIndex.get(a.test_group_id)!
+          : Number.MAX_SAFE_INTEGER;
+        const bOrder = b.test_group_id && groupOrderIndex.has(b.test_group_id)
+          ? groupOrderIndex.get(b.test_group_id)!
+          : Number.MAX_SAFE_INTEGER;
+        return aOrder - bOrder;
+      });
+
+	      const testGroups = orderedPanels
+	        .map(panel => {
           // Use captured return values (not stale rowsByResult closure)
           const raw = loadedByResultId.get(panel.result_id) || [];
           const metaMap = panel.test_group_id
@@ -1029,31 +1301,53 @@ const OrderVerificationView: React.FC<OrderVerificationViewProps> = ({ onBackToP
               const meta =
                 (a.analyte_id ? metaMap.get(a.analyte_id) : undefined) ??
                 nameMap.get(a.parameter?.toLowerCase() ?? "");
-              return {
-                parameter: a.parameter,
-                value: a.value,
-                unit: a.unit,
-                reference_range: a.reference_range,
-                flag: a.flag,
-                section_heading: meta?.section_heading ?? null,
-                is_auto_calculated: meta?.is_auto_calculated ?? false,
-                _sort: meta?.sort_order ?? 999,
-              };
+	              return {
+	                parameter: a.parameter,
+	                value: a.value,
+	                unit: a.unit,
+	                reference_range: a.reference_range,
+	                flag: a.flag,
+	                section_heading: meta?.section_heading ?? null,
+	                is_auto_calculated: a.is_auto_calculated ?? meta?.is_auto_calculated ?? false,
+	                _sort: meta?.sort_order ?? 999,
+	              };
             })
             .sort((x, y) => x._sort - y._sort)
             .map(({ _sort: _s, ...rest }) => rest);
 
           return {
+            testGroupId: panel.test_group_id,
             testGroupName: panel.test_group_name || "Test Results",
             analytes,
             groupInterpretation: panel.test_group_id
               ? (groupInterpretations.get(panel.test_group_id) ?? null)
               : null,
           };
-        })
-        .filter(g => g.analytes.length > 0);
+	        })
+	        .filter(g => g.analytes.length > 0);
+
+      console.info("[QuickPreview] building preview", {
+        orderId: order.orderId,
+        printLayoutMode,
+        groupCount: testGroups.length,
+        groupOrder,
+        compactPageAssignments: orderReportSettings.compactPageAssignments || null,
+	        compactMaxClubbedAnalytes: orderReportSettings.compactMaxClubbedAnalytes || Number(labCompactPrint.maxClubbedAnalytes || 5),
+	        hasSignatureImage: !!signatoryImageUrl,
+	        hasVerificationUrl: !!verificationUrl,
+	        pdfLayoutSettings: labPdfLayoutSettings,
+	        queryErrors: {
+          patients: !!patientRes.error,
+          orders: !!orderRes.error,
+          testGroupAnalytes: !!tgaRes.error,
+          testGroups: !!tgRes.error,
+          sections: !!sectionsRes.error,
+          verifier: !!verifierRes.error,
+        },
+      });
 
       const html = buildBasicPreviewHtml({
+        orderId: order.orderId,
         patientName: order.patientName,
         patientCode,
         ageGender,
@@ -1061,10 +1355,19 @@ const OrderVerificationView: React.FC<OrderVerificationViewProps> = ({ onBackToP
         referredBy,
         sampleId,
         testGroups,
-        sections: reportSections,
-        signatoryName,
-        signatoryDesignation,
-        printOptions: resolvedPrintOptions,
+	        sections: reportSections,
+	        signatoryName,
+	        signatoryDesignation,
+	        signatoryImageUrl,
+	        verificationUrl,
+	        printOptions: resolvedPrintOptions,
+	        pdfLayoutSettings: labPdfLayoutSettings,
+	        printLayoutMode,
+        compactPlan: {
+          orderedGroupIds: groupOrder,
+          pageAssignments: orderReportSettings.compactPageAssignments,
+          maxClubbedAnalytes: orderReportSettings.compactMaxClubbedAnalytes || Number(labCompactPrint.maxClubbedAnalytes || 5),
+        },
       });
 
       setQuickPreview({ html, patientName: order.patientName });
@@ -2103,9 +2406,14 @@ ${summary.urgent_findings.map(f => `• ${f}`).join('\n')}` : ''}
 
         {!loading && groupByOrder.length > 0 && (
           <div className="space-y-6">
-            {groupByOrder.map(order => {
-              const orderApprovedPct = percentage(order.stats.approved, order.stats.expected);
-              const allReady = order.stats.readyPanels === order.panels.length;
+	            {groupByOrder.map(order => {
+	              const enteredCount = Math.min(order.stats.entered || order.stats.handled || 0, order.stats.expected);
+	              const approvedCount = Math.min(order.stats.approved || 0, order.stats.expected);
+	              const orderHandledPct = percentage(enteredCount, order.stats.expected);
+	              const pendingCount = Math.max(0, order.stats.expected - enteredCount);
+	              const forApprovalCount = Math.max(0, enteredCount - approvedCount);
+	              const allReady = order.stats.expected > 0 && approvedCount >= order.stats.expected;
+	              const allAnalytesHandled = order.stats.expected > 0 && pendingCount === 0;
 
               return (
                 <div key={order.orderId} className="border-2 rounded-2xl bg-white shadow-sm">
@@ -2130,14 +2438,18 @@ ${summary.urgent_findings.map(f => `• ${f}`).join('\n')}` : ''}
                             </div>
                           </div>
                           <div className="mt-3 flex items-center space-x-3">
-                            {allReady ? (
-                              <span className="inline-flex items-center px-3 py-1.5 rounded-full bg-green-100 text-green-700 text-sm font-semibold">
-                                <ShieldCheck className="h-4 w-4 mr-2" /> Fully Verified
-                              </span>
-                            ) : order.stats.approved > 0 ? (
-                              <span className="inline-flex items-center px-3 py-1.5 rounded-full bg-amber-100 text-amber-700 text-sm font-semibold">
-                                <AlertTriangle className="h-4 w-4 mr-2" /> Partial ({order.stats.approved}/{order.stats.expected})
-                              </span>
+	                            {allReady ? (
+	                              <span className="inline-flex items-center px-3 py-1.5 rounded-full bg-green-100 text-green-700 text-sm font-semibold">
+	                                <ShieldCheck className="h-4 w-4 mr-2" /> Fully Verified
+	                              </span>
+	                            ) : allAnalytesHandled ? (
+	                              <span className="inline-flex items-center px-3 py-1.5 rounded-full bg-blue-100 text-blue-700 text-sm font-semibold">
+	                                <CheckCircle2 className="h-4 w-4 mr-2" /> Ready for Approval ({enteredCount}/{order.stats.expected})
+	                              </span>
+		                            ) : enteredCount > 0 ? (
+		                              <span className="inline-flex items-center px-3 py-1.5 rounded-full bg-amber-100 text-amber-700 text-sm font-semibold">
+		                                <AlertTriangle className="h-4 w-4 mr-2" /> Partial ({enteredCount}/{order.stats.expected})
+		                              </span>
                             ) : (
                               <span className="inline-flex items-center px-3 py-1.5 rounded-full bg-red-100 text-red-700 text-sm font-semibold">
                                 <AlertCircle className="h-4 w-4 mr-2" /> Pending
@@ -2150,10 +2462,19 @@ ${summary.urgent_findings.map(f => `• ${f}`).join('\n')}` : ''}
                         <div className="text-sm text-gray-500">Progress</div>
                         <div className="flex items-center space-x-3">
                           <div className="w-48 bg-gray-100 rounded-full h-3">
-                            <div className="h-3 rounded-full bg-gradient-to-r from-blue-500 to-indigo-600" style={{ width: `${orderApprovedPct}%` }} />
-                          </div>
-                          <span className="text-gray-700 font-semibold">{orderApprovedPct}%</span>
-                        </div>
+	                            <div className="h-3 rounded-full bg-gradient-to-r from-blue-500 to-indigo-600" style={{ width: `${orderHandledPct}%` }} />
+	                          </div>
+	                          <span className="text-gray-700 font-semibold">{orderHandledPct}%</span>
+	                        </div>
+	                        <div className="flex flex-wrap justify-end gap-1 text-[11px]">
+	                          <span className="rounded bg-red-50 px-2 py-0.5 text-red-600">Pending: {pendingCount}</span>
+	                          <span className="rounded bg-amber-50 px-2 py-0.5 text-amber-700">For approval: {forApprovalCount}</span>
+	                          <span className="rounded bg-green-50 px-2 py-0.5 text-green-700">Approved: {approvedCount}</span>
+	                          {order.stats.hidden > 0 && (
+	                            <span className="rounded bg-slate-50 px-2 py-0.5 text-slate-700">Hidden: {order.stats.hidden}</span>
+	                          )}
+	                          <span className="rounded bg-blue-50 px-2 py-0.5 text-blue-700">Total: {order.stats.expected}</span>
+	                        </div>
                         <div className="flex flex-wrap gap-2">
                           <button
                             onClick={() => toggleOrder(order.orderId)}
@@ -2301,19 +2622,30 @@ ${summary.urgent_findings.map(f => `• ${f}`).join('\n')}` : ''}
                                     </thead>
                                     <tbody className="divide-y divide-gray-100">
                                       {analytes.map(analyte => {
-                                        const isRerunRequest = analyte.verify_note && analyte.verify_note.toUpperCase().includes("RE-RUN");
-                                        return (
-                                        <tr key={analyte.id} className={`hover:bg-blue-50 ${isRerunRequest ? 'bg-orange-50' : ''}`}>
+	                                        const isRerunRequest = analyte.verify_note && analyte.verify_note.toUpperCase().includes("RE-RUN");
+	                                        const isHidden = !!analyte.is_hidden_from_report;
+	                                        return (
+	                                        <tr key={analyte.id} className={`hover:bg-blue-50 ${isHidden ? 'bg-slate-50 text-slate-500' : isRerunRequest ? 'bg-orange-50' : ''}`}>
                                           <td className="px-4 py-4">
                                             <div className="flex items-center gap-2">
                                               <div className="font-semibold text-gray-900">{analyte.parameter}</div>
-                                              {isRerunRequest && (
-                                                <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-orange-100 text-orange-800 border border-orange-200">
+	                                              {isRerunRequest && (
+	                                                <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-orange-100 text-orange-800 border border-orange-200">
                                                   <RefreshCw className="h-3 w-3 mr-1" />
                                                   RE-RUN
-                                                </span>
-                                              )}
-                                            </div>
+	                                                </span>
+	                                              )}
+	                                              {isHidden && (
+	                                                <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-slate-200 text-slate-700 border border-slate-300">
+	                                                  Hidden from report
+	                                                </span>
+	                                              )}
+	                                            </div>
+	                                            {isHidden && (
+	                                              <div className="mt-1 text-xs text-slate-500">
+	                                                {analyte.hidden_reason || "Will not print on final report"}
+	                                              </div>
+	                                            )}
                                             {isRerunRequest && analyte.verify_note && (
                                               <div className="mt-1 text-xs text-orange-600 bg-orange-50 px-2 py-1 rounded border border-orange-200">
                                                 {analyte.verify_note}
@@ -2518,10 +2850,10 @@ ${summary.urgent_findings.map(f => `• ${f}`).join('\n')}` : ''}
                         return (
                           <div className="bg-white rounded-2xl shadow-sm border border-gray-200 mt-6">
                             <TrendGraphPanel
-                              orderId={order.orderId}
-                              patientId={order.patientId}
-                              analyteIds={allAnalytes.filter((a: any) => a.analyte_id).map((a: any) => a.analyte_id)}
-                              analyteNames={allAnalytes.map((a: any) => a.parameter)}
+	                              orderId={order.orderId}
+	                              patientId={order.patientId}
+	                              analyteIds={allAnalytes.map((a: any) => a.analyte_id || '')}
+	                              analyteNames={allAnalytes.map((a: any) => a.parameter)}
                               includeInReport={includeTrendsInReport[order.orderId] ?? false}
                               onIncludeInReportChange={(include) => {
                                 setIncludeTrendsInReport(prev => ({ ...prev, [order.orderId]: include }));
@@ -2646,12 +2978,12 @@ ${summary.urgent_findings.map(f => `• ${f}`).join('\n')}` : ''}
               </div>
             </div>
             {/* iframe */}
-            <iframe
-              ref={previewIframeRef}
-              srcDoc={quickPreview.html}
-              className="flex-1 w-full border-0"
-              title="Quick Preview"
-            />
+	            <iframe
+	              ref={previewIframeRef}
+	              srcDoc={quickPreview.html}
+	              className="flex-1 w-full border-0 bg-slate-100"
+	              title="Quick Preview"
+	            />
           </div>
         </div>,
         document.body

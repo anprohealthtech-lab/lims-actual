@@ -176,6 +176,12 @@ function generateHistogramSVG(
   return svg
 }
 
+function formatCalculatedResult(value: number): string {
+  if (!Number.isFinite(value)) return String(value)
+  const rounded = value.toFixed(6).replace(/\.?0+$/, '')
+  return rounded === '-0' ? '0' : rounded
+}
+
 // Helper to extract histogram/waveform numeric data
 function extractWaveformData(rawContent: string): Array<{ name: string; data: number[] }> {
   const waveforms: Array<{ name: string; data: number[] }> = [];
@@ -220,6 +226,38 @@ Deno.serve(async (req) => {
       Deno.env.get('SUPABASE_URL') ?? '',
       Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
     )
+
+    const mshFields = String(record.raw_content).split(/\r|\n/).find((s) => s.startsWith('MSH|'))?.split('|') ?? []
+    const hl7MessageType = mshFields[8] || record.message_type || ''
+    const hasResultObx = /\r?OBX\|/i.test(record.raw_content)
+    const isResultMessage =
+      hl7MessageType.includes('ORU') ||
+      hl7MessageType.includes('ASTM_RESULT') ||
+      hasResultObx
+
+    if (!isResultMessage) {
+      await supabase
+        .from('analyzer_raw_messages')
+        .update({
+          ai_status: 'completed',
+          message_type: hl7MessageType || record.message_type || 'NON_RESULT',
+          ai_result: {
+            ignored: true,
+            reason: 'non_result_message',
+            message_type: hl7MessageType || record.message_type || null,
+          },
+        })
+        .eq('id', record.id)
+
+      return new Response(JSON.stringify({
+        success: true,
+        ignored: true,
+        reason: 'non_result_message',
+        message_type: hl7MessageType || null,
+      }), {
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      })
+    }
 
     // 3. Init AI
     const anthropic = new Anthropic({ apiKey: Deno.env.get('ANTHROPIC_API_KEY') || '' })
@@ -267,7 +305,7 @@ REQUIRED JSON STRUCTURE:
 {
   "sample_barcode": "string",
   "results": [
-    { "test_code": "string", "value": "string", "unit": "string", "flag": "string" }
+    { "test_code": "string", "value": "string", "unit": "string", "flag": "string", "reference_range": "string" }
   ],
   "instrument": "string",
   "graphs": [
@@ -276,6 +314,7 @@ REQUIRED JSON STRUCTURE:
 }
 
 CRITICAL FLAG RULES for HL7 OBX segments:
+- OBX field 7 = Reference Range (put this in "reference_range" if present)
 - OBX field 8 = Abnormal Flag (THIS is what goes in "flag"): H=High, L=Low, HH=Critical High, LL=Critical Low, A=Abnormal. Empty or missing = "N" (Normal)
 - OBX field 11 = Result Status (F=Final, P=Preliminary) — DO NOT put this in "flag"
 - If OBX-8 is empty/missing, set flag to "N" (Normal)
@@ -347,7 +386,7 @@ Do NOT include or describe binary histogram data — it is already extracted sep
         // Ensure master Result record exists
         let { data: resultHeader } = await supabase
             .from('results')
-            .select('id')
+            .select('id, test_group_id')
             .eq('sample_id', sample.id)
             .maybeSingle()
 
@@ -399,6 +438,36 @@ Do NOT include or describe binary histogram data — it is already extracted sep
                     // Never filter out based on flag value — F here means Final result, not a clinical flag.
                     return !NON_CLINICAL_PREFIXES.some(p => code.startsWith(p)) && r.value !== ''
                 })
+
+                const machineCodes = clinicalResults
+                    .map((r: any) => String(r.test_code ?? '').toUpperCase())
+                    .filter(Boolean)
+                const expectedAnalyteIds = missingAnalytes
+                    .map((a: any) => a.analyte_id)
+                    .filter(Boolean)
+                let deterministicMappingRows: any[] = []
+
+                if (machineCodes.length > 0 && expectedAnalyteIds.length > 0) {
+                    let deterministicQuery = supabase
+                        .from('test_mappings')
+                        .select('analyzer_code, analyte_id, test_name, test_group_id, ai_confidence, analyzer_connection_id')
+                        .eq('lab_id', sample.lab_id)
+                        .eq('mapping_type', 'result_analyte')
+                        .in('direction', ['inbound', 'bidirectional'])
+                        .in('analyzer_code', machineCodes)
+                        .in('analyte_id', expectedAnalyteIds)
+
+                    if (record.analyzer_connection_id) {
+                        deterministicQuery = deterministicQuery.or(`analyzer_connection_id.eq.${record.analyzer_connection_id},analyzer_connection_id.is.null`)
+                    }
+
+                    const { data: mappingRows, error: mappingRowsError } = await deterministicQuery
+                    if (mappingRowsError) {
+                        console.error('Deterministic analyzer mapping lookup failed:', mappingRowsError)
+                    } else {
+                        deterministicMappingRows = mappingRows ?? []
+                    }
+                }
 
                 const mappingPrompt = `
 You are a laboratory data mapper. Match machine analyzer results to expected lab analytes.
@@ -477,8 +546,27 @@ OUTPUT ONLY valid JSON in this exact format (no markdown, no explanation):
                         }
                     }
                 }
+
+                // Verified inbound mappings override AI guesses.
+                for (const row of deterministicMappingRows) {
+                    const machineCode = String(row.analyzer_code ?? '').toUpperCase()
+                    if (!machineCode || !row.analyte_id) continue
+
+                    const expected = missingAnalytes.find((a: any) => a.analyte_id === row.analyte_id)
+                    if (!expected) continue
+
+                    analyteMap.set(machineCode, {
+                        analyte_id: row.analyte_id,
+                        analyte_name: expected.analyte_name || row.test_name,
+                        test_group_id: expected.test_group_id || row.test_group_id,
+                        order_test_group_id: null,
+                        order_test_id: expected.order_test_id,
+                        confidence: row.ai_confidence || 1.0,
+                        mapping_source: 'test_mappings'
+                    })
+                }
                 
-                console.log(`DEBUG: AI mapped ${analyteMap.size} analytes:`, Array.from(analyteMap.keys()).join(', '))
+                console.log(`DEBUG: Mapped ${analyteMap.size} analytes:`, Array.from(analyteMap.keys()).join(', '))
 
                 // Enrich analyteMap with real order_test_group_id and test_group_id.
                 // Orders may use either order_test_groups OR order_tests — try both.
@@ -644,25 +732,36 @@ OUTPUT ONLY valid JSON in this exact format (no markdown, no explanation):
               }
             }
 
-            // Batch-fetch lab_analyte_interface_config (unit conversion + auto-verify)
+            // Batch-fetch lab_analyte_interface_config (dilution + unit conversion + auto-verify)
             const interfaceConfigMap = new Map<string, {
               multiply_by: number; add_offset: number;
-              lims_unit: string | null; auto_verify: boolean
+              dilution_factor: number; dilution_mode: string;
+              lims_unit: string | null; auto_verify: boolean;
+              analyzer_connection_id: string | null
             }>() // lab_analyte_id → config
             const allLabAnalyteIds = [...labAnalyteIdMap.values()]
             if (allLabAnalyteIds.length > 0) {
               const { data: configRows } = await supabase
                 .from('lab_analyte_interface_config')
-                .select('lab_analyte_id, multiply_by, add_offset, lims_unit, auto_verify')
+                .select('lab_analyte_id, analyzer_connection_id, multiply_by, add_offset, dilution_factor, dilution_mode, lims_unit, auto_verify')
                 .eq('lab_id', sample.lab_id)
                 .in('lab_analyte_id', allLabAnalyteIds)
               if (configRows) {
                 for (const cfg of configRows) {
+                  const existing = interfaceConfigMap.get(cfg.lab_analyte_id)
+                  const isSpecific = cfg.analyzer_connection_id && cfg.analyzer_connection_id === record.analyzer_connection_id
+                  const isFallback = !cfg.analyzer_connection_id
+                  const keepExistingSpecific = existing?.analyzer_connection_id === record.analyzer_connection_id && !isSpecific
+                  if ((!isSpecific && !isFallback) || keepExistingSpecific) continue
+
                   interfaceConfigMap.set(cfg.lab_analyte_id, {
                     multiply_by: Number(cfg.multiply_by ?? 1),
                     add_offset:  Number(cfg.add_offset  ?? 0),
+                    dilution_factor: Number(cfg.dilution_factor ?? 1),
+                    dilution_mode: String(cfg.dilution_mode ?? 'auto'),
                     lims_unit:   cfg.lims_unit ?? null,
                     auto_verify: cfg.auto_verify ?? false,
+                    analyzer_connection_id: cfg.analyzer_connection_id ?? null,
                   })
                 }
                 console.log(`DEBUG: Loaded interface config for ${interfaceConfigMap.size} analytes`)
@@ -710,21 +809,24 @@ OUTPUT ONLY valid JSON in this exact format (no markdown, no explanation):
                 // Use mapped name
                 const finalParamName = mapping.analyte_name
 
-                // Apply unit conversion + auto-verify from lab_analyte_interface_config
+                // Apply dilution + unit conversion + auto-verify from lab_analyte_interface_config.
+                // Manual dilution means the analyzer measured a diluted specimen, so multiply
+                // back to the original specimen concentration before unit conversion.
                 const labAnalyteId = labAnalyteIdMap.get(mapping.analyte_id) || null
                 const ifCfg = labAnalyteId ? interfaceConfigMap.get(labAnalyteId) : null
 
-                let finalValue = item.value
+                let finalValue = String(item.value ?? '')
                 let finalUnit  = item.unit
                 let verifyStatus = 'pending'
 
                 if (ifCfg) {
-                  const raw = parseFloat(item.value)
+                  const raw = parseFloat(finalValue)
                   if (!isNaN(raw)) {
-                    const converted = raw * ifCfg.multiply_by + ifCfg.add_offset
-                    // Preserve original decimal precision style
-                    const decimals = (item.value.split('.')[1] ?? '').length
-                    finalValue = converted.toFixed(Math.max(decimals, 0))
+                    const dilutionFactor = ifCfg.dilution_mode === 'manual'
+                      ? Math.max(1, ifCfg.dilution_factor || 1)
+                      : 1
+                    const converted = (raw * dilutionFactor * ifCfg.multiply_by) + ifCfg.add_offset
+                    finalValue = formatCalculatedResult(converted)
                   }
                   if (ifCfg.lims_unit) finalUnit = ifCfg.lims_unit
                   if (ifCfg.auto_verify)  verifyStatus = 'approved'
@@ -857,7 +959,7 @@ OUTPUT ONLY valid JSON in this exact format (no markdown, no explanation):
       headers: { ...corsHeaders, 'Content-Type': 'application/json' },
     })
 
-  } catch (error) {
+  } catch (error: any) {
     console.error(error)
 
     // Mark message as failed so it doesn't stay stuck as 'pending'

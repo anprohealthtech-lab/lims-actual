@@ -17,8 +17,11 @@ import {
   Link2
 } from 'lucide-react';
 import { supabase } from '../../utils/supabase';
+import { getCalendarDateRangeStrings } from '../../utils/dateRangeFilters';
 import PatientSessionDashboard from './PatientSessionDashboard';
 import SmartTestAddition from './SmartTestAddition';
+
+type SessionDateRange = 'today' | 'week' | 'month';
 
 interface PatientSession {
   visit_group_id: string;
@@ -57,7 +60,7 @@ export default function EnhancedOrders() {
   const [error, setError] = useState<string | null>(null);
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedStatus, setSelectedStatus] = useState('all');
-  const [selectedDateRange, setSelectedDateRange] = useState('today');
+  const [selectedDateRange, setSelectedDateRange] = useState<SessionDateRange>('today');
   const [expandedSessions, setExpandedSessions] = useState<{[key: string]: boolean}>({});
   const [selectedSession, setSelectedSession] = useState<string | null>(null);
   const [showTestAddition, setShowTestAddition] = useState<{
@@ -76,28 +79,20 @@ export default function EnhancedOrders() {
       setLoading(true);
       
       // Determine date range
-      const today = new Date();
       let startDate: string;
       let endDate: string;
 
       switch (selectedDateRange) {
         case 'today':
-          startDate = today.toISOString().split('T')[0];
-          endDate = new Date(today.getTime() + 24 * 60 * 60 * 1000).toISOString().split('T')[0];
-          break;
         case 'week':
-          const weekAgo = new Date(today.getTime() - 7 * 24 * 60 * 60 * 1000);
-          startDate = weekAgo.toISOString().split('T')[0];
-          endDate = new Date(today.getTime() + 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+        case 'month': {
+          const range = getCalendarDateRangeStrings(selectedDateRange);
+          startDate = range.start;
+          endDate = range.end;
           break;
-        case 'month':
-          const monthAgo = new Date(today.getFullYear(), today.getMonth() - 1, today.getDate());
-          startDate = monthAgo.toISOString().split('T')[0];
-          endDate = new Date(today.getTime() + 24 * 60 * 60 * 1000).toISOString().split('T')[0];
-          break;
+        }
         default:
-          startDate = today.toISOString().split('T')[0];
-          endDate = new Date(today.getTime() + 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+          ({ start: startDate, end: endDate } = getCalendarDateRangeStrings('today'));
       }
 
       // Fetch orders grouped by visit sessions
@@ -355,7 +350,7 @@ export default function EnhancedOrders() {
             <Calendar className="h-5 w-5 text-gray-400" />
             <select
               value={selectedDateRange}
-              onChange={(e) => setSelectedDateRange(e.target.value)}
+              onChange={(e) => setSelectedDateRange(e.target.value as SessionDateRange)}
               className="border border-gray-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 focus:border-transparent"
             >
               <option value="today">Today</option>

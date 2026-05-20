@@ -1130,6 +1130,102 @@ serve(async (req) => {
     if (!invTmplErr && (!existingInvoiceTemplates || existingInvoiceTemplates.length === 0)) {
       console.log('   📄 Creating default invoice templates for lab...');
       
+      const compactInvoiceHtml = `<div class="inv-wrap">
+  <div class="inv-header-band">
+    <div class="inv-meta-col">
+      <div class="inv-title">INVOICE / RECEIPT</div>
+      <table class="inv-meta-table">
+        <tr><td class="meta-label">Invoice No</td><td class="meta-value">{{invoice_number}}</td></tr>
+        <tr><td class="meta-label">Date &amp; Time</td><td class="meta-value">{{invoice_datetime}}</td></tr>
+        <tr><td class="meta-label">Due Date</td><td class="meta-value">{{due_date}}</td></tr>
+        <tr><td class="meta-label">Payment</td><td class="meta-value">{{payment_type}}</td></tr>
+      </table>
+    </div>
+    <div class="inv-divider-v"></div>
+    <div class="inv-bill-col">
+      <div class="inv-section-label">BILL TO</div>
+      <table class="inv-bill-table">
+        <tr><td class="field-label">Patient</td><td class="field-value">{{patient_name}}</td><td class="field-label">ID No</td><td class="field-value">{{custom.id_no}}</td></tr>
+        <tr><td class="field-label">Age / Gender</td><td class="field-value">{{patient_age_gender}}</td><td class="field-label">Phone</td><td class="field-value">{{patient_phone}}</td></tr>
+        <tr><td class="field-label">Ref. Doctor</td><td class="field-value">{{doctor}}</td><td class="field-label">Address</td><td class="field-value">{{custom.address}}</td></tr>
+      </table>
+    </div>
+  </div>
+  <hr class="inv-divider" />
+  <table class="inv-items-table">
+    <thead><tr><th class="col-test">Test / Service</th><th class="col-qty">Qty</th><th class="col-rate">Rate</th><th class="col-amt">Amount</th></tr></thead>
+    <tbody>{{invoice_items}}</tbody>
+  </table>
+  <div class="inv-notes">{{notes}}</div>
+  {{upi_qr_code}}
+  <div class="inv-totals-wrap">
+    <table class="inv-totals-table">
+      <tr><td>Subtotal</td><td>{{subtotal}}</td></tr>
+      <tr><td>Discount</td><td>{{discount}}</td></tr>
+      <tr><td>Tax</td><td>{{tax}}</td></tr>
+      <tr class="totals-grand"><td><strong>Total</strong></td><td><strong>{{total}}</strong></td></tr>
+      <tr><td>Paid</td><td>{{amount_paid}}</td></tr>
+      <tr class="totals-balance"><td><strong>Balance Due</strong></td><td><strong>{{balance_due}}</strong></td></tr>
+    </table>
+  </div>
+  {{payment_status_badge}}
+  <div class="inv-footer">Thank you for visiting {{lab_name}}. For queries call <strong>{{lab_phone}}</strong>.</div>
+</div>`;
+
+      const compactInvoiceCss = `* { box-sizing: border-box; margin: 0; padding: 0; }
+body { margin: 0; padding: 0; background: #fff; }
+.inv-wrap { font-family: Arial, Helvetica, sans-serif; font-size: 10.5px; color: #1a1a1a; line-height: 1.35; background: transparent; width: 100%; max-width: 100%; page-break-inside: avoid; }
+.inv-header-band { display: flex; align-items: flex-start; gap: 0; margin-bottom: 5px; }
+.inv-meta-col { flex: 0 0 38%; padding-right: 9px; }
+.inv-bill-col { flex: 1; padding-left: 9px; min-width: 0; }
+.inv-divider-v { width: 1px; background: #ccc; align-self: stretch; margin: 2px 0; }
+.inv-title { font-size: 14px; font-weight: 700; letter-spacing: 1.2px; color: #111; margin-bottom: 4px; }
+.inv-meta-table, .inv-bill-table, .inv-items-table, .inv-totals-table { border-collapse: collapse; width: 100%; }
+.inv-meta-table { font-size: 10px; }
+.inv-meta-table td { padding: 1px 4px; border: none; }
+.meta-label { color: #555; white-space: nowrap; width: 68px; }
+.meta-value { font-weight: 600; padding-left: 7px !important; white-space: nowrap; }
+.inv-section-label { font-size: 8.5px; font-weight: 700; letter-spacing: 0.8px; color: #777; margin-bottom: 2px; text-transform: uppercase; }
+.inv-bill-table { font-size: 10px; table-layout: fixed; }
+.inv-bill-table td { padding: 1.5px 5px 1.5px 0; vertical-align: top; border: none; overflow-wrap: anywhere; }
+.inv-bill-table .field-label { color: #666; white-space: nowrap; width: 70px; font-size: 9.5px; }
+.inv-bill-table .field-label::after { content: ':'; }
+.inv-bill-table .field-value { font-weight: 600; color: #111; width: 35%; }
+.inv-divider { border: none; border-top: 1px solid #bbb; margin: 5px 0; }
+.inv-items-table { margin-bottom: 4px; font-size: 10px; table-layout: fixed; }
+.inv-items-table thead tr { background-color: #222; color: #fff; }
+.inv-items-table th { padding: 4px 5px; font-weight: 600; font-size: 9.5px; letter-spacing: 0.3px; }
+.inv-items-table td { padding: 3px 5px; border-bottom: 1px solid #e8e8e8; background: transparent; overflow-wrap: anywhere; }
+.inv-items-table tbody tr:nth-child(even) td { background-color: rgba(0,0,0,0.025); }
+.col-test { text-align: left; width: 55%; }
+.col-qty { text-align: center; width: 10%; }
+.col-rate { text-align: right; width: 17%; }
+.col-amt { text-align: right; width: 18%; }
+.inv-items-table td:nth-child(2) { text-align: center; }
+.inv-items-table td:nth-child(3), .inv-items-table td:nth-child(4) { text-align: right; }
+.inv-items-table td:nth-child(4) { font-weight: 600; }
+.inv-notes { font-size: 9.5px; color: #555; margin: 3px 0 5px; min-height: 0; }
+.inv-totals-wrap { display: flex; justify-content: flex-end; margin-top: 3px; page-break-inside: avoid; }
+.inv-totals-table { font-size: 10px; width: 155px; }
+.inv-totals-table td { padding: 2.5px 5px; border: none; background: transparent; }
+.inv-totals-table td:first-child { color: #555; }
+.inv-totals-table td:last-child { text-align: right; font-weight: 500; }
+.totals-grand td { border-top: 1px solid #999; border-bottom: 1px solid #999; padding-top: 3px; padding-bottom: 3px; font-size: 11.5px; color: #111; }
+.totals-balance td { font-size: 11.5px; color: #c0392b; padding-top: 3px; }
+.payment-status-badge { display: inline-block; margin-top: 5px; padding: 2px 8px; border-radius: 3px; font-size: 9.5px; font-weight: 700; letter-spacing: 0.4px; }
+.payment-status-badge.paid { background: #d4edda; color: #155724; border: 1px solid #c3e6cb; }
+.payment-status-badge.pending { background: #fff3cd; color: #856404; border: 1px solid #ffeeba; }
+.upi-payment-block { margin: 5px 0; padding: 6px; border: 1px dashed #999; text-align: center; page-break-inside: avoid; }
+.upi-payment-block img { max-width: 72px; height: auto; }
+.upi-payment-block h3, .upi-payment-block .upi-apps { display: none; }
+.upi-payment-block .upi-id, .upi-payment-block .balance-amount { font-size: 9px; margin: 2px 0; }
+.inv-footer { margin-top: 8px; text-align: center; font-size: 9.5px; color: #666; border-top: 1px solid #ddd; padding-top: 5px; page-break-inside: avoid; }
+@media print {
+  @page { margin: 5mm; }
+  body { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  .inv-wrap { font-size: 10px; }
+}`;
+
       // Default invoice templates
       const defaultInvoiceTemplates = [
         {
@@ -1494,10 +1590,17 @@ serve(async (req) => {
         }
       ];
       
+      const compactDefaultInvoiceTemplates = defaultInvoiceTemplates.map((template) => ({
+        ...template,
+        gjs_html: compactInvoiceHtml,
+        gjs_css: compactInvoiceCss,
+        page_size: 'A4',
+      }));
+
       // Insert all invoice templates
       const { error: insertInvTmplErr } = await supabaseClient
         .from('invoice_templates')
-        .insert(defaultInvoiceTemplates);
+        .insert(compactDefaultInvoiceTemplates);
       
       if (!insertInvTmplErr) {
         stats.invoiceTemplatesCreated = defaultInvoiceTemplates.length;
@@ -1693,16 +1796,35 @@ serve(async (req) => {
     
     const currentSettings = labData?.pdf_layout_settings || {};
     
-    // Only update if missing key fields (headerTextColor or resultColors)
-    if (!currentSettings.headerTextColor || !currentSettings.resultColors) {
+    // Only update if missing key fields.
+    if (!currentSettings.headerTextColor || !currentSettings.resultColors || !currentSettings.printOptions) {
       const defaultPdfSettings = {
         ...currentSettings, // Keep existing settings
         // Add defaults only if missing
         headerTextColor: currentSettings.headerTextColor || 'white',
+        printOptions: currentSettings.printOptions || {
+          baseFontSize: 14,
+          flagSymbol: 'before',
+          showFlagLegend: false,
+          flagAsterisk: false,
+          flagAsteriskCritical: false,
+          testNameBold: false,
+          testNameAlignment: 'left',
+          boldAllValues: false,
+          boldAbnormalValues: true,
+          calcMarker: 'cal',
+          sectionHeaderInline: true,
+          testGroupTitlePosition: 'above_headers_center',
+          qrHorizontalOffset: 0,
+          basicColumnWidths: {
+            standard: [36, 24, 12, 28],
+            sibling: [30, 14, 8, 16, 16, 16],
+          },
+        },
         resultColors: currentSettings.resultColors || {
           enabled: true,
           high: '#dc2626',
-          low: '#ea580c',
+          low: '#000000',
           normal: '#16a34a'
         },
         // Ensure other defaults are set
