@@ -134,7 +134,7 @@ Return ONLY valid JSON with no additional text or markdown code blocks.`
         },
         body: JSON.stringify({
           model: 'claude-haiku-4-5-20251001',
-          max_tokens: 4000,
+          max_tokens: 8000,
           messages: messages,
           temperature: 0.7
         })
