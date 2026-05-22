@@ -253,9 +253,9 @@ const Dashboard: React.FC = () => {
   const [dashboardTab, setDashboardTab] = useState<"standard" | "patient-visits">("standard");
   const [bookingQueueOpen, setBookingQueueOpen] = useState(false);
 
-  // Date range state - default to last 7 days
+  // Date range state - default to last 5 calendar days
   const [dateFrom, setDateFrom] = useState<string>(() => {
-    return format(subDays(new Date(), 7), "yyyy-MM-dd");
+    return format(subDays(new Date(), 4), "yyyy-MM-dd");
   });
   const [dateTo, setDateTo] = useState<string>(() => format(new Date(), "yyyy-MM-dd"));
   const [allDates, setAllDates] = useState(false); // ✅ FIX: “All Dates” without breaking query
@@ -1619,7 +1619,7 @@ id,
   const setDateRange = (days: number) => {
     const to = new Date();
     const from = new Date();
-    from.setDate(to.getDate() - days);
+    from.setDate(to.getDate() - Math.max(days - 1, 0));
 
     setAllDates(false);
     setDateTo(to.toISOString().split("T")[0]);
@@ -1904,8 +1904,8 @@ id,
                       <button onClick={setToday} className="px-3 py-2.5 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700 font-medium shadow-sm">
                         Today
                       </button>
-                      <button onClick={() => setDateRange(7)} className="px-3 py-2.5 text-sm bg-white border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 font-medium">
-                        7 days
+                      <button onClick={() => setDateRange(5)} className="px-3 py-2.5 text-sm bg-white border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 font-medium">
+                        5 days
                       </button>
                       <button onClick={() => setDateRange(30)} className="px-3 py-2.5 text-sm bg-white border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 font-medium">
                         30 days
@@ -1983,8 +1983,8 @@ id,
                           <button onClick={setToday} className="px-3 py-1 text-sm bg-blue-100 text-blue-700 rounded hover:bg-blue-200">
                             Today
                           </button>
-                          <button onClick={() => setDateRange(7)} className="px-3 py-1 text-sm bg-gray-100 text-gray-700 rounded hover:bg-gray-200">
-                            7 days
+                          <button onClick={() => setDateRange(5)} className="px-3 py-1 text-sm bg-gray-100 text-gray-700 rounded hover:bg-gray-200">
+                            5 days
                           </button>
                           <button onClick={() => setDateRange(30)} className="px-3 py-1 text-sm bg-gray-100 text-gray-700 rounded hover:bg-gray-200">
                             30 days

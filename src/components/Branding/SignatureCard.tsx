@@ -1,5 +1,5 @@
 import React from 'react';
-import { PenTool, Star, Trash2 } from 'lucide-react';
+import { Edit2, PenTool, Star, Trash2 } from 'lucide-react';
 
 type ProcessingStatus = 'pending' | 'processing' | 'ready' | 'error' | undefined;
 
@@ -7,6 +7,7 @@ type SignatureType = 'digital' | 'handwritten' | 'stamp' | 'text';
 
 export interface SignatureSummary {
   id: string;
+  user_id?: string;
   signature_type: SignatureType;
   signature_name: string;
   is_default: boolean;
@@ -25,6 +26,7 @@ export interface SignatureSummary {
 interface SignatureCardProps {
   signature: SignatureSummary;
   onSetDefault: () => void;
+  onEdit: () => void;
   onDelete: () => void;
   processingStatus?: ProcessingStatus;
 }
@@ -32,6 +34,7 @@ interface SignatureCardProps {
 export const SignatureCard: React.FC<SignatureCardProps> = ({
   signature,
   onSetDefault,
+  onEdit,
   onDelete,
   processingStatus,
 }) => {
@@ -71,7 +74,7 @@ export const SignatureCard: React.FC<SignatureCardProps> = ({
 
       <p className="mb-3 text-xs text-gray-500">{statusLabel}</p>
 
-      <div className="flex items-center justify-between">
+      <div className="flex flex-wrap items-center justify-between gap-2">
         <button
           type="button"
           onClick={onSetDefault}
@@ -79,14 +82,24 @@ export const SignatureCard: React.FC<SignatureCardProps> = ({
         >
           Set as default
         </button>
-        <button
-          type="button"
-          onClick={onDelete}
-          className="inline-flex items-center gap-2 rounded-md border border-red-200 px-3 py-1.5 text-xs font-medium text-red-600 hover:bg-red-50"
-        >
-          <Trash2 className="h-3 w-3" />
-          Remove
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={onEdit}
+            className="inline-flex items-center gap-2 rounded-md border border-gray-300 px-3 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-50"
+          >
+            <Edit2 className="h-3 w-3" />
+            Edit
+          </button>
+          <button
+            type="button"
+            onClick={onDelete}
+            className="inline-flex items-center gap-2 rounded-md border border-red-200 px-3 py-1.5 text-xs font-medium text-red-600 hover:bg-red-50"
+          >
+            <Trash2 className="h-3 w-3" />
+            Remove
+          </button>
+        </div>
       </div>
     </div>
   );

@@ -427,8 +427,8 @@ th { padding: 3px 4px !important; }
 		.tbl-results thead th:nth-child(4) { width: ${formatBasicWidth(standardColumnWidths[3])}; text-align: left; }
 			.tbl-results tbody td:nth-child(1) { width: ${formatBasicWidth(standardColumnWidths[0])}; text-align: left; color: #111 !important; }
 			.tbl-results tbody td:nth-child(2) { width: ${formatBasicWidth(standardColumnWidths[1])}; text-align: right; white-space: nowrap; overflow: hidden; }
-			.tbl-results tbody td:nth-child(3) { width: ${formatBasicWidth(standardColumnWidths[2])}; text-align: left; color: #444 !important; white-space: nowrap; }
-			.tbl-results tbody td:nth-child(4) { width: ${formatBasicWidth(standardColumnWidths[3])}; text-align: left; color: #666 !important; }
+			.tbl-results tbody td:nth-child(3) { width: ${formatBasicWidth(standardColumnWidths[2])}; text-align: left; color: #444 !important; white-space: normal; overflow-wrap: anywhere; word-break: break-word; }
+			.tbl-results tbody td:nth-child(4) { width: ${formatBasicWidth(standardColumnWidths[3])}; text-align: left; color: #666 !important; white-space: normal; overflow-wrap: anywhere; word-break: break-word; }
 			.tbl-results.has-sibling thead th:nth-child(1) { width: ${formatBasicWidth(siblingColumnWidths[0])}; text-align: left; }
 			.tbl-results.has-sibling thead th:nth-child(2) { width: ${formatBasicWidth(siblingColumnWidths[1])}; text-align: right; }
 			.tbl-results.has-sibling thead th:nth-child(3) { width: ${formatBasicWidth(siblingColumnWidths[2])}; text-align: left; }
@@ -437,12 +437,12 @@ th { padding: 3px 4px !important; }
 			.tbl-results.has-sibling thead th:nth-child(6) { width: ${formatBasicWidth(siblingColumnWidths[5])}; text-align: left; }
 			.tbl-results.has-sibling tbody td:nth-child(1) { width: ${formatBasicWidth(siblingColumnWidths[0])}; text-align: left; }
 			.tbl-results.has-sibling tbody td:nth-child(2) { width: ${formatBasicWidth(siblingColumnWidths[1])}; text-align: right; }
-			.tbl-results.has-sibling tbody td:nth-child(3) { width: ${formatBasicWidth(siblingColumnWidths[2])}; text-align: left; }
-			.tbl-results.has-sibling tbody td:nth-child(4) { width: ${formatBasicWidth(siblingColumnWidths[3])}; text-align: left; }
+			.tbl-results.has-sibling tbody td:nth-child(3) { width: ${formatBasicWidth(siblingColumnWidths[2])}; text-align: left; white-space: normal; overflow-wrap: anywhere; word-break: break-word; }
+			.tbl-results.has-sibling tbody td:nth-child(4) { width: ${formatBasicWidth(siblingColumnWidths[3])}; text-align: left; white-space: normal; overflow-wrap: anywhere; word-break: break-word; }
 			.tbl-results.has-sibling tbody td:nth-child(5) { width: ${formatBasicWidth(siblingColumnWidths[4])}; text-align: right; }
-			.tbl-results.has-sibling tbody td:nth-child(6) { width: ${formatBasicWidth(siblingColumnWidths[5])}; text-align: left; }
+			.tbl-results.has-sibling tbody td:nth-child(6) { width: ${formatBasicWidth(siblingColumnWidths[5])}; text-align: left; white-space: normal; overflow-wrap: anywhere; word-break: break-word; }
 		.same-row-sibling { display: inline; white-space: nowrap; color: #000; font-size: ${basePx}px; text-align: right; }
-		.same-row-sibling-unit { color: #444; font-weight: normal; margin-left: 4px; }
+		.same-row-sibling-unit { color: #444; font-weight: normal; margin-left: 4px; white-space: normal; overflow-wrap: anywhere; word-break: break-word; }
 		.same-row-sibling-ref { display: inline; color: #666; font-size: ${smallPx + 1}px; line-height: 1.15; text-align: left; }
 		.sub-section-col-header td {
 		  border-bottom: 1px solid #999 !important;

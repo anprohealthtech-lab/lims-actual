@@ -411,8 +411,8 @@ export async function buildPrintPdf(data: ReportData): Promise<Blob> {
       columnStyles: {
         0: { cellWidth: contentWidth * 0.34 },
         1: { cellWidth: contentWidth * 0.22, halign: "right" },
-        2: { cellWidth: contentWidth * 0.12 },
-        3: { cellWidth: contentWidth * 0.32, textColor: [102, 102, 102] },
+        2: { cellWidth: contentWidth * 0.12, overflow: "linebreak" },
+        3: { cellWidth: contentWidth * 0.32, overflow: "linebreak", textColor: [102, 102, 102] },
       },
       didParseCell: (hook: CellHookData) => {
         const rowIdx = hook.row.index;

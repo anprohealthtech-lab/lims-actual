@@ -1,11 +1,13 @@
 import React, { useState } from 'react';
-import { X, Check, Save } from 'lucide-react';
-import { database } from '../../utils/supabase';
+import { X, Save } from 'lucide-react';
+import { database, supabase } from '../../utils/supabase';
 
 interface ReceivePaymentModalProps {
     accountId: string;
     accountName: string;
     currentBalance?: number;
+    totalAmount?: number;
+    paidAmount?: number;
     consolidatedInvoiceId?: string;
     onClose: () => void;
     onSuccess: () => void;
@@ -15,6 +17,8 @@ const ReceivePaymentModal: React.FC<ReceivePaymentModalProps> = ({
     accountId,
     accountName,
     currentBalance = 0,
+    totalAmount,
+    paidAmount = 0,
     consolidatedInvoiceId,
     onClose,
     onSuccess
@@ -32,27 +36,33 @@ const ReceivePaymentModal: React.FC<ReceivePaymentModalProps> = ({
 
         setLoading(true);
         try {
-            // Create credit transaction of type 'payment'
-            const { error } = await (database as any).creditTransactions?.create?.({
+            const paymentAmount = parseFloat(amount);
+            const labId = await database.getCurrentUserLabId();
+
+            // Keep account payments tied to the consolidated invoice so partial
+            // payments can be displayed against the correct B2B invoice.
+            const { error } = await supabase.from('credit_transactions').insert([{
                 account_id: accountId,
-                lab_id: await database.getCurrentUserLabId(),
-                amount: parseFloat(amount),
+                lab_id: labId,
+                amount: paymentAmount,
                 transaction_type: 'payment',
                 payment_method: paymentMethod,
                 reference_number: reference,
+                reference_type: consolidatedInvoiceId ? 'consolidated_invoice' : 'account',
+                reference_id: consolidatedInvoiceId || accountId,
                 transaction_date: paymentDate,
                 notes: notes,
                 description: `Payment received via ${paymentMethod.toUpperCase()}`
-            });
+            }]);
 
             if (error) throw error;
 
             // Consolidated B2B invoices are tracked in a separate table, so
             // we need an explicit status update when the payment is tied to one.
             if (consolidatedInvoiceId) {
-                const paymentAmount = parseFloat(amount);
-                const normalizedBalance = Number(currentBalance) || 0;
-                const newStatus = paymentAmount >= normalizedBalance ? 'paid' : 'partial';
+                const normalizedTotal = Number(totalAmount ?? currentBalance) || 0;
+                const newPaidAmount = (Number(paidAmount) || 0) + paymentAmount;
+                const newStatus = newPaidAmount >= normalizedTotal ? 'paid' : 'partial';
 
                 const { error: invoiceError } = await (database as any).consolidatedInvoices?.update?.(
                     consolidatedInvoiceId,
@@ -88,6 +98,18 @@ const ReceivePaymentModal: React.FC<ReceivePaymentModalProps> = ({
                 <div className="mb-6 bg-blue-50 p-4 rounded-lg">
                     <div className="text-sm text-gray-600">Account</div>
                     <div className="font-medium text-lg text-blue-900">{accountName}</div>
+                    {totalAmount !== undefined && (
+                        <div className="mt-1 flex justify-between text-sm">
+                            <span className="text-gray-600">Invoice Total:</span>
+                            <span className="font-semibold">₹{totalAmount.toFixed(2)}</span>
+                        </div>
+                    )}
+                    {paidAmount > 0 && (
+                        <div className="mt-1 flex justify-between text-sm">
+                            <span className="text-gray-600">Paid Amount:</span>
+                            <span className="font-semibold text-green-700">₹{paidAmount.toFixed(2)}</span>
+                        </div>
+                    )}
                     {currentBalance !== undefined && (
                         <div className="mt-2 flex justify-between text-sm">
                             <span className="text-gray-600">Current Due:</span>

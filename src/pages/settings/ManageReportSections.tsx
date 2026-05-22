@@ -61,6 +61,22 @@ const SECTION_TYPES = [
   { value: 'custom', label: 'Custom', icon: '📝' },
 ];
 
+const SECTION_TYPE_ICON_OVERRIDES: Record<string, string> = {
+  findings: '🔍',
+  impression: '💡',
+  recommendation: '📋',
+  technique: '⚙️',
+  clinical_history: '📜',
+  conclusion: '✅',
+  custom: '📝',
+};
+
+const getSectionTypeIcon = (sectionType: string) =>
+  SECTION_TYPE_ICON_OVERRIDES[sectionType] || '📝';
+
+const getSectionIcon = (section: Pick<TemplateSection, 'section_type'> & { section_config?: SectionConfig }) =>
+  section.section_config?.icon?.trim() || getSectionTypeIcon(section.section_type);
+
 // ============================================
 // CASCADE TYPES
 // ============================================
@@ -86,6 +102,7 @@ interface MatrixConfig {
 
 interface SectionConfig {
   mode: 'flat' | 'cascading' | 'matrix';
+  icon?: string;
   cascade_levels: CascadeLevel[];
   matrix: MatrixConfig;
 }
@@ -583,7 +600,7 @@ const ManageReportSections: React.FC = () => {
             ? aiData.suggestedOptions
             : prev.predefined_options,
           section_config: aiData.section_config
-            ? (aiData.section_config as SectionConfig)
+            ? { ...prev.section_config, ...(aiData.section_config as SectionConfig) }
             : prev.section_config,
         }));
 
@@ -661,6 +678,7 @@ const ManageReportSections: React.FC = () => {
       placeholder_key: section.placeholder_key || '',
       section_config: {
         mode: ((section as any).section_config?.mode || 'flat'),
+        icon: (section as any).section_config?.icon || getSectionTypeIcon(section.section_type),
         cascade_levels: (section as any).section_config?.cascade_levels || [],
         matrix: (section as any).section_config?.matrix || DEFAULT_MATRIX_CONFIG,
       },
@@ -719,7 +737,10 @@ const ManageReportSections: React.FC = () => {
         allow_images: formData.allow_images,
         allow_technician_entry: formData.allow_technician_entry,
         placeholder_key: formData.placeholder_key.trim() || formData.section_type,
-        section_config: formData.section_config,
+        section_config: {
+          ...formData.section_config,
+          icon: (formData.section_config.icon ?? getSectionTypeIcon(formData.section_type)).trim() || null,
+        },
       };
 
       if (editingSection) {
@@ -940,9 +961,7 @@ const ManageReportSections: React.FC = () => {
                       <div className="flex items-start justify-between">
                         <div className="flex-1">
                           <div className="flex items-center space-x-2">
-                            <span className="text-lg">
-                              {SECTION_TYPES.find(t => t.value === section.section_type)?.icon || '📝'}
-                            </span>
+                            <span className="text-lg">{getSectionIcon(section)}</span>
                             <h4 className="font-medium text-gray-900">{section.section_name}</h4>
                             <span className="px-2 py-0.5 text-xs bg-blue-100 text-blue-700 rounded-full">
                               {section.section_type}
@@ -1210,13 +1229,19 @@ const ManageReportSections: React.FC = () => {
                     onChange={(e) => setFormData(prev => ({
                       ...prev,
                       section_type: e.target.value,
-                      placeholder_key: e.target.value
+                      placeholder_key: e.target.value,
+                      section_config: {
+                        ...prev.section_config,
+                        icon: prev.section_config.icon?.trim()
+                          ? prev.section_config.icon
+                          : getSectionTypeIcon(e.target.value),
+                      },
                     }))}
                     className="w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500"
                   >
                     {SECTION_TYPES.map(type => (
                       <option key={type.value} value={type.value}>
-                        {type.icon} {type.label}
+                        {getSectionTypeIcon(type.value)} {type.label}
                       </option>
                     ))}
                   </select>
@@ -1233,6 +1258,27 @@ const ManageReportSections: React.FC = () => {
                     placeholder="e.g., Peripheral Smear Findings"
                     required
                   />
+                </div>
+              </div>
+
+              {/* Icon / Emoji */}
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Icon / Emoji</label>
+                <div className="flex items-center gap-3">
+                  <input
+                    type="text"
+                    value={formData.section_config.icon ?? getSectionTypeIcon(formData.section_type)}
+                    onChange={(e) => setFormData(prev => ({
+                      ...prev,
+                      section_config: { ...prev.section_config, icon: e.target.value },
+                    }))}
+                    className="w-24 px-3 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500 text-center text-xl"
+                    placeholder={getSectionTypeIcon(formData.section_type)}
+                    aria-label="Section icon or emoji"
+                  />
+                  <p className="text-xs text-gray-500">
+                    Paste any emoji or short symbol. It appears in this settings page and while entering report section content.
+                  </p>
                 </div>
               </div>
 

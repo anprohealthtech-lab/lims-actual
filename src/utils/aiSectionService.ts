@@ -28,8 +28,9 @@ export interface SectionGeneratorResponse {
   suggestedOptions?: string[];
   sectionHeading?: string;
   section_config?: {
-    mode: 'flat' | 'cascading';
-    cascade_levels: Array<{
+    mode: 'flat' | 'cascading' | 'matrix';
+    icon?: string;
+    cascade_levels?: Array<{
       id: string;
       label: string;
       multi_select: boolean;
@@ -39,6 +40,11 @@ export interface SectionGeneratorResponse {
         sub_levels?: any[];
       }>;
     }>;
+    matrix?: {
+      rows: string[];
+      columns: string[];
+      cellOptions?: string[];
+    };
   };
 }
 

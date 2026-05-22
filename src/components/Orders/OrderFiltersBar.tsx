@@ -1,14 +1,15 @@
 import React, { useState } from "react";
-import { Calendar, Filter, Search, X } from "lucide-react";
+import { Building2, Calendar, Filter, Search, X } from "lucide-react";
 
 export interface OrderFilters {
   q?: string; // Search query for patient name, order ID, patient ID
-  status?: "All" | "Order Created" | "Sample Collection" | "In Progress" | "Pending Approval" | "Completed" | "Delivered" | "Re-Run Requests";
+  status?: "All" | "All Done" | "Mostly Done" | "Pending" | "Approval" | "Order Created" | "Sample Collection" | "In Progress" | "Pending Approval" | "Completed" | "Delivered" | "Re-Run Requests";
   priority?: "All" | "Normal" | "Urgent" | "STAT";
   from?: string; // Date from
   to?: string; // Date to
   doctor?: string; // Filter by doctor
   locationId?: string; // Filter by location
+  account?: string; // Filter by B2B account name
 }
 
 type Props = {
@@ -20,9 +21,10 @@ type Props = {
     byPriority: Record<string, number>;
   };
   locations?: { id: string; name: string }[];
+  accounts?: { id: string; name: string }[];
 };
 
-const OrderFiltersBar: React.FC<Props> = ({ value, onChange, orderCounts, locations }) => {
+const OrderFiltersBar: React.FC<Props> = ({ value, onChange, orderCounts, locations, accounts }) => {
   const [showDatePicker, setShowDatePicker] = useState(false);
 
   const today = new Date().toISOString().slice(0, 10);
@@ -30,6 +32,10 @@ const OrderFiltersBar: React.FC<Props> = ({ value, onChange, orderCounts, locati
 
   const statusOptions = [
     "All",
+    "All Done",
+    "Mostly Done",
+    "Pending",
+    "Approval",
     "Order Created",
     "Sample Collection",
     "In Progress",
@@ -42,7 +48,7 @@ const OrderFiltersBar: React.FC<Props> = ({ value, onChange, orderCounts, locati
   const priorityOptions = ["All", "Normal", "Urgent", "STAT"];
 
   return (
-    <div className="bg-white border border-gray-200 rounded-lg p-3 sm:p-4 flex flex-col gap-3 sm:flex-row sm:items-center">
+    <div className="bg-white border border-gray-200 rounded-lg p-2 sm:p-3 flex flex-col gap-2 sm:flex-row sm:items-center">
       <div className="flex-1 relative">
         <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-400" />
         <input
@@ -54,6 +60,24 @@ const OrderFiltersBar: React.FC<Props> = ({ value, onChange, orderCounts, locati
       </div>
 
       <div className="flex gap-2 flex-wrap sm:flex-nowrap">
+        {accounts && accounts.length > 0 && (
+          <div className="relative">
+            <Building2 className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-400" />
+            <input
+              list="order-account-filter-options"
+              value={value.account || ""}
+              onChange={(e) => onChange({ ...value, account: e.target.value || undefined })}
+              className="w-[190px] pl-9 pr-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500"
+              placeholder="B2B account..."
+            />
+            <datalist id="order-account-filter-options">
+              {accounts.map(account => (
+                <option key={account.id} value={account.name} />
+              ))}
+            </datalist>
+          </div>
+        )}
+
         {/* Location Filter */}
         {locations && locations.length > 0 && (
           <select

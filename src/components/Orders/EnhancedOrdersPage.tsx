@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Plus, Link, Users, Activity, ChevronRight, ChevronDown, Search, TestTube, X, Calendar, CheckCircle, AlertCircle, FlaskConical } from 'lucide-react';
+import { Plus, Link, Users, Activity, ChevronRight, ChevronDown, Search, TestTube, X, Calendar, CheckCircle, AlertCircle, FlaskConical, ClipboardEdit, ArrowDownUp } from 'lucide-react';
 import { database, supabase } from '../../utils/supabase';
 import { OrderStatusDisplay } from './OrderStatusDisplay';
 import { SampleTypeIndicator } from '../Common/SampleTypeIndicator';
@@ -16,10 +16,18 @@ interface Order {
   total_amount: number;
   order_date: string;
   created_at?: string;
+  order_number?: number | null;
   sample_id?: string;
   sample_type?: string;
   color_name?: string;
   tests: string[];
+  panels?: {
+    name: string;
+    expected: number;
+    entered: number;
+    status: string;
+    verified?: boolean;
+  }[];
   can_add_tests?: boolean;
   hours_until_tat_breach?: number | null;
   is_tat_breached?: boolean | null;
@@ -32,6 +40,7 @@ interface EnhancedOrdersPageProps {
   onUpdateStatus: (orderId: string, newStatus: string) => Promise<void>;
   onRefreshOrders?: () => Promise<void>;
   onViewOrderDetails?: (order: Order) => void;
+  onQuickResultEntry?: (order: Order) => void;
   onNewSession?: () => void;
   onNewPatientVisit?: () => void;
 }
@@ -47,20 +56,52 @@ interface PatientVisit {
   orders: Order[];
 }
 
+type VisitSortMode = 'current' | 'sample_desc' | 'sample_asc' | 'patient_az';
+
 interface PatientVisitCardProps {
   visit: PatientVisit;
+  sortMode: VisitSortMode;
   onAddTests: (orderId: string) => void;
   onCreateFollowUp: (parentOrderId: string) => void;
   onViewActivity: (visitGroupId: string) => void;
   onViewOrderDetails?: (order: Order) => void;
+  onQuickResultEntry?: (order: Order) => void;
 }
+
+const getOrderSortNumber = (order: Order) => {
+  if (typeof order.order_number === 'number' && Number.isFinite(order.order_number)) {
+    return order.order_number;
+  }
+
+  const sampleIdMatch = order.sample_id?.match(/(?:^|[/-])(\d+)\s*$/);
+  if (sampleIdMatch) return parseInt(sampleIdMatch[1], 10);
+
+  const visitGroupIdMatch = order.visit_group_id?.match(/(?:^|[/-])(\d+)\s*$/);
+  if (visitGroupIdMatch) return parseInt(visitGroupIdMatch[1], 10);
+
+  const orderIdMatch = order.id?.match(/(\d+)$/);
+  return orderIdMatch ? parseInt(orderIdMatch[1], 10) : 0;
+};
+
+const getPendingPanels = (order: Order) => {
+  const panels = order.panels || [];
+  if (panels.length === 0) {
+    return ['Completed', 'Delivered'].includes(order.status) ? [] : order.tests;
+  }
+
+  return panels
+    .filter(panel => !panel.verified && panel.status !== 'Verified' && panel.entered < panel.expected)
+    .map(panel => panel.name);
+};
 
 const PatientVisitCard: React.FC<PatientVisitCardProps> = ({
   visit,
+  sortMode,
   onAddTests,
   onCreateFollowUp,
   onViewActivity,
-  onViewOrderDetails
+  onViewOrderDetails,
+  onQuickResultEntry
 }) => {
   const [expanded, setExpanded] = useState(false);
 
@@ -86,47 +127,17 @@ const PatientVisitCard: React.FC<PatientVisitCardProps> = ({
   };
 
   const primaryOrder = visit.orders.find(o => o.order_type === 'initial') || visit.orders[0];
+  const pendingPanelNames = Array.from(new Set(visit.orders.flatMap(getPendingPanels)));
 
-  // Sort orders by sample ID number (newest/highest first) with clear debugging
+  // Keep the existing order by default; only sort the chain when the user chooses it.
   const sortedOrders = [...visit.orders].sort((a, b) => {
-    // Function to extract sample number from sample_id or visit_group_id
-    const extractSampleNumber = (order: any) => {
-      // First try to extract number from sample_id (e.g., "06-Sep-2025-004" -> 4)
-      const sampleIdMatch = order.sample_id?.match(/-(\d+)$/);
-      if (sampleIdMatch) {
-        const num = parseInt(sampleIdMatch[1]);
-        console.log(`Sample ID ${order.sample_id} -> number: ${num}`);
-        return num;
-      }
+    if (sortMode === 'current' || sortMode === 'patient_az') return 0;
 
-      // Try to extract number from visit_group_id (e.g., "sample-06-Sep-2025-004" -> 4)
-      const visitGroupIdMatch = order.visit_group_id?.match(/-(\d+)$/);
-      if (visitGroupIdMatch) {
-        const num = parseInt(visitGroupIdMatch[1]);
-        console.log(`Visit Group ID ${order.visit_group_id} -> number: ${num}`);
-        return num;
-      }
-
-      // Try to extract number from order.id if it has a pattern
-      const orderIdMatch = order.id?.match(/(\d+)$/);
-      if (orderIdMatch) {
-        const num = parseInt(orderIdMatch[1]);
-        console.log(`Order ID ${order.id} -> number: ${num}`);
-        return num;
-      }
-
-      console.log(`No number found for order ${order.id}, using 0`);
-      return 0;
-    };
-
-    // First try to sort by sample number (HIGHEST numbers first - newest)
-    const sampleNumA = extractSampleNumber(a);
-    const sampleNumB = extractSampleNumber(b);
+    const sampleNumA = getOrderSortNumber(a);
+    const sampleNumB = getOrderSortNumber(b);
 
     if (sampleNumA !== sampleNumB) {
-      const result = sampleNumB - sampleNumA; // Higher numbers first (4, 3, 2, 1)
-      console.log(`Sorting: ${sampleNumB} - ${sampleNumA} = ${result}`);
-      return result;
+      return sortMode === 'sample_asc' ? sampleNumA - sampleNumB : sampleNumB - sampleNumA;
     }
 
     // If sample numbers are same, fallback to timestamp sorting (newest first)
@@ -165,10 +176,22 @@ const PatientVisitCard: React.FC<PatientVisitCardProps> = ({
                 <span>•</span>
                 <span>🆔 {visit.visit_group_id}</span>
                 <span>•</span>
-                <span className={`px-2 py-1 rounded-full text-xs font-medium ${getStatusColor(visit.visit_status)}`}>
-                  {visit.visit_status}
-                </span>
-              </div>
+	                <span className={`px-2 py-1 rounded-full text-xs font-medium ${getStatusColor(visit.visit_status)}`}>
+	                  {visit.visit_status}
+	                </span>
+                  {pendingPanelNames.length > 0 && (
+                    <>
+                      <span>â€¢</span>
+                      <span
+                        className="rounded-full bg-amber-100 px-2 py-1 text-xs font-medium text-amber-800"
+                        title={pendingPanelNames.join(', ')}
+                      >
+                        Pending: {pendingPanelNames.slice(0, 2).join(', ')}
+                        {pendingPanelNames.length > 2 ? ` +${pendingPanelNames.length - 2}` : ''}
+                      </span>
+                    </>
+                  )}
+	              </div>
             </div>
           </div>
 
@@ -194,6 +217,16 @@ const PatientVisitCard: React.FC<PatientVisitCardProps> = ({
                   title="Add Tests to Current Order"
                 >
                   <Plus className="h-4 w-4" />
+                </button>
+              )}
+
+              {primaryOrder && onQuickResultEntry && (
+                <button
+                  onClick={() => onQuickResultEntry(primaryOrder)}
+                  className="p-2 text-emerald-600 hover:bg-emerald-50 rounded-lg transition-colors"
+                  title="Quick result entry"
+                >
+                  <ClipboardEdit className="h-4 w-4" />
                 </button>
               )}
 
@@ -286,6 +319,20 @@ const PatientVisitCard: React.FC<PatientVisitCardProps> = ({
                           )}
                         </div>
                       )}
+                      {(() => {
+                        const pendingPanels = getPendingPanels(order);
+                        if (pendingPanels.length === 0) return null;
+
+                        return (
+                          <div
+                            className="mt-1 text-xs font-medium text-amber-700 max-w-full md:max-w-xs line-clamp-2 md:line-clamp-1"
+                            title={pendingPanels.join(', ')}
+                          >
+                            Pending: {pendingPanels.slice(0, 3).join(', ')}
+                            {pendingPanels.length > 3 && <span className="text-gray-500"> +{pendingPanels.length - 3} more</span>}
+                          </div>
+                        );
+                      })()}
                       {/* Outsourced Tests Indicator */}
                       {(() => {
                         const orderTests = (order as any).order_tests || [];
@@ -324,6 +371,16 @@ const PatientVisitCard: React.FC<PatientVisitCardProps> = ({
                         <Plus className="h-4 w-4" />
                       </button>
                     )}
+
+                    {onQuickResultEntry && (
+                      <button
+                        onClick={() => onQuickResultEntry(order)}
+                        className="p-2 text-emerald-600 hover:bg-emerald-50 rounded-lg transition-colors border-2 border-emerald-200 hover:border-emerald-300"
+                        title="Quick result entry"
+                      >
+                        <ClipboardEdit className="h-4 w-4" />
+                      </button>
+                    )}
                   </div>
                 </div>
               </div>
@@ -352,6 +409,7 @@ const EnhancedOrdersPage: React.FC<EnhancedOrdersPageProps> = ({
   // onAddOrder, 
   // onUpdateStatus,
   onRefreshOrders,
+  onQuickResultEntry,
   onNewSession,
   onNewPatientVisit
 }) => {
@@ -364,6 +422,7 @@ const EnhancedOrdersPage: React.FC<EnhancedOrdersPageProps> = ({
   const [selectedTests, setSelectedTests] = useState<any[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedRange, setSelectedRange] = useState<'today' | 'yesterday' | 'last7' | 'all'>('today');
+  const [sortMode, setSortMode] = useState<VisitSortMode>('current');
   const [isLoadingTests, setIsLoadingTests] = useState(false);
 
   console.log('Orders version of EnhancedOrdersPage is rendering');
@@ -606,57 +665,6 @@ const EnhancedOrdersPage: React.FC<EnhancedOrdersPageProps> = ({
       group.visit_status = allDone ? 'Completed' : anyActive ? 'In Progress' : group.visit_status;
     });
 
-    // Sort orders inside groups (newest first by sample ID number, fallback to timestamp)
-    Object.values(visitGroups).forEach(g => {
-      g.orders.sort((a, b) => {
-        // Function to extract sample number from sample_id or visit_group_id
-        const extractSampleNumber = (order: any) => {
-          // First try to extract number from sample_id (e.g., "06-Sep-2025-004" -> 4)
-          const sampleIdMatch = order.sample_id?.match(/-(\d+)$/);
-          if (sampleIdMatch) {
-            return parseInt(sampleIdMatch[1]);
-          }
-
-          // Try to extract number from visit_group_id (e.g., "sample-06-Sep-2025-004" -> 4)
-          const visitGroupIdMatch = order.visit_group_id?.match(/-(\d+)$/);
-          if (visitGroupIdMatch) {
-            return parseInt(visitGroupIdMatch[1]);
-          }
-
-          // Try to extract number from order.id if it has a pattern
-          const orderIdMatch = order.id?.match(/-(\d+)$/);
-          if (orderIdMatch) {
-            return parseInt(orderIdMatch[1]);
-          }
-
-          // Fallback to 0 if no number found
-          return 0;
-        };
-
-        // First try to sort by sample number (newest sample number first)
-        const sampleNumA = extractSampleNumber(a);
-        const sampleNumB = extractSampleNumber(b);
-
-        if (sampleNumA !== sampleNumB) {
-          return sampleNumB - sampleNumA; // Higher numbers first (newest)
-        }
-
-        // If sample numbers are same, fallback to timestamp sorting
-        const timeA = a.created_at || a.order_date;
-        const timeB = b.created_at || b.order_date;
-        const timestampA = new Date(timeA).getTime();
-        const timestampB = new Date(timeB).getTime();
-
-        if (timestampA !== timestampB) {
-          return timestampB - timestampA; // Newest first
-        }
-
-        // Final fallback to ID comparison for consistency
-        return (b.id || '').localeCompare(a.id || '');
-      });
-    });
-
-    // Sort groups by visit_date desc
     return Object.values(visitGroups).sort((a, b) => b.visit_date.localeCompare(a.visit_date));
   }, [orders]);
 
@@ -715,29 +723,25 @@ const EnhancedOrdersPage: React.FC<EnhancedOrdersPageProps> = ({
       return b.date.getTime() - a.date.getTime();
     });
 
-    // Sort visits within each date group by sample number (newest first)
-    sortedGroups.forEach(group => {
-      group.visits.sort((a, b) => {
-        // Extract highest sample number from each visit's orders
-        const getMaxSampleNumber = (visit: PatientVisit) => {
-          const numbers = visit.orders.map(order => {
-            const sampleIdMatch = order.sample_id?.match(/-(\d+)$/);
-            return sampleIdMatch ? parseInt(sampleIdMatch[1]) : 0;
-          });
-          return Math.max(...numbers, 0);
-        };
+    if (sortMode !== 'current') {
+      sortedGroups.forEach(group => {
+        group.visits.sort((a, b) => {
+          if (sortMode === 'patient_az') {
+            return a.patient_name.localeCompare(b.patient_name);
+          }
 
-        const maxA = getMaxSampleNumber(a);
-        const maxB = getMaxSampleNumber(b);
+          const getMaxSampleNumber = (visit: PatientVisit) => Math.max(...visit.orders.map(getOrderSortNumber), 0);
+          const maxA = getMaxSampleNumber(a);
+          const maxB = getMaxSampleNumber(b);
 
-        if (maxA !== maxB) {
-          return maxB - maxA; // Higher sample numbers first (004 before 002)
-        }
+          if (maxA !== maxB) {
+            return sortMode === 'sample_asc' ? maxA - maxB : maxB - maxA;
+          }
 
-        // Fallback to visit date/time
-        return b.visit_date.localeCompare(a.visit_date);
+          return a.patient_name.localeCompare(b.patient_name);
+        });
       });
-    });
+    }
 
     return sortedGroups;
   };
@@ -835,6 +839,20 @@ const EnhancedOrdersPage: React.FC<EnhancedOrdersPageProps> = ({
                 {option.label}
               </button>
             ))}
+          </div>
+          <div className="relative">
+            <ArrowDownUp className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400" />
+            <select
+              value={sortMode}
+              onChange={(e) => setSortMode(e.target.value as VisitSortMode)}
+              className="h-9 rounded-lg border border-gray-300 bg-white pl-9 pr-8 text-sm text-gray-700 shadow-sm focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500"
+              title="Sort patient visits"
+            >
+              <option value="current">Current order</option>
+              <option value="sample_desc">Sample ID high to low</option>
+              <option value="sample_asc">Sample ID low to high</option>
+              <option value="patient_az">Patient A-Z</option>
+            </select>
           </div>
           <button
             onClick={onNewPatientVisit || onNewSession}
@@ -940,9 +958,11 @@ const EnhancedOrdersPage: React.FC<EnhancedOrdersPageProps> = ({
                   <PatientVisitCard
                     key={visit.visit_group_id}
                     visit={visit}
+                    sortMode={sortMode}
                     onAddTests={handleAddTests}
                     onCreateFollowUp={handleCreateFollowUp}
                     onViewActivity={handleViewActivity}
+                    onQuickResultEntry={onQuickResultEntry}
                   />
                 ))}
               </div>

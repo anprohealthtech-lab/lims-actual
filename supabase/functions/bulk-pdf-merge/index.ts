@@ -6,6 +6,15 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 };
 
+const getGeneratedPdfUrl = (order: {
+  smart_report_url?: string | null;
+  reports?: { pdf_url?: string | null; print_pdf_url?: string | null }[] | { pdf_url?: string | null; print_pdf_url?: string | null } | null;
+}) => {
+  const reports = Array.isArray(order.reports) ? order.reports : order.reports ? [order.reports] : [];
+  const reportUrl = reports.find((report) => report?.print_pdf_url || report?.pdf_url);
+  return reportUrl?.print_pdf_url || reportUrl?.pdf_url || order.smart_report_url || null;
+};
+
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') {
     return new Response('ok', { headers: corsHeaders });
@@ -74,8 +83,8 @@ Deno.serve(async (req) => {
 
     for (const order of orders || []) {
       try {
-        const report = Array.isArray(order.reports) ? order.reports[0] : order.reports;
-        const pdfUrl = report?.print_pdf_url || report?.pdf_url || order.smart_report_url;
+        // Use only already-generated PDF URLs. This function must not generate reports.
+        const pdfUrl = getGeneratedPdfUrl(order);
 
         if (!pdfUrl) {
           failed++;

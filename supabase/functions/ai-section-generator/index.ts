@@ -29,6 +29,7 @@ interface CascadeLevel  { id: string; label: string; multi_select: boolean; opti
 interface MatrixConfig {
   rows: string[];
   columns: string[];
+  cellOptions?: string[];
 }
 
 interface SectionGeneratorResponse {
@@ -37,7 +38,8 @@ interface SectionGeneratorResponse {
   sectionHeading?: string;
   section_config?: {
     mode: 'flat' | 'cascading' | 'matrix';
-    cascade_levels: CascadeLevel[];
+    icon?: string;
+    cascade_levels?: CascadeLevel[];
     matrix?: MatrixConfig;
   } | null;
 }
@@ -209,11 +211,12 @@ Return ONLY valid JSON with no additional text or markdown code blocks.`
 
   } catch (error) {
     console.error('Error in AI section generator:', error)
+    const message = error instanceof Error ? error.message : 'Unknown error'
 
     return new Response(
       JSON.stringify({
         success: false,
-        error: error.message
+        error: message
       }),
       {
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },
@@ -248,13 +251,23 @@ REQUIREMENTS:
    - Use proper formatting (bold markers with **, line breaks with \\n)
    - Be factually accurate based on common medical patterns
    - If patient info or test results are missing, keep content generic and avoid definitive diagnoses or invented values
-   - Do not fabricate patient-specific details or numeric results
+	   - Do not fabricate patient-specific details or numeric results
+   - Do not add Height, Weight, BMI, or other anthropometric fields unless the user explicitly asks for them.
+
+	3. ICON / EMOJI RULES:
+	   - If the user asks for an icon, emoji, symbol, visual marker, or says the section should "have icon", include a medically relevant single emoji or short symbol in section_config.icon.
+	   - Pick an icon that matches the section/test context, for example: findings "🔍", impression "💡", recommendation "📋", clinical history "📜", technique/method "🔬", conclusion "✅", microbiology/culture "🧫", antibiotic sensitivity "💊", radiology/imaging "🩻", pathology/biopsy "🔬".
+	   - Do not put the icon in generatedContent, suggestedOptions, option values, or sectionHeading unless the user explicitly asks for it there.
+	   - For FLAT sections with an icon request, return section_config as: { "mode": "flat", "icon": "🔍", "cascade_levels": [] }.
+	   - For CASCADING or MATRIX sections, add the same "icon" field alongside mode/cascade_levels/matrix.
+	   - If the user asks for icons beside individual cascading fields/options, prefix the visible "label" or "value" text only, for example "🗣️ Chief Complaints" or "🌡️ Fever". Never add emoji to "id" fields.
 
 3. CASCADING SMART FORM — when the user asks for a "cascading", "smart form", "decision tree", or step-by-step guided form:
    Return section_config as:
-   {
-     "mode": "cascading",
-     "cascade_levels": [
+	   {
+	     "mode": "cascading",
+	     "icon": "optional single emoji or short symbol if requested",
+	     "cascade_levels": [
        {
          "id": "lvl_<short_snake_case>",
          "label": "Level Label (e.g. Specimen Type)",
@@ -291,9 +304,10 @@ REQUIREMENTS:
 
 4. MATRIX TABLE — when the user asks for a "matrix", "matrix table", "matrix format", "antibiotic matrix", "sensitivity matrix", or grid-style table with rows and columns:
    Return section_config as:
-   {
-     "mode": "matrix",
-     "cascade_levels": [],
+	   {
+	     "mode": "matrix",
+	     "icon": "optional single emoji or short symbol if requested",
+	     "cascade_levels": [],
      "matrix": {
        "rows": ["Row label 1", "Row label 2", ...],
        "columns": ["Column header 1", "Column header 2", ...],
@@ -306,13 +320,15 @@ REQUIREMENTS:
    - cellOptions = predefined dropdown values for each cell. Use ["S", "I", "R"] for antibiotic sensitivity. Leave as [] for free-text cells (e.g. eye refraction SPH/CYL values).
    - Keep row and column labels short and clear
    - For antibiotic sensitivity: rows = antibiotics, columns = organism placeholders ("Organism 1", "Organism 2") since organisms vary per patient, cellOptions = ["S", "I", "R"]
+   - For eye/refraction matrix requests: use rows like ["RE", "LE"] and columns like ["SPH", "CYL", "AXIS", "ADD"]. Do not include Height, Weight, or BMI.
    - Set generatedContent to "" when using matrix mode (content is built from cell entries at report time)
    - Set suggestedOptions to [] when using matrix mode
    - Limit to at most 20 rows and 6 columns to stay compact
 
-5. For FLAT sections (no cascading/matrix keyword):
-   - Set section_config to null
-   - Provide suggestedOptions as normal
+	5. For FLAT sections (no cascading/matrix keyword):
+	   - Set section_config to null unless the user requested an icon/emoji/symbol
+	   - If the user requested an icon/emoji/symbol, set section_config to { "mode": "flat", "icon": "chosen icon", "cascade_levels": [] }
+	   - Provide suggestedOptions as normal
 
 6. For FINDINGS sections (like Peripheral Smear):
    - Describe morphological observations

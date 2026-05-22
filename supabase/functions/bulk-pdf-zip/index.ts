@@ -6,6 +6,22 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 };
 
+const getGeneratedPdfUrl = (order: {
+  smart_report_url?: string | null;
+  reports?: { pdf_url?: string | null; print_pdf_url?: string | null }[] | { pdf_url?: string | null; print_pdf_url?: string | null } | null;
+}, pdfVariant: 'print' | 'ecopy' = 'print') => {
+  const reports = Array.isArray(order.reports) ? order.reports : order.reports ? [order.reports] : [];
+  const reportUrl = reports.find((report) =>
+    pdfVariant === 'ecopy' ? report?.pdf_url : report?.print_pdf_url || report?.pdf_url
+  );
+
+  if (pdfVariant === 'ecopy') {
+    return reportUrl?.pdf_url || order.smart_report_url || null;
+  }
+
+  return reportUrl?.print_pdf_url || reportUrl?.pdf_url || order.smart_report_url || null;
+};
+
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') {
     return new Response('ok', { headers: corsHeaders });
@@ -25,8 +41,9 @@ Deno.serve(async (req) => {
       });
     }
 
-    const { request_id } = await req.json();
+    const { request_id, pdf_variant } = await req.json();
     if (!request_id) throw new Error('request_id is required');
+    const pdfVariant: 'print' | 'ecopy' = pdf_variant === 'ecopy' ? 'ecopy' : 'print';
 
     // Get user's lab_id
     const { data: userData } = await supabase
@@ -75,9 +92,8 @@ Deno.serve(async (req) => {
 
     for (const order of orders || []) {
       try {
-        // Find best available PDF URL
-        const report = Array.isArray(order.reports) ? order.reports[0] : order.reports;
-        const pdfUrl = report?.print_pdf_url || report?.pdf_url || order.smart_report_url;
+        // Use only already-generated PDF URLs. This function must not generate reports.
+        const pdfUrl = getGeneratedPdfUrl(order, pdfVariant);
 
         if (!pdfUrl) {
           failed++;
@@ -108,7 +124,7 @@ Deno.serve(async (req) => {
         .from('bulk_pdf_download_requests')
         .update({
           status: 'failed',
-          error_message: 'No PDFs could be fetched. Reports may not be generated yet.',
+          error_message: `No ${pdfVariant === 'ecopy' ? 'eCopy ' : ''}PDFs could be fetched. Reports may not be generated yet.`,
           processed_orders: 0,
           failed_orders: orderIds.length,
           completed_at: new Date().toISOString(),

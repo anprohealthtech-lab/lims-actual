@@ -94,6 +94,7 @@ export const handler = async (event) => {
     contentType,
     base64Data,
     userId,
+    signatureId,
     signatureType = 'digital',
     assetName,
     description,
@@ -127,13 +128,31 @@ export const handler = async (event) => {
   let scopePath;
   let insertData;
 
-  if (userId) {
+  let existingSignature = null;
+  if (signatureId) {
+    const { data, error } = await supabase
+      .from('lab_user_signatures')
+      .select('id, user_id, file_path')
+      .eq('id', signatureId)
+      .eq('lab_id', labId)
+      .single();
+
+    if (error || !data) {
+      console.error('Signature update target not found', error);
+      return errorResponse(404, 'Signature not found');
+    }
+
+    existingSignature = data;
+  }
+
+  if (userId || existingSignature) {
     // User-specific signature upload
+    const resolvedUserId = userId || existingSignature.user_id;
     tableName = 'lab_user_signatures';
-    scopePath = `labs/${labId}/users/${userId}/signature/original`;
+    scopePath = `labs/${labId}/users/${resolvedUserId}/signature/original`;
     insertData = {
       lab_id: labId,
-      user_id: userId,
+      user_id: resolvedUserId,
       signature_type: signatureType,
       signature_name: safeName,
       file_type: contentType,
@@ -186,14 +205,58 @@ export const handler = async (event) => {
     insertData.storage_path = storagePath;
     insertData.file_url = publicUrl || `supabase://${SUPABASE_BUCKET}/${storagePath}`;
 
-    const { data: insertResult, error: insertError } = await supabase.from(tableName).insert(insertData).select('id').single();
-    if (insertError) {
-      console.error('Database insert failed', insertError);
-      return errorResponse(500, 'Failed to record branding asset');
+    let recordId;
+    if (existingSignature) {
+      const updateData = {
+        signature_type: insertData.signature_type,
+        signature_name: insertData.signature_name,
+        file_type: insertData.file_type,
+        file_size: insertData.file_size,
+        storage_bucket: insertData.storage_bucket,
+        status: 'pending',
+        description: insertData.description,
+        usage_context: insertData.usage_context,
+        updated_by: insertData.updated_by,
+        updated_at: now.toISOString(),
+        file_path: storagePath,
+        storage_path: storagePath,
+        file_url: publicUrl || `supabase://${SUPABASE_BUCKET}/${storagePath}`,
+        imagekit_url: null,
+        imagekit_file_id: null,
+        variants: null,
+        last_error: null,
+        processed_at: null,
+      };
+
+      const { error: updateError } = await supabase
+        .from(tableName)
+        .update(updateData)
+        .eq('id', existingSignature.id);
+
+      if (updateError) {
+        console.error('Database update failed', updateError);
+        return errorResponse(500, 'Failed to update signature');
+      }
+
+      if (existingSignature.file_path && existingSignature.file_path !== storagePath) {
+        supabase.storage.from(SUPABASE_BUCKET).remove([existingSignature.file_path]).catch((removeError) => {
+          console.warn('Failed to remove previous signature file', removeError);
+        });
+      }
+
+      recordId = existingSignature.id;
+    } else {
+      const { data: insertResult, error: insertError } = await supabase.from(tableName).insert(insertData).select('id').single();
+      if (insertError) {
+        console.error('Database insert failed', insertError);
+        return errorResponse(500, 'Failed to record branding asset');
+      }
+
+      recordId = insertResult.id;
     }
 
     const jobPayload = {
-      assetId: insertResult.id,
+      assetId: recordId,
       tableName,
       labId,
       userId: userId || null,
@@ -218,7 +281,7 @@ export const handler = async (event) => {
       console.warn('Failed to invoke background processor; leaving asset pending', bgError);
     }
 
-    return successResponse({ id: insertResult.id, status: 'pending', storagePath });
+    return successResponse({ id: recordId, status: 'pending', storagePath });
   } catch (err) {
     console.error('Unexpected error during branding upload', err);
     return errorResponse(500, 'Unexpected server error');

@@ -13,6 +13,7 @@ import { supabase, auth, database } from '../utils/supabase';
 import { useBrandingProcessingStatus } from '../hooks/useBrandingProcessingStatus';
 import { BrandingAssetUploader } from '../components/Branding/BrandingAssetUploader';
 import { SignatureUploader } from '../components/Branding/SignatureUploader';
+import { SignatureEditor } from '../components/Branding/SignatureEditor';
 import { BrandingAssetCard } from '../components/Branding/BrandingAssetCard';
 import { SignatureCard } from '../components/Branding/SignatureCard';
 import { BrandingPreview } from '../components/Branding/BrandingPreview';
@@ -32,6 +33,7 @@ interface BrandingAsset {
 
 interface UserSignature {
   id: string;
+  user_id?: string;
   signature_type: 'digital' | 'handwritten' | 'stamp' | 'text';
   signature_name: string;
   file_url?: string;
@@ -41,6 +43,12 @@ interface UserSignature {
   processing_status?: 'pending' | 'processing' | 'ready' | 'error';
   created_at: string;
   variants?: SignatureVariant[] | Record<string, string> | null;
+  users?: {
+    id: string;
+    name: string;
+    email: string;
+    role?: string;
+  };
 }
 
 interface AssetVariant {
@@ -94,6 +102,7 @@ export const BrandingSettings: React.FC = () => {
   // Upload states
   const [showAssetUploader, setShowAssetUploader] = useState(false);
   const [showSignatureUploader, setShowSignatureUploader] = useState(false);
+  const [editingSignature, setEditingSignature] = useState<UserSignature | null>(null);
   const [selectedAssetType, setSelectedAssetType] = useState<'header' | 'footer' | 'watermark' | 'logo' | 'letterhead' | 'front_page' | 'last_page'>('logo');
 
   // Processing status polling
@@ -190,6 +199,11 @@ export const BrandingSettings: React.FC = () => {
   const handleSignatureUploaded = async () => {
     await loadBrandingData();
     setShowSignatureUploader(false);
+  };
+
+  const handleSignatureUpdated = async () => {
+    await loadBrandingData();
+    setEditingSignature(null);
   };
 
   // Handle setting as default
@@ -757,6 +771,7 @@ export const BrandingSettings: React.FC = () => {
                   key={signature.id}
                   signature={signature}
                   onSetDefault={() => handleSetSignatureDefault(signature.id)}
+                  onEdit={() => setEditingSignature(signature)}
                   onDelete={() => handleDeleteSignature(signature.id)}
                   processingStatus={processingItems.find(item =>
                     item.asset_id === signature.id && item.asset_type === 'user_signature'
@@ -1141,6 +1156,15 @@ export const BrandingSettings: React.FC = () => {
           userId={currentUserId}
           onSuccess={handleSignatureUploaded}
           onClose={() => setShowSignatureUploader(false)}
+        />
+      )}
+
+      {editingSignature && labId && (
+        <SignatureEditor
+          signature={editingSignature}
+          labId={labId}
+          onSuccess={handleSignatureUpdated}
+          onClose={() => setEditingSignature(null)}
         />
       )}
     </div>

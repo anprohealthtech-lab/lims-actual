@@ -710,7 +710,7 @@ const ResultVerificationConsole: React.FC = () => {
   }, [from, to, currentLabId]);
 
   /* ----------------- Filter panels ----------------- */
-  const filteredPanels = useMemo(() => {
+	  const filteredPanels = useMemo(() => {
     const k = q.trim().toLowerCase();
     const normalizedSearchId = normalizeIdForSearch(k);
 
@@ -751,10 +751,15 @@ const ResultVerificationConsole: React.FC = () => {
       );
     }
 
-    return list;
-  }, [panels, q, stateFilter]);
+	    return list;
+	  }, [panels, q, stateFilter]);
 
-  /* ----------------- Load analytes for panel ----------------- */
+	  const allFilteredPanelsSelected = useMemo(
+	    () => filteredPanels.length > 0 && filteredPanels.every((panel) => selectedPanels.has(panel.result_id)),
+	    [filteredPanels, selectedPanels]
+	  );
+
+	  /* ----------------- Load analytes for panel ----------------- */
   const ensureAnalytesLoaded = async (result_id: string) => {
     if (rowsByResult[result_id]) return;
 
@@ -3333,10 +3338,10 @@ const ResultVerificationConsole: React.FC = () => {
                   <option value="ready">Verified Only</option>
                 </select>
 
-                <button
-                  onClick={() => setShowAdvancedFilters(!showAdvancedFilters)}
-                  className={`inline-flex items-center justify-center px-4 py-3 sm:py-4 border-2 rounded-xl transition-all duration-200 font-semibold ${showAdvancedFilters
-                    ? 'bg-blue-100 border-blue-300 text-blue-700'
+	                <button
+	                  onClick={() => setShowAdvancedFilters(!showAdvancedFilters)}
+	                  className={`inline-flex items-center justify-center px-4 py-3 sm:py-4 border-2 rounded-xl transition-all duration-200 font-semibold ${showAdvancedFilters
+	                    ? 'bg-blue-100 border-blue-300 text-blue-700'
                     : 'border-gray-300 text-gray-700 hover:border-gray-400 hover:bg-gray-50'
                     }`}
                 >
@@ -3345,11 +3350,19 @@ const ResultVerificationConsole: React.FC = () => {
                   {showAdvancedFilters ? (
                     <ChevronUp className="h-4 w-4 ml-2" />
                   ) : (
-                    <ChevronDown className="h-4 w-4 ml-2" />
-                  )}
-                </button>
-              </div>
-            </div>
+	                    <ChevronDown className="h-4 w-4 ml-2" />
+	                  )}
+	                </button>
+	                <button
+	                  onClick={selectAllPanels}
+	                  disabled={filteredPanels.length === 0 || allFilteredPanelsSelected}
+	                  className="inline-flex items-center justify-center px-4 py-3 sm:py-4 border-2 border-blue-200 text-blue-700 rounded-xl hover:bg-blue-50 hover:border-blue-300 transition-all duration-200 font-semibold disabled:cursor-not-allowed disabled:opacity-60"
+	                >
+	                  <CheckSquare className="h-5 w-5 mr-2" />
+	                  {allFilteredPanelsSelected ? 'All Selected' : `Select All (${filteredPanels.length})`}
+	                </button>
+	              </div>
+	            </div>
 
             {/* Advanced Filters Panel */}
             {showAdvancedFilters && (

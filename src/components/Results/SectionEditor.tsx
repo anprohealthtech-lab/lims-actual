@@ -47,6 +47,7 @@ interface MatrixConfig {
 
 interface SectionConfig {
   mode: 'flat' | 'cascading' | 'matrix';
+  icon?: string;
   cascade_levels: CascadeLevel[];
   matrix: MatrixConfig;
 }
@@ -476,6 +477,19 @@ const SECTION_TYPE_ICONS: Record<string, string> = {
   conclusion: '✅',
   custom: '📝',
 };
+
+const SECTION_TYPE_ICON_OVERRIDES: Record<string, string> = {
+  findings: '🔍',
+  impression: '💡',
+  recommendation: '📋',
+  technique: '🔬',
+  clinical_history: '📜',
+  conclusion: '✅',
+  custom: '📝',
+};
+
+const getSectionIcon = (section: TemplateSection) =>
+  section.section_config?.icon?.trim() || SECTION_TYPE_ICON_OVERRIDES[section.section_type] || '📝';
 
 const SECTION_TYPE_LABELS: Record<string, string> = {
   findings: 'Findings',
@@ -1063,7 +1077,7 @@ const SectionEditor = forwardRef<SectionEditorRef, SectionEditorProps>(({
                 className="w-full flex items-center justify-between p-4 hover:bg-gray-50 transition-colors"
               >
                 <div className="flex items-center">
-                  <span className="text-xl mr-3">{SECTION_TYPE_ICONS[section.section_type] || '📝'}</span>
+                  <span className="text-xl mr-3">{getSectionIcon(section)}</span>
                   <div className="text-left">
                     <div className="font-medium text-gray-900">
                       {section.section_name}

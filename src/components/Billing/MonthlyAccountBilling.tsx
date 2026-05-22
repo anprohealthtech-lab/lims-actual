@@ -40,6 +40,62 @@ const STATUS_COLORS: Record<string, string> = {
   cancelled: 'bg-gray-100 text-gray-400',
 };
 
+const sumPayments = (payments: any[]) =>
+  payments.reduce((sum, payment) => sum + (Number(payment.amount) || 0), 0);
+
+const getPaymentDateValue = (payment: any) =>
+  new Date(payment.transaction_date || payment.created_at || 0).getTime();
+
+const getConsolidatedPaymentInfo = (
+  invoice: ConsolidatedInvoice,
+  accountInvoices: ConsolidatedInvoice[],
+  accountPayments: any[]
+) => {
+  const invoiceId = (invoice as any).id;
+  const directPaid = sumPayments(
+    accountPayments.filter(
+      payment =>
+        payment.reference_type === 'consolidated_invoice' &&
+        payment.reference_id === invoiceId
+    )
+  );
+
+  const unassignedPayments = accountPayments
+    .filter(payment => payment.reference_type !== 'consolidated_invoice')
+    .sort((a, b) => getPaymentDateValue(a) - getPaymentDateValue(b));
+
+  let unassignedPool = sumPayments(unassignedPayments);
+  let allocatedToThisInvoice = 0;
+  const chronologicalInvoices = [...accountInvoices].sort((a: any, b: any) =>
+    String(a.billing_period_start).localeCompare(String(b.billing_period_start)) ||
+    String(a.created_at || '').localeCompare(String(b.created_at || ''))
+  );
+
+  for (const currentInvoice of chronologicalInvoices) {
+    const currentDirectPaid = sumPayments(
+      accountPayments.filter(
+        payment =>
+          payment.reference_type === 'consolidated_invoice' &&
+          payment.reference_id === (currentInvoice as any).id
+      )
+    );
+    const remainingTotal = Math.max(0, Number((currentInvoice as any).total_amount || 0) - currentDirectPaid);
+    const allocated = Math.min(unassignedPool, remainingTotal);
+    unassignedPool -= allocated;
+
+    if ((currentInvoice as any).id === invoiceId) {
+      allocatedToThisInvoice = allocated;
+      break;
+    }
+  }
+
+  const totalAmount = Number((invoice as any).total_amount || 0);
+  const paidAmount = Math.min(totalAmount, directPaid + allocatedToThisInvoice);
+  const dueAmount = Math.max(0, totalAmount - paidAmount);
+
+  return { paid_amount: paidAmount, due_amount: dueAmount };
+};
+
 const MonthlyAccountBilling: React.FC<MonthlyAccountBillingProps> = ({ onClose }) => {
   const [loading, setLoading] = useState(true);
   const [selectedPeriod, setSelectedPeriod] = useState('');
@@ -50,6 +106,7 @@ const MonthlyAccountBilling: React.FC<MonthlyAccountBillingProps> = ({ onClose }
   const [consolidating, setConsolidating] = useState<string | null>(null);
   const [pdfLoading, setPdfLoading] = useState<string | null>(null);
   const [showPaymentModal, setShowPaymentModal] = useState<string | null>(null);
+  const [selectedPreviewOrderIds, setSelectedPreviewOrderIds] = useState<string[]>([]);
 
   // Last 6 months always available
   const periods = React.useMemo(() => {
@@ -81,6 +138,21 @@ const MonthlyAccountBilling: React.FC<MonthlyAccountBillingProps> = ({ onClose }
       const monthlyAccounts = (accounts || []).filter(
         (a: any) => a.billing_mode === 'monthly' && a.is_active !== false
       );
+      const monthlyAccountIds = monthlyAccounts.map((account: any) => account.id);
+      const { data: accountPaymentRows } = monthlyAccountIds.length
+        ? await supabase
+            .from('credit_transactions')
+            .select('id, account_id, amount, transaction_type, reference_type, reference_id, transaction_date, created_at')
+            .eq('lab_id', await database.getCurrentUserLabId())
+            .eq('transaction_type', 'payment')
+            .in('account_id', monthlyAccountIds)
+        : { data: [] as any[] };
+      const paymentsByAccount = new Map<string, any[]>();
+      (accountPaymentRows || []).forEach((payment: any) => {
+        const accountPayments = paymentsByAccount.get(payment.account_id) || [];
+        accountPayments.push(payment);
+        paymentsByAccount.set(payment.account_id, accountPayments);
+      });
 
       const periodStart = `${selectedPeriod}-01`;
       const allConsolidated: ConsolidatedInvoice[] = consolidatedAll || [];
@@ -111,6 +183,14 @@ const MonthlyAccountBilling: React.FC<MonthlyAccountBillingProps> = ({ onClose }
           const accountHistory = allConsolidated
             .filter((ci: any) => ci.account_id === account.id)
             .sort((a: any, b: any) => b.billing_period_start.localeCompare(a.billing_period_start));
+          const accountPayments = paymentsByAccount.get(account.id) || [];
+          const accountHistoryWithPayments = accountHistory.map((ci: any) => ({
+            ...ci,
+            ...getConsolidatedPaymentInfo(ci, accountHistory, accountPayments),
+          }));
+          const currentConsolidated = thisConsolidated
+            ? accountHistoryWithPayments.find((ci: any) => ci.id === (thisConsolidated as any).id)
+            : undefined;
 
           return {
             account,
@@ -119,8 +199,8 @@ const MonthlyAccountBilling: React.FC<MonthlyAccountBillingProps> = ({ onClose }
             orderCount: unbilledOrders.length,
             patientCount: patientNames.size,
             hasConsolidated: !!thisConsolidated,
-            consolidatedInvoice: thisConsolidated,
-            allConsolidated: accountHistory,
+            consolidatedInvoice: currentConsolidated,
+            allConsolidated: accountHistoryWithPayments,
           };
         })
       );
@@ -133,7 +213,15 @@ const MonthlyAccountBilling: React.FC<MonthlyAccountBillingProps> = ({ onClose }
     }
   };
 
-  const handleCreateConsolidatedInvoice = async (accountId: string) => {
+  const getBillableOrders = (summary: AccountBillingSummary) =>
+    summary.orders.filter(o => o.billing_status !== 'billed' && !o.consolidated_invoice_id);
+
+  const openPreview = (summary: AccountBillingSummary) => {
+    setPreviewAccount(summary);
+    setSelectedPreviewOrderIds(getBillableOrders(summary).map(o => o.id));
+  };
+
+  const handleCreateConsolidatedInvoice = async (accountId: string, orderIds?: string[]) => {
     const summary = accountSummaries.find(s => s.account.id === accountId);
     if (!summary || summary.orderCount === 0) {
       alert('No unbilled orders found for this account in the selected period.');
@@ -149,12 +237,23 @@ const MonthlyAccountBilling: React.FC<MonthlyAccountBillingProps> = ({ onClose }
       const dueDate = new Date(
         Date.now() + (summary.account.payment_terms || 30) * 24 * 60 * 60 * 1000
       ).toISOString().split('T')[0];
-      const invoiceNumber = `CI-${selectedPeriod.replace('-', '')}-${accountId.slice(0, 6).toUpperCase()}`;
+      const existingPeriodInvoices = summary.allConsolidated.filter((ci: any) =>
+        ci.account_id === accountId && ci.billing_period_start === periodStart
+      );
+      const invoiceNumberSuffix = existingPeriodInvoices.length > 0
+        ? `-${String(existingPeriodInvoices.length + 1).padStart(2, '0')}`
+        : '';
+      const invoiceNumber = `CI-${selectedPeriod.replace('-', '')}-${accountId.slice(0, 6).toUpperCase()}${invoiceNumberSuffix}`;
       const lab_id = await database.getCurrentUserLabId();
 
-      const unbilledOrders = summary.orders.filter(
-        o => o.billing_status !== 'billed' && !o.consolidated_invoice_id
-      );
+      const selectedOrderIds = orderIds && orderIds.length > 0 ? new Set(orderIds) : null;
+      const unbilledOrders = getBillableOrders(summary).filter(o => !selectedOrderIds || selectedOrderIds.has(o.id));
+      if (unbilledOrders.length === 0) {
+        alert('Select at least one unbilled order to create the B2B bill.');
+        return;
+      }
+      const selectedTotalAmount = unbilledOrders.reduce((sum, order) => sum + order.total_amount, 0);
+      const selectedPatientCount = new Set(unbilledOrders.map(o => o.patient_name)).size;
 
       // Step 1: Create individual account invoices per order
       const createdInvoiceIds: string[] = [];
@@ -183,19 +282,19 @@ const MonthlyAccountBilling: React.FC<MonthlyAccountBillingProps> = ({ onClose }
         else if (inv) createdInvoiceIds.push(inv.id);
       }
 
-      // Step 2: Create consolidated invoice
+      // Step 2: Create a new consolidated invoice for this selected batch.
       const { data: consolidated, error: ciErr } = await database.consolidatedInvoices.create({
         account_id: accountId,
         invoice_number: invoiceNumber,
         billing_period_start: periodStart,
         billing_period_end: periodEnd,
-        subtotal: summary.totalAmount,
+        subtotal: selectedTotalAmount,
         discount_amount: 0,
         tax_amount: 0,
-        total_amount: summary.totalAmount,
+        total_amount: selectedTotalAmount,
         status: 'sent' as const,
         due_date: dueDate,
-        notes: `${summary.orderCount} orders · ${summary.patientCount} patients`,
+        notes: `${unbilledOrders.length} orders - ${selectedPatientCount} patients`,
       });
       if (ciErr) throw ciErr;
 
@@ -304,7 +403,7 @@ const MonthlyAccountBilling: React.FC<MonthlyAccountBillingProps> = ({ onClose }
               <div>
                 <div className="text-gray-500">Pending Amount</div>
                 <div className="font-bold text-lg text-orange-600">
-                  {formatCurrency(accountSummaries.filter(a => !a.hasConsolidated).reduce((s, a) => s + a.totalAmount, 0))}
+	                  {formatCurrency(accountSummaries.reduce((s, a) => s + a.totalAmount, 0))}
                 </div>
               </div>
               <div>
@@ -410,6 +509,22 @@ const MonthlyAccountBilling: React.FC<MonthlyAccountBillingProps> = ({ onClose }
                           </span>
                         </div>
                       )}
+                      {summary.hasConsolidated && summary.consolidatedInvoice && (summary.consolidatedInvoice as any).paid_amount > 0 && (
+                        <div>
+                          <span className="text-gray-500">Paid:</span>
+                          <span className="ml-1 font-semibold text-green-700">
+                            {formatCurrency((summary.consolidatedInvoice as any).paid_amount)}
+                          </span>
+                        </div>
+                      )}
+                      {summary.hasConsolidated && summary.consolidatedInvoice && (summary.consolidatedInvoice as any).due_amount > 0 && (
+                        <div>
+                          <span className="text-gray-500">Due:</span>
+                          <span className="ml-1 font-semibold text-amber-700">
+                            {formatCurrency((summary.consolidatedInvoice as any).due_amount)}
+                          </span>
+                        </div>
+                      )}
                     </div>
 
                     {summary.orderCount === 0 && !summary.hasConsolidated && (
@@ -423,7 +538,7 @@ const MonthlyAccountBilling: React.FC<MonthlyAccountBillingProps> = ({ onClose }
                   <div className="flex items-center gap-2 shrink-0">
                     {summary.orderCount > 0 && (
                       <button
-                        onClick={() => setPreviewAccount(summary)}
+	                        onClick={() => openPreview(summary)}
                         className="px-3 py-1.5 text-sm border border-gray-300 rounded-md text-gray-700 hover:bg-gray-50 flex items-center gap-1"
                       >
                         <Eye className="w-4 h-4" />
@@ -431,9 +546,19 @@ const MonthlyAccountBilling: React.FC<MonthlyAccountBillingProps> = ({ onClose }
                       </button>
                     )}
 
-                    {summary.hasConsolidated && summary.consolidatedInvoice ? (
-                      <>
-                        <button
+	                    {summary.hasConsolidated && summary.consolidatedInvoice ? (
+	                      <>
+	                        {summary.orderCount > 0 && (
+	                          <button
+	                            onClick={() => openPreview(summary)}
+	                            disabled={consolidating === summary.account.id}
+	                            className="px-3 py-1.5 text-sm bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:opacity-50 flex items-center gap-1"
+	                          >
+	                            <Plus className="w-4 h-4" />
+	                            New Bill
+	                          </button>
+	                        )}
+	                        <button
                           onClick={() => handleDownloadPDF(summary.consolidatedInvoice!, summary.account.name)}
                           disabled={pdfLoading === summary.consolidatedInvoice.id}
                           className="px-3 py-1.5 text-sm bg-gray-100 text-gray-700 hover:bg-gray-200 rounded-md flex items-center gap-1 disabled:opacity-50"
@@ -456,7 +581,7 @@ const MonthlyAccountBilling: React.FC<MonthlyAccountBillingProps> = ({ onClose }
                         className="px-4 py-1.5 text-sm bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:opacity-40 flex items-center gap-1"
                       >
                         <Plus className="w-4 h-4" />
-                        {consolidating === summary.account.id ? 'Generating...' : 'Generate Monthly Bill'}
+	                        {consolidating === summary.account.id ? 'Generating...' : 'Create B2B Bill'}
                       </button>
                     )}
                   </div>
@@ -482,8 +607,9 @@ const MonthlyAccountBilling: React.FC<MonthlyAccountBillingProps> = ({ onClose }
             <div className="overflow-y-auto flex-1 p-5">
               <table className="w-full text-sm">
                 <thead>
-                  <tr className="border-b border-gray-200 text-left text-xs text-gray-500 uppercase">
-                    <th className="pb-2">Order #</th>
+	                  <tr className="border-b border-gray-200 text-left text-xs text-gray-500 uppercase">
+	                    <th className="pb-2 w-8"></th>
+	                    <th className="pb-2">Order #</th>
                     <th className="pb-2">Patient</th>
                     <th className="pb-2">Date</th>
                     <th className="pb-2 text-right">Amount</th>
@@ -491,9 +617,23 @@ const MonthlyAccountBilling: React.FC<MonthlyAccountBillingProps> = ({ onClose }
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-100">
-                  {previewAccount.orders.map(o => (
-                    <tr key={o.id} className={o.billing_status === 'billed' || o.consolidated_invoice_id ? 'opacity-40' : ''}>
-                      <td className="py-2 font-mono text-xs">{o.order_number || o.id.slice(0, 8)}</td>
+	                  {previewAccount.orders.map(o => (
+	                    <tr key={o.id} className={o.billing_status === 'billed' || o.consolidated_invoice_id ? 'opacity-40' : ''}>
+	                      <td className="py-2">
+	                        {!o.consolidated_invoice_id && o.billing_status !== 'billed' && (
+	                          <input
+	                            type="checkbox"
+	                            checked={selectedPreviewOrderIds.includes(o.id)}
+	                            onChange={(e) => {
+	                              setSelectedPreviewOrderIds(prev =>
+	                                e.target.checked ? [...prev, o.id] : prev.filter(id => id !== o.id)
+	                              );
+	                            }}
+	                            className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+	                          />
+	                        )}
+	                      </td>
+	                      <td className="py-2 font-mono text-xs">{o.order_number || o.id.slice(0, 8)}</td>
                       <td className="py-2">{o.patient_name}</td>
                       <td className="py-2 text-gray-500">{formatDate(o.order_date)}</td>
                       <td className="py-2 text-right font-medium text-green-700">{formatCurrency(o.total_amount)}</td>
@@ -511,8 +651,14 @@ const MonthlyAccountBilling: React.FC<MonthlyAccountBillingProps> = ({ onClose }
                 </tbody>
                 <tfoot>
                   <tr className="border-t-2 border-gray-300">
-                    <td colSpan={3} className="pt-3 font-semibold text-right pr-4 text-sm">Unbilled Total</td>
-                    <td className="pt-3 font-bold text-right text-green-700">{formatCurrency(previewAccount.totalAmount)}</td>
+	                    <td colSpan={4} className="pt-3 font-semibold text-right pr-4 text-sm">Selected Total</td>
+	                    <td className="pt-3 font-bold text-right text-green-700">
+	                      {formatCurrency(
+	                        getBillableOrders(previewAccount)
+	                          .filter(o => selectedPreviewOrderIds.includes(o.id))
+	                          .reduce((sum, o) => sum + o.total_amount, 0)
+	                      )}
+	                    </td>
                     <td />
                   </tr>
                 </tfoot>
@@ -523,16 +669,16 @@ const MonthlyAccountBilling: React.FC<MonthlyAccountBillingProps> = ({ onClose }
               <button onClick={() => setPreviewAccount(null)} className="px-4 py-2 border border-gray-300 rounded-md text-gray-700 hover:bg-gray-50 text-sm">
                 Close
               </button>
-              {!previewAccount.hasConsolidated && previewAccount.orderCount > 0 && (
-                <button
-                  onClick={() => { setPreviewAccount(null); handleCreateConsolidatedInvoice(previewAccount.account.id); }}
-                  disabled={consolidating === previewAccount.account.id}
-                  className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:opacity-50 flex items-center gap-2 text-sm"
-                >
-                  <Plus className="w-4 h-4" />
-                  Generate Monthly Bill
-                </button>
-              )}
+	              {previewAccount.orderCount > 0 && (
+	                <button
+	                  onClick={() => { setPreviewAccount(null); handleCreateConsolidatedInvoice(previewAccount.account.id, selectedPreviewOrderIds); }}
+	                  disabled={consolidating === previewAccount.account.id || selectedPreviewOrderIds.length === 0}
+	                  className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:opacity-50 flex items-center gap-2 text-sm"
+	                >
+	                  <Plus className="w-4 h-4" />
+	                  Create B2B Bill
+	                </button>
+	              )}
             </div>
           </div>
         </div>
@@ -573,7 +719,15 @@ const MonthlyAccountBilling: React.FC<MonthlyAccountBillingProps> = ({ onClose }
                         {formatDate(ci.billing_period_start)} – {formatDate(ci.billing_period_end)}
                       </td>
                       <td className="py-3 text-gray-500">{ci.due_date ? formatDate(ci.due_date) : '—'}</td>
-                      <td className="py-3 text-right font-semibold">{formatCurrency(ci.total_amount)}</td>
+                      <td className="py-3 text-right">
+                        <div className="font-semibold">{formatCurrency(ci.total_amount)}</div>
+                        {(ci.paid_amount || 0) > 0 && (
+                          <div className="text-xs text-green-700">Paid: {formatCurrency(ci.paid_amount)}</div>
+                        )}
+                        {ci.status !== 'paid' && (
+                          <div className="text-xs text-amber-700">Due: {formatCurrency(ci.due_amount ?? ci.total_amount)}</div>
+                        )}
+                      </td>
                       <td className="py-3">
                         <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${STATUS_COLORS[ci.status] || 'bg-gray-100 text-gray-600'}`}>
                           {ci.status}
@@ -614,7 +768,9 @@ const MonthlyAccountBilling: React.FC<MonthlyAccountBillingProps> = ({ onClose }
           <ReceivePaymentModal
             accountId={summary.account.id}
             accountName={summary.account.name}
-            currentBalance={summary.consolidatedInvoice ? (summary.consolidatedInvoice as any).total_amount : summary.totalAmount}
+            totalAmount={summary.consolidatedInvoice ? (summary.consolidatedInvoice as any).total_amount : summary.totalAmount}
+            paidAmount={summary.consolidatedInvoice ? ((summary.consolidatedInvoice as any).paid_amount || 0) : 0}
+            currentBalance={summary.consolidatedInvoice ? ((summary.consolidatedInvoice as any).due_amount ?? (summary.consolidatedInvoice as any).total_amount) : summary.totalAmount}
             consolidatedInvoiceId={summary.consolidatedInvoice?.id}
             onClose={() => setShowPaymentModal(null)}
             onSuccess={() => { loadPeriodData(); setShowPaymentModal(null); }}

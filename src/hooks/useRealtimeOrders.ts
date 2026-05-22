@@ -53,12 +53,9 @@ export function useRealtimeOrders(options: UseRealtimeOrdersOptions = {}) {
 
   useEffect(() => {
     if (!enabled) {
-      console.log('📡 Realtime orders: Disabled');
       return;
     }
 
-    console.log('📡 Setting up realtime subscription for orders...', { labId });
-    
     // Build filter based on lab_id
     const filter = labId ? `lab_id=eq.${labId}` : undefined;
     
@@ -73,8 +70,6 @@ export function useRealtimeOrders(options: UseRealtimeOrdersOptions = {}) {
           ...(filter && { filter })
         },
         (payload: any) => {
-          console.log('📡 Order change received:', payload.eventType, payload);
-          
           const update: RealtimeOrderUpdate = {
             type: payload.eventType,
             order: payload.new,
@@ -86,29 +81,23 @@ export function useRealtimeOrders(options: UseRealtimeOrdersOptions = {}) {
           // Call event-specific handlers
           switch (payload.eventType) {
             case 'INSERT':
-              console.log('✨ New order created:', payload.new.id);
               if (onInsertRef.current) onInsertRef.current(payload.new);
               break;
               
             case 'UPDATE':
-              console.log('🔄 Order updated:', payload.new.id);
               if (onUpdateRef.current) onUpdateRef.current(payload.new, payload.old);
               break;
               
             case 'DELETE':
-              console.log('🗑️ Order deleted:', payload.old.id);
               if (onDeleteRef.current) onDeleteRef.current(payload.old.id);
               break;
           }
         }
       )
       .subscribe((status) => {
-        console.log('📡 Orders subscription status:', status);
-        
         if (status === 'SUBSCRIBED') {
           setIsConnected(true);
           setError(null);
-          console.log('✅ Successfully subscribed to order changes');
         } else if (status === 'CHANNEL_ERROR') {
           setIsConnected(false);
           setError('Failed to connect to realtime channel');
@@ -122,7 +111,6 @@ export function useRealtimeOrders(options: UseRealtimeOrdersOptions = {}) {
 
     // Cleanup on unmount
     return () => {
-      console.log('📡 Unsubscribing from order changes...');
       channel.unsubscribe();
       setIsConnected(false);
     };

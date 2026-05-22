@@ -37,7 +37,7 @@ import { database, supabase, LabBrandingAsset, LabUserSignature } from '../utils
 import { ensureReportRegions } from '../utils/reportTemplateRegions';
 import '../styles/report-baseline.css';
 
-type PlaceholderGroup = 'lab' | 'test' | 'patient' | 'branding' | 'signature' | 'section';
+type PlaceholderGroup = 'lab' | 'test' | 'patient' | 'branding' | 'signature' | 'section' | 'extras';
 
 interface LabTemplateRecord {
   id: string;
@@ -114,6 +114,15 @@ const REQUIRED_PLACEHOLDERS: Record<string, string> = {
 };
 
 const PLACEHOLDER_REGEX = /{{\s*([^{}]+)\s*}}/g;
+
+const slugPlaceholderKey = (value: string): string =>
+  value
+    .replace(/{{|}}/g, '')
+    .replace(/^section:/i, '')
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '');
 
 const BRANDING_TYPE_LABELS: Record<LabBrandingAsset['asset_type'], string> = {
   logo: 'Logo',
@@ -1222,16 +1231,59 @@ const TemplateStudioCKE: React.FC = () => {
         } else if (sectionRows?.length) {
           const sectionPlaceholders = sectionRows
             .filter((section: any) => section?.placeholder_key)
-            .map((section: any) => {
+            .flatMap((section: any) => {
               const rawKey = String(section.placeholder_key || '').trim();
-              const token = rawKey.startsWith('{{') ? rawKey : `{{${rawKey}}}`;
-              const label = section.section_name || toTitleCase(rawKey.replace(/{{|}}/g, '')) || 'Report Section';
-              return {
+              const cleanKey = rawKey
+                .replace(/^{{\s*/, '')
+                .replace(/\s*}}$/, '')
+                .replace(/^section:/i, '')
+                .trim();
+              const sectionKey = slugPlaceholderKey(cleanKey || rawKey);
+              const token = `{{${sectionKey || cleanKey || rawKey}}}`;
+              const label = section.section_name || toTitleCase(sectionKey || cleanKey || rawKey.replace(/{{|}}/g, '')) || 'Report Section';
+              const options: PlaceholderOption[] = [{
                 id: `section-${section.id || rawKey}`,
                 label,
                 placeholder: token,
                 group: 'section' as const,
-              } satisfies PlaceholderOption;
+              }];
+
+              const rawConfig = section.section_config;
+              const sectionConfig = typeof rawConfig === 'string'
+                ? (() => {
+                  try {
+                    return JSON.parse(rawConfig);
+                  } catch {
+                    return null;
+                  }
+                })()
+                : rawConfig;
+              const cascadeLevels = Array.isArray(sectionConfig?.cascade_levels)
+                ? sectionConfig.cascade_levels
+                : [];
+
+              const addCascadeLevelPlaceholders = (levels: any[]) => {
+                levels.forEach((level: any) => {
+                  const levelKey = slugPlaceholderKey(level?.label || level?.id || '');
+                  if (sectionKey && levelKey) {
+                    options.push({
+                      id: `section-${section.id || rawKey}-${level.id || levelKey}`,
+                      label: `${label} - ${level.label || toTitleCase(levelKey)}`,
+                      placeholder: `{{${sectionKey}_${levelKey}}}`,
+                      group: 'section',
+                    });
+                  }
+
+                  (level?.options || []).forEach((option: any) => {
+                    if (Array.isArray(option?.sub_levels)) {
+                      addCascadeLevelPlaceholders(option.sub_levels);
+                    }
+                  });
+                });
+              };
+
+              addCascadeLevelPlaceholders(cascadeLevels);
+              return options;
             });
 
           if (sectionPlaceholders.length) {
@@ -1332,7 +1384,15 @@ const TemplateStudioCKE: React.FC = () => {
     console.log('Final options after dedup:', finalOptions);
     console.log('Test group items after dedup:', finalOptions.filter(o => o.group === 'test'));
     return finalOptions;
-  }, [LAB_META_PLACEHOLDER_OPTIONS, PATIENT_PLACEHOLDER_OPTIONS, labId, templateMeta?.test_group_id, user?.id]);
+  }, [
+    LAB_META_PLACEHOLDER_OPTIONS,
+    PATIENT_PLACEHOLDER_OPTIONS,
+    REPORT_EXTRAS_PLACEHOLDER_OPTIONS,
+    SECTION_PLACEHOLDER_OPTIONS,
+    labId,
+    templateMeta?.test_group_id,
+    user?.id,
+  ]);
 
   const loadPlaceholderOptions = useCallback(async () => {
     setPlaceholderLoading(true);

@@ -247,6 +247,13 @@ const InvoiceTemplateEditor: React.FC<InvoiceTemplateEditorProps> = ({ templateI
       patient_age: '45',
       patient_gender: 'Male',
       patient_id: 'PAT-2024-001',
+      account_name: 'Acme Corporate Health',
+      account_address: 'Corporate Park, Mumbai, Maharashtra',
+      account_phone: '+91 22 5555 0101',
+      account_email: 'billing@acme.example',
+      account_gst: '27AAAAA0000A1Z5',
+      patient_count: '2',
+      invoice_count: '2',
       invoice_number: 'INV-2024-12345',
       invoice_date: new Date().toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' }),
       due_date: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' }),
@@ -285,9 +292,34 @@ const InvoiceTemplateEditor: React.FC<InvoiceTemplateEditorProps> = ({ templateI
       subtotal: '₹1,900.00',
       tax_amount: '₹342.00',
       tax_percentage: '18',
+      b2b_patient_blocks: `
+        <div class="patient-service-block">
+          <div class="patient-service-head">
+            <div>
+              <div class="patient-service-index">Patient 1</div>
+              <div class="patient-service-name">Rajesh Kumar</div>
+              <div class="patient-service-meta">Invoice: INV-2024-12345</div>
+            </div>
+            <div class="patient-service-total"><span>Patient Amount</span><strong>₹1,300.00</strong></div>
+          </div>
+          <table class="patient-service-items">
+            <tbody>
+              <tr><td>Complete Blood Count<div class="patient-item-package">Package: Executive Health Package</div></td><td style="text-align:center;">1</td><td style="text-align:right;">₹500.00</td><td style="text-align:right;">₹500.00</td></tr>
+              <tr><td>Lipid Profile</td><td style="text-align:center;">1</td><td style="text-align:right;">₹800.00</td><td style="text-align:right;">₹800.00</td></tr>
+            </tbody>
+          </table>
+          <div class="patient-service-words">Amount in words: One Thousand Three Hundred Rupees Only</div>
+        </div>
+      `,
+      patient_service_blocks: '{{b2b_patient_blocks}}',
+      patient_item_blocks: '{{b2b_patient_blocks}}',
       total: '₹2,242.00',
       amount_paid: '₹1,000.00',
       balance_due: '₹1,242.00',
+      grand_total: '₹2,242.00',
+      amount_in_words: 'Two Thousand Two Hundred Forty Two Rupees Only',
+      total_amount_in_words: 'Two Thousand Two Hundred Forty Two Rupees Only',
+      grand_total_in_words: 'Two Thousand Two Hundred Forty Two Rupees Only',
       payment_terms: 'Payment is due within 7 days of invoice date. Late payments may incur additional charges.',
       bank_details: `
         <div style="margin-top: 20px; padding: 15px; background: #f9fafb; border: 1px solid #e5e7eb; border-radius: 6px;">
@@ -308,6 +340,10 @@ const InvoiceTemplateEditor: React.FC<InvoiceTemplateEditorProps> = ({ templateI
     let result = html;
     
     // Replace all placeholders
+    Object.entries(sampleData).forEach(([key, value]) => {
+      const regex = new RegExp(`{{\\s*${key}\\s*}}`, 'g');
+      result = result.replace(regex, String(value));
+    });
     Object.entries(sampleData).forEach(([key, value]) => {
       const regex = new RegExp(`{{\\s*${key}\\s*}}`, 'g');
       result = result.replace(regex, String(value));

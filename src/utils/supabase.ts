@@ -16,6 +16,10 @@ if (!supabaseUrl || !supabaseAnonKey) {
 
 export const supabase = createClient(supabaseUrl, supabaseAnonKey);
 
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const isUuid = (value: unknown): value is string =>
+  typeof value === "string" && UUID_RE.test(value);
+
 export interface ReportTemplateContextMeta {
   orderNumber: string;
   orderDate: string | null;
@@ -3711,6 +3715,19 @@ export const database = {
     // Auto-update order status based on results
     checkAndUpdateStatus: async (orderId: string) => {
       try {
+        if (!isUuid(orderId)) {
+          return { data: null, error: new Error("Invalid order ID") };
+        }
+
+        const { data: rpcData, error: rpcError } = await supabase
+          .rpc("check_and_update_order_status", { p_order_id: orderId });
+
+        if (!rpcError) {
+          return { data: rpcData, error: null };
+        }
+
+        console.warn("RPC check_and_update_order_status failed, falling back to client status check:", rpcError);
+
         // Get order with tests and results
         const { data: order, error: orderError } = await supabase
           .from("orders")

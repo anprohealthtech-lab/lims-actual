@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 
-type PlaceholderGroup = 'lab' | 'test' | 'patient' | 'branding' | 'signature' | 'section';
+type PlaceholderGroup = 'lab' | 'test' | 'patient' | 'branding' | 'signature' | 'section' | 'extras';
 type BrandingAssetType = 'header' | 'footer' | 'watermark' | 'logo' | 'letterhead';
 
 interface PlaceholderOption {
@@ -52,6 +52,7 @@ const PlaceholderPicker: React.FC<PlaceholderPickerProps> = ({ options, onInsert
       branding: [],
       signature: [],
       section: [],
+      extras: [],
     };
     options.forEach((option) => {
       const bucket = option.group ?? 'lab';
@@ -339,9 +340,51 @@ const PlaceholderPicker: React.FC<PlaceholderPickerProps> = ({ options, onInsert
   // Render analyte-centric view for test group placeholders
   const renderAnalyteCentricView = () => {
     if (analyteGroups.length === 0) {
+      if (grouped.section.length > 0) {
+        return (
+          <div className="space-y-3">
+            <div className="rounded-md border border-blue-100 bg-blue-50 px-3 py-2 text-xs text-blue-700">
+              This linked test group has report sections instead of analytes. Insert section placeholders into the template.
+            </div>
+            <div className="grid grid-cols-1 gap-2">
+              {grouped.section.map((option) => {
+                const isJustActioned = lastAction?.placeholder === option.placeholder;
+                return (
+                  <button
+                    key={option.id}
+                    type="button"
+                    onClick={() => handleQuickInsert(option)}
+                    onContextMenu={(e) => {
+                      e.preventDefault();
+                      handleQuickCopy(option);
+                    }}
+                    className={`relative rounded-md border px-3 py-2 text-left text-xs transition ${
+                      isJustActioned
+                        ? 'border-green-400 bg-green-50'
+                        : 'border-gray-200 bg-white hover:border-blue-300 hover:bg-blue-50'
+                    }`}
+                    title={`Click to insert, Right-click to copy\n${option.placeholder}`}
+                  >
+                    <div className="font-medium text-gray-900">{option.label}</div>
+                    <code className="mt-1 block truncate text-[10px] text-gray-500">
+                      {option.placeholder}
+                    </code>
+                    {isJustActioned && (
+                      <span className="absolute -top-2 right-2 rounded bg-green-600 px-1.5 py-0.5 text-[9px] text-white">
+                        {lastAction?.type === 'copy' ? 'Copied!' : 'Inserted!'}
+                      </span>
+                    )}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        );
+      }
+
       return (
         <div className="rounded-md border border-dashed border-gray-200 bg-gray-50 px-4 py-8 text-center text-sm text-gray-500">
-          Select a test group to view analyte placeholders.
+          Select a linked test group to view result or section placeholders.
         </div>
       );
     }
@@ -590,9 +633,9 @@ const PlaceholderPicker: React.FC<PlaceholderPickerProps> = ({ options, onInsert
                 }`}
               >
                 Test Results
-                {analyteGroups.length > 0 && (
+                {(analyteGroups.length > 0 || grouped.section.length > 0) && (
                   <span className="ml-1.5 rounded-full bg-blue-100 px-2 py-0.5 text-[10px] text-blue-700">
-                    {analyteGroups.length}
+                    {analyteGroups.length || grouped.section.length}
                   </span>
                 )}
               </button>

@@ -14,6 +14,7 @@ import SectionEditor, { SectionEditorRef } from "../Results/SectionEditor";
 // ─── Types ───────────────────────────────────────────────────────────────────
 
 interface AnalyteRow {
+  test_group_id: string;
   analyte_id: string;
   lab_analyte_id?: string | null;
   parameter: string;
@@ -44,20 +45,23 @@ interface TestGroup {
   order_test_id: string | null;
   is_section_only?: boolean;
   ref_range_ai_config?: { enabled?: boolean; consider_age?: boolean } | null;
-  analytes: {
-    id: string;
-    name: string;
-    code?: string;
-    units?: string;
-    reference_range?: string;
-    is_calculated?: boolean;
-    formula?: string | null;
-    formula_variables?: string[] | string | null;
-    expected_normal_values?: string[];
-    expected_value_flag_map?: Record<string, string>;
-    value_type?: string;
-    expected_value_codes?: Record<string, string>;
-    existing_result?: {
+	  analytes: {
+	    id: string;
+	    lab_analyte_id?: string | null;
+	    name: string;
+	    code?: string;
+	    units?: string;
+	    reference_range?: string;
+	    lab_specific_reference_range?: string | null;
+	    is_calculated?: boolean;
+	    formula?: string | null;
+	    formula_variables?: string[] | string | null;
+	    expected_normal_values?: string[];
+	    expected_value_flag_map?: Record<string, string>;
+	    value_type?: string;
+	    expected_value_codes?: Record<string, string>;
+	    default_value?: string | null;
+	    existing_result?: {
       value: string;
       unit?: string;
       reference_range?: string;
@@ -205,10 +209,16 @@ const toVariableSlug = (name: string): string => {
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const safeUuid = (v: string | null | undefined) => (v && UUID_RE.test(v) ? v : null);
+const uuidProp = (key: string, value: string | null | undefined) => {
+  const id = safeUuid(value);
+  return id ? { [key]: id } : {};
+};
 
 const getGroupKey = (tg: Pick<TestGroup, "test_group_id" | "order_test_group_id" | "order_test_id">) => {
-  if (tg.order_test_group_id) return `otg:${tg.order_test_group_id}`;
-  if (tg.order_test_id) return `ot:${tg.order_test_id}`;
+  const orderTestGroupId = safeUuid(tg.order_test_group_id);
+  const orderTestId = safeUuid(tg.order_test_id);
+  if (orderTestGroupId) return `otg:${orderTestGroupId}`;
+  if (orderTestId) return `ot:${orderTestId}`;
   return `tg:${tg.test_group_id}`;
 };
 
@@ -288,7 +298,7 @@ const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, on
           ),
           results(
             id, order_test_group_id, order_test_id, test_group_id,
-	            result_values(analyte_id, analyte_name, parameter, value, unit, reference_range, flag, verify_note, verify_status, is_hidden_from_report, hidden_reason)
+		            result_values(analyte_id, lab_analyte_id, analyte_name, parameter, value, unit, reference_range, flag, verify_note, verify_status, is_hidden_from_report, hidden_reason)
           )
         `)
         .eq("id", order.id)
@@ -311,18 +321,11 @@ const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, on
             (otId && r.order_test_id === otId) ||
             (!otgId && !otId && r.test_group_id === a?.test_group_id)
           );
-          let existing = resultRow?.result_values?.find((rv: any) => rv.analyte_id === a?.id) || null;
-          // Fallback: scan all result rows by analyte_id or analyte_name
-          // (handles: analyzer-inserted values with null linkage fields, Save Draft with null analyte_id)
-          if (!existing && results) {
-            for (const r of results) {
-              const found = r.result_values?.find((rv: any) =>
-                rv.analyte_id === a?.id ||
-                (!rv.analyte_id && (rv.analyte_name === a?.name || rv.parameter === a?.name))
-              );
-              if (found) { existing = found; break; }
-            }
-          }
+	          let existing = resultRow?.result_values?.find((rv: any) =>
+		            (tga.lab_analyte_id && rv.lab_analyte_id === tga.lab_analyte_id) ||
+		            rv.analyte_id === a?.id ||
+	            (!rv.analyte_id && (rv.analyte_name === a?.name || rv.parameter === a?.name))
+	          ) || null;
           // Merge: spread global analyte fields first, then override with lab_analytes fields
           const merged = la ? {
             ...a,
@@ -384,24 +387,25 @@ const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, on
         return acc;
       }, []);
 
-      // Fetch lab_analytes overrides for analytes that didn't have lab_analyte_id set yet
-      // (fallback for rows pre-dating the lab_analyte_id migration)
-      const allAnalyteIds = merged.flatMap(tg => tg.analytes.map(a => a.id)).filter(Boolean);
-      let labAnalytesMap = new Map<string, any>();
-      if (allAnalyteIds.length > 0 && data.lab_id) {
-        const { data: la } = await supabase
-          .from("lab_analytes")
-          .select("analyte_id, expected_normal_values, expected_value_flag_map, value_type, expected_value_codes, default_value, reference_range, lab_specific_reference_range, is_calculated, formula, formula_variables")
-          .eq("lab_id", data.lab_id)
-          .in("analyte_id", allAnalyteIds)
-          .order("created_at", { ascending: true });
-        // Deduplicate: keep only the first (earliest) row per analyte_id
-        if (la) {
-          for (const x of la as any[]) {
-            if (!labAnalytesMap.has(x.analyte_id)) labAnalytesMap.set(x.analyte_id, x);
-          }
-        }
-      }
+	      // Fetch any missing lab_analytes overrides by exact lab_analyte_id.
+	      // Do not fall back by analyte_id: the same analyte can appear in different
+	      // test groups (for example Urine Color and Stool Color) with different defaults.
+	      const allLabAnalyteIds = Array.from(new Set(
+	        merged.flatMap(tg => tg.analytes.map(a => a.lab_analyte_id).filter(Boolean))
+	      ));
+	      let labAnalytesMap = new Map<string, any>();
+	      if (allLabAnalyteIds.length > 0 && data.lab_id) {
+	        const { data: la } = await supabase
+	          .from("lab_analytes")
+	          .select("id, analyte_id, expected_normal_values, expected_value_flag_map, value_type, expected_value_codes, default_value, reference_range, lab_specific_reference_range, is_calculated, formula, formula_variables")
+	          .eq("lab_id", data.lab_id)
+	          .in("id", allLabAnalyteIds);
+	        if (la) {
+	          for (const x of la as any[]) {
+	            if (x.id) labAnalytesMap.set(x.id, x);
+	          }
+	        }
+	      }
 
       setTestGroups(merged);
 
@@ -429,11 +433,13 @@ const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, on
 
         if (needsStubIds.size > 0) {
           // Pre-create stub result rows for groups that have technician sections or are section-only
-          const [{ data: { user: currentUser } }, userLabId] = await Promise.all([
-            supabase.auth.getUser(),
-            database.getCurrentUserLabId(),
-          ]);
-          for (const tg of merged) {
+	          const [{ data: { user: currentUser } }, userLabId] = await Promise.all([
+	            supabase.auth.getUser(),
+	            database.getCurrentUserLabId(),
+	          ]);
+	          const currentLabId = safeUuid(userLabId);
+	          if (!currentLabId) throw new Error("No valid lab ID found for current user");
+	          for (const tg of merged) {
             if (!needsStubIds.has(tg.test_group_id)) continue;
             if (resultIdMap.has(tg.test_group_id)) continue;
             const { data: stub } = await supabase
@@ -447,9 +453,9 @@ const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, on
                 entered_by: currentUser?.email || "Unknown",
                 entered_date: new Date().toISOString().split("T")[0],
                 test_group_id: tg.test_group_id,
-                lab_id: userLabId,
-                ...(tg.order_test_group_id && { order_test_group_id: tg.order_test_group_id }),
-                ...(tg.order_test_id && { order_test_id: tg.order_test_id }),
+	                lab_id: currentLabId,
+                ...uuidProp("order_test_group_id", tg.order_test_group_id),
+                ...uuidProp("order_test_id", tg.order_test_id),
               }, { onConflict: "order_id,test_name", ignoreDuplicates: false })
               .select()
               .single();
@@ -461,12 +467,12 @@ const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, on
       setResultIds(resultIdMap);
 
 
-      // Build flat rows
-      const flat: AnalyteRow[] = merged.flatMap(tg =>
-        tg.analytes.map(a => {
-          const la = labAnalytesMap.get(a.id);
-          let envValues: string[] = a.expected_normal_values || [];
-          let envMap: Record<string, string> = a.expected_value_flag_map || {};
+	      // Build flat rows
+	      const flat: AnalyteRow[] = merged.flatMap(tg =>
+	        tg.analytes.map(a => {
+	          const la = a.lab_analyte_id ? (labAnalytesMap.get(a.lab_analyte_id) || a) : a;
+	          let envValues: string[] = a.expected_normal_values || [];
+	          let envMap: Record<string, string> = a.expected_value_flag_map || {};
           if (la?.expected_normal_values) {
             try { const p = typeof la.expected_normal_values === "string" ? JSON.parse(la.expected_normal_values) : la.expected_normal_values; if (p?.length) envValues = p; } catch { /* */ }
           }
@@ -486,6 +492,7 @@ const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, on
             } catch { /* */ }
           }
           const envDefaultValue: string = la?.default_value || "";
+          const defaultFlag = envDefaultValue ? (envMap[envDefaultValue] ?? "") : "";
           const isRerun = !!(a.existing_result?.verify_note && String(a.existing_result.verify_note).toUpperCase().includes("RE-RUN"));
 	          const isHiddenExisting = !!a.existing_result?.is_hidden_from_report;
 	          const hasExisting = (hasMeaningfulTextValue(a.existing_result?.value) || isHiddenExisting) && !isRerun;
@@ -494,13 +501,14 @@ const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, on
             ? a.existing_result!.value
             : (isRerun ? (a.existing_result?.value || "") : (envDefaultValue || ""));
           return {
-            analyte_id: a.id,
-            lab_analyte_id: a.lab_analyte_id || null,
+	            test_group_id: tg.test_group_id,
+	            analyte_id: a.id,
+	            lab_analyte_id: a.lab_analyte_id || null,
             parameter: a.name,
             value: prefillValue,
             unit: a.existing_result?.unit || a.units || "",
             reference: a.existing_result?.reference_range ?? (la != null ? (la.lab_specific_reference_range ?? la.reference_range ?? a.reference_range) : a.reference_range) ?? "",
-            flag: a.existing_result?.flag || "",
+            flag: a.existing_result?.flag || defaultFlag,
             // lab_analytes overrides win for calculated-param fields
             is_calculated: la?.is_calculated != null ? !!la.is_calculated : !!a.is_calculated,
             is_existing: hasExisting,
@@ -584,6 +592,10 @@ const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, on
       setRows(flatWithCalc);
     } catch (err) {
       console.error("QuickResultEntry load error:", err);
+      setMessage({
+        text: `Could not load analytes: ${err instanceof Error ? err.message : (err as any)?.message || "Unknown error"}`,
+        type: "error",
+      });
     } finally {
       setLoading(false);
     }
@@ -846,14 +858,17 @@ const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, on
   // ── Save Draft ──────────────────────────────────────────────────────────────
 
   const handleSaveDraft = async () => {
-	    const valid = rows.filter(r => !r.is_calculated && (r.value.trim() || r.is_hidden_from_report));
+    const valid = rows.filter(r => !r.is_calculated && (r.value.trim() || r.is_hidden_from_report));
     if (!valid.length) { setMessage({ text: "Enter at least one value before saving.", type: "error" }); return; }
 
     setSaving(true);
     setMessage(null);
     try {
 	      const resultValues = valid.map(r => ({
-	        parameter: r.parameter,
+		        analyte_id: r.analyte_id || null,
+		        lab_analyte_id: r.lab_analyte_id || null,
+		        analyte_name: r.parameter,
+		        parameter: r.parameter,
 	        value: r.value.replace(/,/g, ''),
 	        unit: r.unit,
 	        reference_range: r.reference,
@@ -873,15 +888,15 @@ const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, on
         entered_by: user?.user_metadata?.full_name || user?.email || "Unknown",
         entered_date: new Date().toISOString().split("T")[0],
         values: withFlags,
+	        lab_id: safeUuid(order.lab_id),
       };
 
       // Check for existing result row to update
       const { data: existing } = await supabase.from("results").select("id").eq("order_id", order.id).limit(1).maybeSingle();
-      if (existing?.id) {
-        await database.results.update(existing.id, payload);
-      } else {
-        await database.results.create(payload);
-      }
+      const resultSave = existing?.id
+        ? await database.results.update(existing.id, payload)
+        : await database.results.create(payload);
+      if (resultSave?.error) throw resultSave.error;
       setMessage({ text: "Draft saved.", type: "success" });
       setTimeout(() => setMessage(null), 3000);
     } catch (err: any) {
@@ -894,7 +909,7 @@ const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, on
   // ── Submit ──────────────────────────────────────────────────────────────────
 
   const handleSubmit = async () => {
-	    const valid = rows.filter(r => !r.is_calculated && (r.value.trim() || r.is_hidden_from_report));
+    const valid = rows.filter(r => !r.is_calculated && (r.value.trim() || r.is_hidden_from_report));
     const hasSections = sectionEditorRefs.current.size > 0;
     if (!valid.length && !hasSections) { setMessage({ text: "Enter at least one value before submitting.", type: "error" }); return; }
 
@@ -902,10 +917,12 @@ const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, on
     setMessage({ text: "Saving results...", type: "success" });
 
     try {
-      const [{ data: { user: currentUser } }, userLabId] = await Promise.all([
-        supabase.auth.getUser(),
-        database.getCurrentUserLabId(),
-      ]);
+	      const [{ data: { user: currentUser } }, userLabId] = await Promise.all([
+	        supabase.auth.getUser(),
+	        database.getCurrentUserLabId(),
+	      ]);
+	      const currentLabId = safeUuid(userLabId);
+	      if (!currentLabId) throw new Error("No valid lab ID found for current user");
 
       // Prefetch existing result rows for key-based dedup
       const { data: existingRows } = await supabase
@@ -949,7 +966,10 @@ const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, on
         const { resolveReferenceRanges } = await import("../../utils/referenceRangeService");
         for (const tg of groupsToResolve) {
           const payload = tg.analytes.map(a => {
-            const row = workingRows.find(r => r.analyte_id === a.id);
+	            const row = workingRows.find(r =>
+	              r.test_group_id === tg.test_group_id &&
+	              ((a.lab_analyte_id && r.lab_analyte_id === a.lab_analyte_id) || (!a.lab_analyte_id && r.analyte_id === a.id))
+	            );
             return { id: a.id, name: a.name, value: row?.value || "", unit: row?.unit || a.units || "" };
           });
           try {
@@ -975,7 +995,10 @@ const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, on
         // Build value lookup map for formula evaluation
         const valueLookup = new Map<string, number>();
         for (const a of tg.analytes) {
-          const row = workingRows.find(r => r.analyte_id === a.id);
+	          const row = workingRows.find(r =>
+	            r.test_group_id === tg.test_group_id &&
+	            ((a.lab_analyte_id && r.lab_analyte_id === a.lab_analyte_id) || (!a.lab_analyte_id && r.analyte_id === a.id))
+	          );
           const val = row?.value || a.existing_result?.value;
           const num = toNumber(val);
           if (num !== null) {
@@ -989,17 +1012,21 @@ const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, on
 	        const manualForGroup = workingRows.filter(r =>
 	          !r.is_calculated &&
 	          (r.value.trim() || r.is_hidden_from_report) &&
-	          tg.analytes.some(a => a.id === r.analyte_id)
-	        );
+		          r.test_group_id === tg.test_group_id
+		        );
 
         const calcForGroup: AnalyteRow[] = tg.analytes
           .filter(a => !!a.is_calculated)
           .map(a => {
             const vars = parseFormulaVars(a.formula_variables);
-            const calcVal = a.formula ? evalFormula(a.formula, vars, valueLookup, deps, a.id) : "";
-            const existingRow = workingRows.find(r => r.analyte_id === a.id);
-	            return {
-	              analyte_id: a.id,
+	            const calcVal = a.formula ? evalFormula(a.formula, vars, valueLookup, deps, a.id, a.lab_analyte_id) : "";
+	            const existingRow = workingRows.find(r =>
+	              r.test_group_id === tg.test_group_id &&
+	              ((a.lab_analyte_id && r.lab_analyte_id === a.lab_analyte_id) || (!a.lab_analyte_id && r.analyte_id === a.id))
+	            );
+		            return {
+		              test_group_id: tg.test_group_id,
+		              analyte_id: a.id,
 	              lab_analyte_id: a.lab_analyte_id || null,
 	              parameter: a.name,
 	              value: existingRow?.value?.trim() ? existingRow.value : calcVal,
@@ -1015,11 +1042,12 @@ const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, on
 	          })
 	          .filter(r => hasMeaningfulTextValue(r.value) || r.is_hidden_from_report);
 
-        // Merge: prefer manual, add calc, dedup
-        const toPersist = [...manualForGroup, ...calcForGroup].reduce<AnalyteRow[]>((acc, r) => {
-          if (!acc.some(x => x.analyte_id === r.analyte_id)) acc.push(r);
-          return acc;
-        }, []);
+	        // Merge: prefer manual, add calc, dedup
+	        const toPersist = [...manualForGroup, ...calcForGroup].reduce<AnalyteRow[]>((acc, r) => {
+	          const key = r.lab_analyte_id || r.analyte_id;
+	          if (!acc.some(x => (x.lab_analyte_id || x.analyte_id) === key)) acc.push(r);
+	          return acc;
+	        }, []);
 
         if (toPersist.length === 0) continue;
 
@@ -1039,13 +1067,13 @@ const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, on
               entered_by: currentUser?.email || "Unknown",
               entered_date: new Date().toISOString().split("T")[0],
               test_group_id: tg.test_group_id,
-              lab_id: userLabId,
+	              lab_id: currentLabId,
               extracted_by_ai: false,
               status: autoVerifyOnSubmit ? "Reviewed" : "pending_verification",
               verification_status: autoVerifyOnSubmit ? "verified" : "pending_verification",
-              ...(autoVerifyOnSubmit && { verified_at: verifiedAt, verified_by: currentUser?.id || null }),
-              ...(tg.order_test_group_id && { order_test_group_id: tg.order_test_group_id }),
-              ...(tg.order_test_id && { order_test_id: tg.order_test_id }),
+              ...(autoVerifyOnSubmit && { verified_at: verifiedAt, verified_by: safeUuid(currentUser?.id) }),
+              ...uuidProp("order_test_group_id", tg.order_test_group_id),
+              ...uuidProp("order_test_id", tg.order_test_id),
             }, { onConflict: "order_id,test_name", ignoreDuplicates: false })
             .select("id, status, verification_status")
             .single();
@@ -1095,16 +1123,16 @@ const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, on
 	              is_auto_calculated: r.is_calculated,
               verify_status: (r.is_hidden_from_report || autoVerifyOnSubmit) ? "approved" : "pending",
               verified: r.is_hidden_from_report || autoVerifyOnSubmit,
-              verified_by: (r.is_hidden_from_report || autoVerifyOnSubmit) ? (currentUser?.id || null) : null,
+	              verified_by: (r.is_hidden_from_report || autoVerifyOnSubmit) ? safeUuid(currentUser?.id) : null,
               verified_at: (r.is_hidden_from_report || autoVerifyOnSubmit) ? verifiedAt : null,
               verify_note: r.is_hidden_from_report ? (r.hidden_reason || "Hidden from report") : (autoVerifyOnSubmit ? "Auto-verified during result entry." : null),
               is_hidden_from_report: !!r.is_hidden_from_report,
               hidden_reason: r.is_hidden_from_report ? (r.hidden_reason || "Hidden from report") : null,
 	              order_id: order.id,
               test_group_id: tg.test_group_id,
-              lab_id: userLabId,
-              ...(tg.order_test_group_id && { order_test_group_id: tg.order_test_group_id }),
-              ...(tg.order_test_id && { order_test_id: tg.order_test_id }),
+	              lab_id: currentLabId,
+	              ...uuidProp("order_test_group_id", tg.order_test_group_id),
+	              ...uuidProp("order_test_id", tg.order_test_id),
             };
           });
           const { error: mve } = await supabase.from("result_values").insert(missingValueRows);
@@ -1120,7 +1148,7 @@ const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, on
                 status: "Reviewed",
                 verification_status: "verified",
                 verified_at: verifiedAt,
-                verified_by: currentUser?.id || null,
+	                verified_by: safeUuid(currentUser?.id),
               }),
             })
             .eq("id", resultRowId!);
@@ -1181,16 +1209,16 @@ const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, on
 	          is_auto_calculated: r.is_calculated,
           verify_status: (r.is_hidden_from_report || autoVerifyOnSubmit) ? "approved" : "pending",
           verified: r.is_hidden_from_report || autoVerifyOnSubmit,
-          verified_by: (r.is_hidden_from_report || autoVerifyOnSubmit) ? (currentUser?.id || null) : null,
+	          verified_by: (r.is_hidden_from_report || autoVerifyOnSubmit) ? safeUuid(currentUser?.id) : null,
           verified_at: (r.is_hidden_from_report || autoVerifyOnSubmit) ? verifiedAt : null,
           verify_note: r.is_hidden_from_report ? (r.hidden_reason || "Hidden from report") : (autoVerifyOnSubmit ? "Auto-verified during result entry." : null),
           is_hidden_from_report: !!r.is_hidden_from_report,
           hidden_reason: r.is_hidden_from_report ? (r.hidden_reason || "Hidden from report") : null,
 	          order_id: order.id,
           test_group_id: tg.test_group_id,
-          lab_id: userLabId,
-          ...(tg.order_test_group_id && { order_test_group_id: tg.order_test_group_id }),
-          ...(tg.order_test_id && { order_test_id: tg.order_test_id }),
+	          lab_id: currentLabId,
+	          ...uuidProp("order_test_group_id", tg.order_test_group_id),
+	          ...uuidProp("order_test_id", tg.order_test_id),
           };
         });
 
@@ -1198,7 +1226,7 @@ const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, on
         if (ve) throw ve;
 
         // Non-blocking: inventory auto-consume
-        database.inventory.triggerAutoConsume({ labId: userLabId, orderId: order.id, resultId: resultRowId || undefined, testGroupId: tg.test_group_id })
+	        database.inventory.triggerAutoConsume({ labId: currentLabId, orderId: order.id, resultId: resultRowId || undefined, testGroupId: tg.test_group_id })
           .catch(e => console.warn("Inventory auto-consume skipped:", e));
       }
 
@@ -1228,7 +1256,7 @@ const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, on
             status: "Reviewed",
             verification_status: "verified",
             verified_at: verifiedAt,
-            verified_by: currentUser?.id || null,
+	            verified_by: safeUuid(currentUser?.id),
           })
           .in("id", Array.from(savedResultIds));
         if (resultVerifyError) throw resultVerifyError;
@@ -1363,7 +1391,7 @@ const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, on
 	                        : isDefault ? "bg-amber-50/50" : hasDraftValue ? "bg-green-50/40" : "hover:bg-blue-50/30";
 
                       return (
-                        <tr key={row.analyte_id} className={`border-b transition-colors ${rowBg}`}>
+	                        <tr key={`${row.test_group_id}:${row.lab_analyte_id || row.analyte_id}`} className={`border-b transition-colors ${rowBg}`}>
 
                           {/* Analyte name + ref range hint */}
                           <td className="px-4 py-2.5 overflow-hidden">

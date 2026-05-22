@@ -21,7 +21,21 @@ import TimelineFeed, { TimelineItem } from "../components/Dashboard/TimelineFeed
 
 const Dashboard2: React.FC = () => {
   // ---- filters / state ------------------------------------------------------
+  const getDateString = (date: Date) => {
+    const year = date.getFullYear();
+    const month = String(date.getMonth() + 1).padStart(2, "0");
+    const day = String(date.getDate()).padStart(2, "0");
+    return `${year}-${month}-${day}`;
+  };
+  const today = getDateString(new Date());
+  const last5DaysFrom = (() => {
+    const date = new Date();
+    date.setDate(date.getDate() - 4);
+    return getDateString(date);
+  })();
   const [filters, setFilters] = useState<{ from?: string; to?: string; status?: any; q?: string; labId?: string }>({
+    from: last5DaysFrom,
+    to: today,
     status: "all",
   });
   const [selected, setSelected] = useState<DashboardOrderRow | null>(null);

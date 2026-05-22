@@ -10,8 +10,21 @@ type Props = {
 const FiltersBar: React.FC<Props> = ({ value, onChange }) => {
   const [showDatePicker, setShowDatePicker] = useState(false);
 
-  const today = new Date().toISOString().slice(0, 10);
-  const last30Days = new Date(Date.now() - 30 * 24 * 3600 * 1000).toISOString().slice(0, 10);
+  const toDateString = (date: Date) => {
+    const year = date.getFullYear();
+    const month = String(date.getMonth() + 1).padStart(2, "0");
+    const day = String(date.getDate()).padStart(2, "0");
+    return `${year}-${month}-${day}`;
+  };
+
+  const today = toDateString(new Date());
+  const daysAgo = (days: number) => {
+    const date = new Date();
+    date.setDate(date.getDate() - days);
+    return toDateString(date);
+  };
+  const last5Days = daysAgo(4);
+  const last30Days = daysAgo(29);
 
   return (
     <div className="bg-white border border-gray-200 rounded-lg p-3 sm:p-4 flex flex-col gap-3 sm:flex-row sm:items-center">
@@ -42,7 +55,7 @@ const FiltersBar: React.FC<Props> = ({ value, onChange }) => {
             className="px-3 py-2 border border-gray-300 rounded-md inline-flex items-center"
           >
             <Calendar className="h-4 w-4 mr-2" /> 
-            {value.from ? `${value.from} to ${value.to || today}` : 'Last 30 days'}
+            {value.from ? `${value.from} to ${value.to || today}` : 'All dates'}
           </button>
           
           {showDatePicker && (
@@ -77,29 +90,37 @@ const FiltersBar: React.FC<Props> = ({ value, onChange }) => {
                     onClick={() => {
                       onChange({ ...value, from: today, to: today });
                       setShowDatePicker(false);
+	                    }}
+	                    className="px-3 py-1 text-sm bg-blue-600 text-white rounded-md"
+	                  >
+	                    Today
+	                  </button>
+                  <button
+                    onClick={() => {
+                      onChange({ ...value, from: last5Days, to: today });
+                      setShowDatePicker(false);
                     }}
-                    className="px-3 py-1 text-sm bg-blue-600 text-white rounded-md"
+                    className="px-3 py-1 text-sm bg-gray-600 text-white rounded-md"
                   >
-                    Today
+                    Last 5 days
                   </button>
                   <button
                     onClick={() => {
                       onChange({ ...value, from: last30Days, to: today });
                       setShowDatePicker(false);
                     }}
-                    className="px-3 py-1 text-sm bg-gray-600 text-white rounded-md"
+                    className="px-3 py-1 text-sm bg-purple-600 text-white rounded-md"
                   >
                     Last 30 days
                   </button>
                   <button
                     onClick={() => {
-                      const last7Days = new Date(Date.now() - 7 * 24 * 3600 * 1000).toISOString().slice(0, 10);
-                      onChange({ ...value, from: last7Days, to: today });
+                      onChange({ ...value, from: undefined, to: undefined });
                       setShowDatePicker(false);
                     }}
-                    className="px-3 py-1 text-sm bg-purple-600 text-white rounded-md"
+                    className="px-3 py-1 text-sm bg-white border border-gray-300 text-gray-700 rounded-md"
                   >
-                    Last 7 days
+                    All dates
                   </button>
                 </div>
               </div>

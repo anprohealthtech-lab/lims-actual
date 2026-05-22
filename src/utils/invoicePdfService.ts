@@ -282,7 +282,7 @@ async function fetchConsolidatedInvoiceData(id: string) {
   // Fetch linked invoices
   const { data: invoices } = await supabase
     .from('invoices')
-    .select('*, patient:patients(name)')
+    .select('*, patient:patients(name), invoice_items(*, package:packages(name))')
     .eq('consolidated_invoice_id', id)
     .order('invoice_date');
 
@@ -342,6 +342,10 @@ async function buildConsolidatedInvoiceHtmlBundle(
     '{{cgst}}': formatCurrency((data.tax || 0) / 2),
     '{{sgst}}': formatCurrency((data.tax || 0) / 2),
     '{{total}}': formatCurrency(data.total || 0),
+    '{{grand_total}}': formatCurrency(data.total || 0),
+    '{{amount_in_words}}': amountToIndianWords(data.total || 0),
+    '{{total_amount_in_words}}': amountToIndianWords(data.total || 0),
+    '{{grand_total_in_words}}': amountToIndianWords(data.total || 0),
     '{{amount_paid}}': formatCurrency(0),
     '{{balance_due}}': formatCurrency(data.total || 0),
     '{{payment_type}}': 'Bill to Account',
@@ -377,8 +381,12 @@ async function buildConsolidatedInvoiceHtmlBundle(
   });
 
   const consolidatedRowsHtml = buildConsolidatedInvoiceRows(data.invoices || []);
+  const patientBlocksHtml = buildPatientServiceBlocks(data.invoices || []);
   html = html.replace(/{{consolidated_invoice_rows}}/g, consolidatedRowsHtml);
   html = html.replace(/{{invoice_items}}/g, consolidatedRowsHtml);
+  html = html.replace(/{{b2b_patient_blocks}}/g, patientBlocksHtml);
+  html = html.replace(/{{patient_service_blocks}}/g, patientBlocksHtml);
+  html = html.replace(/{{patient_item_blocks}}/g, patientBlocksHtml);
 
   if (template.include_payment_terms && template.payment_terms_text) {
     html = html.replace(/{{payment_terms}}/g, `
@@ -435,6 +443,71 @@ function buildConsolidatedInvoiceRows(invoices: any[]): string {
       <td style="text-align:right;">${formatCurrency(inv.total || 0)}</td>
     </tr>
   `).join('');
+}
+
+function buildPatientServiceBlocks(invoices: any[]): string {
+  if (!invoices || invoices.length === 0) {
+    return '<div class="patient-service-empty">No patient services found</div>';
+  }
+
+  return invoices.map((inv: any, index: number) => {
+    const items = Array.isArray(inv.invoice_items) ? inv.invoice_items : [];
+    const serviceRows = items.length > 0
+      ? items.map((item: any) => {
+          const packageName = item.package?.name || item.package_name || '';
+          const itemName = item.test_name || item.name || 'Service';
+          const label = packageName
+            ? `${escapeHtml(itemName)}<div class="patient-item-package">Package: ${escapeHtml(packageName)}</div>`
+            : escapeHtml(itemName);
+          return `
+            <tr>
+              <td>${label}</td>
+              <td style="text-align:center;">${Number(item.quantity || 1)}</td>
+              <td style="text-align:right;">${formatCurrency(Number(item.price || 0))}</td>
+              <td style="text-align:right;">${formatCurrency(Number(item.total || 0))}</td>
+            </tr>
+          `;
+        }).join('')
+      : `
+        <tr>
+          <td>${escapeHtml(inv.invoice_number || 'Invoice')}</td>
+          <td style="text-align:center;">1</td>
+          <td style="text-align:right;">${formatCurrency(Number(inv.subtotal || inv.total || 0))}</td>
+          <td style="text-align:right;">${formatCurrency(Number(inv.total || 0))}</td>
+        </tr>
+      `;
+
+    const patientTotal = Number(inv.total || 0);
+    const patientName = inv.patient?.name || inv.patient_name || 'Unknown Patient';
+
+    return `
+      <div class="patient-service-block">
+        <div class="patient-service-head">
+          <div>
+            <div class="patient-service-index">Patient ${index + 1}</div>
+            <div class="patient-service-name">${escapeHtml(patientName)}</div>
+            <div class="patient-service-meta">Invoice: ${escapeHtml(inv.invoice_number || '-')}</div>
+          </div>
+          <div class="patient-service-total">
+            <span>Patient Amount</span>
+            <strong>${formatCurrency(patientTotal)}</strong>
+          </div>
+        </div>
+        <table class="patient-service-items">
+          <thead>
+            <tr>
+              <th>Test / Package</th>
+              <th style="text-align:center;">Qty</th>
+              <th style="text-align:right;">Rate</th>
+              <th style="text-align:right;">Amount</th>
+            </tr>
+          </thead>
+          <tbody>${serviceRows}</tbody>
+        </table>
+        <div class="patient-service-words">Amount in words: ${amountToIndianWords(patientTotal)}</div>
+      </div>
+    `;
+  }).join('');
 }
 
 function buildConsolidatedInvoiceHtml(data: any, lab: any): string {
@@ -561,7 +634,7 @@ async function fetchInvoiceData(invoiceId: string): Promise<Invoice | null> {
       lab:labs(name, address, phone, email, license_number, registration_number, upi_id, bank_details, gst_number),
       patient:patients(name, phone, email, address, date_of_birth, age, age_unit, gender, custom_fields),
       account:accounts(name, billing_mode, address_line1, address_line2, city, state, pincode, billing_phone, billing_email, gst_number),
-      invoice_items(*),
+      invoice_items(*, package:packages(name)),
       location:locations(id, name, address, phone, email, contact_person, upi_id, bank_details),
       referring_doctor:doctors(name)
     `)
@@ -822,6 +895,10 @@ async function buildInvoiceHtmlBundle(invoice: Invoice, template: InvoiceTemplat
     '{{cgst}}': formatCurrency(cgst),
     '{{sgst}}': formatCurrency(sgst),
     '{{total}}': formatCurrency(invoice.total),
+    '{{grand_total}}': formatCurrency(invoice.total),
+    '{{amount_in_words}}': amountToIndianWords(invoice.total),
+    '{{total_amount_in_words}}': amountToIndianWords(invoice.total),
+    '{{grand_total_in_words}}': amountToIndianWords(invoice.total),
     '{{amount_paid}}': formatCurrency(invoice.amount_paid),
     // If account is monthly billing, Balance Due is effectively 0 for the patient (handled by account)
     '{{balance_due}}': (invoice.account && invoice.account.billing_mode === 'monthly') 
@@ -876,7 +953,11 @@ async function buildInvoiceHtmlBundle(invoice: Invoice, template: InvoiceTemplat
 
   // Build invoice items table
   const itemsHtml = buildInvoiceItemsTable(invoice.invoice_items || []);
+  const patientBlocksHtml = buildPatientServiceBlocks([invoice]);
   html = html.replace(/{{invoice_items}}/g, itemsHtml);
+  html = html.replace(/{{b2b_patient_blocks}}/g, patientBlocksHtml);
+  html = html.replace(/{{patient_service_blocks}}/g, patientBlocksHtml);
+  html = html.replace(/{{patient_item_blocks}}/g, patientBlocksHtml);
 
   // Add payment terms if enabled
   if (template.include_payment_terms && template.payment_terms_text) {
@@ -1372,6 +1453,64 @@ function formatDate(dateString: string): string {
 
 function formatCurrency(amount: number): string {
   return `₹${amount.toFixed(2)}`;
+}
+
+function amountToIndianWords(amount: number): string {
+  const safeAmount = Math.max(0, Number(amount) || 0);
+  const rupees = Math.floor(safeAmount);
+  const paise = Math.round((safeAmount - rupees) * 100);
+  const rupeeWords = numberToIndianWords(rupees);
+  const paiseWords = paise > 0 ? ` and ${numberToIndianWords(paise)} Paise` : '';
+  return `${rupeeWords} Rupees${paiseWords} Only`;
+}
+
+function numberToIndianWords(value: number): string {
+  const ones = [
+    'Zero', 'One', 'Two', 'Three', 'Four', 'Five', 'Six', 'Seven', 'Eight', 'Nine',
+    'Ten', 'Eleven', 'Twelve', 'Thirteen', 'Fourteen', 'Fifteen', 'Sixteen',
+    'Seventeen', 'Eighteen', 'Nineteen',
+  ];
+  const tens = ['', '', 'Twenty', 'Thirty', 'Forty', 'Fifty', 'Sixty', 'Seventy', 'Eighty', 'Ninety'];
+
+  const belowHundred = (num: number): string => {
+    if (num < 20) return ones[num];
+    const ten = Math.floor(num / 10);
+    const one = num % 10;
+    return one ? `${tens[ten]} ${ones[one]}` : tens[ten];
+  };
+
+  const belowThousand = (num: number): string => {
+    if (num < 100) return belowHundred(num);
+    const hundred = Math.floor(num / 100);
+    const rest = num % 100;
+    return rest ? `${ones[hundred]} Hundred ${belowHundred(rest)}` : `${ones[hundred]} Hundred`;
+  };
+
+  if (value === 0) return 'Zero';
+
+  const parts: string[] = [];
+  const crore = Math.floor(value / 10000000);
+  value %= 10000000;
+  const lakh = Math.floor(value / 100000);
+  value %= 100000;
+  const thousand = Math.floor(value / 1000);
+  value %= 1000;
+
+  if (crore) parts.push(`${belowThousand(crore)} Crore`);
+  if (lakh) parts.push(`${belowThousand(lakh)} Lakh`);
+  if (thousand) parts.push(`${belowThousand(thousand)} Thousand`);
+  if (value) parts.push(belowThousand(value));
+
+  return parts.join(' ');
+}
+
+function escapeHtml(value: string): string {
+  return String(value)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
 }
 
 function formatPaymentType(type: string): string {

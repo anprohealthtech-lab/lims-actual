@@ -19,10 +19,23 @@ interface Batch {
   status: string;
 }
 
+interface PackageOption {
+  id: string;
+  name: string;
+  package_test_groups?: {
+    test_group_id: string;
+    test_groups?: {
+      id: string;
+      name: string;
+    } | null;
+  }[];
+}
+
 interface OrderRow {
   id: string;
   order_display: string | null;
   order_date: string;
+  patient_id: string | null;
   patient_name: string;
   patient_phone: string | null;
   status: string;
@@ -30,6 +43,8 @@ interface OrderRow {
   final_amount: number | null;
   account_id: string;
   bulk_batch_id: string | null;
+  billing_status: string | null;
+  sample_id: string | null;
   report_generation_status: string | null;
   smart_report_url: string | null;
   report_pdf_url: string | null;
@@ -64,11 +79,18 @@ const AccountOrdersView: React.FC<AccountOrdersViewProps> = ({ initialAccountId,
   const [loading, setLoading] = useState(false);
   const [selectedOrderIds, setSelectedOrderIds] = useState<Set<string>>(new Set());
   const [downloadRequest, setDownloadRequest] = useState<DownloadRequest | null>(null);
+  const [downloadPdfVariant, setDownloadPdfVariant] = useState<'print' | 'ecopy'>('print');
   const [downloadPollInterval, setDownloadPollInterval] = useState<ReturnType<typeof setInterval> | null>(null);
   const [downloadLoading, setDownloadLoading] = useState(false);
+  const [ecopyDownloadLoading, setEcopyDownloadLoading] = useState(false);
   const [mergeLoading, setMergeLoading] = useState(false);
   const [quickResultOrderId, setQuickResultOrderId] = useState<string | null>(null);
   const [showBulkResultModal, setShowBulkResultModal] = useState(false);
+  const [packages, setPackages] = useState<PackageOption[]>([]);
+  const [showPackageUpdateModal, setShowPackageUpdateModal] = useState(false);
+  const [selectedPackageId, setSelectedPackageId] = useState('');
+  const [packageUpdateLoading, setPackageUpdateLoading] = useState(false);
+  const [packageUpdateMessage, setPackageUpdateMessage] = useState('');
 
   // Load lab_id and accounts on mount
   useEffect(() => {
@@ -87,6 +109,18 @@ const AccountOrdersView: React.FC<AccountOrdersViewProps> = ({ initialAccountId,
     };
     loadLabAndAccounts();
   }, []);
+
+  useEffect(() => {
+    if (!labId) return;
+    database.packages.getAll().then(({ data, error }: any) => {
+      if (error) {
+        console.error('Failed to load packages for package update:', error);
+        setPackages([]);
+        return;
+      }
+      setPackages((data || []) as PackageOption[]);
+    });
+  }, [labId]);
 
   // Load batches when account changes
   useEffect(() => {
@@ -107,8 +141,9 @@ const AccountOrdersView: React.FC<AccountOrdersViewProps> = ({ initialAccountId,
       let query = supabase
         .from('orders')
         .select(`
-          id, order_display, order_date, patient_name, status,
+          id, order_display, order_date, patient_id, patient_name, status,
           total_amount, final_amount, account_id, bulk_batch_id,
+          billing_status, sample_id,
           report_generation_status, smart_report_url,
           patients(phone),
           reports!reports_order_id_fkey(id, pdf_url, print_pdf_url)
@@ -132,6 +167,7 @@ const AccountOrdersView: React.FC<AccountOrdersViewProps> = ({ initialAccountId,
         id: string;
         order_display: string | null;
         order_date: string;
+        patient_id: string | null;
         patient_name: string;
         patients: { phone: string | null } | null;
         status: string;
@@ -139,20 +175,23 @@ const AccountOrdersView: React.FC<AccountOrdersViewProps> = ({ initialAccountId,
         final_amount: number | null;
         account_id: string;
         bulk_batch_id: string | null;
+        billing_status: string | null;
+        sample_id: string | null;
         report_generation_status: string | null;
         smart_report_url: string | null;
         reports: { id: string; pdf_url: string | null; print_pdf_url: string | null }[] | { id: string; pdf_url: string | null; print_pdf_url: string | null } | null;
-      }) => ({
-        ...o,
-        patient_phone: o.patients?.phone || null,
-        report_pdf_url: Array.isArray(o.reports) ? (o.reports[0]?.pdf_url || null) : (o.reports?.pdf_url || null),
-        report_print_pdf_url: Array.isArray(o.reports) ? (o.reports[0]?.print_pdf_url || null) : (o.reports?.print_pdf_url || null),
-        has_report: !!(
-          o.smart_report_url ||
-          o.report_generation_status === 'completed' ||
-          (Array.isArray(o.reports) ? o.reports.some((r) => !!(r?.pdf_url || r?.print_pdf_url)) : !!(o.reports?.pdf_url || o.reports?.print_pdf_url))
-        ),
-      }));
+      }) => {
+        const reportRows = Array.isArray(o.reports) ? o.reports : o.reports ? [o.reports] : [];
+        const firstReportWithUrl = reportRows.find((report) => !!(report?.pdf_url || report?.print_pdf_url));
+
+        return {
+          ...o,
+          patient_phone: o.patients?.phone || null,
+          report_pdf_url: firstReportWithUrl?.pdf_url || null,
+          report_print_pdf_url: firstReportWithUrl?.print_pdf_url || null,
+          has_report: !!(o.smart_report_url || firstReportWithUrl),
+        };
+      });
       setOrders(mapped);
     } finally {
       setLoading(false);
@@ -189,17 +228,169 @@ const AccountOrdersView: React.FC<AccountOrdersViewProps> = ({ initialAccountId,
     });
   };
 
-  const startBulkDownload = async () => {
-    const orderIds = selectedOrderIds.size > 0
-      ? Array.from(selectedOrderIds)
-      : orders.filter((o) => o.has_report).map((o) => o.id);
+  const getGeneratedPrintPdfUrl = (order: OrderRow) =>
+    order.report_print_pdf_url || order.report_pdf_url || order.smart_report_url;
 
-    if (orderIds.length === 0) {
-      alert('No orders with generated reports found. Please generate reports first.');
+  const getGeneratedEcopyPdfUrl = (order: OrderRow) =>
+    order.report_pdf_url || order.smart_report_url;
+
+  const getGeneratedPdfUrl = (order: OrderRow, pdfVariant: 'print' | 'ecopy') =>
+    pdfVariant === 'ecopy' ? getGeneratedEcopyPdfUrl(order) : getGeneratedPrintPdfUrl(order);
+
+  const getBulkEligibleOrderIds = (pdfVariant: 'print' | 'ecopy' = 'print') => {
+    const sourceOrders = selectedOrderIds.size > 0
+      ? orders.filter((order) => selectedOrderIds.has(order.id))
+      : orders;
+    const eligibleOrders = sourceOrders.filter((order) => !!getGeneratedPdfUrl(order, pdfVariant));
+
+    return {
+      orderIds: eligibleOrders.map((order) => order.id),
+      missingCount: sourceOrders.length - eligibleOrders.length,
+    };
+  };
+
+  const getPackageUpdateCandidateOrders = () => {
+    const sourceOrders = selectedOrderIds.size > 0
+      ? orders.filter((order) => selectedOrderIds.has(order.id))
+      : orders;
+    return sourceOrders.filter((order) => order.billing_status !== 'billed');
+  };
+
+  const applyPackageUpdateToOrders = async () => {
+    const pkg = packages.find((item) => item.id === selectedPackageId);
+    if (!pkg) {
+      setPackageUpdateMessage('Select a package first.');
       return;
     }
 
-    setDownloadLoading(true);
+    const packageTests = (pkg.package_test_groups || [])
+      .map((row) => row.test_groups ? {
+        id: row.test_groups.id || row.test_group_id,
+        name: row.test_groups.name,
+      } : null)
+      .filter(Boolean) as { id: string; name: string }[];
+
+    if (packageTests.length === 0) {
+      setPackageUpdateMessage('Selected package has no tests to apply.');
+      return;
+    }
+
+    const candidateOrders = getPackageUpdateCandidateOrders();
+    if (candidateOrders.length === 0) {
+      setPackageUpdateMessage('No unbilled orders found in the current selection/filter.');
+      return;
+    }
+
+    const confirmed = window.confirm(
+      `Apply missing tests from "${pkg.name}" to ${candidateOrders.length} unbilled order${candidateOrders.length === 1 ? '' : 's'}?\n\nNewly added tests will be inserted at price 0 and order totals will not be changed.`
+    );
+    if (!confirmed) return;
+
+    setPackageUpdateLoading(true);
+    setPackageUpdateMessage('');
+
+    try {
+      const orderIds = candidateOrders.map((order) => order.id);
+      const { data: existingRows, error: existingError } = await supabase
+        .from('order_tests')
+        .select('order_id, test_group_id, package_id')
+        .in('order_id', orderIds);
+
+      if (existingError) throw existingError;
+
+      const existingByOrder = new Map<string, Set<string>>();
+      const packagePresentOrders = new Set<string>();
+      (existingRows || []).forEach((row: any) => {
+        if (!existingByOrder.has(row.order_id)) existingByOrder.set(row.order_id, new Set());
+        if (row.test_group_id) existingByOrder.get(row.order_id)!.add(row.test_group_id);
+        if (row.package_id === selectedPackageId) packagePresentOrders.add(row.order_id);
+      });
+
+      const rowsToInsert = candidateOrders.flatMap((order) => {
+        if (!packagePresentOrders.has(order.id)) return [];
+        const existingTestIds = existingByOrder.get(order.id) || new Set<string>();
+        return packageTests
+          .filter((test) => !existingTestIds.has(test.id))
+          .map((test) => ({
+            order_id: order.id,
+            test_group_id: test.id,
+            test_name: test.name,
+            package_id: selectedPackageId,
+            price: 0,
+            sample_id: order.sample_id || null,
+            lab_id: labId,
+            outsourced_lab_id: null,
+          }));
+      });
+
+      if (rowsToInsert.length === 0) {
+        setPackageUpdateMessage('No missing tests found. These orders already match the selected package.');
+        return;
+      }
+
+      const { error: insertError } = await supabase
+        .from('order_tests')
+        .insert(rowsToInsert);
+
+      if (insertError) throw insertError;
+
+      const affectedOrderIds = new Set(rowsToInsert.map((row) => row.order_id));
+      const activityRows = candidateOrders
+        .filter((order) => affectedOrderIds.has(order.id))
+        .map((order) => ({
+          patient_id: order.patient_id,
+          order_id: order.id,
+          lab_id: labId,
+          activity_type: 'package_update_applied',
+          description: `Missing tests from package "${pkg.name}" were added with no billing impact.`,
+          metadata: {
+            package_id: selectedPackageId,
+            package_name: pkg.name,
+            added_test_count: rowsToInsert.filter((row) => row.order_id === order.id).length,
+            price_policy: 'zero_price_no_total_change',
+          },
+          performed_by: null,
+          performed_at: new Date().toISOString(),
+        }));
+
+      if (activityRows.length > 0) {
+        const { error: activityError } = await supabase
+          .from('patient_activity_log')
+          .insert(activityRows);
+        if (activityError) console.warn('Package update activity log failed:', activityError);
+      }
+
+      setPackageUpdateMessage(
+        `Added ${rowsToInsert.length} missing test${rowsToInsert.length === 1 ? '' : 's'} to ${affectedOrderIds.size} order${affectedOrderIds.size === 1 ? '' : 's'}. Prices and totals were not changed.`
+      );
+      await loadOrders();
+      setSelectedOrderIds(new Set());
+    } catch (err) {
+      setPackageUpdateMessage(`Package update failed: ${(err as Error).message}`);
+    } finally {
+      setPackageUpdateLoading(false);
+    }
+  };
+
+  const startBulkDownload = async (pdfVariant: 'print' | 'ecopy' = 'print') => {
+    const { orderIds, missingCount } = getBulkEligibleOrderIds(pdfVariant);
+    const variantLabel = pdfVariant === 'ecopy' ? 'eCopy' : 'print';
+
+    if (orderIds.length === 0) {
+      alert(`No orders with generated ${variantLabel} reports found. Please generate reports first.`);
+      return;
+    }
+
+    if (missingCount > 0) {
+      alert(`${missingCount} selected order${missingCount === 1 ? '' : 's'} do not have a generated ${variantLabel} PDF URL yet and will be skipped.`);
+    }
+
+    setDownloadPdfVariant(pdfVariant);
+    if (pdfVariant === 'ecopy') {
+      setEcopyDownloadLoading(true);
+    } else {
+      setDownloadLoading(true);
+    }
     setDownloadRequest(null);
 
     try {
@@ -230,7 +421,7 @@ const AccountOrdersView: React.FC<AccountOrdersViewProps> = ({ initialAccountId,
 
       // Invoke edge function
       const { error: fnError } = await supabase.functions.invoke('bulk-pdf-zip', {
-        body: { request_id: reqData.id },
+        body: { request_id: reqData.id, pdf_variant: pdfVariant },
       });
 
       if (fnError) throw new Error(fnError.message);
@@ -255,18 +446,24 @@ const AccountOrdersView: React.FC<AccountOrdersViewProps> = ({ initialAccountId,
     } catch (err) {
       alert(`Download failed: ${(err as Error).message}`);
     } finally {
-      setDownloadLoading(false);
+      if (pdfVariant === 'ecopy') {
+        setEcopyDownloadLoading(false);
+      } else {
+        setDownloadLoading(false);
+      }
     }
   };
 
   const startMergeDownload = async () => {
-    const orderIds = selectedOrderIds.size > 0
-      ? Array.from(selectedOrderIds)
-      : orders.filter((o) => o.has_report).map((o) => o.id);
+    const { orderIds, missingCount } = getBulkEligibleOrderIds('print');
 
     if (orderIds.length === 0) {
       alert('No orders with generated reports found. Please generate reports first.');
       return;
+    }
+
+    if (missingCount > 0) {
+      alert(`${missingCount} selected order${missingCount === 1 ? '' : 's'} do not have a generated PDF URL yet and will be skipped.`);
     }
 
     setMergeLoading(true);
@@ -327,7 +524,10 @@ const AccountOrdersView: React.FC<AccountOrdersViewProps> = ({ initialAccountId,
   };
 
   const ordersWithReports = orders.filter((o) => o.has_report).length;
+  const ordersWithEcopyReports = orders.filter((o) => !!getGeneratedEcopyPdfUrl(o)).length;
   const effectiveSelectedCount = selectedOrderIds.size > 0 ? selectedOrderIds.size : ordersWithReports;
+  const effectiveEcopySelectedCount = selectedOrderIds.size > 0 ? selectedOrderIds.size : ordersWithEcopyReports;
+  const activeDownloadLabel = downloadPdfVariant === 'ecopy' ? 'eCopy ' : '';
 
   const statusBadge = (status: string) => {
     const map: Record<string, string> = {
@@ -419,16 +619,26 @@ const AccountOrdersView: React.FC<AccountOrdersViewProps> = ({ initialAccountId,
             <RefreshCw className="w-4 h-4" />
           </button>
           <button
-            onClick={startBulkDownload}
-            disabled={downloadLoading || mergeLoading || orders.length === 0 || ordersWithReports === 0}
+            onClick={() => startBulkDownload('print')}
+            disabled={downloadLoading || ecopyDownloadLoading || mergeLoading || orders.length === 0 || ordersWithReports === 0}
             className="flex items-center gap-1.5 px-4 py-2 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50"
+            title="Download stored print PDFs as a ZIP"
           >
             {downloadLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Download className="w-4 h-4" />}
             Download {effectiveSelectedCount > 0 ? `${effectiveSelectedCount} PDFs` : 'All PDFs'}
           </button>
           <button
+            onClick={() => startBulkDownload('ecopy')}
+            disabled={downloadLoading || ecopyDownloadLoading || mergeLoading || orders.length === 0 || ordersWithEcopyReports === 0}
+            className="flex items-center gap-1.5 px-4 py-2 text-sm bg-green-600 text-white rounded-lg hover:bg-green-700 disabled:opacity-50"
+            title="Download stored eCopy PDFs as a ZIP"
+          >
+            {ecopyDownloadLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Download className="w-4 h-4" />}
+            Download eCopy {effectiveEcopySelectedCount > 0 ? `${effectiveEcopySelectedCount} PDFs` : 'All PDFs'}
+          </button>
+          <button
             onClick={startMergeDownload}
-            disabled={downloadLoading || mergeLoading || orders.length === 0 || ordersWithReports === 0}
+            disabled={downloadLoading || ecopyDownloadLoading || mergeLoading || orders.length === 0 || ordersWithReports === 0}
             className="flex items-center gap-1.5 px-4 py-2 text-sm bg-purple-600 text-white rounded-lg hover:bg-purple-700 disabled:opacity-50"
             title="Merge all PDFs into one file for easy printing"
           >
@@ -443,6 +653,15 @@ const AccountOrdersView: React.FC<AccountOrdersViewProps> = ({ initialAccountId,
           >
             <FileSpreadsheet className="w-4 h-4" />
             Bulk Result Entry
+          </button>
+          <button
+            onClick={() => { setPackageUpdateMessage(''); setShowPackageUpdateModal(true); }}
+            disabled={orders.length === 0 || packages.length === 0}
+            className="flex items-center gap-1.5 px-4 py-2 text-sm bg-amber-600 text-white rounded-lg hover:bg-amber-700 disabled:opacity-50"
+            title="Add tests newly added to a package into existing unbilled corporate orders at zero price"
+          >
+            <Layers className="w-4 h-4" />
+            Apply Package Update
           </button>
         </div>
       </div>
@@ -476,6 +695,7 @@ const AccountOrdersView: React.FC<AccountOrdersViewProps> = ({ initialAccountId,
             <a
               href={downloadRequest.zip_url}
               download
+              title={`Download ${activeDownloadLabel}${downloadRequest.download_type === 'merged' ? 'merged PDF' : 'ZIP'}`}
               className="flex items-center gap-1 px-3 py-1.5 bg-green-600 text-white rounded-lg text-xs hover:bg-green-700"
             >
               <FileDown className="w-3.5 h-3.5" />
@@ -629,6 +849,66 @@ const AccountOrdersView: React.FC<AccountOrdersViewProps> = ({ initialAccountId,
           onClose={() => setShowBulkResultModal(false)}
           onSaved={loadOrders}
         />
+      )}
+
+      {showPackageUpdateModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+          <div className="w-full max-w-lg rounded-xl bg-white shadow-xl">
+            <div className="border-b px-5 py-4">
+              <h3 className="text-base font-semibold text-gray-900">Apply Package Update</h3>
+              <p className="mt-1 text-sm text-gray-500">
+                Missing tests from the selected package will be added to unbilled matching orders at price 0.
+              </p>
+            </div>
+
+            <div className="space-y-4 p-5">
+              <div>
+                <label className="mb-1 block text-sm font-medium text-gray-700">Package</label>
+                <select
+                  value={selectedPackageId}
+                  onChange={(event) => { setSelectedPackageId(event.target.value); setPackageUpdateMessage(''); }}
+                  className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                >
+                  <option value="">Select package...</option>
+                  {packages.map((pkg) => (
+                    <option key={pkg.id} value={pkg.id}>
+                      {pkg.name} ({pkg.package_test_groups?.length || 0} tests)
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="rounded-lg bg-amber-50 p-3 text-sm text-amber-800">
+                Target: {getPackageUpdateCandidateOrders().length} unbilled order{getPackageUpdateCandidateOrders().length === 1 ? '' : 's'}
+                {selectedOrderIds.size > 0 ? ' from your selection' : ' from the current filters'}.
+                Billed orders are skipped. Order totals and invoice amounts are not recalculated.
+              </div>
+
+              {packageUpdateMessage && (
+                <div className={`rounded-lg p-3 text-sm ${packageUpdateMessage.includes('failed') ? 'bg-red-50 text-red-700' : 'bg-blue-50 text-blue-700'}`}>
+                  {packageUpdateMessage}
+                </div>
+              )}
+            </div>
+
+            <div className="flex items-center justify-end gap-2 border-t px-5 py-4">
+              <button
+                onClick={() => setShowPackageUpdateModal(false)}
+                className="rounded-lg border border-gray-300 px-4 py-2 text-sm text-gray-700 hover:bg-gray-50"
+              >
+                Close
+              </button>
+              <button
+                onClick={applyPackageUpdateToOrders}
+                disabled={packageUpdateLoading || !selectedPackageId || getPackageUpdateCandidateOrders().length === 0}
+                className="flex items-center gap-1.5 rounded-lg bg-amber-600 px-4 py-2 text-sm text-white hover:bg-amber-700 disabled:opacity-50"
+              >
+                {packageUpdateLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Layers className="h-4 w-4" />}
+                Apply Missing Tests
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );

@@ -2846,8 +2846,8 @@ function generateBasicDefaultTemplateHtml(
 .basic-report-template .tbl-results thead th:nth-child(4) { width: ${formatBasicWidth(standardColumnWidths[3])} !important; text-align: left !important; }
 .basic-report-template .tbl-results tbody td:nth-child(1) { width: ${formatBasicWidth(standardColumnWidths[0])} !important; text-align: ${testNameAlignment} !important; color: #111 !important; }
 .basic-report-template .tbl-results tbody td:nth-child(2) { width: ${formatBasicWidth(standardColumnWidths[1])} !important; text-align: right !important; white-space: nowrap !important; overflow: hidden !important; }
-.basic-report-template .tbl-results tbody td:nth-child(3) { width: ${formatBasicWidth(standardColumnWidths[2])} !important; text-align: left !important; color: #444 !important; white-space: nowrap !important; }
-.basic-report-template .tbl-results tbody td:nth-child(4) { width: ${formatBasicWidth(standardColumnWidths[3])} !important; text-align: left !important; color: #666 !important; }
+.basic-report-template .tbl-results tbody td:nth-child(3) { width: ${formatBasicWidth(standardColumnWidths[2])} !important; text-align: left !important; color: #444 !important; white-space: normal !important; overflow-wrap: anywhere !important; word-break: break-word !important; }
+.basic-report-template .tbl-results tbody td:nth-child(4) { width: ${formatBasicWidth(standardColumnWidths[3])} !important; text-align: left !important; color: #666 !important; white-space: normal !important; overflow-wrap: anywhere !important; word-break: break-word !important; }
 
 .basic-report-template .tbl-results.has-sibling thead th:nth-child(1) { width: ${formatBasicWidth(siblingColumnWidths[0])} !important; text-align: ${testNameAlignment} !important; }
 .basic-report-template .tbl-results.has-sibling thead th:nth-child(2) { width: ${formatBasicWidth(siblingColumnWidths[1])} !important; text-align: right !important; }
@@ -2858,15 +2858,15 @@ function generateBasicDefaultTemplateHtml(
 /* Only apply narrow widths to rows with sibling-section-row class */
 .basic-report-template .tbl-results.has-sibling tbody tr.sibling-section-row td:nth-child(1) { width: ${formatBasicWidth(siblingColumnWidths[0])} !important; text-align: ${testNameAlignment} !important; }
 .basic-report-template .tbl-results.has-sibling tbody tr.sibling-section-row td:nth-child(2) { width: ${formatBasicWidth(siblingColumnWidths[1])} !important; text-align: right !important; }
-.basic-report-template .tbl-results.has-sibling tbody tr.sibling-section-row td:nth-child(3) { width: ${formatBasicWidth(siblingColumnWidths[2])} !important; text-align: left !important; }
-.basic-report-template .tbl-results.has-sibling tbody tr.sibling-section-row td:nth-child(4) { width: ${formatBasicWidth(siblingColumnWidths[3])} !important; text-align: left !important; }
+.basic-report-template .tbl-results.has-sibling tbody tr.sibling-section-row td:nth-child(3) { width: ${formatBasicWidth(siblingColumnWidths[2])} !important; text-align: left !important; white-space: normal !important; overflow-wrap: anywhere !important; word-break: break-word !important; }
+.basic-report-template .tbl-results.has-sibling tbody tr.sibling-section-row td:nth-child(4) { width: ${formatBasicWidth(siblingColumnWidths[3])} !important; text-align: left !important; white-space: normal !important; overflow-wrap: anywhere !important; word-break: break-word !important; }
 .basic-report-template .tbl-results.has-sibling tbody tr.sibling-section-row td:nth-child(5) { width: ${formatBasicWidth(siblingColumnWidths[4])} !important; text-align: right !important; }
-.basic-report-template .tbl-results.has-sibling tbody tr.sibling-section-row td:nth-child(6) { width: ${formatBasicWidth(siblingColumnWidths[5])} !important; text-align: left !important; }
+.basic-report-template .tbl-results.has-sibling tbody tr.sibling-section-row td:nth-child(6) { width: ${formatBasicWidth(siblingColumnWidths[5])} !important; text-align: left !important; white-space: normal !important; overflow-wrap: anywhere !important; word-break: break-word !important; }
 /* Wide widths for non-sibling rows in has-sibling table */
 .basic-report-template .tbl-results.has-sibling tbody tr.wide-section-row td:nth-child(1) { width: ${formatBasicWidth(standardColumnWidths[0])} !important; text-align: ${testNameAlignment} !important; }
 .basic-report-template .tbl-results.has-sibling tbody tr.wide-section-row td:nth-child(2) { width: ${formatBasicWidth(standardColumnWidths[1])} !important; text-align: right !important; }
-.basic-report-template .tbl-results.has-sibling tbody tr.wide-section-row td:nth-child(3) { width: ${formatBasicWidth(standardColumnWidths[2])} !important; text-align: left !important; }
-.basic-report-template .tbl-results.has-sibling tbody tr.wide-section-row td:nth-child(4) { width: ${formatBasicWidth(standardColumnWidths[3])} !important; text-align: left !important; }
+.basic-report-template .tbl-results.has-sibling tbody tr.wide-section-row td:nth-child(3) { width: ${formatBasicWidth(standardColumnWidths[2])} !important; text-align: left !important; white-space: normal !important; overflow-wrap: anywhere !important; word-break: break-word !important; }
+.basic-report-template .tbl-results.has-sibling tbody tr.wide-section-row td:nth-child(4) { width: ${formatBasicWidth(standardColumnWidths[3])} !important; text-align: left !important; white-space: normal !important; overflow-wrap: anywhere !important; word-break: break-word !important; }
 
 .basic-report-template .same-row-sibling {
   display: inline !important;
@@ -2880,6 +2880,9 @@ function generateBasicDefaultTemplateHtml(
   color: #444 !important;
   font-weight: normal !important;
   margin-left: 4px !important;
+  white-space: normal !important;
+  overflow-wrap: anywhere !important;
+  word-break: break-word !important;
 }
 
 .basic-report-template .same-row-sibling-ref {
@@ -5243,8 +5246,20 @@ async function fetchSectionContent(
   supabaseClient: any,
   resultIds: string[],
   includeImages = true,
-): Promise<{ sectionContent: Record<string, string>; sectionLabels: Record<string, string> }> {
-  if (!resultIds || resultIds.length === 0) return { sectionContent: {}, sectionLabels: {} };
+): Promise<{
+  sectionContent: Record<string, string>;
+  sectionLabels: Record<string, string>;
+  sectionContentByGroup: Map<string, Record<string, string>>;
+  sectionPlaceholderValues: Record<string, string>;
+}> {
+  if (!resultIds || resultIds.length === 0) {
+    return {
+      sectionContent: {},
+      sectionLabels: {},
+      sectionContentByGroup: new Map(),
+      sectionPlaceholderValues: {},
+    };
+  }
 
   try {
     // Build a map of result_id -> test_group_id so we can assign section content
@@ -5270,12 +5285,14 @@ async function fetchSectionContent(
       .select(`
         result_id,
         final_content,
+        cascading_selections,
         image_urls,
         lab_template_sections!inner(
           placeholder_key,
           section_name,
           test_group_id,
-          display_order
+          display_order,
+          section_config
         )
       `)
       .in("result_id", resultIds)
@@ -5283,7 +5300,7 @@ async function fetchSectionContent(
 
     if (error || !data) {
       console.warn("Failed to fetch section content:", error?.message);
-      return { sectionContent: {}, sectionLabels: {}, sectionContentByGroup: new Map() };
+      return { sectionContent: {}, sectionLabels: {}, sectionContentByGroup: new Map(), sectionPlaceholderValues: {} };
     }
 
     // Sort by display_order so sections render in the configured order
@@ -5304,13 +5321,18 @@ async function fetchSectionContent(
     // instead of the later one silently overwriting the earlier one.
     const sectionContent: Record<string, string> = {};
     const sectionLabels: Record<string, string> = {};
+    const sectionPlaceholderValues: Record<string, string> = {};
     const sectionContentByGroup = new Map<string, Record<string, string>>();
     const keyCounters: Record<string, number> = {}; // tracks how many times a base key has been seen
     for (const item of data) {
       const baseKey = item.lab_template_sections?.placeholder_key;
       if (baseKey) {
         const label = item.lab_template_sections?.section_name;
-        const content = item.final_content ? String(item.final_content) : "";
+        const rebuiltCascadeContent = buildCascadeContentFromConfig(
+          item.lab_template_sections?.section_config,
+          item.cascading_selections,
+        );
+        const content = rebuiltCascadeContent || (item.final_content ? String(item.final_content) : "");
         const imageUrls = parseSectionImageUrls(item.image_urls);
         const imagesHtml = includeImages ? buildSectionImagesHtml(imageUrls) : "";
         const combined = [content.trim(), imagesHtml].filter(Boolean).join("\n\n");
@@ -5321,6 +5343,15 @@ async function fetchSectionContent(
 
           if (label) sectionLabels[uniqueKey] = label;
           sectionContent[uniqueKey] = combined;
+          Object.assign(sectionPlaceholderValues, buildSectionPlaceholderAliases({ [uniqueKey]: combined }));
+          Object.assign(
+            sectionPlaceholderValues,
+            buildCascadePlaceholderAliases(
+              uniqueKey,
+              item.lab_template_sections?.section_config,
+              item.cascading_selections,
+            ),
+          );
           // Use the section's own test_group_id first; fall back to the result's
           // test_group_id for section-only groups where the section template is
           // not explicitly linked to a test group (test_group_id IS NULL).
@@ -5337,10 +5368,10 @@ async function fetchSectionContent(
     }
     console.log(`ðŸ“ fetchSectionContent: ${data.length} row(s) â†’ ${Object.keys(sectionContent).length} unique section(s): [${Object.keys(sectionContent).join(", ")}]`);
 
-    return { sectionContent, sectionLabels, sectionContentByGroup };
+    return { sectionContent, sectionLabels, sectionContentByGroup, sectionPlaceholderValues };
   } catch (err) {
     console.warn("Error fetching section content:", err);
-    return { sectionContent: {}, sectionLabels: {}, sectionContentByGroup: new Map() };
+    return { sectionContent: {}, sectionLabels: {}, sectionContentByGroup: new Map(), sectionPlaceholderValues: {} };
   }
 }
 
@@ -5469,6 +5500,141 @@ function normalizeSectionKey(
     return { rawKey: trimmed.slice(8), originalKey: trimmed };
   }
   return { rawKey: trimmed, originalKey: trimmed };
+}
+
+function buildSectionPlaceholderAliases(
+  sectionContent: Record<string, string>,
+): Record<string, string> {
+  const aliases: Record<string, string> = {};
+
+  for (const [key, content] of Object.entries(sectionContent || {})) {
+    if (!key || !content) continue;
+
+    aliases[key] = content;
+
+    const { rawKey } = normalizeSectionKey(key);
+    if (rawKey && rawKey !== key) {
+      aliases[rawKey] = content;
+    }
+    if (rawKey) {
+      aliases[`section:${rawKey}`] = content;
+    }
+  }
+
+  return aliases;
+}
+
+function buildCascadeContentFromConfig(
+  sectionConfig: unknown,
+  selections: unknown,
+): string {
+  const config = parseMaybeJsonObject(sectionConfig);
+  if (config?.mode !== "cascading" || !Array.isArray(config?.cascade_levels)) {
+    return "";
+  }
+
+  const selectionMap = parseMaybeJsonObject(selections);
+  const lines: string[] = [];
+
+  const traverse = (cascadeLevels: any[]) => {
+    for (const level of cascadeLevels || []) {
+      const selectedIds = Array.isArray(selectionMap[level?.id])
+        ? selectionMap[level.id]
+        : [];
+      if (selectedIds.length === 0) continue;
+
+      const selectedOptions = Array.isArray(level?.options)
+        ? level.options.filter((option: any) => selectedIds.includes(option?.id))
+        : [];
+      const values = selectedOptions
+        .map((option: any) => String(option?.value || "").trim())
+        .filter(Boolean)
+        .join(", ");
+
+      if (values) {
+        const label = String(level?.label || "").trim();
+        lines.push(label ? `${label}: ${values}` : values);
+      }
+
+      for (const option of selectedOptions) {
+        if (Array.isArray(option?.sub_levels)) {
+          traverse(option.sub_levels);
+        }
+      }
+    }
+  };
+
+  traverse(config.cascade_levels);
+  return lines.join("\n");
+}
+
+function slugPlaceholderKey(value: string): string {
+  return String(value || "")
+    .replace(/{{|}}/g, "")
+    .replace(/^section:/i, "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "");
+}
+
+function parseMaybeJsonObject(value: unknown): Record<string, any> {
+  if (!value) return {};
+  if (typeof value === "string") {
+    try {
+      const parsed = JSON.parse(value);
+      return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+        ? parsed
+        : {};
+    } catch {
+      return {};
+    }
+  }
+  return typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, any>
+    : {};
+}
+
+function buildCascadePlaceholderAliases(
+  sectionKey: string,
+  sectionConfig: unknown,
+  selections: unknown,
+): Record<string, string> {
+  const aliases: Record<string, string> = {};
+  const sectionSlug = slugPlaceholderKey(sectionKey);
+  const config = parseMaybeJsonObject(sectionConfig);
+  const selectionMap = parseMaybeJsonObject(selections);
+  const levels = Array.isArray(config?.cascade_levels) ? config.cascade_levels : [];
+
+  const traverse = (cascadeLevels: any[]) => {
+    for (const level of cascadeLevels || []) {
+      const selectedIds = Array.isArray(selectionMap[level?.id])
+        ? selectionMap[level.id]
+        : [];
+      const selectedOptions = Array.isArray(level?.options)
+        ? level.options.filter((option: any) => selectedIds.includes(option?.id))
+        : [];
+      const value = selectedOptions
+        .map((option: any) => String(option?.value || "").trim())
+        .filter(Boolean)
+        .join(", ");
+      const levelSlug = slugPlaceholderKey(level?.label || level?.id || "");
+
+      if (value && sectionSlug && levelSlug) {
+        aliases[`${sectionSlug}_${levelSlug}`] = value;
+        if (!aliases[levelSlug]) aliases[levelSlug] = value;
+      }
+
+      for (const option of selectedOptions) {
+        if (Array.isArray(option?.sub_levels)) {
+          traverse(option.sub_levels);
+        }
+      }
+    }
+  };
+
+  traverse(levels);
+  return aliases;
 }
 
 function injectSectionContent(
@@ -6106,6 +6272,32 @@ function applyLetterheadImageTransform(url: string): string {
   } catch (e) {
     console.log("âš ï¸ Could not apply letterhead transform:", e);
     return url;
+  }
+}
+
+async function fetchCkeTemplateLetterheadUrl(
+  supabaseClient: any,
+  labId: string,
+): Promise<string | null> {
+  try {
+    const { data: asset, error } = await supabaseClient
+      .from("lab_branding_assets")
+      .select("imagekit_url, file_url")
+      .eq("lab_id", labId)
+      .eq("asset_type", "letterhead")
+      .eq("is_active", true)
+      .eq("is_default", true)
+      .maybeSingle();
+
+    if (error) {
+      console.warn("CKE letterhead lookup failed:", error.message);
+      return null;
+    }
+
+    return asset?.imagekit_url || asset?.file_url || null;
+  } catch (error) {
+    console.warn("CKE letterhead lookup failed:", error);
+    return null;
   }
 }
 
@@ -6831,13 +7023,14 @@ serve(async (req) => {
           if (resultError) {
             console.warn("âš ï¸ Failed to fetch result ids for section-only validation:", resultError.message);
           } else {
-            const resultIds = (resultRows || []).map((row: any) => row.id).filter(Boolean);
-            if (resultIds.length > 0) {
-              const {
-                sectionContent: scWithImages,
-                sectionLabels,
-                sectionContentByGroup: scByGroupWithImages,
-              } = await fetchSectionContent(supabaseClient, resultIds, true);
+	            const resultIds = (resultRows || []).map((row: any) => row.id).filter(Boolean);
+	            if (resultIds.length > 0) {
+	              const {
+	                sectionContent: scWithImages,
+	                sectionLabels,
+	                sectionContentByGroup: scByGroupWithImages,
+	                sectionPlaceholderValues: scPlaceholderValuesWithImages,
+	              } = await fetchSectionContent(supabaseClient, resultIds, true);
               const {
                 sectionContent: scNoImages,
                 sectionContentByGroup: scByGroupNoImages,
@@ -6857,13 +7050,21 @@ serve(async (req) => {
                   ? scNoImages
                   : (context.sectionContentNoImages || context.sectionContent || {});
                 context.sectionLabels = sectionLabels;
-                context.sectionContentByGroup = scByGroupWithImages.size > 0
-                  ? scByGroupWithImages
-                  : (context.sectionContentByGroup || new Map());
-                context.placeholderValues = {
-                  ...(context.placeholderValues || {}),
-                  ...(context.sectionContent || {}),
-                };
+	                context.sectionContentByGroup = scByGroupWithImages.size > 0
+	                  ? scByGroupWithImages
+	                  : (context.sectionContentByGroup || new Map());
+	                const sectionOnlyGroupIds = Array.from(context.sectionContentByGroup.keys());
+	                if (sectionOnlyGroupIds.length > 0) {
+	                  context.testGroupIds = Array.from(new Set([
+	                    ...(context.testGroupIds || []),
+	                    ...sectionOnlyGroupIds,
+	                  ]));
+	                }
+	                context.placeholderValues = {
+	                  ...(context.placeholderValues || {}),
+	                  ...buildSectionPlaceholderAliases(context.sectionContent || {}),
+	                  ...scPlaceholderValuesWithImages,
+	                };
               }
             }
           }
@@ -7030,12 +7231,12 @@ serve(async (req) => {
             .map((row: any) => row.id)
             .filter(Boolean);
 
-          if (resultIds.length > 0) {
-            const { sectionContent: scWithImages, sectionLabels, sectionContentByGroup: scByGroupWithImages } = await fetchSectionContent(
+	          if (resultIds.length > 0) {
+            const { sectionContent: scWithImages, sectionLabels, sectionContentByGroup: scByGroupWithImages, sectionPlaceholderValues: scPlaceholderValuesWithImages } = await fetchSectionContent(
               supabaseClient,
               resultIds,
               true,
-            );
+	            );
             const { sectionContent: scNoImages, sectionContentByGroup: scByGroupNoImages } = await fetchSectionContent(
               supabaseClient,
               resultIds,
@@ -7049,14 +7250,22 @@ serve(async (req) => {
               ? scNoImages
               : (context.sectionContent || {});
 
-            context.sectionContent = withImages;
-            context.sectionContentNoImages = noImages;
-            context.sectionLabels = sectionLabels;
-            context.sectionContentByGroup = scByGroupWithImages.size > 0 ? scByGroupWithImages : (context.sectionContentByGroup || new Map());
-            context.placeholderValues = {
-              ...(context.placeholderValues || {}),
-              ...withImages,
-            };
+	            context.sectionContent = withImages;
+	            context.sectionContentNoImages = noImages;
+	            context.sectionLabels = sectionLabels;
+	            context.sectionContentByGroup = scByGroupWithImages.size > 0 ? scByGroupWithImages : (context.sectionContentByGroup || new Map());
+	            const sectionGroupIds = Array.from(context.sectionContentByGroup.keys());
+	            if (sectionGroupIds.length > 0) {
+	              context.testGroupIds = Array.from(new Set([
+	                ...(context.testGroupIds || []),
+	                ...sectionGroupIds,
+	              ]));
+	            }
+	            context.placeholderValues = {
+	              ...(context.placeholderValues || {}),
+	              ...buildSectionPlaceholderAliases(withImages),
+	              ...scPlaceholderValuesWithImages,
+	            };
           }
         }
       } catch (err) {
@@ -7305,6 +7514,15 @@ serve(async (req) => {
       }
 
       const pdfSettings = labSettings?.pdf_layout_settings || {};
+      const ckeTemplateLetterheadUrl = templatesWithHtml.length > 0
+        ? applyLetterheadImageTransform(
+          await fetchCkeTemplateLetterheadUrl(supabaseClient, job.lab_id) || "",
+        ) || null
+        : null;
+
+      if (ckeTemplateLetterheadUrl) {
+        console.log("  CKE template letterhead background found");
+      }
 
       // result_colors lives inside pdf_layout_settings.resultColors (not a separate column)
 
@@ -8565,7 +8783,7 @@ serve(async (req) => {
 
         console.log(
           "ðŸ”§ About to call buildPdfBodyDocumentV2 with letterhead:",
-          letterheadUrl || "NONE",
+          (template?.gjs_html && ckeTemplateLetterheadUrl ? ckeTemplateLetterheadUrl : letterheadUrl) || "NONE",
         );
 
         const verifyUrl = `https://app.limsapp.in/verify?id=${
@@ -8579,7 +8797,7 @@ serve(async (req) => {
         bodyHtml = buildPdfBodyDocumentV2(
           renderedHtml,
           templateCss,
-          letterheadUrl,
+          template?.gjs_html && ckeTemplateLetterheadUrl ? ckeTemplateLetterheadUrl : letterheadUrl,
           pdfSettings,
           verifyUrl,
         );
@@ -8599,6 +8817,7 @@ serve(async (req) => {
         console.log("ðŸ”€ Multi-test group rendering...");
         const renderedSections: string[] = [];
         let firstGroupTemplate = null;
+        let usedCkeTemplateInMulti = false;
         const multiInterpretationCssChunks: string[] = [];
 
         // Lift lab-level print options for print version (no single group to merge with)
@@ -8744,6 +8963,7 @@ serve(async (req) => {
 
           if (groupTemplate?.gjs_html && !useGenericTemplate) {
             if (!firstGroupTemplate) firstGroupTemplate = groupTemplate;
+            usedCkeTemplateInMulti = true;
 
             renderedHtml = renderTemplate(
               groupTemplate.gjs_html,
@@ -8963,9 +9183,12 @@ serve(async (req) => {
         const labPrintOptions = mergePrintOptions(pdfSettings, undefined);
         mergedPrintOptions = labPrintOptions; // lift to outer scope for print version
         const dynamicCss = generateDynamicCss(pdfSettings, labPrintOptions ?? undefined);
+        const multiLetterheadUrl = usedCkeTemplateInMulti && ckeTemplateLetterheadUrl
+          ? ckeTemplateLetterheadUrl
+          : letterheadUrl;
         console.log(
           "ðŸ”§ About to call buildPdfBodyDocumentV2 (multi-template) with letterhead:",
-          letterheadUrl || "NONE",
+          multiLetterheadUrl || "NONE",
         );
 
         const verifyUrl = `https://app.limsapp.in/verify?id=${
@@ -8974,7 +9197,7 @@ serve(async (req) => {
         bodyHtml = buildPdfBodyDocumentV2(
           renderedSections.join("\n"),
           templateCss + "\n" + dynamicCss,
-          letterheadUrl,
+          multiLetterheadUrl,
           pdfSettings,
           verifyUrl,
         );
@@ -9055,6 +9278,7 @@ serve(async (req) => {
 
       // No conversion needed - PDF.co can fetch from ImageKit URLs directly
       const processedBody = bodyHtml;
+      const processedBodyHasLetterhead = processedBody.includes("page-bg");
       // Not using separate header/footer - using letterhead background instead
       const processedHeader = "";
       const processedFooter = "";
@@ -9083,7 +9307,7 @@ serve(async (req) => {
       // so the background image is not pushed down. Content spacing is handled by CSS padding.
       let margins = DEFAULT_PDF_SETTINGS.margins;
 
-      if (letterheadUrl) {
+      if (processedBodyHasLetterhead) {
         // Letterhead Mode: 0px all margins (background full bleed), side padding handled by CSS
         margins = `0px 0px 0px 0px`;
         console.log(
@@ -9570,6 +9794,7 @@ serve(async (req) => {
       // Build PDF.co options based on mode
       const isHeaderFooterMode = pdfLetterheadMode === 'header_footer';
       const hasNativeHeaderFooterAssets = isHeaderFooterMode &&
+        !processedBodyHasLetterhead &&
         !!headerFooterHtml.headerHtml &&
         !!headerFooterHtml.footerHtml;
 
@@ -9596,7 +9821,7 @@ serve(async (req) => {
             ? (pdfSettings?.headerHeight
               ? `${pdfSettings.headerHeight}px`
               : DEFAULT_PDF_SETTINGS.headerHeight)
-            : (letterheadUrl
+            : (processedBodyHasLetterhead
               ? "0px"
               : (pdfSettings?.headerHeight
                 ? `${pdfSettings.headerHeight}px`
@@ -9605,7 +9830,7 @@ serve(async (req) => {
             ? (pdfSettings?.footerHeight
               ? `${pdfSettings.footerHeight}px`
               : DEFAULT_PDF_SETTINGS.footerHeight)
-            : (letterheadUrl
+            : (processedBodyHasLetterhead
               ? "0px"
               : (pdfSettings?.footerHeight
                 ? `${pdfSettings.footerHeight}px`
@@ -9613,7 +9838,7 @@ serve(async (req) => {
           scale: pdfSettings?.scale ?? DEFAULT_PDF_SETTINGS.scale,
           displayHeaderFooter: hasNativeHeaderFooterAssets
             ? true
-            : (letterheadUrl
+            : (processedBodyHasLetterhead
               ? false
               : (pdfSettings?.displayHeaderFooter ??
                 DEFAULT_PDF_SETTINGS.displayHeaderFooter)),

@@ -27,7 +27,8 @@ import {
   Settings,
   Trash2,
   FileCode,
-  Sparkles
+  Sparkles,
+  Send
 } from 'lucide-react';
 import {
   format,
@@ -167,6 +168,8 @@ const Reports: React.FC = () => {
   const [sortDirection, setSortDirection] = useState<SortDirection>('desc');
   const [showFilters, setShowFilters] = useState(false);
   const [selectedOrders, setSelectedOrders] = useState<Set<string>>(new Set());
+  const [isQueueingSelectedReports, setIsQueueingSelectedReports] = useState(false);
+  const [isDeletingSelectedReports, setIsDeletingSelectedReports] = useState(false);
   const [isTestingTemplate, setIsTestingTemplate] = useState(false);
   const [previewingOrderId, setPreviewingOrderId] = useState<string | null>(null);
   const [isAdmin, setIsAdmin] = useState(false);
@@ -357,7 +360,7 @@ const Reports: React.FC = () => {
         if (orderIds.length > 0) {
           const { data: reportsData } = await supabase
             .from('reports')
-            .select('order_id, status, generated_date, report_type, pdf_url, pdf_generated_at, print_pdf_url, print_pdf_generated_at, print_layout_mode, compact_ecopy_url, compact_ecopy_generated_at')
+            .select('id, order_id, status, generated_date, report_type, pdf_url, pdf_generated_at, print_pdf_url, print_pdf_generated_at, print_layout_mode, compact_ecopy_url, compact_ecopy_generated_at')
             .in('order_id', orderIds);
           existingReports = (reportsData as any[]) || [];
         }
@@ -897,6 +900,41 @@ const Reports: React.FC = () => {
     }
   };
 
+  const verifyBulkReportDeletePermission = useCallback(async () => {
+    try {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) {
+        alert('You must be logged in to delete reports.');
+        return false;
+      }
+
+      const { data: userData, error } = await supabase
+        .from('users')
+        .select('role')
+        .eq('id', user.id)
+        .single();
+
+      if (error) throw error;
+
+      const userRoleLower = (userData?.role || '').toLowerCase();
+      const hasPermission = Boolean(userData && (
+        userRoleLower === 'admin' ||
+        userRoleLower === 'super_admin' ||
+        userRoleLower === 'lab_admin'
+      ));
+
+      if (!hasPermission) {
+        alert(`Permission denied. Your role is '${userData?.role || 'unknown'}', but 'admin' or 'super_admin' is required.`);
+      }
+
+      return hasPermission;
+    } catch (checkError) {
+      console.error('Error checking permissions:', checkError);
+      alert('Failed to verify permissions. See console for details.');
+      return false;
+    }
+  }, []);
+
   const handleDeleteReport = useCallback(async (orderId: string) => {
     // Perform on-demand admin check to be absolutely sure and debuggable
     console.log('🕵️‍♀️ Verifying admin status before deletion...');
@@ -971,6 +1009,70 @@ const Reports: React.FC = () => {
       alert('Failed to delete report: ' + (error instanceof Error ? error.message : 'Unknown error'));
     }
   }, [isAdmin, approvedResults, loadApprovedResults]);
+
+  const handleDeleteSelectedReports = useCallback(async () => {
+    const selectedOrderIds = Array.from(selectedOrders);
+    if (selectedOrderIds.length === 0) {
+      alert('Please select at least one order');
+      return;
+    }
+
+    const hasPermission = await verifyBulkReportDeletePermission();
+    if (!hasPermission) return;
+
+    const selectedGroupsWithReports = selectedOrderIds
+      .map((orderId) => orderGroups.find((group) => group.order_id === orderId))
+      .filter((group): group is OrderGroup => Boolean(group))
+      .filter((group) => Boolean((group.results[0] as ApprovedResult | undefined)?.has_report));
+
+    if (selectedGroupsWithReports.length === 0) {
+      alert('No generated reports found for the selected orders.');
+      return;
+    }
+
+    const confirmMessage = `Delete generated reports for ${selectedGroupsWithReports.length} selected order${selectedGroupsWithReports.length === 1 ? '' : 's'}? This removes report records but keeps the orders and results. This cannot be undone.`;
+    if (!window.confirm(confirmMessage)) return;
+
+    setIsDeletingSelectedReports(true);
+    try {
+      const orderIdsToDelete = selectedGroupsWithReports.map((group) => group.order_id);
+      const { error } = await supabase
+        .from('reports')
+        .delete()
+        .in('order_id', orderIdsToDelete);
+
+      if (error) throw error;
+
+      setApprovedResults((prev) =>
+        prev.map((result) => {
+          if (!orderIdsToDelete.includes(result.order_id)) return result;
+
+          return {
+            ...result,
+            has_report: false,
+            has_draft_report: false,
+            has_final_report: false,
+            is_report_ready: true,
+            report_status: undefined,
+            report_generated_at: undefined,
+            draft_report: null,
+            final_report: null,
+            print_pdf_url: undefined,
+            compact_ecopy_url: undefined,
+          };
+        })
+      );
+
+      setSelectedOrders(new Set());
+      alert(`Deleted ${orderIdsToDelete.length} generated report${orderIdsToDelete.length === 1 ? '' : 's'}.`);
+      await loadApprovedResults();
+    } catch (error) {
+      console.error('Error deleting selected reports:', error);
+      alert('Failed to delete selected reports: ' + (error instanceof Error ? error.message : 'Unknown error'));
+    } finally {
+      setIsDeletingSelectedReports(false);
+    }
+  }, [loadApprovedResults, orderGroups, selectedOrders, verifyBulkReportDeletePermission]);
 
   const moveOrderSettingsGroup = useCallback((index: number, direction: -1 | 1) => {
     setOrderSettingsGroups(prev => {
@@ -1349,6 +1451,140 @@ const Reports: React.FC = () => {
     setSelectedTestType('all');
     setSelectedDoctor('all');
     setDateFilter('today');
+  };
+
+  const getReportUrlForQueue = (result?: ApprovedResult | null): string | null => {
+    const finalReport = result?.final_report;
+    const candidates = [
+      finalReport?.pdf_url,
+      result?.compact_ecopy_url,
+      finalReport?.compact_ecopy_url,
+      finalReport?.print_pdf_url,
+      result?.print_pdf_url,
+    ].filter(Boolean) as string[];
+
+    const usableUrl = candidates.find((url) => !isTempPdfUrl(url)) || candidates[0];
+    return usableUrl ? convertToCustomDomain(usableUrl) || usableUrl : null;
+  };
+
+  const queueSelectedReportsForWhatsApp = async () => {
+    if (selectedOrders.size === 0) {
+      alert('Please select at least one order');
+      return;
+    }
+
+    if (!userLabId) {
+      alert('Lab context not available. Please refresh and try again.');
+      return;
+    }
+
+    setIsQueueingSelectedReports(true);
+
+    try {
+      const selectedGroups = Array.from(selectedOrders)
+        .map((orderId) => orderGroups.find((group) => group.order_id === orderId))
+        .filter(Boolean) as OrderGroup[];
+
+      const queueRows: any[] = [];
+      const skipped: string[] = [];
+      const candidateOrderIds: string[] = [];
+
+      for (const group of selectedGroups) {
+        const result = group.results[0] as ApprovedResult | undefined;
+        const reportUrl = getReportUrlForQueue(result);
+        const patientPhone = result?.phone;
+
+        if (!reportUrl) {
+          skipped.push(`${group.patient_full_name}: report PDF missing`);
+          continue;
+        }
+
+        if (!patientPhone) {
+          skipped.push(`${group.patient_full_name}: phone missing`);
+          continue;
+        }
+
+        const testName = (group.test_names || []).join(', ') || 'lab';
+        candidateOrderIds.push(group.order_id);
+        queueRows.push({
+          lab_id: userLabId,
+          recipient_type: 'patient',
+          recipient_phone: patientPhone,
+          recipient_name: group.patient_full_name,
+          recipient_id: group.patient_id,
+          trigger_type: 'report_ready',
+          order_id: group.order_id,
+          report_id: result?.final_report?.id || null,
+          message_content: `Hello ${group.patient_full_name}, your ${testName} report is ready. Please find it attached.`,
+          attachment_url: reportUrl,
+          attachment_type: 'report',
+          status: 'pending',
+          scheduled_for: new Date().toISOString(),
+          last_error: 'Queued manually from Reports page',
+        });
+      }
+
+      if (queueRows.length === 0) {
+        alert(`No selected reports could be queued.\n\n${skipped.slice(0, 8).join('\n')}`);
+        return;
+      }
+
+      const { data: existingQueue, error: existingError } = await supabase
+        .from('notification_queue')
+        .select('order_id')
+        .eq('lab_id', userLabId)
+        .eq('recipient_type', 'patient')
+        .eq('trigger_type', 'report_ready')
+        .in('status', ['pending', 'scheduled', 'sending'])
+        .in('order_id', candidateOrderIds);
+
+      if (existingError) throw existingError;
+
+      const alreadyQueued = new Set((existingQueue || []).map((row: any) => row.order_id));
+      const rowsToInsert = queueRows.filter((row) => !alreadyQueued.has(row.order_id));
+
+      if (rowsToInsert.length === 0) {
+        alert('All valid selected reports are already in the WhatsApp queue.');
+        return;
+      }
+
+      const { error: insertError } = await supabase
+        .from('notification_queue')
+        .insert(rowsToInsert);
+
+      if (insertError) throw insertError;
+
+      clearSelection();
+
+      let processorMessage = 'Queue processor will send them in the background.';
+      try {
+        const { data: processorData, error: processorError } = await supabase.functions.invoke('process-notification-queue', {
+          body: { labId: userLabId, limit: Math.max(rowsToInsert.length, 10) },
+        });
+
+        if (processorError) {
+          processorMessage = 'Queued, but automatic processing did not start.';
+          console.warn('Notification queue processor error:', processorError);
+        } else if (processorData) {
+          processorMessage = `Queue processed: ${processorData.sent || 0} sent, ${processorData.failed || 0} failed.`;
+        }
+      } catch (processorError) {
+        processorMessage = 'Queued, but automatic processing did not start.';
+        console.warn('Notification queue processor exception:', processorError);
+      }
+
+      const duplicateCount = queueRows.length - rowsToInsert.length;
+      const parts = [`Queued ${rowsToInsert.length} report${rowsToInsert.length === 1 ? '' : 's'} for WhatsApp.`];
+      if (duplicateCount > 0) parts.push(`${duplicateCount} already queued.`);
+      if (skipped.length > 0) parts.push(`${skipped.length} skipped.`);
+      parts.push(processorMessage);
+      alert(parts.join(' '));
+    } catch (error) {
+      console.error('Failed to queue selected reports:', error);
+      alert('Failed to queue selected reports: ' + (error instanceof Error ? error.message : 'Unknown error'));
+    } finally {
+      setIsQueueingSelectedReports(false);
+    }
   };
 
   const generateReport = async () => {
@@ -1807,7 +2043,7 @@ const Reports: React.FC = () => {
     <div className="space-y-4">
       {[...Array(5)].map((_, i) => (
         <div key={i} className="bg-white rounded-lg border border-gray-200 p-6 animate-pulse">
-          <div className="flex items-center justify-between">
+	              <div className="flex flex-wrap items-center justify-between gap-3">
             <div className="flex items-center space-x-4">
               <div className="w-4 h-4 bg-gray-200 rounded"></div>
               <div className="space-y-2">
@@ -1936,18 +2172,26 @@ const Reports: React.FC = () => {
                 </button>
               )}
             </div>
-            <button
-              onClick={() => setShowFilters(!showFilters)}
-              className={`flex items-center space-x-2 px-4 py-3 border rounded-lg transition-colors ${showFilters ? 'bg-blue-50 border-blue-300 text-blue-700' : 'border-gray-300 text-gray-700 hover:bg-gray-50'
-                }`}
-            >
-              <Filter className="w-4 h-4" />
-              <span>Filters</span>
-              {(selectedStatus !== 'all' || selectedTestType !== 'all' || selectedDoctor !== 'all' || dateFilter !== 'today') && (
-                <span className="w-2 h-2 bg-blue-500 rounded-full"></span>
-              )}
-            </button>
-          </div>
+	            <button
+	              onClick={() => setShowFilters(!showFilters)}
+	              className={`flex items-center space-x-2 px-4 py-3 border rounded-lg transition-colors ${showFilters ? 'bg-blue-50 border-blue-300 text-blue-700' : 'border-gray-300 text-gray-700 hover:bg-gray-50'
+	                }`}
+	            >
+	              <Filter className="w-4 h-4" />
+	              <span>Filters</span>
+	              {(selectedStatus !== 'all' || selectedTestType !== 'all' || selectedDoctor !== 'all' || dateFilter !== 'today') && (
+	                <span className="w-2 h-2 bg-blue-500 rounded-full"></span>
+	              )}
+	            </button>
+	            <button
+	              onClick={selectAllOrders}
+	              disabled={orderGroups.length === 0 || selectedOrders.size === orderGroups.length}
+	              className="flex items-center justify-center space-x-2 px-4 py-3 border border-blue-200 text-blue-700 rounded-lg hover:bg-blue-50 transition-colors disabled:cursor-not-allowed disabled:opacity-60"
+	            >
+	              <CheckCircle className="w-4 h-4" />
+	              <span>{selectedOrders.size === orderGroups.length && orderGroups.length > 0 ? 'All Selected' : 'Select All'}</span>
+	            </button>
+	          </div>
 
           {/* Advanced Filters */}
           {showFilters && (
@@ -2036,7 +2280,7 @@ const Reports: React.FC = () => {
           {/* Selection Actions */}
           {selectedOrders.size > 0 && (
             <div className="bg-blue-50 rounded-lg p-4 border border-blue-200">
-              <div className="flex items-center justify-between">
+              <div className="flex flex-wrap items-center justify-between gap-3">
                 <div className="flex items-center space-x-3">
                   <span className="text-sm font-medium text-blue-900">
                     {selectedOrders.size} order{selectedOrders.size !== 1 ? 's' : ''} selected
@@ -2048,13 +2292,47 @@ const Reports: React.FC = () => {
                     Clear selection
                   </button>
                 </div>
-                <button
-                  onClick={generateReport}
-                  className="flex items-center space-x-2 px-4 py-2 bg-green-600 text-white rounded-md hover:bg-green-700 transition-colors"
-                >
-                  <FileText className="w-4 h-4" />
-                  <span>Generate Reports</span>
-                </button>
+                <div className="flex flex-wrap items-center justify-end gap-2">
+                  <button
+                    onClick={queueSelectedReportsForWhatsApp}
+                    disabled={isQueueingSelectedReports}
+                    className={`flex items-center space-x-2 px-4 py-2 rounded-md transition-colors ${
+                      isQueueingSelectedReports
+                        ? 'bg-emerald-300 text-white cursor-not-allowed'
+                        : 'bg-emerald-600 text-white hover:bg-emerald-700'
+                    }`}
+                  >
+                    {isQueueingSelectedReports ? (
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                    ) : (
+                      <Send className="w-4 h-4" />
+                    )}
+                    <span>{isQueueingSelectedReports ? 'Queueing...' : 'Queue WhatsApp'}</span>
+                  </button>
+                  <button
+                    onClick={handleDeleteSelectedReports}
+                    disabled={isDeletingSelectedReports}
+                    className={`flex items-center space-x-2 px-4 py-2 rounded-md transition-colors ${
+                      isDeletingSelectedReports
+                        ? 'bg-red-300 text-white cursor-not-allowed'
+                        : 'bg-red-600 text-white hover:bg-red-700'
+                    }`}
+                  >
+                    {isDeletingSelectedReports ? (
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                    ) : (
+                      <Trash2 className="w-4 h-4" />
+                    )}
+                    <span>{isDeletingSelectedReports ? 'Deleting...' : 'Delete Generated Report'}</span>
+                  </button>
+                  <button
+                    onClick={generateReport}
+                    className="flex items-center space-x-2 px-4 py-2 bg-green-600 text-white rounded-md hover:bg-green-700 transition-colors"
+                  >
+                    <FileText className="w-4 h-4" />
+                    <span>Generate Reports</span>
+                  </button>
+                </div>
               </div>
             </div>
           )}

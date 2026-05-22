@@ -4,7 +4,8 @@
  * Features:
  * 1. Download Excel template with orders grouped by test group
  *    - Regular tests: columns = analyte names
- *    - Section-only tests: columns = section names
+ *    - Section report tests: columns = section names
+ *    - Mixed tests: columns = analyte names + section names
  * 2. Upload filled Excel and save results
  *    - Only non-blank cells are saved
  *    - Blank cells are skipped (existing values preserved)
@@ -47,13 +48,30 @@ interface TestGroupInfo {
   columns: ColumnInfo[];
 }
 
+interface CascadeLevel {
+  id: string;
+  label: string;
+  options: { id: string; value: string }[];
+  multi_select?: boolean;
+}
+
+interface SectionConfig {
+  mode?: 'flat' | 'cascading' | 'matrix';
+  cascade_levels?: CascadeLevel[];
+}
+
 interface ColumnInfo {
   id: string; // analyte_id or section_id
   name: string;
-  type: 'analyte' | 'section';
+  type: 'analyte' | 'section' | 'cascade_field';
   unit?: string;
   reference_range?: string;
   section_type?: string;
+  // For cascade fields
+  section_id?: string; // parent section ID
+  cascade_level_id?: string;
+  cascade_options?: string[]; // allowed values
+  multi_select?: boolean;
 }
 
 interface ParsedRow {
@@ -232,32 +250,14 @@ const BulkResultExcelModal: React.FC<BulkResultExcelModalProps> = ({
     }
   }, [orderIds, labId]);
 
-  // Get columns (analytes or sections) for a test group
+  // Get columns (analytes and/or sections) for a test group
   async function getColumnsForTestGroup(
     tg: { id: string; name: string; is_section_only?: boolean; test_group_analytes?: any[] },
     labId: string
   ): Promise<ColumnInfo[]> {
     const columns: ColumnInfo[] = [];
 
-    if (tg.is_section_only) {
-      // Fetch sections from lab_template_sections
-      const { data: sections } = await supabase
-        .from('lab_template_sections')
-        .select('id, section_name, section_type, display_order')
-        .eq('test_group_id', tg.id)
-        .eq('lab_id', labId)
-        .eq('is_editable', true)
-        .order('display_order');
-
-      for (const sec of (sections || [])) {
-        columns.push({
-          id: sec.id,
-          name: sec.section_name,
-          type: 'section',
-          section_type: sec.section_type
-        });
-      }
-    } else {
+    if (!tg.is_section_only) {
       // Use analytes from test_group_analytes
       const analytes = [...(tg.test_group_analytes || [])].sort((a, b) =>
         (a.sort_order ?? 0) - (b.sort_order ?? 0)
@@ -274,6 +274,51 @@ const BulkResultExcelModal: React.FC<BulkResultExcelModalProps> = ({
           type: 'analyte',
           unit: la?.unit || a.unit || '',
           reference_range: la?.reference_range || a.reference_range || ''
+        });
+      }
+    }
+
+    // Fetch editable report sections for both section-only and mixed test groups.
+    const { data: sections } = await supabase
+      .from('lab_template_sections')
+      .select('id, section_name, section_type, display_order, section_config')
+      .eq('test_group_id', tg.id)
+      .eq('lab_id', labId)
+      .eq('is_editable', true)
+      .order('display_order');
+
+    for (const sec of (sections || [])) {
+      // Parse section_config to check for cascading mode
+      let config: SectionConfig | null = null;
+      if (sec.section_config) {
+        try {
+          config = typeof sec.section_config === 'string'
+            ? JSON.parse(sec.section_config)
+            : sec.section_config;
+        } catch { /* ignore */ }
+      }
+
+      // If cascading mode with levels, expand each level to a column
+      if (config?.mode === 'cascading' && config.cascade_levels?.length) {
+        for (const level of config.cascade_levels) {
+          const optionValues = level.options?.map(o => o.value) || [];
+          columns.push({
+            id: `${sec.id}:${level.id}`,
+            name: level.label || level.id,
+            type: 'cascade_field',
+            section_id: sec.id,
+            cascade_level_id: level.id,
+            cascade_options: optionValues,
+            multi_select: !!level.multi_select,
+          });
+        }
+      } else {
+        // Flat or unknown mode - single column for the section
+        columns.push({
+          id: sec.id,
+          name: sec.section_name,
+          type: 'section',
+          section_type: sec.section_type
         });
       }
     }
@@ -298,14 +343,29 @@ const BulkResultExcelModal: React.FC<BulkResultExcelModalProps> = ({
       for (const col of group.columns) {
         if (col.type === 'analyte' && col.unit) {
           headers.push(`${col.name} (${col.unit})`);
+        } else if (col.type === 'cascade_field' && col.multi_select) {
+          headers.push(`${col.name} (multi)`);
         } else {
           headers.push(col.name);
         }
       }
 
-      // Build data rows
-      const rows: string[][] = [headers];
+      // Build hint row for allowed values (cascade options or reference ranges)
+      const hasHints = group.columns.some(c => c.reference_range || c.cascade_options?.length);
+      const hintRow = ['', '', 'Options/Ref:'];
+      for (const col of group.columns) {
+        if (col.cascade_options?.length) {
+          // Show allowed values for cascade fields
+          hintRow.push(col.cascade_options.join(' | '));
+        } else if (col.reference_range) {
+          hintRow.push(col.reference_range);
+        } else {
+          hintRow.push('');
+        }
+      }
 
+      // Build data rows
+      const dataRows: string[][] = [];
       for (const order of group.orders) {
         const row: string[] = [
           order.order_display || order.id.slice(-6),
@@ -316,41 +376,29 @@ const BulkResultExcelModal: React.FC<BulkResultExcelModalProps> = ({
         for (let i = 0; i < group.columns.length; i++) {
           row.push('');
         }
-        rows.push(row);
+        dataRows.push(row);
       }
 
-      // Create worksheet
-      const ws = XLSX.utils.aoa_to_sheet(rows);
+      // Combine: headers + hints (if any) + data
+      const allRows = hasHints ? [headers, hintRow, ...dataRows] : [headers, ...dataRows];
 
-      // Set column widths
+      // Create worksheet
+      const ws = XLSX.utils.aoa_to_sheet(allRows);
+
+      // Set column widths - wider for cascade fields with options
       const colWidths = [
         { wch: 12 },  // Order ID
         { wch: 20 },  // Patient Name
         { wch: 12 },  // Sample ID
-        ...group.columns.map(() => ({ wch: 15 }))
+        ...group.columns.map(col => ({
+          wch: col.cascade_options?.length ? Math.max(18, col.name.length + 2) : 15
+        }))
       ];
       ws['!cols'] = colWidths;
 
-      // Add reference ranges as a comment/note row (optional - helps technicians)
-      if (group.columns.some(c => c.reference_range)) {
-        const refRow = ['', '', 'Ref Range:'];
-        for (const col of group.columns) {
-          refRow.push(col.reference_range || '');
-        }
-        // Insert as second row
-        XLSX.utils.sheet_add_aoa(ws, [refRow], { origin: 1 });
-        // Shift data rows down
-        const dataWithRef = [headers, refRow, ...rows.slice(1)];
-        const wsWithRef = XLSX.utils.aoa_to_sheet(dataWithRef);
-        wsWithRef['!cols'] = colWidths;
-
-        // Use sanitized sheet name (Excel has 31 char limit)
-        const sheetName = sanitizeSheetName(group.name);
-        XLSX.utils.book_append_sheet(wb, wsWithRef, sheetName);
-      } else {
-        const sheetName = sanitizeSheetName(group.name);
-        XLSX.utils.book_append_sheet(wb, ws, sheetName);
-      }
+      // Use sanitized sheet name (Excel has 31 char limit)
+      const sheetName = sanitizeSheetName(group.name);
+      XLSX.utils.book_append_sheet(wb, ws, sheetName);
     }
 
     // Generate filename with date
@@ -418,7 +466,7 @@ const BulkResultExcelModal: React.FC<BulkResultExcelModalProps> = ({
 
             for (const col of matchingGroup.columns) {
               // Try to find the column value by matching header name
-              const value = findColumnValue(row, col.name, col.unit);
+              const value = findColumnValue(row, col.name, col.unit, col.multi_select);
               if (value !== null && value !== undefined && String(value).trim() !== '') {
                 values[col.name] = String(value).trim();
               }
@@ -486,7 +534,7 @@ const BulkResultExcelModal: React.FC<BulkResultExcelModalProps> = ({
   }
 
   // Find column value from row with flexible header matching
-  function findColumnValue(row: Record<string, any>, colName: string, unit?: string): any {
+  function findColumnValue(row: Record<string, any>, colName: string, unit?: string, isMultiSelect?: boolean): any {
     // Try exact match
     if (row[colName] !== undefined) return row[colName];
 
@@ -495,12 +543,19 @@ const BulkResultExcelModal: React.FC<BulkResultExcelModalProps> = ({
       return row[`${colName} (${unit})`];
     }
 
+    // Try with (multi) suffix for cascade fields
+    if (isMultiSelect && row[`${colName} (multi)`] !== undefined) {
+      return row[`${colName} (multi)`];
+    }
+
     // Try case-insensitive match
     const lowerName = colName.toLowerCase();
     for (const [key, value] of Object.entries(row)) {
-      if (key.toLowerCase() === lowerName ||
-          key.toLowerCase().startsWith(lowerName) ||
-          key.toLowerCase().includes(lowerName)) {
+      const lowerKey = key.toLowerCase();
+      if (lowerKey === lowerName ||
+          lowerKey === `${lowerName} (multi)` ||
+          lowerKey.startsWith(lowerName) ||
+          lowerKey.includes(lowerName)) {
         return value;
       }
     }
@@ -541,29 +596,32 @@ const BulkResultExcelModal: React.FC<BulkResultExcelModalProps> = ({
           };
 
           try {
-            if (group.is_section_only) {
-              // Save section content
-              const savedCount = await saveSectionResults(
-                row.order_id,
-                group,
-                row.values,
-                currentUser?.id || null,
-                userLabId
-              );
-              saveResult.saved_count = savedCount;
-              saveResult.success = true;
-            } else {
+            let savedCount = 0;
+
+            if (group.columns.some(col => col.type === 'analyte')) {
               // Save analyte results
-              const savedCount = await saveAnalyteResults(
+              savedCount += await saveAnalyteResults(
                 row.order_id,
                 group,
                 row.values,
                 currentUser,
                 userLabId
               );
-              saveResult.saved_count = savedCount;
-              saveResult.success = true;
             }
+
+            if (group.columns.some(col => col.type === 'section' || col.type === 'cascade_field')) {
+              // Save report section content
+              savedCount += await saveSectionResults(
+                row.order_id,
+                group,
+                row.values,
+                currentUser?.id || null,
+                userLabId
+              );
+            }
+
+            saveResult.saved_count = savedCount;
+            saveResult.success = true;
 
             // Update order status
             await database.orders.checkAndUpdateStatus(row.order_id);
@@ -646,6 +704,8 @@ const BulkResultExcelModal: React.FC<BulkResultExcelModalProps> = ({
     const resultValues: any[] = [];
 
     for (const col of group.columns) {
+      if (col.type !== 'analyte') continue;
+
       const value = values[col.name];
       if (!value) continue;
 
@@ -737,14 +797,66 @@ const BulkResultExcelModal: React.FC<BulkResultExcelModalProps> = ({
       resultId = newResult.id;
     }
 
-    // Save section contents using result_section_content table
-    let savedCount = 0;
+    // Group columns by section_id for cascade fields
+    const sectionGroups = new Map<string, { sectionId: string; cascadeValues: Map<string, string> }>();
+    const flatSections: ColumnInfo[] = [];
 
     for (const col of group.columns) {
+      if (col.type === 'cascade_field' && col.section_id && col.cascade_level_id) {
+        const content = values[col.name];
+        if (!content) continue;
+
+        if (!sectionGroups.has(col.section_id)) {
+          sectionGroups.set(col.section_id, { sectionId: col.section_id, cascadeValues: new Map() });
+        }
+        sectionGroups.get(col.section_id)!.cascadeValues.set(col.cascade_level_id, content);
+      } else if (col.type === 'section') {
+        flatSections.push(col);
+      }
+    }
+
+    let savedCount = 0;
+
+    // Save cascade sections
+    for (const [sectionId, { cascadeValues }] of sectionGroups) {
+      if (cascadeValues.size === 0) continue;
+
+      // Build cascading_selections in the format expected by SectionEditor
+      // Format: { level_id: [option_id], ... } - we use the value text as option_id for simplicity
+      const cascadingSelections: Record<string, string[]> = {};
+      const contentParts: string[] = [];
+
+      for (const [levelId, value] of cascadeValues) {
+        // Find the column to get the label
+        const col = group.columns.find(c => c.cascade_level_id === levelId);
+        const label = col?.name || levelId;
+
+        // Handle multi-select (comma-separated values)
+        const valueList = value.split(',').map(v => v.trim()).filter(Boolean);
+        cascadingSelections[levelId] = valueList;
+        contentParts.push(`${label}: ${valueList.join(', ')}`);
+      }
+
+      const finalContent = contentParts.join('\n');
+
+      const { error } = await database.resultSectionContent.upsert({
+        result_id: resultId,
+        section_id: sectionId,
+        selected_options: [],
+        custom_text: '',
+        final_content: finalContent,
+        image_urls: [],
+        cascading_selections: cascadingSelections,
+      }, userId);
+
+      if (!error) savedCount += cascadeValues.size;
+    }
+
+    // Save flat sections
+    for (const col of flatSections) {
       const content = values[col.name];
       if (!content) continue;
 
-      // Use database utility for upserting section content
       const { error } = await database.resultSectionContent.upsert({
         result_id: resultId,
         section_id: col.id,
@@ -770,6 +882,17 @@ const BulkResultExcelModal: React.FC<BulkResultExcelModalProps> = ({
 
   const successCount = saveResults.filter(r => r.success).length;
   const failedCount = saveResults.filter(r => !r.success).length;
+
+  function getColumnSummary(group: TestGroupInfo): string {
+    const analyteCount = group.columns.filter(col => col.type === 'analyte').length;
+    const sectionCount = group.columns.filter(col => col.type === 'section' || col.type === 'cascade_field').length;
+    const parts: string[] = [];
+
+    if (analyteCount > 0) parts.push(`${analyteCount} analyte${analyteCount === 1 ? '' : 's'}`);
+    if (sectionCount > 0) parts.push(`${sectionCount} section column${sectionCount === 1 ? '' : 's'}`);
+
+    return parts.join(', ') || '0 columns';
+  }
 
   return (
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
@@ -824,7 +947,7 @@ const BulkResultExcelModal: React.FC<BulkResultExcelModalProps> = ({
                         )}
                       </span>
                       <span className="text-gray-500">
-                        {group.orders.length} orders · {group.columns.length} {group.is_section_only ? 'sections' : 'analytes'}
+                        {group.orders.length} orders · {getColumnSummary(group)}
                       </span>
                     </div>
                   ))}
