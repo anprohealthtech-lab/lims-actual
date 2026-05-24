@@ -469,9 +469,11 @@ export const SimpleAnalyteEditor: React.FC<SimpleAnalyteEditorProps> = ({
           );
 
       if (updateError) throw updateError;
+      const resolvedLabAnalyteId =
+        (data as any)?.id || formData.lab_analyte_id || analyte.lab_analyte_id || null;
 
       // Save lab_analyte_interface_config (dilution, unit conversion, auto-verify)
-      const labAnalyteId = analyte.lab_analyte_id;
+      const labAnalyteId = resolvedLabAnalyteId;
       if (labAnalyteId) {
         const configPayload = {
           lab_id: labId,
@@ -501,21 +503,39 @@ export const SimpleAnalyteEditor: React.FC<SimpleAnalyteEditorProps> = ({
         }
       }
 
-      // Save lab-specific analyte_dependencies if source analytes were selected via picker
-        if ((formulaData.is_calculated || analyte.is_calculated) && selectedSources.length > 0) {
-          const deps = selectedSources
-            .filter(s => !s.id.startsWith('_manual_')) // skip manual-only entries
-            .map(s => ({ source_analyte_id: s.id, source_lab_analyte_id: s.lab_analyte_id || null, variable_name: s.variableName }));
+      // Replace lab-specific analyte_dependencies on every calculated-config save.
+      // When no picker sources are selected, this intentionally clears old rows so
+      // recalculation falls back to the newly saved formula_variables instead.
+      if (formulaData.is_calculated || analyte.is_calculated) {
+        const deps = selectedSources
+          .filter(s => !s.id.startsWith('_manual_')) // skip manual-only entries
+          .map(s => ({ source_analyte_id: s.id, source_lab_analyte_id: s.lab_analyte_id || null, variable_name: s.variableName }));
 
-          if (deps.length > 0) {
-            const { error: depError } = await database.analyteDependencies.setDependencies(formData.id, deps, labId, analyte.lab_analyte_id || null);
-            if (depError) {
-              console.error('Failed to save analyte dependencies:', depError);
-            }
+        console.info('[Calculated Analyte Save] Saving formula/dependencies', {
+          analyte_id: formData.id,
+          lab_analyte_id: resolvedLabAnalyteId,
+          formula: formulaData.formula || null,
+          formula_variables: parsedVars,
+          dependencies: deps,
+        });
+
+        const { error: depError } = await database.analyteDependencies.setDependencies(formData.id, deps, labId, resolvedLabAnalyteId);
+        if (depError) {
+          console.error('Failed to save analyte dependencies:', depError);
         }
       }
 
-      onSave({ ...formData, value_type: valueType || null, default_value: defaultValue.trim() || null, expected_normal_values, expected_value_flag_map: valueType === 'qualitative' ? {} : expectedValueFlagMap, expected_value_codes: Object.keys(expected_value_codes).length > 0 ? expected_value_codes : null, ...formulaData });
+      onSave({
+        ...formData,
+        lab_analyte_id: resolvedLabAnalyteId,
+        value_type: valueType || null,
+        default_value: defaultValue.trim() || null,
+        expected_normal_values,
+        expected_value_flag_map: valueType === 'qualitative' ? {} : expectedValueFlagMap,
+        expected_value_codes: Object.keys(expected_value_codes).length > 0 ? expected_value_codes : null,
+        ...formulaData,
+        formula_variables: parsedVars.length > 0 ? parsedVars : [],
+      });
     } catch (error) {
       console.error('Failed to update analyte:', error);
       setError(error instanceof Error ? error.message : 'Failed to update analyte');

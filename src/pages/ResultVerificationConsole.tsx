@@ -72,6 +72,8 @@ type PanelRow = {
   result_verification_status?: string | null;
   patient_id: string;
   patient_name: string;
+  patient_age?: string | number | null;
+  patient_gender?: string | null;
   order_date: string;
   department?: string | null;
 };
@@ -205,6 +207,23 @@ const normalizeFlagToken = (flag: string | null | undefined) =>
     .toLowerCase()
     .replace(/[-\s]/g, "_")
     .replace(/[^a-z0-9_]/g, "");
+
+const normalizeFormulaForPanelEvaluation = (formula: string): string => {
+  let expression = formula.trim().replace(/\bpow\s*\(/g, "Math.pow(");
+
+  // JavaScript cannot parse `base ** -0.411`; convert lab-style ^ powers to Math.pow().
+  // Handles common LIMS formulas like: 141 * (CREAT / 0.9) ^ -0.411 * 0.993 ^ AGE
+  const powerPattern =
+    /(\([^()]+\)|-?\d+(?:\.\d+)?|[A-Za-z_][A-Za-z0-9_]*)\s*\^\s*(\([^()]+\)|-?\d+(?:\.\d+)?|[A-Za-z_][A-Za-z0-9_]*)/g;
+
+  for (let i = 0; i < 10; i++) {
+    const next = expression.replace(powerPattern, "Math.pow($1, $2)");
+    if (next === expression) break;
+    expression = next;
+  }
+
+  return expression;
+};
 
 const getCanonicalFlag = (flag: string | null | undefined): CanonicalFlag | null => {
   const token = normalizeFlagToken(flag);
@@ -681,25 +700,38 @@ const ResultVerificationConsole: React.FC = () => {
     if (error) {
       setErr(error.message);
       setPanels([]);
-    } else {
-      const basePanels = (data || []) as PanelRow[];
-      const resultIds = Array.from(new Set(basePanels.map((row) => row.result_id).filter(Boolean)));
-
-      if (resultIds.length > 0) {
-        const { data: resultStatuses } = await supabase
-          .from("results")
-          .select("id, verification_status")
-          .in("id", resultIds);
-
-        const statusMap = new Map((resultStatuses || []).map((row: any) => [row.id, row.verification_status || null]));
-        setPanels(basePanels.map((row) => ({
-          ...row,
-          result_verification_status: statusMap.has(row.result_id) ? statusMap.get(row.result_id) ?? null : null,
-        })));
-      } else {
-        setPanels(basePanels);
-      }
-    }
+	    } else {
+	      const basePanels = (data || []) as PanelRow[];
+	      const resultIds = Array.from(new Set(basePanels.map((row) => row.result_id).filter(Boolean)));
+	      const patientIds = Array.from(new Set(basePanels.map((row) => row.patient_id).filter(Boolean)));
+	
+	      const [{ data: resultStatuses }, { data: patientRows }] = await Promise.all([
+	        resultIds.length > 0
+	          ? supabase
+	              .from("results")
+	              .select("id, verification_status")
+	              .in("id", resultIds)
+	          : Promise.resolve({ data: [] as any[] }),
+	        patientIds.length > 0
+	          ? supabase
+	              .from("patients")
+	              .select("id, age, gender")
+	              .in("id", patientIds)
+	          : Promise.resolve({ data: [] as any[] }),
+	      ]);
+	
+	      const statusMap = new Map((resultStatuses || []).map((row: any) => [row.id, row.verification_status || null]));
+	      const patientMap = new Map((patientRows || []).map((patient: any) => [patient.id, patient]));
+	      setPanels(basePanels.map((row) => {
+	        const patient = patientMap.get(row.patient_id) as any;
+	        return {
+	          ...row,
+	          result_verification_status: statusMap.has(row.result_id) ? statusMap.get(row.result_id) ?? null : null,
+	          patient_age: row.patient_age ?? patient?.age ?? null,
+	          patient_gender: row.patient_gender ?? patient?.gender ?? null,
+	        };
+	      }));
+	    }
     if (!silent) setLoading(false);
   };
 
@@ -1339,6 +1371,20 @@ const ResultVerificationConsole: React.FC = () => {
           if (analyteSlug) valueLookup.set(analyteSlug, num);
         }
       }
+      const patientAge = toNumber(row.patient_age);
+      if (patientAge !== null) {
+        valueLookup.set('AGE', patientAge);
+        valueLookup.set('age', patientAge);
+      }
+      const patientGender = String(row.patient_gender || '').trim().toLowerCase();
+      const isMale = patientGender === 'male' || patientGender === 'm';
+      const isFemale = patientGender === 'female' || patientGender === 'f';
+      valueLookup.set('GENDER_MALE', isMale ? 1 : 0);
+      valueLookup.set('gender_male', isMale ? 1 : 0);
+      valueLookup.set('GENDER_FEMALE', isFemale ? 1 : 0);
+      valueLookup.set('gender_female', isFemale ? 1 : 0);
+      valueLookup.set('GENDER', isMale ? 1 : (isFemale ? 0 : 0.5));
+      valueLookup.set('gender', isMale ? 1 : (isFemale ? 0 : 0.5));
 
       const parseVars = (raw: any): string[] => {
         if (!raw) return [];
@@ -1349,96 +1395,206 @@ const ResultVerificationConsole: React.FC = () => {
 
       const updates: Array<{ id: string; value: string; inputs: Record<string, number> }> = [];
       const debugHintsForResult: Record<string, string[]> = {};
+      const recalcLogPrefix = `[Panel Recalculate][${row.result_id}]`;
 
-      for (const calcRow of calcRows) {
-        const fi = (formulas || []).find((f: any) => f.id === calcRow.analyte_id);
-        if (!fi?.formula) continue;
+      console.groupCollapsed(`${recalcLogPrefix} ${row.test_group_name || 'Panel'}: ${calcRows.length} calculated analyte(s)`);
+      console.info(`${recalcLogPrefix} Source values`, srcRows.map((r) => ({
+        row_id: r.id,
+        analyte_id: r.analyte_id,
+        lab_analyte_id: r.lab_analyte_id,
+        parameter: r.parameter,
+        value: r.value,
+      })));
+      console.info(`${recalcLogPrefix} Formulas loaded`, formulas.map((f: any) => ({
+        analyte_id: f.id,
+        formula: f.formula,
+        formula_variables: f.formula_variables,
+      })));
+      console.info(`${recalcLogPrefix} Dependencies loaded`, deps);
 
-          const rowDeps = (deps || []).filter((d: any) =>
-            (calcRow.lab_analyte_id && d.calculated_lab_analyte_id === calcRow.lab_analyte_id) ||
-            (!d.calculated_lab_analyte_id && d.calculated_analyte_id === calcRow.analyte_id)
-          );
-        const scope: Record<string, number> = {};
-        let allFound = true;
-        const missingVariables: string[] = [];
-
-        if (rowDeps.length > 0) {
-          for (const dep of rowDeps) {
-            let val = valueLookup.get(dep.source_lab_analyte_id || '') ??
-                      valueLookup.get(dep.source_analyte_id) ??
-                      valueLookup.get((dep.variable_name as string).toLowerCase());
-            if (val === undefined && dep.source_lab_analyte_id) {
-              const sourceName = sourceNameByLabAnalyteId.get(dep.source_lab_analyte_id);
-              if (sourceName) {
-                val = valueLookup.get(sourceName.toLowerCase());
-                if (val === undefined) {
-                  const slug = toVariableSlug(sourceName);
-                  if (slug) val = valueLookup.get(slug);
-                }
-              }
-            }
-            if (val === undefined && dep.source_analyte_id) {
-              const sourceName = sourceNameByAnalyteId.get(dep.source_analyte_id);
-              const sourceCode = sourceCodeByAnalyteId.get(dep.source_analyte_id);
-              if (sourceName) {
-                val = valueLookup.get(sourceName.toLowerCase());
-                if (val === undefined) {
-                  const slug = toVariableSlug(sourceName);
-                  if (slug) val = valueLookup.get(slug);
-                }
-              }
-              if (val === undefined && sourceCode) {
-                val = valueLookup.get(sourceCode.toLowerCase());
-              }
-            }
-            if (val === undefined) {
-              allFound = false;
-              missingVariables.push(dep.variable_name);
-              break;
-            }
-            scope[dep.variable_name] = val;
-          }
-        } else {
-          // Fallback: use formula_variables
-          for (const v of parseVars(fi.formula_variables)) {
-            const val = valueLookup.get(v.toLowerCase()) ?? valueLookup.get(v) ?? valueLookup.get(toVariableSlug(v));
-            if (val === undefined) {
-              allFound = false;
-              missingVariables.push(v);
-              break;
-            }
-            scope[v] = val;
-          }
-        }
-
-        if (!allFound || Object.keys(scope).length === 0) {
-          debugHintsForResult[calcRow.id] = missingVariables.length > 0 ? missingVariables : ["source values"];
-          continue;
-        }
-
-        let resolved = (fi.formula as string).trim();
-        for (const [k, v] of Object.entries(scope)) {
-          const esc = k.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-          resolved = resolved.replace(new RegExp(`\\b${esc}\\b`, 'g'), String(v));
-        }
-        resolved = resolved
-          .replace(/\bpow\s*\(/g, 'Math.pow(')
-          .replace(/\^/g, '**');
-        if (!/^[0-9+\-*/().\sA-Za-z,_]+$/.test(resolved)) {
-          debugHintsForResult[calcRow.id] = ["formula syntax"];
-          continue;
-        }
-        try {
-          const computed = Function('"use strict"; return (' + resolved + ');')();
-          if (!Number.isFinite(computed)) {
-            debugHintsForResult[calcRow.id] = ["non-finite result"];
+      try {
+        for (const calcRow of calcRows) {
+          const calcLogBase = {
+            row_id: calcRow.id,
+            analyte_id: calcRow.analyte_id,
+            lab_analyte_id: calcRow.lab_analyte_id,
+            parameter: calcRow.parameter,
+          };
+          const fi = (formulas || []).find((f: any) => f.id === calcRow.analyte_id);
+          if (!fi?.formula) {
+            debugHintsForResult[calcRow.id] = ["formula not configured"];
+            console.warn(`${recalcLogPrefix} Skipped calculated analyte: no formula`, calcLogBase);
             continue;
           }
-          updates.push({ id: calcRow.id, value: String(Math.round(Number(computed) * 100) / 100), inputs: { ...scope } });
-        } catch {
-          debugHintsForResult[calcRow.id] = ["formula evaluation"];
-          continue;
+
+          const exactLabDeps = calcRow.lab_analyte_id
+            ? (deps || []).filter((d: any) => d.calculated_lab_analyte_id === calcRow.lab_analyte_id)
+            : [];
+          const fallbackDeps = (deps || []).filter((d: any) =>
+            !d.calculated_lab_analyte_id && d.calculated_analyte_id === calcRow.analyte_id
+          );
+          const rowDeps = exactLabDeps.length > 0 ? exactLabDeps : fallbackDeps;
+          const scope: Record<string, number> = {};
+          let allFound = true;
+          const missingVariables: string[] = [];
+
+          console.debug(`${recalcLogPrefix} Calculating`, {
+            ...calcLogBase,
+            formula: fi.formula,
+            formula_variables: parseVars(fi.formula_variables),
+            dependency_mode: exactLabDeps.length > 0 ? 'lab-specific' : (fallbackDeps.length > 0 ? 'fallback/global' : 'formula_variables'),
+            dependencies: rowDeps,
+          });
+
+          if (rowDeps.length > 0) {
+            for (const dep of rowDeps) {
+              let val = valueLookup.get(dep.source_lab_analyte_id || '') ??
+                        valueLookup.get(dep.source_analyte_id) ??
+                        valueLookup.get((dep.variable_name as string).toLowerCase());
+              if (val === undefined && dep.source_lab_analyte_id) {
+                const sourceName = sourceNameByLabAnalyteId.get(dep.source_lab_analyte_id);
+                if (sourceName) {
+                  val = valueLookup.get(sourceName.toLowerCase());
+                  if (val === undefined) {
+                    const slug = toVariableSlug(sourceName);
+                    if (slug) val = valueLookup.get(slug);
+                  }
+                }
+              }
+              if (val === undefined && dep.source_analyte_id) {
+                const sourceName = sourceNameByAnalyteId.get(dep.source_analyte_id);
+                const sourceCode = sourceCodeByAnalyteId.get(dep.source_analyte_id);
+                if (sourceName) {
+                  val = valueLookup.get(sourceName.toLowerCase());
+                  if (val === undefined) {
+                    const slug = toVariableSlug(sourceName);
+                    if (slug) val = valueLookup.get(slug);
+                  }
+                }
+                if (val === undefined && sourceCode) {
+                  val = valueLookup.get(sourceCode.toLowerCase());
+                }
+              }
+              if (val === undefined) {
+                allFound = false;
+                missingVariables.push(dep.variable_name);
+                console.warn(`${recalcLogPrefix} Missing dependency value`, {
+                  ...calcLogBase,
+                  dependency: dep,
+                  known_lookup_keys: Array.from(valueLookup.keys()),
+                });
+                break;
+              }
+              scope[dep.variable_name] = val;
+              scope[String(dep.variable_name).toUpperCase()] = val;
+
+              const aliasCandidates = [
+                dep.source_lab_analyte_id ? sourceNameByLabAnalyteId.get(dep.source_lab_analyte_id) : null,
+                dep.source_analyte_id ? sourceNameByAnalyteId.get(dep.source_analyte_id) : null,
+                dep.source_analyte_id ? sourceCodeByAnalyteId.get(dep.source_analyte_id) : null,
+              ].filter(Boolean) as string[];
+
+              for (const alias of aliasCandidates) {
+                scope[alias] = val;
+                scope[alias.toUpperCase()] = val;
+                scope[alias.toLowerCase()] = val;
+                const slug = toVariableSlug(alias);
+                if (slug) {
+                  scope[slug] = val;
+                  scope[slug.toUpperCase()] = val;
+                }
+              }
+            }
+	          } else {
+	            // Fallback: use formula_variables
+	            for (const v of parseVars(fi.formula_variables)) {
+	              const val = valueLookup.get(v.toLowerCase()) ?? valueLookup.get(v) ?? valueLookup.get(toVariableSlug(v));
+              if (val === undefined) {
+                allFound = false;
+                missingVariables.push(v);
+                console.warn(`${recalcLogPrefix} Missing formula variable value`, {
+                  ...calcLogBase,
+                  variable: v,
+                  known_lookup_keys: Array.from(valueLookup.keys()),
+                });
+                break;
+              }
+	              scope[v] = val;
+	            }
+	          }
+
+	          // Patient context is not an analyte dependency, but formulas like eGFR
+	          // commonly require AGE / GENDER_MALE alongside source analytes.
+	          for (const contextKey of ['AGE', 'age', 'GENDER_MALE', 'gender_male', 'GENDER_FEMALE', 'gender_female', 'GENDER', 'gender']) {
+	            const contextValue = valueLookup.get(contextKey);
+	            if (contextValue !== undefined) {
+	              scope[contextKey] = contextValue;
+	            }
+	          }
+	
+	          if (!allFound || Object.keys(scope).length === 0) {
+            debugHintsForResult[calcRow.id] = missingVariables.length > 0 ? missingVariables : ["source values"];
+            console.warn(`${recalcLogPrefix} Not calculated: missing source values`, {
+              ...calcLogBase,
+              missing: debugHintsForResult[calcRow.id],
+              scope,
+            });
+            continue;
+          }
+
+          let resolved = (fi.formula as string).trim();
+          for (const [k, v] of Object.entries(scope)) {
+            const esc = k.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            resolved = resolved.replace(new RegExp(`\\b${esc}\\b`, 'g'), String(v));
+          }
+          resolved = normalizeFormulaForPanelEvaluation(resolved);
+          if (!/^[0-9+\-*/().\sA-Za-z,_?:<>=!]+$/.test(resolved)) {
+            debugHintsForResult[calcRow.id] = ["formula syntax"];
+            console.warn(`${recalcLogPrefix} Not calculated: formula syntax check failed`, {
+              ...calcLogBase,
+              formula: fi.formula,
+              resolved,
+              scope,
+            });
+            continue;
+          }
+          try {
+            const computed = Function('"use strict"; return (' + resolved + ');')();
+            if (!Number.isFinite(computed)) {
+              debugHintsForResult[calcRow.id] = ["non-finite result"];
+              console.warn(`${recalcLogPrefix} Not calculated: non-finite result`, {
+                ...calcLogBase,
+                formula: fi.formula,
+                resolved,
+                scope,
+                computed,
+              });
+              continue;
+            }
+            const roundedValue = String(Math.round(Number(computed) * 100) / 100);
+            updates.push({ id: calcRow.id, value: roundedValue, inputs: { ...scope } });
+            console.info(`${recalcLogPrefix} Calculated successfully`, {
+              ...calcLogBase,
+              value: roundedValue,
+              formula: fi.formula,
+              resolved,
+              scope,
+            });
+          } catch (err) {
+            debugHintsForResult[calcRow.id] = ["formula evaluation"];
+	            console.warn(`${recalcLogPrefix} Not calculated: formula evaluation error`, {
+	              ...calcLogBase,
+	              formula: fi.formula,
+	              resolved,
+	              scope,
+	              error_message: err instanceof Error ? err.message : String(err),
+	              error: err,
+	            });
+            continue;
+          }
         }
+      } finally {
+        console.groupEnd();
       }
 
       setCalcDebugHints(prev => ({ ...prev, [row.result_id]: debugHintsForResult }));

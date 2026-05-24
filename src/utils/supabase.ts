@@ -8378,11 +8378,12 @@ export const database = {
           deleteQuery = deleteQuery.eq("calculated_analyte_id", calculatedAnalyteId);
         }
 
-        if (labId) {
-          await deleteQuery.eq("lab_id", labId);
-        } else {
-        await deleteQuery.is("lab_id", null);
-      }
+        const { error: deleteError } = labId
+          ? await deleteQuery.eq("lab_id", labId)
+          : await deleteQuery.is("lab_id", null);
+        if (deleteError) {
+          return { data: null, error: deleteError };
+        }
 
       if (dependencies.length === 0) {
         return { data: [], error: null };

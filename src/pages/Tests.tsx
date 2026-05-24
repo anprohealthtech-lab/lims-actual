@@ -1316,6 +1316,7 @@ const Tests: React.FC = () => {
 
     const transformedAnalyte = {
       ...editingAnalyte,
+      lab_analyte_id: formData.lab_analyte_id ?? editingAnalyte.lab_analyte_id,
       name: formData.name,
       unit: formData.unit,
       referenceRange: formData.reference_range ?? editingAnalyte.referenceRange,
@@ -2524,6 +2525,7 @@ const Tests: React.FC = () => {
             <SimpleAnalyteEditor
               analyte={{
                 id: editingAnalyte.id,
+                lab_analyte_id: editingAnalyte.lab_analyte_id || null,
                 name: editingAnalyte.name,
                 unit: editingAnalyte.unit,
                 category: editingAnalyte.category,
@@ -2555,7 +2557,13 @@ const Tests: React.FC = () => {
               }}
               availableAnalytes={analytes
                 .filter(a => a.id !== editingAnalyte.id)
-                .map(a => ({ id: a.id, name: a.name, unit: a.unit || '', category: a.category }))}
+                .map(a => ({
+                  id: a.id,
+                  lab_analyte_id: (a as any).lab_analyte_id || null,
+                  name: a.name,
+                  unit: a.unit || '',
+                  category: a.category
+                }))}
               onSave={handleSimpleEditorSave}
               onCancel={handleCloseAnalyteModal}
             />

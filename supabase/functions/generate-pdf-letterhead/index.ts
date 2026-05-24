@@ -5105,6 +5105,40 @@ async function pollPdfCoJob(
 }
 
 /**
+ * Remove image tags that Chromium/PDF.co would render as a broken image icon.
+ * CKEditor placeholders such as {{approverSignature}} can resolve to src="",
+ * which causes PDF.co to print the image icon plus alt text in the PDF.
+ */
+function stripBrokenPdfImages(html: string): string {
+  if (!html) return html;
+
+  let removedCount = 0;
+  const cleanedHtml = html.replace(/<img\b[^>]*>/gi, (imgTag) => {
+    const srcMatch = imgTag.match(/\bsrc\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/i);
+    const rawSrc = (srcMatch?.[1] ?? srcMatch?.[2] ?? srcMatch?.[3] ?? "").trim();
+    const normalizedSrc = rawSrc.replace(/&quot;/g, '"').trim();
+    const shouldRemove =
+      !srcMatch ||
+      !normalizedSrc ||
+      normalizedSrc === "#" ||
+      /^about:blank$/i.test(normalizedSrc) ||
+      /^(undefined|null)$/i.test(normalizedSrc) ||
+      /^\{\{[\s\S]*\}\}$/.test(normalizedSrc);
+
+    if (!shouldRemove) return imgTag;
+
+    removedCount++;
+    return "";
+  });
+
+  if (removedCount > 0) {
+    console.warn(`Removed ${removedCount} broken/empty image tag(s) before PDF.co render`);
+  }
+
+  return cleanedHtml;
+}
+
+/**
  * Send HTML to PDF.co API and get PDF URL
  */
 async function sendHtmlToPdfCo(
@@ -5125,11 +5159,14 @@ async function sendHtmlToPdfCo(
     grayscale?: boolean; // Convert to black & white for print versions
   } = {},
 ): Promise<string> {
+  const sanitizedHtml = stripBrokenPdfImages(html);
+  const sanitizedHeaderHtml = stripBrokenPdfImages(options.headerHtml || "");
+  const sanitizedFooterHtml = stripBrokenPdfImages(options.footerHtml || "");
   console.log("ðŸ“¤ Sending HTML to PDF.co API...");
   console.log("  Filename:", filename);
-  console.log("  HTML length:", html.length);
-  console.log("  Header length:", options.headerHtml?.length || 0);
-  console.log("  Footer length:", options.footerHtml?.length || 0);
+  console.log("  HTML length:", sanitizedHtml.length);
+  console.log("  Header length:", sanitizedHeaderHtml.length);
+  console.log("  Footer length:", sanitizedFooterHtml.length);
 
   const parsePxValue = (value: string | number | undefined, fallback: number): number => {
     if (typeof value === "number" && Number.isFinite(value)) return value;
@@ -5142,14 +5179,14 @@ async function sendHtmlToPdfCo(
 
   const payload: Record<string, any> = {
     name: filename,
-    html: html,
+    html: sanitizedHtml,
     async: true, // Use async for large documents
     margins: options.margins || DEFAULT_PDF_SETTINGS.margins,
     papersize: options.paperSize || DEFAULT_PDF_SETTINGS.paperSize,
     displayheaderfooter: options.displayHeaderFooter ??
       DEFAULT_PDF_SETTINGS.displayHeaderFooter,
-    header: options.headerHtml || "",
-    footer: options.footerHtml || "",
+    header: sanitizedHeaderHtml,
+    footer: sanitizedFooterHtml,
     headerheight: options.headerHeight || DEFAULT_PDF_SETTINGS.headerHeight,
     footerheight: options.footerHeight || DEFAULT_PDF_SETTINGS.footerHeight,
     scale: options.scale ?? DEFAULT_PDF_SETTINGS.scale,
@@ -8549,7 +8586,9 @@ serve(async (req) => {
         // Create flat aliases for nested properties (for template compatibility)
 
         const sig = baseContext.signatory || {};
-        let sigName = sig.name || "";
+        const rawSigName = sig.name || "";
+        const sigDesignation = sig.designation || "";
+        let sigName = rawSigName;
         const sigUrl = sig.signature_url || sig.url;
 
         // Logic to inject signature image directly into the name placeholder
@@ -8601,7 +8640,12 @@ serve(async (req) => {
 
           // Signatory aliases
           signatoryName: sigName,
-          signatoryDesignation: sig.designation || "",
+          signatoryDesignation: sigDesignation,
+          approverName: rawSigName,
+          approvedByName: rawSigName,
+          approverRole: sigDesignation,
+          approverSignature: sigUrl || "",
+          approvedBySignature: sigUrl || "",
 
           // QR verification URL
           verifyUrl: verifyUrl,

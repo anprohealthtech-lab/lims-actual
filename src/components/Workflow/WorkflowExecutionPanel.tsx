@@ -38,8 +38,6 @@ interface WorkflowInstance {
   current_step_id: string | null;
   started_at: string | null;
   completed_at: string | null;
-  created_at: string;
-  created_by: string | null;
   workflow_versions?: {
     id: string;
     name: string;
@@ -116,8 +114,6 @@ export const WorkflowExecutionPanel: React.FC<WorkflowExecutionPanelProps> = ({
           current_step_id,
           started_at,
           completed_at,
-          created_at,
-          created_by,
           workflow_versions (
             id,
             name,
@@ -139,7 +135,7 @@ export const WorkflowExecutionPanel: React.FC<WorkflowExecutionPanelProps> = ({
           )
         `)
         .eq('order_id', orderId)
-        .order('created_at', { ascending: false });
+        .order('started_at', { ascending: false });
 
       if (testGroupId) {
         // Filter by test_group_id if we have a join to workflow_versions->test_group_id
@@ -387,7 +383,7 @@ export const WorkflowExecutionPanel: React.FC<WorkflowExecutionPanelProps> = ({
                   <div className="text-left">
                     <div className="text-sm font-medium text-gray-900">{workflowName}</div>
                     <div className="text-xs text-gray-500">
-                      {formatDateTime(instance.started_at || instance.created_at)}
+                      {formatDateTime(instance.started_at)}
                     </div>
                   </div>
                 </div>

@@ -855,7 +855,15 @@ const TemplateStudioCKE: React.FC = () => {
       { id: 'sampleCollectedAt', label: 'Sample Collected At', placeholder: '{{sampleCollectedAt}}', group: 'patient' },
       { id: 'approvedAt', label: 'Approved / Verified At', placeholder: '{{approvedAt}}', group: 'patient' },
       { id: 'orderId', label: 'Order ID', placeholder: '{{orderId}}', group: 'patient' },
-      { id: 'approverSignature', label: 'Approver Signature (Dynamic)', placeholder: '{{approverSignature}}', group: 'patient' },
+      {
+        id: 'approverSignature',
+        label: 'Approver Signature (Dynamic)',
+        placeholder: '{{approverSignature}}',
+        group: 'signature',
+        assetType: 'signature',
+        preferredWidth: 160,
+        preferredHeight: 55,
+      },
       { id: 'approvedByName', label: 'Approved By Name', placeholder: '{{approvedByName}}', group: 'patient' },
       { id: 'approverName', label: 'Approver Name', placeholder: '{{approverName}}', group: 'patient' },
       { id: 'approverRole', label: 'Approver Role', placeholder: '{{approverRole}}', group: 'patient' },
@@ -894,7 +902,15 @@ const TemplateStudioCKE: React.FC = () => {
   // Signatory placeholders
   const SIGNATORY_PLACEHOLDER_OPTIONS: PlaceholderOption[] = useMemo(
     () => [
-      { id: 'approverSignature', label: 'Approver Signature Image', placeholder: '{{approverSignature}}', group: 'signature' },
+      {
+        id: 'approverSignature',
+        label: 'Approver Signature Image',
+        placeholder: '{{approverSignature}}',
+        group: 'signature',
+        assetType: 'signature',
+        preferredWidth: 160,
+        preferredHeight: 55,
+      },
       { id: 'approverName', label: 'Approver Name (Signatory)', placeholder: '{{approverName}}', group: 'signature' },
       { id: 'approvedByName', label: 'Approved By Name', placeholder: '{{approvedByName}}', group: 'signature' },
       { id: 'approverRole', label: 'Approver Role/Title', placeholder: '{{approverRole}}', group: 'signature' },
@@ -1526,7 +1542,7 @@ const TemplateStudioCKE: React.FC = () => {
             instance.model.insertContent(modelFragment, selection);
           // For signature placeholders, insert as image tag instead of plain text
           } else if (token === '{{approverSignature}}' || token === '{{approvedBySignature}}') {
-            const imgHtml = `<img src="${token}" alt="Approver Signature" style="max-width:200px;height:auto;object-fit:contain;" />`;
+            const imgHtml = `<img class="ck-signature-img" src="${token}" alt="Approver Signature" width="160" height="55" style="display:block;width:160px;max-width:160px;height:55px;object-fit:contain;" onerror="this.style.visibility='hidden'" />`;
             const viewFragment = instance.data.processor.toView(imgHtml);
             const modelFragment = instance.data.toModel(viewFragment);
             instance.model.insertContent(modelFragment, selection);
