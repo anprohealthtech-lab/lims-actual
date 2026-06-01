@@ -12,7 +12,8 @@ import {
     AlertCircle,
     Settings,
     Send,
-    Stethoscope
+    Stethoscope,
+    Gift
 } from 'lucide-react';
 import { notificationTriggerService, NotificationSettings } from '../../utils/notificationTriggerService';
 import { database } from '../../utils/supabase';
@@ -97,6 +98,8 @@ export const NotificationTriggerSettings: React.FC = () => {
         send_report_on_status: 'Completed',
         auto_send_invoice_to_patient: false,
         auto_send_registration_confirmation: false,
+        auto_send_loyalty_points: false,
+        auto_send_loyalty_redemption: false,
         include_test_details_in_registration: true,
         include_invoice_in_registration: true,
         default_patient_channel: 'whatsapp',
@@ -449,6 +452,30 @@ export const NotificationTriggerSettings: React.FC = () => {
                         </label>
                     </div>
                 </SettingRow>
+            </div>
+
+            {/* Loyalty Notifications */}
+            <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
+                <div className="flex items-center space-x-2 mb-4">
+                    <Gift className="h-5 w-5 text-amber-600" />
+                    <h3 className="text-lg font-medium text-gray-900">Loyalty Notifications</h3>
+                </div>
+
+                <SettingRow
+                    icon={<Gift className="h-5 w-5" />}
+                    title="Send points earned message"
+                    description="Automatically tell patients how many loyalty points they earned after payment"
+                    enabled={settings.auto_send_loyalty_points || false}
+                    onChange={(v) => updateSetting('auto_send_loyalty_points', v)}
+                />
+
+                <SettingRow
+                    icon={<MessageSquare className="h-5 w-5" />}
+                    title="Send points redeemed message"
+                    description="Automatically confirm redeemed loyalty points and remaining balance"
+                    enabled={settings.auto_send_loyalty_redemption || false}
+                    onChange={(v) => updateSetting('auto_send_loyalty_redemption', v)}
+                />
             </div>
 
             {/* Timing Settings */}

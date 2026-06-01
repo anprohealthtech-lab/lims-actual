@@ -68,8 +68,8 @@ function getProfileSetting(profile: any, key: string, fallback = ''): string {
   return String(profile?.connection_settings?.[key] ?? profile?.[key] ?? fallback)
 }
 
-function isAnalyzerInitiated(profile: any): boolean {
-  const flow = profile?.connection_settings?.worklist_flow
+function isAnalyzerInitiated(profile: any, connection: any): boolean {
+  const flow = connection?.config?.worklist_flow ?? profile?.connection_settings?.worklist_flow
   const responseType = profile?.ai_parsing_hints?.worklist_response_type
   return flow === 'analyzer_initiated' || responseType === 'ORR^O02'
 }
@@ -523,8 +523,20 @@ Deno.serve(async (req) => {
       })
     }
 
-    const profile = connection.profile ?? {}
-    const analyzerInitiated = isAnalyzerInitiated(profile)
+    const baseProfile = connection.profile ?? {}
+    const connectionConfig = connection.config ?? {}
+    const profile = {
+      ...baseProfile,
+      connection_settings: {
+        ...(baseProfile.connection_settings ?? {}),
+        ...connectionConfig,
+      },
+      ai_parsing_hints: {
+        ...(baseProfile.ai_parsing_hints ?? {}),
+        ...(connectionConfig.ai_parsing_hints ?? {}),
+      },
+    }
+    const analyzerInitiated = isAnalyzerInitiated(profile, connection)
     const messageControlId = `LIMS${Date.now()}`
 
     const { data: queueEntry, error: queueError } = await supabase

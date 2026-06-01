@@ -1,11 +1,37 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { LogOut, Download, Filter, Search, Calendar, RefreshCw, PlusCircle, X, Clock, User, Phone, Trash2, Printer, FileText } from 'lucide-react';
+import { LogOut, Download, Filter, Search, Calendar, RefreshCw, PlusCircle, X, Clock, User, Phone, Trash2, Printer, FileText, Wallet, CreditCard, Receipt, Loader2, CheckCircle, AlertCircle } from 'lucide-react';
 import { supabase } from '../utils/supabase';
 import { getCurrentB2BAccount } from '../utils/b2bAuth';
 import AccountInfoCard from '../components/B2B/AccountInfoCard';
 import B2BBookingModal from '../components/B2B/B2BBookingModal';
 import { format } from 'date-fns';
+import type { InitiatePaymentResponse } from '../types/payment';
+
+const PAYMENT_FUNCTIONS_BASE_URL =
+    import.meta.env.VITE_PAYMENT_FUNCTIONS_BASE_URL ||
+    (window.location.hostname === 'app.limsapp.in'
+        ? 'https://api.limsapp.in'
+        : import.meta.env.VITE_SUPABASE_URL);
+
+const PAYMENT_CALLBACK_URL =
+    import.meta.env.VITE_CCAVENUE_CALLBACK_URL ||
+    `${PAYMENT_FUNCTIONS_BASE_URL}/functions/v1/payment-callback?provider=ccavenue`;
+
+const PAYMENT_CANCEL_URL =
+    import.meta.env.VITE_PAYMENT_CANCEL_URL ||
+    `${window.location.origin}/b2b/payment/cancelled`;
+
+const getBookingAmount = (booking: any): number => {
+    const quoted = Number(booking?.quotation_amount);
+    if (Number.isFinite(quoted) && quoted > 0) return quoted;
+
+    const tests = Array.isArray(booking?.test_details) ? booking.test_details : [];
+    return tests.reduce((sum: number, item: any) => {
+        const price = Number(item?.price);
+        return sum + (Number.isFinite(price) ? price : 0);
+    }, 0);
+};
 
 interface Order {
     id: string;
@@ -16,6 +42,9 @@ interface Order {
     order_date: string;
     expected_date: string;
     total_amount: number;
+    final_amount?: number;
+    billing_status?: string | null;
+    is_billed?: boolean | null;
     sample_id?: string;
     color_code?: string;
     color_name?: string;
@@ -26,6 +55,36 @@ interface Order {
         status: string;
         generated_date?: string;
     } | null;
+}
+
+interface PaymentAttempt {
+    id: string;
+    amount: number;
+    currency?: string;
+    provider?: string;
+    payment_purpose?: string;
+    status: string;
+    gateway_order_id?: string;
+    gateway_tracking_id?: string;
+    gateway_payment_id?: string;
+    payment_method?: string;
+    completed_at?: string;
+    created_at?: string;
+}
+
+interface ConsolidatedInvoice {
+    id: string;
+    invoice_number: string;
+    billing_period_start?: string;
+    billing_period_end?: string;
+    total_amount: number;
+    paid_amount?: number;
+    due_amount?: number;
+    status: string;
+    due_date?: string;
+    pdf_url?: string;
+    paid_at?: string;
+    created_at?: string;
 }
 
 const B2BPortal: React.FC = () => {
@@ -40,6 +99,14 @@ const B2BPortal: React.FC = () => {
     const [showBookingModal, setShowBookingModal] = useState(false);
     const [pendingBookings, setPendingBookings] = useState<any[]>([]);
     const [cancellingBooking, setCancellingBooking] = useState<string | null>(null);
+    const [payments, setPayments] = useState<PaymentAttempt[]>([]);
+    const [paymentCreditTotal, setPaymentCreditTotal] = useState(0);
+    const [invoices, setInvoices] = useState<ConsolidatedInvoice[]>([]);
+    const [outstandingInvoiceAmount, setOutstandingInvoiceAmount] = useState(0);
+    const [topUpAmount, setTopUpAmount] = useState('');
+    const [topUpAmountEdited, setTopUpAmountEdited] = useState(false);
+    const [paymentLoading, setPaymentLoading] = useState(false);
+    const [paymentError, setPaymentError] = useState<string | null>(null);
 
     // Load account and orders
     useEffect(() => {
@@ -94,6 +161,71 @@ const B2BPortal: React.FC = () => {
 
             if (!bookingsError && bookingsData) {
                 setPendingBookings(bookingsData);
+            }
+
+            const { data: paymentsData, error: paymentsError } = await supabase
+                .from('b2b_payment_attempts')
+                .select('id, amount, currency, provider, payment_purpose, status, gateway_order_id, gateway_tracking_id, gateway_payment_id, payment_method, completed_at, created_at')
+                .eq('account_id', accountData.id)
+                .eq('status', 'success')
+                .order('completed_at', { ascending: false })
+                .limit(5);
+
+            if (paymentsError) {
+                console.error('Error fetching payment history:', paymentsError);
+            } else {
+                setPayments(paymentsData || []);
+            }
+
+            const { data: paymentCreditData, error: paymentCreditError } = await supabase
+                .from('b2b_payment_attempts')
+                .select('amount')
+                .eq('account_id', accountData.id)
+                .eq('status', 'success')
+                .eq('credit_applied', true);
+
+            if (paymentCreditError) {
+                console.error('Error fetching payment credit total:', paymentCreditError);
+            } else {
+                const totalCredit = (paymentCreditData || []).reduce((sum, payment) => {
+                    const amount = Number(payment.amount);
+                    return sum + (Number.isFinite(amount) ? amount : 0);
+                }, 0);
+                setPaymentCreditTotal(totalCredit);
+            }
+
+            const { data: invoicesData, error: invoicesError } = await supabase
+                .from('consolidated_invoices')
+                .select('id, invoice_number, billing_period_start, billing_period_end, total_amount, status, due_date, pdf_url, paid_at, created_at')
+                .eq('account_id', accountData.id)
+                .order('billing_period_start', { ascending: false })
+                .limit(5);
+
+            if (invoicesError) {
+                console.error('Error fetching bills:', invoicesError);
+            } else {
+                setInvoices(invoicesData || []);
+            }
+
+            const { data: allInvoiceData, error: allInvoiceError } = await supabase
+                .from('consolidated_invoices')
+                .select('total_amount, status')
+                .eq('account_id', accountData.id)
+                .eq('lab_id', accountData.lab_id);
+
+            if (allInvoiceError) {
+                console.error('Error fetching outstanding bill total:', allInvoiceError);
+            } else {
+                const totalOutstanding = (allInvoiceData || [])
+                    .filter((invoice) => {
+                        const status = String(invoice.status || '').toLowerCase();
+                        return status !== 'paid' && status !== 'cancelled';
+                    })
+                    .reduce((sum, invoice) => {
+                        const amount = Number(invoice.total_amount);
+                        return sum + (Number.isFinite(amount) ? amount : 0);
+                    }, 0);
+                setOutstandingInvoiceAmount(totalOutstanding);
             }
         } catch (error) {
             console.error('Error loading data:', error);
@@ -164,6 +296,123 @@ const B2BPortal: React.FC = () => {
         window.open(reportUrl, '_blank');
     };
 
+    const handlePayNow = async () => {
+        const amount = Number(topUpAmount);
+        if (!account?.id || !account?.lab_id) return;
+        if (!Number.isFinite(amount) || amount <= 0) {
+            setPaymentError('Enter a valid payment amount');
+            return;
+        }
+
+        setPaymentLoading(true);
+        setPaymentError(null);
+
+        try {
+            const { data, error } = await supabase.functions.invoke<InitiatePaymentResponse>('initiate-payment', {
+                body: {
+                    account_id: account.id,
+                    lab_id: account.lab_id,
+                    amount,
+                    purpose: 'credit_topup',
+                    return_url: PAYMENT_CALLBACK_URL,
+                    cancel_url: PAYMENT_CANCEL_URL,
+                },
+            });
+
+            if (error) throw error;
+
+            if (data?.redirect_required && data.gateway_url) {
+                const form = document.createElement('form');
+                form.method = data.form_method || 'POST';
+                form.action = data.gateway_url;
+
+                Object.entries(data.form_data || {}).forEach(([key, value]) => {
+                    const input = document.createElement('input');
+                    input.type = 'hidden';
+                    input.name = key;
+                    input.value = value;
+                    form.appendChild(input);
+                });
+
+                document.body.appendChild(form);
+                form.submit();
+                return;
+            }
+
+            if (data?.razorpay_order_id) {
+                openRazorpayCheckout(data);
+                return;
+            }
+
+            setPaymentError('Payment gateway did not return a checkout option');
+            setPaymentLoading(false);
+        } catch (err: any) {
+            console.error('Payment initiation error:', err);
+            setPaymentError(err.message || 'Failed to initiate payment');
+            setPaymentLoading(false);
+        }
+    };
+
+    const openRazorpayCheckout = (paymentData: InitiatePaymentResponse) => {
+        const startCheckout = () => {
+            const options = {
+                key: paymentData.razorpay_key_id,
+                amount: (paymentData.amount || 0) * 100,
+                currency: paymentData.currency || 'INR',
+                name: paymentData.name || 'B2B Credit Top-up',
+                description: paymentData.description || 'Account credit top-up',
+                order_id: paymentData.razorpay_order_id,
+                prefill: paymentData.prefill,
+                notes: paymentData.notes,
+                handler: async (response: any) => {
+                    try {
+                        const { data, error } = await supabase.functions.invoke('payment-callback/verify', {
+                            body: {
+                                razorpay_order_id: response.razorpay_order_id,
+                                razorpay_payment_id: response.razorpay_payment_id,
+                                razorpay_signature: response.razorpay_signature,
+                                payment_id: paymentData.payment_id,
+                            },
+                        });
+
+                        if (error) throw error;
+
+                        if (data?.success) {
+                            setTopUpAmount('');
+                            await loadData();
+                        } else {
+                            setPaymentError('Payment verification failed');
+                        }
+                    } catch (err: any) {
+                        setPaymentError(err.message || 'Payment verification failed');
+                    } finally {
+                        setPaymentLoading(false);
+                    }
+                },
+                modal: {
+                    ondismiss: () => setPaymentLoading(false),
+                },
+            };
+
+            const rzp = new (window as any).Razorpay(options);
+            rzp.open();
+        };
+
+        if ((window as any).Razorpay) {
+            startCheckout();
+            return;
+        }
+
+        const script = document.createElement('script');
+        script.src = 'https://checkout.razorpay.com/v1/checkout.js';
+        script.onload = startCheckout;
+        script.onerror = () => {
+            setPaymentError('Could not load Razorpay checkout');
+            setPaymentLoading(false);
+        };
+        document.body.appendChild(script);
+    };
+
     const getStatusColor = (status: string) => {
         const colors: Record<string, string> = {
             'Pending Collection': 'bg-yellow-100 text-yellow-800',
@@ -184,13 +433,50 @@ const B2BPortal: React.FC = () => {
         }).format(amount);
     };
 
-    const formatDate = (dateString: string) => {
-        return new Date(dateString).toLocaleDateString('en-IN', {
+    const formatDate = (dateString?: string) => {
+        if (!dateString) return '-';
+        const date = new Date(dateString);
+        if (Number.isNaN(date.getTime())) return '-';
+
+        return date.toLocaleDateString('en-IN', {
             day: '2-digit',
             month: 'short',
             year: 'numeric',
         });
     };
+
+    const getOrderAmount = (order: Order): number => {
+        const finalAmount = Number(order.final_amount);
+        if (Number.isFinite(finalAmount) && finalAmount > 0) return finalAmount;
+
+        const totalAmount = Number(order.total_amount);
+        return Number.isFinite(totalAmount) ? totalAmount : 0;
+    };
+
+    const isOpenCreditOrder = (order: Order): boolean => {
+        const status = String(order.status || '').toLowerCase();
+        const billingStatus = String(order.billing_status || '').toLowerCase();
+
+        return status !== 'cancelled' && !order.is_billed && billingStatus !== 'billed';
+    };
+
+    const openOrderAmount = orders
+        .filter(isOpenCreditOrder)
+        .reduce((sum, order) => sum + getOrderAmount(order), 0);
+    const pendingBookingAmount = pendingBookings.reduce((sum, booking) => sum + getBookingAmount(booking), 0);
+    const creditLimit = Number(account?.credit_limit || 0);
+    const storedCreditUsed = Number(account?.credit_used || 0);
+    const liveCreditUsed = Math.max(0, outstandingInvoiceAmount + openOrderAmount + pendingBookingAmount - paymentCreditTotal);
+    const effectiveCreditUsed = Math.max(storedCreditUsed, liveCreditUsed);
+    const availableCredit = creditLimit - effectiveCreditUsed;
+    const isCreditBlocked = availableCredit < 0;
+    const suggestedTopUpAmount = Math.max(1, Math.ceil(creditLimit > 0 ? creditLimit * 2 : effectiveCreditUsed));
+
+    useEffect(() => {
+        if (!topUpAmountEdited && suggestedTopUpAmount > 0) {
+            setTopUpAmount(String(suggestedTopUpAmount));
+        }
+    }, [suggestedTopUpAmount, topUpAmountEdited]);
 
     if (loading) {
         return (
@@ -213,14 +499,16 @@ const B2BPortal: React.FC = () => {
                             <h1 className="text-2xl font-bold text-gray-900">B2B Portal</h1>
                             <p className="text-sm text-gray-600 mt-1">Welcome back, {account?.name}</p>
                         </div>
-                        <div className="flex items-center gap-3">
-                            <button
-                                onClick={() => setShowBookingModal(true)}
-                                className="flex items-center px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors shadow-sm"
-                            >
-                                <PlusCircle className="h-4 w-4 mr-2" />
-                                Book New Test
-                            </button>
+	                        <div className="flex items-center gap-3">
+	                            <button
+	                                onClick={() => setShowBookingModal(true)}
+                                    disabled={isCreditBlocked}
+                                    title={isCreditBlocked ? 'Clear pending credit before booking a new test' : 'Book New Test'}
+	                                className="flex items-center px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors shadow-sm disabled:bg-gray-300 disabled:text-gray-500 disabled:cursor-not-allowed disabled:shadow-none"
+	                            >
+	                                <PlusCircle className="h-4 w-4 mr-2" />
+	                                Book New Test
+	                            </button>
                             <button
                                 onClick={handleLogout}
                                 className="flex items-center px-4 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 transition-colors"
@@ -239,6 +527,218 @@ const B2BPortal: React.FC = () => {
                 {account && (
                     <div className="mb-8">
                         <AccountInfoCard account={account} />
+                    </div>
+                )}
+
+	                {/* Finance Section */}
+	                {account && (
+	                    <div className="grid grid-cols-1 xl:grid-cols-3 gap-6 mb-8">
+                        <div className="bg-white rounded-lg shadow-md border border-gray-200 p-6">
+                            <div className="flex items-center justify-between mb-5">
+                                <div>
+                                    <h2 className="text-lg font-bold text-gray-900">Credit Summary</h2>
+                                    <p className="text-sm text-gray-500">Available balance and limit</p>
+                                </div>
+                                <div className="h-10 w-10 rounded-lg bg-blue-50 flex items-center justify-center">
+                                    <Wallet className="h-5 w-5 text-blue-600" />
+                                </div>
+                            </div>
+                            <div className="space-y-3">
+                                <div className="flex items-center justify-between">
+                                    <span className="text-sm text-gray-500">Credit Limit</span>
+                                    <span className="font-semibold text-gray-900">{formatCurrency(creditLimit)}</span>
+                                </div>
+                                <div className="flex items-center justify-between">
+                                    <span className="text-sm text-gray-500">Open Orders</span>
+                                    <span className="font-semibold text-orange-600">{formatCurrency(openOrderAmount)}</span>
+                                </div>
+                                <div className="flex items-center justify-between">
+                                    <span className="text-sm text-gray-500">Outstanding Bills</span>
+                                    <span className="font-semibold text-orange-600">{formatCurrency(outstandingInvoiceAmount)}</span>
+                                </div>
+                                <div className="flex items-center justify-between">
+                                    <span className="text-sm text-gray-500">Pending Bookings</span>
+                                    <span className="font-semibold text-amber-600">{formatCurrency(pendingBookingAmount)}</span>
+                                </div>
+                                <div className="flex items-center justify-between">
+                                    <span className="text-sm text-gray-500">Payments Applied</span>
+                                    <span className="font-semibold text-green-600">-{formatCurrency(paymentCreditTotal)}</span>
+                                </div>
+                                <div className="flex items-center justify-between">
+                                    <span className="text-sm text-gray-500">Used Credit</span>
+                                    <span className="font-semibold text-gray-900">{formatCurrency(effectiveCreditUsed)}</span>
+                                </div>
+                                <div className="pt-3 border-t border-gray-200 flex items-center justify-between">
+                                    <span className="text-sm font-medium text-gray-700">Balance Credit</span>
+                                    <span className={`text-xl font-bold ${availableCredit >= 0 ? 'text-green-600' : 'text-red-600'}`}>
+                                        {formatCurrency(availableCredit)}
+                                    </span>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div className="bg-white rounded-lg shadow-md border border-gray-200 p-6">
+                            <div className="flex items-center justify-between mb-5">
+                                <div>
+                                    <h2 className="text-lg font-bold text-gray-900">Pay Now</h2>
+                                    <p className="text-sm text-gray-500">Top up account credit</p>
+                                </div>
+                                <div className="h-10 w-10 rounded-lg bg-green-50 flex items-center justify-center">
+                                    <CreditCard className="h-5 w-5 text-green-600" />
+                                </div>
+                            </div>
+                            <div className="space-y-3">
+                                <div className="relative">
+                                    <span className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500">₹</span>
+                                    <input
+                                        type="number"
+                                        min="1"
+                                        value={topUpAmount}
+                                        onChange={(e) => {
+                                            setTopUpAmountEdited(true);
+                                            setTopUpAmount(e.target.value);
+                                        }}
+                                        placeholder="Enter amount"
+                                        className="w-full pl-8 pr-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                                    />
+                                </div>
+                                {paymentError && (
+                                    <div className="flex items-start gap-2 text-sm text-red-600 bg-red-50 border border-red-100 rounded-lg p-2">
+                                        <AlertCircle className="h-4 w-4 mt-0.5 shrink-0" />
+                                        <span>{paymentError}</span>
+	                    </div>
+	                )}
+
+                {isCreditBlocked && (
+                    <div className="mb-8 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+                        Account credit is overdue. New bookings and report downloads are disabled until payment is received.
+                    </div>
+                )}
+                                <button
+                                    onClick={handlePayNow}
+                                    disabled={paymentLoading}
+                                    className="w-full flex items-center justify-center gap-2 px-4 py-2.5 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors disabled:opacity-60"
+                                >
+                                    {paymentLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <CreditCard className="h-4 w-4" />}
+                                    {paymentLoading ? 'Opening Gateway...' : 'Pay Now'}
+                                </button>
+                            </div>
+                        </div>
+
+                        <div className="bg-white rounded-lg shadow-md border border-gray-200 p-6">
+                            <div className="flex items-center justify-between mb-5">
+                                <div>
+                                    <h2 className="text-lg font-bold text-gray-900">Recent Payments</h2>
+                                    <p className="text-sm text-gray-500">Successful gateway payments</p>
+                                </div>
+                                <div className="h-10 w-10 rounded-lg bg-emerald-50 flex items-center justify-center">
+                                    <CheckCircle className="h-5 w-5 text-emerald-600" />
+                                </div>
+                            </div>
+                            <div className="space-y-3">
+                                {payments.length === 0 ? (
+                                    <p className="text-sm text-gray-500 py-4 text-center">No successful payments yet</p>
+                                ) : (
+                                    payments.map((payment) => (
+                                        <div key={payment.id} className="flex items-center justify-between border-b border-gray-100 pb-3 last:border-0 last:pb-0">
+                                            <div className="min-w-0">
+                                                <p className="text-sm font-medium text-gray-900">{formatCurrency(payment.amount)}</p>
+                                                <p className="text-xs text-gray-500 capitalize">
+                                                    {payment.provider || 'gateway'} {payment.payment_method ? ` - ${payment.payment_method}` : ''}
+                                                </p>
+                                            </div>
+                                            <div className="text-right">
+                                                <span className="inline-flex px-2 py-1 rounded-full text-xs font-medium bg-green-100 text-green-700">
+                                                    Success
+                                                </span>
+                                                <p className="text-xs text-gray-500 mt-1">
+                                                    {formatDate(payment.completed_at || payment.created_at || '')}
+                                                </p>
+                                            </div>
+                                        </div>
+                                    ))
+                                )}
+                            </div>
+                        </div>
+                    </div>
+                )}
+
+                {/* Bills Section */}
+                {account && (
+                    <div className="bg-white rounded-lg shadow-md border border-gray-200 mb-8">
+                        <div className="p-6 border-b border-gray-200 flex items-center justify-between">
+                            <div>
+                                <h2 className="text-lg font-bold text-gray-900 flex items-center gap-2">
+                                    <Receipt className="h-5 w-5 text-blue-600" />
+                                    Bills
+                                </h2>
+                                <p className="text-sm text-gray-500 mt-1">Recent consolidated monthly bills</p>
+                            </div>
+                        </div>
+                        <div className="overflow-x-auto">
+                            <table className="w-full">
+                                <thead className="bg-gray-50 border-b border-gray-200">
+                                    <tr>
+                                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Bill No.</th>
+                                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Period</th>
+                                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Due Date</th>
+                                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Status</th>
+                                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Amount</th>
+                                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Action</th>
+                                    </tr>
+                                </thead>
+                                <tbody className="bg-white divide-y divide-gray-200">
+                                    {invoices.length === 0 ? (
+                                        <tr>
+                                            <td colSpan={6} className="px-6 py-10 text-center text-gray-500">
+                                                No bills generated yet
+                                            </td>
+                                        </tr>
+                                    ) : (
+                                        invoices.map((invoice) => (
+                                            <tr key={invoice.id} className="hover:bg-gray-50 transition-colors">
+                                                <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">{invoice.invoice_number}</td>
+                                                <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-600">
+                                                    {invoice.billing_period_start && invoice.billing_period_end
+                                                        ? `${formatDate(invoice.billing_period_start)} - ${formatDate(invoice.billing_period_end)}`
+                                                        : '-'}
+                                                </td>
+                                                <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-600">
+                                                    {invoice.due_date ? formatDate(invoice.due_date) : '-'}
+                                                </td>
+                                                <td className="px-6 py-4 whitespace-nowrap">
+                                                    <span className={`px-2 py-1 rounded-full text-xs font-medium capitalize ${
+                                                        invoice.status === 'paid'
+                                                            ? 'bg-green-100 text-green-700'
+                                                            : invoice.status === 'overdue'
+                                                                ? 'bg-red-100 text-red-700'
+                                                                : 'bg-blue-100 text-blue-700'
+                                                    }`}>
+                                                        {invoice.status}
+                                                    </span>
+                                                </td>
+                                                <td className="px-6 py-4 whitespace-nowrap text-sm font-semibold text-gray-900">
+                                                    {formatCurrency(invoice.total_amount)}
+                                                </td>
+                                                <td className="px-6 py-4 whitespace-nowrap text-sm">
+                                                    {invoice.pdf_url ? (
+                                                        <button
+                                                            onClick={() => handleDownloadReport(invoice.pdf_url!)}
+                                                            className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium rounded-lg text-white bg-blue-600 hover:bg-blue-700 transition-colors"
+                                                        >
+                                                            <Download className="h-3.5 w-3.5" />
+                                                            Download
+                                                        </button>
+                                                    ) : (
+                                                        <span className="text-gray-400 text-xs italic">Not ready</span>
+                                                    )}
+                                                </td>
+                                            </tr>
+                                        ))
+                                    )}
+                                </tbody>
+                            </table>
+                        </div>
                     </div>
                 )}
 
@@ -444,25 +944,27 @@ const B2BPortal: React.FC = () => {
                                                     {order.reports?.pdf_url ? (
                                                         <>
                                                             {/* E-Copy (digital PDF) */}
-                                                            <button
-                                                                onClick={() => handleDownloadReport(order.reports!.pdf_url!)}
-                                                                className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium rounded-lg text-white bg-emerald-600 hover:bg-emerald-700 transition-colors"
-                                                                title="Download E-Copy (digital PDF)"
-                                                            >
-                                                                <FileText className="h-3.5 w-3.5" />
-                                                                E-Copy
-                                                            </button>
+	                                                            <button
+	                                                                onClick={() => handleDownloadReport(order.reports!.pdf_url!)}
+                                                                    disabled={isCreditBlocked}
+	                                                                className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium rounded-lg text-white bg-emerald-600 hover:bg-emerald-700 transition-colors disabled:bg-gray-300 disabled:text-gray-500 disabled:cursor-not-allowed"
+	                                                                title={isCreditBlocked ? 'Clear pending credit to download reports' : 'Download E-Copy (digital PDF)'}
+	                                                            >
+	                                                                <FileText className="h-3.5 w-3.5" />
+	                                                                E-Copy
+	                                                            </button>
                                                             {/* Print version */}
                                                             <button
                                                                 onClick={() => {
-                                                                    const url = order.reports!.print_pdf_url || order.reports!.pdf_url!;
-                                                                    handleDownloadReport(url);
-                                                                }}
-                                                                className="inline-flex items-center justify-center p-1.5 text-xs font-medium rounded-lg text-white bg-emerald-700 hover:bg-emerald-800 transition-colors"
-                                                                title={order.reports!.print_pdf_url ? "Print Version (letterhead)" : "Print (opens report PDF)"}
-                                                            >
-                                                                <Printer className="h-3.5 w-3.5" />
-                                                            </button>
+	                                                                    const url = order.reports!.print_pdf_url || order.reports!.pdf_url!;
+	                                                                    handleDownloadReport(url);
+	                                                                }}
+                                                                    disabled={isCreditBlocked}
+	                                                                className="inline-flex items-center justify-center p-1.5 text-xs font-medium rounded-lg text-white bg-emerald-700 hover:bg-emerald-800 transition-colors disabled:bg-gray-300 disabled:text-gray-500 disabled:cursor-not-allowed"
+	                                                                title={isCreditBlocked ? 'Clear pending credit to download reports' : order.reports!.print_pdf_url ? "Print Version (letterhead)" : "Print (opens report PDF)"}
+	                                                            >
+	                                                                <Printer className="h-3.5 w-3.5" />
+	                                                            </button>
                                                         </>
                                                     ) : (
                                                         <span className="text-gray-400 text-xs italic">Report pending</span>

@@ -9,7 +9,7 @@ const corsHeaders = {
 // Helper to extract Base64 images from HL7/ASTM messages
 function extractEmbeddedImages(rawContent: string): Array<{ type: string; data: string; name: string }> {
   const images: Array<{ type: string; data: string; name: string }> = [];
-  
+
   // Pattern 1: OBX segments with ED (Encapsulated Data) - HL7 standard
   // Format: OBX|1|ED|HISTOGRAM^WBC||^^PNG^BASE64^/9j/4AAQSkZJRgABAQAA...
   const obxEdPattern = /OBX\|[^|]*\|ED\|([^|]*)\|[^|]*\|([^^]*)\^([^^]*)\^([^^]*)\^([^|]*)/gi;
@@ -24,7 +24,7 @@ function extractEmbeddedImages(rawContent: string): Array<{ type: string; data: 
       });
     }
   }
-  
+
   // Pattern 2: Inline base64 data (common in some analyzers)
   // Look for PNG/JPEG magic bytes in base64
   const base64Pattern = /data:image\/(png|jpeg|jpg|gif);base64,([A-Za-z0-9+/=]+)/gi;
@@ -35,7 +35,7 @@ function extractEmbeddedImages(rawContent: string): Array<{ type: string; data: 
       name: 'inline_image'
     });
   }
-  
+
   // Pattern 3: Raw base64 blocks (PNG starts with iVBOR, JPEG with /9j/)
   const rawBase64Pattern = /(iVBOR[A-Za-z0-9+/=]{100,}|\/9j\/[A-Za-z0-9+/=]{100,})/g;
   while ((match = rawBase64Pattern.exec(rawContent)) !== null) {
@@ -47,7 +47,7 @@ function extractEmbeddedImages(rawContent: string): Array<{ type: string; data: 
       name: 'raw_image'
     });
   }
-  
+
   return images;
 }
 
@@ -182,10 +182,123 @@ function formatCalculatedResult(value: number): string {
   return rounded === '-0' ? '0' : rounded
 }
 
+function parseHl7Components(value: string | undefined): string[] {
+  return String(value ?? '').split('^')
+}
+
+function firstComponent(value: string | undefined): string {
+  return parseHl7Components(value)[0]?.trim() ?? ''
+}
+
+function normalizeHl7Flag(value: string | undefined): string {
+  const flag = String(value ?? '').trim()
+  return flag || 'N'
+}
+
+function parseHl7ResultsDeterministic(rawContent: string): {
+  sample_barcode: string
+  results: Array<{ test_code: string; name: string; value: string; unit: string; flag: string; reference_range: string }>
+  instrument: string
+  graphs: Array<{ type: string; name: string; test_code: string; description: string; associated_test: string }>
+} | null {
+  const segments = rawContent.split(/\r|\n/).map((s) => s.trim()).filter(Boolean)
+  if (!segments.some((s) => s.startsWith('MSH|'))) return null
+
+  const msh = segments.find((s) => s.startsWith('MSH|'))?.split('|') ?? []
+  const instrument = [msh[2], msh[3]].filter(Boolean).join('^')
+  let sampleBarcode = ''
+
+  for (const segment of segments) {
+    const fields = segment.split('|')
+    if (fields[0] === 'OBR') {
+      sampleBarcode = firstComponent(fields[3]) || firstComponent(fields[2]) || sampleBarcode
+    } else if (fields[0] === 'ORC') {
+      sampleBarcode = firstComponent(fields[2]) || sampleBarcode
+    } else if (fields[0] === 'PID') {
+      sampleBarcode = firstComponent(fields[3]) || sampleBarcode
+    }
+  }
+
+  const results: Array<{ test_code: string; name: string; value: string; unit: string; flag: string; reference_range: string }> = []
+  const graphs: Array<{ type: string; name: string; test_code: string; description: string; associated_test: string }> = []
+
+  for (const segment of segments) {
+    const fields = segment.split('|')
+    if (fields[0] !== 'OBX') continue
+
+    const valueType = String(fields[2] ?? '').trim().toUpperCase()
+    const idParts = parseHl7Components(fields[3])
+    const testCode = (idParts[0] || '').trim()
+    const name = (idParts[1] || testCode).trim()
+    const value = String(fields[5] ?? '').trim()
+
+    if (!testCode) continue
+
+    if (['ED', 'NA'].includes(valueType)) {
+      graphs.push({
+        type: valueType === 'ED' ? 'histogram' : 'waveform',
+        name,
+        test_code: testCode,
+        description: name,
+        associated_test: '',
+      })
+      continue
+    }
+
+    results.push({
+      test_code: testCode,
+      name,
+      value,
+      unit: firstComponent(fields[6]),
+      reference_range: String(fields[7] ?? '').trim(),
+      flag: normalizeHl7Flag(fields[8]),
+    })
+  }
+
+  if (!sampleBarcode && results.length === 0) return null
+  return { sample_barcode: sampleBarcode, results, instrument, graphs }
+}
+
+async function saveAnalyzerLearning(
+  supabase: any,
+  record: any,
+  parsedData: any,
+  messageType: string,
+) {
+  const sampleResults = (parsedData.results ?? [])
+    .slice(0, 25)
+    .map((r: any) => `${r.test_code}${r.name ? ` (${r.name})` : ''}`)
+    .join(', ')
+
+  await supabase.from('analyzer_knowledge').insert({
+    lab_id: record.lab_id,
+    knowledge_type: 'protocol',
+    title: `${messageType || 'HL7'} ${parsedData.instrument || record.analyzer_connection_id || 'analyzer'} message`,
+    content: [
+      `message_type=${messageType || 'UNKNOWN'}`,
+      `analyzer_connection_id=${record.analyzer_connection_id || ''}`,
+      `instrument=${parsedData.instrument || ''}`,
+      `sample_barcode_field=OBR-3/OBR-2/PID-3`,
+      `result_format=HL7_OBX`,
+      `result_codes=${sampleResults}`,
+    ].join('\n'),
+    metadata: {
+      analyzer_connection_id: record.analyzer_connection_id,
+      message_type: messageType || null,
+      sample_barcode: parsedData.sample_barcode || null,
+      parser: 'deterministic_hl7_obx',
+      result_count: parsedData.results?.length ?? 0,
+      graph_count: parsedData.graphs?.length ?? 0,
+      raw_message_id: record.id,
+    },
+    confidence_score: 0.8,
+  })
+}
+
 // Helper to extract histogram/waveform numeric data
 function extractWaveformData(rawContent: string): Array<{ name: string; data: number[] }> {
   const waveforms: Array<{ name: string; data: number[] }> = [];
-  
+
   // Pattern: OBX with NA (Numeric Array) data type
   // Format: OBX|1|NA|HISTOGRAM^RBC||12^15^18^22^...
   const naPattern = /OBX\|[^|]*\|NA\|([^|]*)\|[^|]*\|([^|]*)/gi;
@@ -200,7 +313,7 @@ function extractWaveformData(rawContent: string): Array<{ name: string; data: nu
       }
     }
   }
-  
+
   return waveforms;
 }
 
@@ -213,7 +326,7 @@ Deno.serve(async (req) => {
     // 1. Parse Webhook Payload
     const payload = await req.json()
     const { record } = payload
-    
+
     if (!record || !record.raw_content) {
         return new Response(JSON.stringify({ message: 'No record content' }), {
             headers: { ...corsHeaders, 'Content-Type': 'application/json' },
@@ -288,7 +401,14 @@ Deno.serve(async (req) => {
 
     console.log(`📊 Found ${embeddedImages.length} images, ${waveformData.length} waveforms, ${octerHistograms.length} Octer-stream histograms in analyzer data`);
 
-    // 4. AI Parse
+	    // 4. Parse results. Standard HL7 OBX messages are deterministic; AI is fallback.
+	    let parsedData = parseHl7ResultsDeterministic(record.raw_content)
+	    let parserUsed = parsedData ? 'deterministic_hl7_obx' : 'ai'
+
+	    if (!parsedData || !Array.isArray(parsedData.results) || parsedData.results.length === 0) {
+	      parserUsed = 'ai'
+
+	    // 4. AI Parse
     // Strip ED/Octer-stream binary blobs before sending to AI — already decoded separately
     const rawForAI = record.raw_content.replace(
       /(\|ED\|[^|]*\|\|[^^]*\^Application\^Octer-stream\^)[0-9]+/gi,
@@ -332,24 +452,36 @@ Do NOT include or describe binary histogram data — it is already extracted sep
       messages: [{ role: 'user', content: parsePrompt }]
     })
     const aiText = (aiResult.content[0] as { type: string; text: string }).text
-    
+
     // Robust JSON Extraction
     const jsonMatch = aiText.match(/\{[\s\S]*\}/);
     const jsonStr = jsonMatch ? jsonMatch[0] : aiText.trim();
-    
-    let parsedData;
-    try {
-        parsedData = JSON.parse(jsonStr)
-    } catch (e) {
-        console.error("AI returned invalid JSON:", aiText)
-        throw new Error("AI Parsing Failed: Invalid JSON format")
-    }
 
-    // 5. Order Lookup & Insertion Logic
+	    try {
+	        parsedData = JSON.parse(jsonStr)
+	    } catch (e) {
+	        console.error("AI returned invalid JSON:", aiText)
+	        throw new Error("AI Parsing Failed: Invalid JSON format")
+	    }
+	    }
+
+	    if (parsedData && parserUsed === 'deterministic_hl7_obx') {
+	      try {
+	        await saveAnalyzerLearning(supabase, record, parsedData, hl7MessageType || record.message_type || 'HL7')
+	      } catch (learningError) {
+	        console.warn('Analyzer knowledge save skipped:', learningError)
+	      }
+	    }
+
+	    if (!parsedData) {
+	      throw new Error('Analyzer parsing failed: no parser produced result data')
+	    }
+
+	    // 5. Order Lookup & Insertion Logic
     let statusLog = "Parsed successfully. "
     let foundOrderId: string | null = null
     const barcode = String(parsedData.sample_barcode).trim()
-    
+
     // A. Find Sample (using robust WILDCARD search)
     const { data: sampleList, error: sampleError } = await supabase
         .from('samples')
@@ -359,14 +491,14 @@ Do NOT include or describe binary histogram data — it is already extracted sep
         .limit(1)
 
     const sample = sampleList && sampleList.length > 0 ? sampleList[0] : null
-    
+
     if (sampleError || !sample) {
        statusLog += `Warning: Sample with barcode '${barcode}' not found (Lab: ${record.lab_id}).`
     } else {
         foundOrderId = sample.order_id ?? null
         // B. Process Results
         statusLog += "Sample found. Processing results... "
-        
+
         // Fetch Patient Details from Order (patient_name from orders, gender from patients join)
         const { data: orderData, error: orderError } = await supabase
             .from('orders')
@@ -425,7 +557,7 @@ Do NOT include or describe binary histogram data — it is already extracted sep
                 .from('v_order_missing_analytes')
                 .select('*')
                 .eq('order_id', sample.order_id)
-            
+
             if (!missingAnalytes || missingAnalytes.length === 0) {
                 statusLog += "No expected analytes found for this order. "
             } else {
@@ -469,12 +601,38 @@ Do NOT include or describe binary histogram data — it is already extracted sep
                     }
                 }
 
-                const mappingPrompt = `
+	                const analyteMap = new Map()
+	                for (const row of deterministicMappingRows) {
+	                    const machineCode = String(row.analyzer_code ?? '').toUpperCase()
+	                    if (!machineCode || !row.analyte_id) continue
+
+	                    const expected = missingAnalytes.find((a: any) => a.analyte_id === row.analyte_id)
+	                    if (!expected) continue
+
+	                    analyteMap.set(machineCode, {
+	                        analyte_id: row.analyte_id,
+	                        analyte_name: expected.analyte_name || row.test_name,
+	                        test_group_id: expected.test_group_id || row.test_group_id,
+	                        order_test_group_id: null,
+	                        order_test_id: expected.order_test_id,
+	                        confidence: row.ai_confidence || 1.0,
+	                        mapping_source: 'test_mappings'
+	                    })
+	                }
+
+	                const unresolvedClinicalResults = clinicalResults.filter((r: any) => {
+	                    const code = String(r.test_code ?? '').toUpperCase()
+	                    return code && !analyteMap.has(code)
+	                })
+
+	                let aiMappings = { mappings: [] as any[] }
+	                if (unresolvedClinicalResults.length > 0) {
+	                const mappingPrompt = `
 You are a laboratory data mapper. Match machine analyzer results to expected lab analytes.
 Output ONLY valid JSON. No markdown fences, no explanation.
 
 MACHINE RESULTS:
-${JSON.stringify(clinicalResults.map((r: any) => ({ test_code: r.test_code, name: r.name, value: r.value, unit: r.unit })), null, 2)}
+${JSON.stringify(unresolvedClinicalResults.map((r: any) => ({ test_code: r.test_code, name: r.name, value: r.value, unit: r.unit })), null, 2)}
 
 EXPECTED ANALYTES FOR THIS ORDER:
 ${JSON.stringify(missingAnalytes.map(a => ({
@@ -516,56 +674,38 @@ OUTPUT ONLY valid JSON in this exact format (no markdown, no explanation):
                   messages: [{ role: 'user', content: mappingPrompt }]
                 })
                 const aiMappingText = (aiMappingResult.content[0] as { type: string; text: string }).text
-                
+
                 // Robust JSON extraction
                 const mappingJsonMatch = aiMappingText.match(/\{[\s\S]*\}/)
                 const mappingJsonStr = mappingJsonMatch ? mappingJsonMatch[0] : aiMappingText.trim()
-                
-                let aiMappings
-                try {
-                    aiMappings = JSON.parse(mappingJsonStr)
-                } catch (e) {
-                    console.error("AI mapping returned invalid JSON:", aiMappingText)
-                    statusLog += "AI mapping failed. "
-                    aiMappings = { mappings: [] }
-                }
-                
-                // Build lookup map from AI mappings
-                const analyteMap = new Map()
-                if (aiMappings.mappings && Array.isArray(aiMappings.mappings)) {
-                    for (const mapping of aiMappings.mappings) {
-                        if (mapping.machine_code && mapping.analyte_id) {
-                            analyteMap.set(mapping.machine_code.toUpperCase(), {
-                                analyte_id: mapping.analyte_id,
-                                analyte_name: mapping.analyte_name,
-                                test_group_id: mapping.test_group_id,
+
+	                try {
+	                    aiMappings = JSON.parse(mappingJsonStr)
+	                } catch (e) {
+	                    console.error("AI mapping returned invalid JSON:", aiMappingText)
+	                    statusLog += "AI mapping failed. "
+	                    aiMappings = { mappings: [] }
+	                }
+	                }
+
+	                // Build lookup map from AI mappings
+	                if (aiMappings.mappings && Array.isArray(aiMappings.mappings)) {
+	                    for (const mapping of aiMappings.mappings) {
+	                        if (mapping.machine_code && mapping.analyte_id) {
+	                            const machineCode = mapping.machine_code.toUpperCase()
+	                            if (analyteMap.has(machineCode)) continue
+	                            analyteMap.set(machineCode, {
+	                                analyte_id: mapping.analyte_id,
+	                                analyte_name: mapping.analyte_name,
+	                                test_group_id: mapping.test_group_id,
                                 order_test_group_id: null, // Not in view, will be populated by trigger
                                 order_test_id: mapping.order_test_id,
                                 confidence: mapping.confidence || 0.8
                             })
-                        }
-                    }
-                }
+	                        }
+	                    }
+	                }
 
-                // Verified inbound mappings override AI guesses.
-                for (const row of deterministicMappingRows) {
-                    const machineCode = String(row.analyzer_code ?? '').toUpperCase()
-                    if (!machineCode || !row.analyte_id) continue
-
-                    const expected = missingAnalytes.find((a: any) => a.analyte_id === row.analyte_id)
-                    if (!expected) continue
-
-                    analyteMap.set(machineCode, {
-                        analyte_id: row.analyte_id,
-                        analyte_name: expected.analyte_name || row.test_name,
-                        test_group_id: expected.test_group_id || row.test_group_id,
-                        order_test_group_id: null,
-                        order_test_id: expected.order_test_id,
-                        confidence: row.ai_confidence || 1.0,
-                        mapping_source: 'test_mappings'
-                    })
-                }
-                
                 console.log(`DEBUG: Mapped ${analyteMap.size} analytes:`, Array.from(analyteMap.keys()).join(', '))
 
                 // Enrich analyteMap with real order_test_group_id and test_group_id.
@@ -868,7 +1008,7 @@ OUTPUT ONLY valid JSON in this exact format (no markdown, no explanation):
                     order_test_id: mapping.order_test_id,
                     lab_id: sample.lab_id
                 })
-                
+
                 if (valError) {
                     console.error(`Failed to insert result value for ${item.test_code}`, valError)
                     statusLog += `Error inserting ${item.test_code}: ${valError.message}. `
@@ -938,7 +1078,7 @@ OUTPUT ONLY valid JSON in this exact format (no markdown, no explanation):
       extracted_histograms: octerHistograms.length,
       graphs_analyzed: parsedData.graphs?.length || 0
     };
-    
+
     await supabase
       .from('analyzer_raw_messages')
       .update({
@@ -950,11 +1090,11 @@ OUTPUT ONLY valid JSON in this exact format (no markdown, no explanation):
       })
       .eq('id', record.id)
 
-    return new Response(JSON.stringify({ 
-      success: true, 
+    return new Response(JSON.stringify({
+      success: true,
       log: statusLog,
       images_found: embeddedImages.length,
-      waveforms_found: waveformData.length 
+      waveforms_found: waveformData.length
     }), {
       headers: { ...corsHeaders, 'Content-Type': 'application/json' },
     })

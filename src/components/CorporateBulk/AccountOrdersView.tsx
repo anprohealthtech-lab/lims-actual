@@ -34,6 +34,7 @@ interface PackageOption {
 interface OrderRow {
   id: string;
   order_display: string | null;
+  order_number: number | null;
   order_date: string;
   patient_id: string | null;
   patient_name: string;
@@ -49,6 +50,8 @@ interface OrderRow {
   smart_report_url: string | null;
   report_pdf_url: string | null;
   report_print_pdf_url: string | null;
+  draft_report_pdf_url: string | null;
+  draft_report_print_pdf_url: string | null;
   has_report: boolean;
 }
 
@@ -67,6 +70,9 @@ interface AccountOrdersViewProps {
   initialBatchId?: string;
 }
 
+type BulkPdfSortMode = 'sample_desc' | 'sample_asc' | 'order_id_asc' | 'order_id_desc' | 'date_desc' | 'patient_az';
+const ORDERS_PAGE_SIZE = 1000;
+
 const AccountOrdersView: React.FC<AccountOrdersViewProps> = ({ initialAccountId, initialBatchId }) => {
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [batches, setBatches] = useState<Batch[]>([]);
@@ -84,6 +90,7 @@ const AccountOrdersView: React.FC<AccountOrdersViewProps> = ({ initialAccountId,
   const [downloadLoading, setDownloadLoading] = useState(false);
   const [ecopyDownloadLoading, setEcopyDownloadLoading] = useState(false);
   const [mergeLoading, setMergeLoading] = useState(false);
+  const [bulkPdfSortMode, setBulkPdfSortMode] = useState<BulkPdfSortMode>('sample_desc');
   const [quickResultOrderId, setQuickResultOrderId] = useState<string | null>(null);
   const [showBulkResultModal, setShowBulkResultModal] = useState(false);
   const [packages, setPackages] = useState<PackageOption[]>([]);
@@ -134,39 +141,45 @@ const AccountOrdersView: React.FC<AccountOrdersViewProps> = ({ initialAccountId,
       .then(({ data }) => setBatches(data || []));
   }, [selectedAccountId]);
 
-  const loadOrders = useCallback(async () => {
-    if (!selectedAccountId && !selectedBatchId) { setOrders([]); return; }
-    setLoading(true);
-    try {
-      let query = supabase
-        .from('orders')
-        .select(`
-          id, order_display, order_date, patient_id, patient_name, status,
-          total_amount, final_amount, account_id, bulk_batch_id,
-          billing_status, sample_id,
-          report_generation_status, smart_report_url,
-          patients(phone),
-          reports!reports_order_id_fkey(id, pdf_url, print_pdf_url)
-        `)
-        .order('order_date', { ascending: false })
-        .limit(200);
+	  const loadOrders = useCallback(async () => {
+	    if (!selectedAccountId && !selectedBatchId) { setOrders([]); return; }
+	    setLoading(true);
+	    try {
+	      const allRows: any[] = [];
+	      for (let from = 0; ; from += ORDERS_PAGE_SIZE) {
+	        let query = supabase
+	          .from('orders')
+	          .select(`
+	            id, order_display, order_number, order_date, patient_id, patient_name, status,
+	            total_amount, final_amount, account_id, bulk_batch_id,
+	            billing_status, sample_id,
+	            report_generation_status, smart_report_url,
+	            patients(phone),
+	            reports!reports_order_id_fkey(id, report_type, pdf_url, print_pdf_url)
+	          `)
+	          .order('order_date', { ascending: false })
+	          .range(from, from + ORDERS_PAGE_SIZE - 1);
 
-      if (selectedBatchId) {
-        query = query.eq('bulk_batch_id', selectedBatchId);
-      } else if (selectedAccountId) {
-        query = query.eq('account_id', selectedAccountId);
-      }
+	        if (selectedBatchId) {
+	          query = query.eq('bulk_batch_id', selectedBatchId);
+	        } else if (selectedAccountId) {
+	          query = query.eq('account_id', selectedAccountId);
+	        }
 
-      if (dateFrom) query = query.gte('order_date', dateFrom);
-      if (dateTo) query = query.lte('order_date', dateTo);
+	        if (dateFrom) query = query.gte('order_date', dateFrom);
+	        if (dateTo) query = query.lte('order_date', dateTo);
 
-      const { data, error } = await query;
-      if (error) throw error;
+	        const { data, error } = await query;
+	        if (error) throw error;
+	        allRows.push(...(data || []));
+	        if (!data || data.length < ORDERS_PAGE_SIZE) break;
+	      }
 
-      const mapped = (data || []).map((o: {
-        id: string;
-        order_display: string | null;
-        order_date: string;
+	      const mapped = allRows.map((o: {
+		        id: string;
+		        order_display: string | null;
+		        order_number: number | null;
+		        order_date: string;
         patient_id: string | null;
         patient_name: string;
         patients: { phone: string | null } | null;
@@ -179,17 +192,30 @@ const AccountOrdersView: React.FC<AccountOrdersViewProps> = ({ initialAccountId,
         sample_id: string | null;
         report_generation_status: string | null;
         smart_report_url: string | null;
-        reports: { id: string; pdf_url: string | null; print_pdf_url: string | null }[] | { id: string; pdf_url: string | null; print_pdf_url: string | null } | null;
+        reports: { id: string; report_type: 'draft' | 'final' | null; pdf_url: string | null; print_pdf_url: string | null }[] | { id: string; report_type: 'draft' | 'final' | null; pdf_url: string | null; print_pdf_url: string | null } | null;
       }) => {
         const reportRows = Array.isArray(o.reports) ? o.reports : o.reports ? [o.reports] : [];
-        const firstReportWithUrl = reportRows.find((report) => !!(report?.pdf_url || report?.print_pdf_url));
+        const finalReports = reportRows.filter((report) => report?.report_type !== 'draft');
+        const draftReports = reportRows.filter((report) => report?.report_type === 'draft');
+        const finalReportWithEcopyUrl = finalReports.find((report) => !!report?.pdf_url);
+        const finalReportWithPrintUrl = finalReports.find((report) => !!report?.print_pdf_url);
+        const draftReportWithEcopyUrl = draftReports.find((report) => !!report?.pdf_url);
+        const draftReportWithPrintUrl = draftReports.find((report) => !!report?.print_pdf_url);
 
         return {
           ...o,
           patient_phone: o.patients?.phone || null,
-          report_pdf_url: firstReportWithUrl?.pdf_url || null,
-          report_print_pdf_url: firstReportWithUrl?.print_pdf_url || null,
-          has_report: !!(o.smart_report_url || firstReportWithUrl),
+          report_pdf_url: finalReportWithEcopyUrl?.pdf_url || draftReportWithEcopyUrl?.pdf_url || null,
+          report_print_pdf_url: finalReportWithPrintUrl?.print_pdf_url || draftReportWithPrintUrl?.print_pdf_url || null,
+          draft_report_pdf_url: draftReportWithEcopyUrl?.pdf_url || null,
+          draft_report_print_pdf_url: draftReportWithPrintUrl?.print_pdf_url || null,
+          has_report: !!(
+            o.smart_report_url ||
+            finalReportWithEcopyUrl ||
+            finalReportWithPrintUrl ||
+            draftReportWithEcopyUrl ||
+            draftReportWithPrintUrl
+          ),
         };
       });
       setOrders(mapped);
@@ -229,19 +255,52 @@ const AccountOrdersView: React.FC<AccountOrdersViewProps> = ({ initialAccountId,
   };
 
   const getGeneratedPrintPdfUrl = (order: OrderRow) =>
-    order.report_print_pdf_url || order.report_pdf_url || order.smart_report_url;
+    order.report_print_pdf_url;
 
   const getGeneratedEcopyPdfUrl = (order: OrderRow) =>
     order.report_pdf_url || order.smart_report_url;
 
-  const getGeneratedPdfUrl = (order: OrderRow, pdfVariant: 'print' | 'ecopy') =>
-    pdfVariant === 'ecopy' ? getGeneratedEcopyPdfUrl(order) : getGeneratedPrintPdfUrl(order);
+	  const getGeneratedPdfUrl = (order: OrderRow, pdfVariant: 'print' | 'ecopy') =>
+	    pdfVariant === 'ecopy' ? getGeneratedEcopyPdfUrl(order) : getGeneratedPrintPdfUrl(order);
+
+  const getDailySeq = (order: Pick<OrderRow, 'order_number' | 'sample_id'>) => {
+    if (typeof order.order_number === 'number' && Number.isFinite(order.order_number)) return order.order_number;
+    const tail = String(order.sample_id || '').match(/(?:^|[/-])(\d+)\s*$/)?.[1] || '';
+    const parsed = parseInt(tail, 10);
+    return Number.isFinite(parsed) ? parsed : 0;
+  };
+
+  const compareOrdersForBulkPdf = (a: OrderRow, b: OrderRow) => {
+    if (bulkPdfSortMode === 'patient_az') {
+      return (a.patient_name || '').localeCompare(b.patient_name || '');
+    }
+
+    if (bulkPdfSortMode === 'date_desc') {
+      const dateDiff = new Date(b.order_date).getTime() - new Date(a.order_date).getTime();
+      if (dateDiff !== 0) return dateDiff;
+    }
+
+    if (bulkPdfSortMode === 'order_id_asc' || bulkPdfSortMode === 'order_id_desc') {
+      const aRef = a.order_display || a.id;
+      const bRef = b.order_display || b.id;
+      return bulkPdfSortMode === 'order_id_asc'
+        ? aRef.localeCompare(bRef, undefined, { numeric: true })
+        : bRef.localeCompare(aRef, undefined, { numeric: true });
+    }
+
+    const nA = getDailySeq(a);
+    const nB = getDailySeq(b);
+    if (nA !== nB) return bulkPdfSortMode === 'sample_asc' ? nA - nB : nB - nA;
+    return new Date(b.order_date).getTime() - new Date(a.order_date).getTime();
+  };
 
   const getBulkEligibleOrderIds = (pdfVariant: 'print' | 'ecopy' = 'print') => {
-    const sourceOrders = selectedOrderIds.size > 0
-      ? orders.filter((order) => selectedOrderIds.has(order.id))
-      : orders;
-    const eligibleOrders = sourceOrders.filter((order) => !!getGeneratedPdfUrl(order, pdfVariant));
+	    const sourceOrders = selectedOrderIds.size > 0
+	      ? orders.filter((order) => selectedOrderIds.has(order.id))
+	      : orders;
+	    const eligibleOrders = sourceOrders
+      .filter((order) => !!getGeneratedPdfUrl(order, pdfVariant))
+      .sort(compareOrdersForBulkPdf);
 
     return {
       orderIds: eligibleOrders.map((order) => order.id),
@@ -420,9 +479,9 @@ const AccountOrdersView: React.FC<AccountOrdersViewProps> = ({ initialAccountId,
       setDownloadRequest({ ...reqData, download_type: 'zip' } as DownloadRequest);
 
       // Invoke edge function
-      const { error: fnError } = await supabase.functions.invoke('bulk-pdf-zip', {
-        body: { request_id: reqData.id, pdf_variant: pdfVariant },
-      });
+	      const { error: fnError } = await supabase.functions.invoke('bulk-pdf-zip', {
+	        body: { request_id: reqData.id, pdf_variant: pdfVariant, sort_mode: bulkPdfSortMode },
+	      });
 
       if (fnError) throw new Error(fnError.message);
 
@@ -458,12 +517,12 @@ const AccountOrdersView: React.FC<AccountOrdersViewProps> = ({ initialAccountId,
     const { orderIds, missingCount } = getBulkEligibleOrderIds('print');
 
     if (orderIds.length === 0) {
-      alert('No orders with generated reports found. Please generate reports first.');
+      alert('No orders with generated print reports found. Please generate print reports first.');
       return;
     }
 
     if (missingCount > 0) {
-      alert(`${missingCount} selected order${missingCount === 1 ? '' : 's'} do not have a generated PDF URL yet and will be skipped.`);
+      alert(`${missingCount} selected order${missingCount === 1 ? '' : 's'} do not have a generated print PDF URL yet and will be skipped.`);
     }
 
     setMergeLoading(true);
@@ -494,9 +553,9 @@ const AccountOrdersView: React.FC<AccountOrdersViewProps> = ({ initialAccountId,
 
       setDownloadRequest({ ...reqData, download_type: 'merged' });
 
-      const { error: fnError } = await supabase.functions.invoke('bulk-pdf-merge', {
-        body: { request_id: reqData.id },
-      });
+	      const { error: fnError } = await supabase.functions.invoke('bulk-pdf-merge', {
+	        body: { request_id: reqData.id, sort_mode: bulkPdfSortMode },
+	      });
 
       if (fnError) throw new Error(fnError.message);
 
@@ -523,7 +582,7 @@ const AccountOrdersView: React.FC<AccountOrdersViewProps> = ({ initialAccountId,
     }
   };
 
-  const ordersWithReports = orders.filter((o) => o.has_report).length;
+  const ordersWithReports = orders.filter((o) => !!getGeneratedPrintPdfUrl(o)).length;
   const ordersWithEcopyReports = orders.filter((o) => !!getGeneratedEcopyPdfUrl(o)).length;
   const effectiveSelectedCount = selectedOrderIds.size > 0 ? selectedOrderIds.size : ordersWithReports;
   const effectiveEcopySelectedCount = selectedOrderIds.size > 0 ? selectedOrderIds.size : ordersWithEcopyReports;
@@ -607,12 +666,28 @@ const AccountOrdersView: React.FC<AccountOrdersViewProps> = ({ initialAccountId,
           {selectedOrderIds.size > 0 && (
             <span className="text-blue-600 font-medium">· {selectedOrderIds.size} selected</span>
           )}
-          <span className="text-gray-400">· {ordersWithReports} with reports</span>
+          <span className="text-gray-400">· {ordersWithReports} with print reports</span>
         </div>
 
-        <div className="flex items-center gap-2">
-          <button
-            onClick={loadOrders}
+	        <div className="flex items-center gap-2">
+          <label className="flex items-center gap-2 text-xs text-gray-600">
+            PDF sort
+            <select
+              value={bulkPdfSortMode}
+              onChange={(e) => setBulkPdfSortMode(e.target.value as BulkPdfSortMode)}
+              className="border border-gray-300 rounded-lg px-2 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+              title="Sort order used for ZIP and merged PDF"
+            >
+              <option value="sample_desc">Sample ID newest first</option>
+              <option value="sample_asc">Sample ID oldest first</option>
+              <option value="order_id_asc">Order ID A-Z</option>
+              <option value="order_id_desc">Order ID Z-A</option>
+              <option value="date_desc">Order date newest first</option>
+              <option value="patient_az">Patient A-Z</option>
+            </select>
+          </label>
+	          <button
+	            onClick={loadOrders}
             className="p-2 rounded-lg border border-gray-200 hover:bg-gray-50 text-gray-500"
             title="Refresh"
           >
@@ -738,8 +813,8 @@ const AccountOrdersView: React.FC<AccountOrdersViewProps> = ({ initialAccountId,
                 </tr>
               </thead>
               <tbody>
-                {orders.map((order) => (
-                  <tr key={order.id} className={`border-b hover:bg-gray-50 ${selectedOrderIds.has(order.id) ? 'bg-blue-50' : ''}`}>
+	                {orders.map((order) => (
+	                  <tr key={order.id} className={`border-b hover:bg-gray-50 ${selectedOrderIds.has(order.id) ? 'bg-blue-50' : ''}`}>
                     <td className="px-3 py-2.5">
                       <input
                         type="checkbox"
@@ -778,20 +853,20 @@ const AccountOrdersView: React.FC<AccountOrdersViewProps> = ({ initialAccountId,
                         >
                           <ClipboardEdit className="w-3.5 h-3.5" />
                         </button>
-                        {order.report_pdf_url && (
-                          <>
-                            <a
-                              href={order.report_pdf_url}
-                              target="_blank"
-                              rel="noreferrer"
-                              title="Open eCopy PDF"
-                              className="inline-flex items-center gap-1 rounded px-2 py-1 text-xs bg-green-600 text-white hover:bg-green-700"
-                            >
-                              <Download className="w-3.5 h-3.5" />
-                              <span>eCopy</span>
-                            </a>
-                            <QuickSendReport
-                              reportUrl={order.report_pdf_url}
+	                        {order.report_pdf_url && (
+	                          <>
+	                            <a
+	                              href={order.report_pdf_url}
+	                              target="_blank"
+	                              rel="noreferrer"
+	                              title={order.report_pdf_url === order.draft_report_pdf_url ? 'Open draft eCopy PDF' : 'Open eCopy PDF'}
+	                              className="inline-flex items-center gap-1 rounded px-2 py-1 text-xs bg-green-600 text-white hover:bg-green-700"
+	                            >
+	                              <Download className="w-3.5 h-3.5" />
+	                              <span>{order.report_pdf_url === order.draft_report_pdf_url ? 'Draft eCopy' : 'eCopy'}</span>
+	                            </a>
+	                            <QuickSendReport
+	                              reportUrl={order.report_pdf_url}
                               reportName={`${order.patient_name} - Report`}
                               patientName={order.patient_name}
                               patientPhone={order.patient_phone || ''}
@@ -801,18 +876,18 @@ const AccountOrdersView: React.FC<AccountOrdersViewProps> = ({ initialAccountId,
                             />
                           </>
                         )}
-                        {order.report_print_pdf_url && (
-                          <a
-                            href={order.report_print_pdf_url}
-                            target="_blank"
-                            rel="noreferrer"
-                            title="Open print PDF"
-                            className="inline-flex items-center gap-1 rounded px-2 py-1 text-xs bg-amber-500 text-white hover:bg-amber-600"
-                          >
-                            <Printer className="w-3.5 h-3.5" />
-                            <span>Print</span>
-                          </a>
-                        )}
+	                        {order.report_print_pdf_url && (
+	                          <a
+	                            href={order.report_print_pdf_url}
+	                            target="_blank"
+	                            rel="noreferrer"
+	                            title={order.report_print_pdf_url === order.draft_report_print_pdf_url ? 'Open draft print PDF' : 'Open print PDF'}
+	                            className="inline-flex items-center gap-1 rounded px-2 py-1 text-xs bg-amber-500 text-white hover:bg-amber-600"
+	                          >
+	                            <Printer className="w-3.5 h-3.5" />
+	                            <span>{order.report_print_pdf_url === order.draft_report_print_pdf_url ? 'Draft Print' : 'Print'}</span>
+	                          </a>
+	                        )}
                         <a
                           href={`/orders/${order.id}`}
                           target="_blank"

@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { Link, useLocation } from 'react-router-dom';
+import { useAuth } from '../../contexts/AuthContext';
 import {
   LayoutDashboard,
   Users,
@@ -132,6 +133,8 @@ const sections: { label: string; emoji: string; category: CategoryKey }[] = [
 
 const Sidebar: React.FC<SidebarProps> = ({ isOpen, onToggle, isMobile = false, isCollapsed, setIsCollapsed }) => {
   const location = useLocation();
+  const { labName } = useAuth();
+  const displayLabName = labName?.trim();
 
   const [favorites, setFavorites] = useState<string[]>(() => {
     try {
@@ -216,15 +219,25 @@ const Sidebar: React.FC<SidebarProps> = ({ isOpen, onToggle, isMobile = false, i
         ${isCollapsed ? 'w-20' : 'w-64'}
       `}>
         {/* Header */}
-        <div className={`flex-none flex items-center justify-between h-16 bg-blue-600 ${isCollapsed ? 'px-2 justify-center' : 'px-6'}`}>
+        <div className={`flex-none flex items-center justify-between bg-blue-600 ${isCollapsed ? 'h-16 px-2 justify-center' : 'h-20 px-5'}`}>
           {!isCollapsed && (
-            <div className="flex items-center">
+            <div className="flex min-w-0 flex-1 items-center">
               <img
                 src="https://ik.imagekit.io/18tsendxqy/website/Screenshot%202025-12-15%20133819.png?updatedAt=1765786115578"
                 alt="AnPro LIMS"
                 className="h-8 w-8 object-contain rounded"
               />
-              <span className="ml-2 text-xl font-bold text-white">AnPro LIMS</span>
+              <div className="ml-2 min-w-0">
+                <span className="block text-xl font-bold leading-tight text-white">AnPro LIMS</span>
+                {displayLabName && (
+                  <span
+                    className="mt-1 block truncate text-sm font-semibold leading-tight text-blue-50"
+                    title={displayLabName}
+                  >
+                    {displayLabName}
+                  </span>
+                )}
+              </div>
             </div>
           )}
           <div className="flex items-center gap-2">

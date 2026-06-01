@@ -2146,7 +2146,8 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
           detail: `${matchedCount} of ${extractedParams.length} parameters matched`,
         });
 
-        return updated;
+        // Recompute calculated parameters after AI fills in values
+        return recomputeCalculatedValues(updated);
       });
 
       setAiPhase("done");
@@ -2465,7 +2466,8 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
                 updated[idx] = { ...updated[idx], value: rawValue };
               }
             });
-            return updated;
+            // Recompute calculated parameters after AI fills in values
+            return recomputeCalculatedValues(updated);
           });
           setExtractedValues([]);
           matchedCount = foundCount;
@@ -2628,11 +2630,12 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
 
             console.log(`📊 Match summary: ${currentMatchedCount} updated, ${addedParameters.length} added`);
 
+            // Recompute calculated parameters after AI fills in values
             if (addedParameters.length > 0) {
-              return [...updated, ...addedParameters];
+              return recomputeCalculatedValues([...updated, ...addedParameters]);
             }
 
-            return updated;
+            return recomputeCalculatedValues(updated);
           });
           matchedCount = result.extractedParameters.filter((p: any) => p?.matched).length;
         }

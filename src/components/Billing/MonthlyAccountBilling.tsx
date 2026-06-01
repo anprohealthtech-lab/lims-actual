@@ -313,11 +313,11 @@ const MonthlyAccountBilling: React.FC<MonthlyAccountBillingProps> = ({ onClose }
       );
 
       // Step 5: Mark orders as billed so they never appear again
-      const orderIds = unbilledOrders.map(o => o.id);
+      const billedOrderIds = unbilledOrders.map(o => o.id);
       await supabase
         .from('orders')
         .update({ billing_status: 'billed', is_billed: true })
-        .in('id', orderIds);
+        .in('id', billedOrderIds);
 
       await loadPeriodData();
       alert(`✓ Consolidated invoice ${invoiceNumber} generated for ${summary.account.name}`);

@@ -6,6 +6,8 @@ import { CheckCircle, XCircle, FileText, Loader } from 'lucide-react';
 const VerificationPage: React.FC = () => {
     const [searchParams] = useSearchParams();
     const reportId = searchParams.get('id');
+    const labId = searchParams.get('lab_id');
+    const labCode = searchParams.get('lab_code') || searchParams.get('lab');
 
     const [loading, setLoading] = useState(true);
     const [status, setStatus] = useState<'verified' | 'not_found' | 'error'>('verified'); // Defaulting via logic later
@@ -24,7 +26,11 @@ const VerificationPage: React.FC = () => {
                 // Call secure Edge Function instead of querying orders table directly
                 // This ensures orders table is not exposed to public
                 const { data: response, error } = await supabase.functions.invoke('verify-report', {
-                    body: { id: reportId }
+                    body: {
+                        id: reportId,
+                        ...(labId ? { lab_id: labId } : {}),
+                        ...(labCode ? { lab_code: labCode } : {}),
+                    }
                 });
 
                 if (error) {
@@ -62,7 +68,7 @@ const VerificationPage: React.FC = () => {
         };
 
         verifyReport();
-    }, [reportId]);
+    }, [reportId, labId, labCode]);
 
     if (loading) {
         return (

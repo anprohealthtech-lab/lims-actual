@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
-import { X, Search, Calendar, User, Phone, Loader, Package, FlaskConical, Info } from 'lucide-react';
+import { X, Search, Calendar, User, Phone, Loader, Package, FlaskConical, Info, AlertTriangle } from 'lucide-react';
 import { supabase } from '../../utils/supabase';
+import CreditCheckModal from './CreditCheckModal';
 
 interface B2BBookingModalProps {
     accountId: string;
@@ -24,6 +25,11 @@ const B2BBookingModal: React.FC<B2BBookingModalProps> = ({ accountId, labId, onC
     const [searchResults, setSearchResults] = useState<CatalogItem[]>([]);
     const [searching, setSearching] = useState(false);
     const [selectedItems, setSelectedItems] = useState<CatalogItem[]>([]);
+
+    // Credit check state
+    const [showCreditModal, setShowCreditModal] = useState(false);
+    const [creditCheckPassed, setCreditCheckPassed] = useState(false);
+    const [pendingOrderData, setPendingOrderData] = useState<Record<string, unknown> | null>(null);
 
     const [patient, setPatient] = useState({
         name: '',
@@ -111,11 +117,61 @@ const B2BBookingModal: React.FC<B2BBookingModalProps> = ({ accountId, labId, onC
 
     const totalAmount = selectedItems.reduce((sum, item) => sum + (item.price || 0), 0);
 
-    const handleSubmit = async (e: React.FormEvent) => {
+    // Check credit availability before booking
+    const checkCreditAndSubmit = async (e: React.FormEvent) => {
         e.preventDefault();
         if (selectedItems.length === 0) return;
-        setLoading(true);
 
+        // If credit check already passed, proceed directly
+        if (creditCheckPassed) {
+            await createBooking();
+            return;
+        }
+
+        setLoading(true);
+        try {
+            // Check credit availability
+            const { data: creditData, error: creditError } = await supabase.functions.invoke('check-b2b-credit', {
+                body: { account_id: accountId, lab_id: labId, order_amount: totalAmount },
+            });
+
+            if (creditError) throw creditError;
+
+            if (creditData?.can_proceed) {
+                // Sufficient credit, proceed with booking
+                await createBooking();
+            } else {
+                // Insufficient credit, show payment modal
+                const orderData = {
+                    patient_info: {
+                        name: patient.name,
+                        age: patient.age,
+                        gender: patient.gender,
+                        phone: patient.phone,
+                        email: patient.email || undefined,
+                    },
+                    test_details: selectedItems.map(item => ({
+                        id: item.id,
+                        name: item.name,
+                        price: item.price,
+                        type: item.type,
+                    })),
+                    scheduled_at: scheduledDate ? new Date(scheduledDate).toISOString() : null,
+                    order_amount: totalAmount,
+                };
+                setPendingOrderData(orderData);
+                setShowCreditModal(true);
+            }
+        } catch (err: any) {
+            console.error('Error checking credit:', err);
+            alert('Failed to check credit: ' + err.message);
+        } finally {
+            setLoading(false);
+        }
+    };
+
+    const createBooking = async () => {
+        setLoading(true);
         try {
             const { data: accountData } = await supabase
                 .from('accounts')
@@ -128,9 +184,11 @@ const B2BBookingModal: React.FC<B2BBookingModalProps> = ({ accountId, labId, onC
             const { error } = await supabase.from('bookings').insert([{
                 lab_id: accountData.lab_id,
                 status: 'pending',
-                booking_source: 'b2b_portal',
-                account_id: accountId,
-                patient_info: {
+	                booking_source: 'b2b_portal',
+	                account_id: accountId,
+	                b2b_client_id: accountId,
+	                quotation_amount: totalAmount,
+	                patient_info: {
                     name: patient.name,
                     age: patient.age,
                     gender: patient.gender,
@@ -159,6 +217,21 @@ const B2BBookingModal: React.FC<B2BBookingModalProps> = ({ accountId, labId, onC
             setLoading(false);
         }
     };
+
+    const handlePaymentSuccess = (paymentId: string) => {
+        console.log('Payment successful:', paymentId);
+        setCreditCheckPassed(true);
+        setShowCreditModal(false);
+        // After successful payment, create the booking
+        createBooking();
+    };
+
+    const handleProceedWithCredit = () => {
+        setShowCreditModal(false);
+        createBooking();
+    };
+
+    const handleSubmit = checkCreditAndSubmit;
 
     return (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
@@ -395,6 +468,18 @@ const B2BBookingModal: React.FC<B2BBookingModalProps> = ({ accountId, labId, onC
                     </button>
                 </div>
             </div>
+
+            {/* Credit Check Modal */}
+            <CreditCheckModal
+                isOpen={showCreditModal}
+                onClose={() => setShowCreditModal(false)}
+                accountId={accountId}
+                labId={labId}
+                orderAmount={totalAmount}
+                orderData={pendingOrderData || undefined}
+                onPaymentSuccess={handlePaymentSuccess}
+                onProceedWithCredit={handleProceedWithCredit}
+            />
         </div>
     );
 };

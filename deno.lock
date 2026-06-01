@@ -38,7 +38,9 @@
     "https://edge.netlify.com/bootstrap/globals/types.ts": "eaa6148ded3121d8dee62dd91c86e7fe76601df0f3ca8d7962243a30f4c8935f",
     "https://esm.sh/@supabase/supabase-js@2.103.3": "f6efbe62d34ae9d50f3cf7eb51496246ec9378f422c38ff2b637a38157d4fc6b",
     "https://esm.sh/@supabase/supabase-js@2.38.4": "039569070c2e83c292b347c39879a10e76aac6079c166f2e2677453a7799e933",
-    "https://esm.sh/fflate@0.8.2": "e0cdd268850b4eac9ef9f188a3b4c5c9dd3ebd0f66c4006a13911b2a0c0512bb"
+    "https://esm.sh/@supabase/supabase-js@2.39.3": "832d7714491bd1c8a9008a332b35cb099f24b451ad79e755ecf4d71985fd6610",
+    "https://esm.sh/fflate@0.8.2": "e0cdd268850b4eac9ef9f188a3b4c5c9dd3ebd0f66c4006a13911b2a0c0512bb",
+    "https://esm.sh/pdf-lib@1.17.1": "cf7c5527829cb9bbb3aa20d339c530067441c10eb98880360aea9e77c3c87ff8"
   },
   "workspace": {
     "packageJson": {

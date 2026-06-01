@@ -32,6 +32,7 @@ import {
   RotateCcw,
   Lock,
   Tag,
+  Camera,
 } from "lucide-react";
 import QRCodeLib from "qrcode";
 import { database, supabase, formatAge } from "../../utils/supabase";
@@ -1342,12 +1343,26 @@ const DashboardOrderModal: React.FC<DashboardOrderModalProps> = ({
             <div className="flex items-center gap-2 mb-2">
               <Sparkles className="h-5 w-5 text-purple-600" />
               <h3 className="text-lg font-medium text-gray-900">AI-Powered TRF Extraction</h3>
+              <span className="text-xs text-purple-500 bg-purple-100 px-2 py-0.5 rounded-full">Quick Start</span>
             </div>
+            <p className="text-sm text-gray-600 -mt-1">
+              Upload a Test Request Form to automatically extract patient info, doctor details, and test selections
+            </p>
             <div className="space-y-3">
+              {/* Hidden file input for gallery/file picker */}
               <input
                 type="file"
                 id="trf-upload-modal"
                 accept="image/*,.pdf"
+                onChange={handleFileChange}
+                className="hidden"
+              />
+              {/* Hidden file input for camera capture (mobile) */}
+              <input
+                type="file"
+                id="trf-camera-modal"
+                accept="image/*"
+                capture="environment"
                 onChange={handleFileChange}
                 className="hidden"
               />
@@ -1368,10 +1383,24 @@ const DashboardOrderModal: React.FC<DashboardOrderModalProps> = ({
                 ) : (
                   <div className="flex flex-col items-center">
                     <Upload className="w-8 h-8 text-purple-500 mb-2" />
-                    <span className="text-sm font-medium text-gray-700">Upload TRF / Attachment</span>
+                    <span className="text-sm font-medium text-gray-700">Click to Upload TRF or Drag & Drop</span>
+                    <span className="text-xs text-gray-500 mt-1">Supports: JPG, PNG, PDF (Max 10MB)</span>
+                    <span className="text-xs text-yellow-600 mt-1 flex items-center gap-1">
+                      <Sparkles className="w-3 h-3" /> Auto-extracts patient, doctor, and test details
+                    </span>
                   </div>
                 )}
               </label>
+              {/* Camera button for mobile - shown separately */}
+              {!processingTRF && !trfExtraction?.success && (
+                <label
+                  htmlFor="trf-camera-modal"
+                  className="flex items-center justify-center gap-2 cursor-pointer border-2 border-purple-200 bg-purple-50 rounded-lg p-3 text-center hover:border-purple-400 hover:bg-purple-100 transition-colors"
+                >
+                  <Camera className="w-5 h-5 text-purple-600" />
+                  <span className="text-sm font-medium text-purple-700">Take Photo with Camera</span>
+                </label>
+              )}
             </div>
           </section>
 

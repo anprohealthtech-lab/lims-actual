@@ -15,6 +15,7 @@ export interface BasicPrintOptions {
   resultColors?: { high?: string; low?: string; enabled?: boolean }; // custom flag colors (matches edge fn)
   testGroupTitlePosition?: 'below_headers' | 'above_headers_center' | 'above_headers_left';
   qrHorizontalOffset?: number;
+  sectionFieldNamePct?: number;    // Section field name width % for narrative/section-only reports (20-70, default 40)
   basicColumnWidths?: {
     standard?: number[];
     sibling?: number[];
@@ -864,6 +865,19 @@ export default function BasicTemplateFormatBuilder({ printOptions, showMethodolo
               />
               <span className="w-10 text-sm font-mono font-semibold text-gray-700">
                 {printOptions.qrHorizontalOffset ?? 0}
+              </span>
+            </div>
+          </Row>
+          <Row label="Section Field %" hint="Field name width for section-only reports (20-70%)">
+            <div className="flex items-center gap-2">
+              <input
+                type="range" min={20} max={70} step={5}
+                value={printOptions.sectionFieldNamePct ?? 40}
+                onChange={(e) => setPO({ sectionFieldNamePct: Number(e.target.value) })}
+                className="w-24 accent-indigo-600"
+              />
+              <span className="w-10 text-sm font-mono font-semibold text-gray-700">
+                {printOptions.sectionFieldNamePct ?? 40}%
               </span>
             </div>
           </Row>

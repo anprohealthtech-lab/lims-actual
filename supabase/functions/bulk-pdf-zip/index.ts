@@ -8,10 +8,13 @@ const corsHeaders = {
 
 const getGeneratedPdfUrl = (order: {
   smart_report_url?: string | null;
-  reports?: { pdf_url?: string | null; print_pdf_url?: string | null }[] | { pdf_url?: string | null; print_pdf_url?: string | null } | null;
+  reports?: { report_type?: string | null; pdf_url?: string | null; print_pdf_url?: string | null }[] | { report_type?: string | null; pdf_url?: string | null; print_pdf_url?: string | null } | null;
 }, pdfVariant: 'print' | 'ecopy' = 'print') => {
   const reports = Array.isArray(order.reports) ? order.reports : order.reports ? [order.reports] : [];
-  const reportUrl = reports.find((report) =>
+  const finalReports = reports.filter((report) => report?.report_type !== 'draft');
+  const draftReports = reports.filter((report) => report?.report_type === 'draft');
+  const preferredReports = [...finalReports, ...draftReports];
+  const reportUrl = preferredReports.find((report) =>
     pdfVariant === 'ecopy' ? report?.pdf_url : report?.print_pdf_url || report?.pdf_url
   );
 
@@ -19,7 +22,45 @@ const getGeneratedPdfUrl = (order: {
     return reportUrl?.pdf_url || order.smart_report_url || null;
   }
 
-  return reportUrl?.print_pdf_url || reportUrl?.pdf_url || order.smart_report_url || null;
+	return reportUrl?.print_pdf_url || reportUrl?.pdf_url || order.smart_report_url || null;
+};
+
+type BulkPdfSortMode = 'sample_desc' | 'sample_asc' | 'order_id_asc' | 'order_id_desc' | 'date_desc' | 'patient_az';
+
+const getDailySeq = (order: { order_number?: number | null; sample_id?: string | null }) => {
+  if (typeof order.order_number === 'number' && Number.isFinite(order.order_number)) return order.order_number;
+  const tail = String(order.sample_id || '').match(/(?:^|[/-])(\d+)\s*$/)?.[1] || '';
+  const parsed = parseInt(tail, 10);
+  return Number.isFinite(parsed) ? parsed : 0;
+};
+
+const compareOrders = (
+  a: { id: string; order_display?: string | null; order_number?: number | null; sample_id?: string | null; order_date?: string | null; patient_name?: string | null },
+  b: { id: string; order_display?: string | null; order_number?: number | null; sample_id?: string | null; order_date?: string | null; patient_name?: string | null },
+  sortMode: BulkPdfSortMode,
+  orderIndex: Map<string, number>,
+) => {
+  if (sortMode === 'patient_az') {
+    return (a.patient_name || '').localeCompare(b.patient_name || '');
+  }
+
+  if (sortMode === 'date_desc') {
+    const dateDiff = new Date(b.order_date || 0).getTime() - new Date(a.order_date || 0).getTime();
+    if (dateDiff !== 0) return dateDiff;
+  }
+
+  if (sortMode === 'order_id_asc' || sortMode === 'order_id_desc') {
+    const aRef = a.order_display || a.id;
+    const bRef = b.order_display || b.id;
+    return sortMode === 'order_id_asc'
+      ? aRef.localeCompare(bRef, undefined, { numeric: true })
+      : bRef.localeCompare(aRef, undefined, { numeric: true });
+  }
+
+  const nA = getDailySeq(a);
+  const nB = getDailySeq(b);
+  if (nA !== nB) return sortMode === 'sample_asc' ? nA - nB : nB - nA;
+  return (orderIndex.get(a.id) ?? 0) - (orderIndex.get(b.id) ?? 0);
 };
 
 Deno.serve(async (req) => {
@@ -41,9 +82,12 @@ Deno.serve(async (req) => {
       });
     }
 
-    const { request_id, pdf_variant } = await req.json();
-    if (!request_id) throw new Error('request_id is required');
-    const pdfVariant: 'print' | 'ecopy' = pdf_variant === 'ecopy' ? 'ecopy' : 'print';
+	    const { request_id, pdf_variant, sort_mode } = await req.json();
+	    if (!request_id) throw new Error('request_id is required');
+	    const pdfVariant: 'print' | 'ecopy' = pdf_variant === 'ecopy' ? 'ecopy' : 'print';
+    const sortMode: BulkPdfSortMode = ['sample_desc', 'sample_asc', 'order_id_asc', 'order_id_desc', 'date_desc', 'patient_az'].includes(sort_mode)
+      ? sort_mode
+      : 'sample_desc';
 
     // Get user's lab_id
     const { data: userData } = await supabase
@@ -75,22 +119,27 @@ Deno.serve(async (req) => {
     const { data: orders, error: ordersError } = await supabase
       .from('orders')
       .select(`
-        id,
-        order_display,
-        patient_name,
-        smart_report_url,
-        reports!reports_order_id_fkey(pdf_url, print_pdf_url)
+	        id,
+	        order_display,
+	        order_number,
+	        sample_id,
+	        order_date,
+	        patient_name,
+	        smart_report_url,
+        reports!reports_order_id_fkey(report_type, pdf_url, print_pdf_url)
       `)
       .in('id', orderIds)
       .eq('lab_id', labId);
 
-    if (ordersError) throw new Error(`Failed to fetch orders: ${ordersError.message}`);
+	    if (ordersError) throw new Error(`Failed to fetch orders: ${ordersError.message}`);
+    const orderIndex = new Map(orderIds.map((id, index) => [id, index]));
+    const sortedOrders = [...(orders || [])].sort((a, b) => compareOrders(a, b, sortMode, orderIndex));
 
-    const zipFiles: Record<string, Uint8Array> = {};
+	    const zipFiles: Record<string, Uint8Array> = {};
     let processed = 0;
     let failed = 0;
 
-    for (const order of orders || []) {
+	    for (const [index, order] of sortedOrders.entries()) {
       try {
         // Use only already-generated PDF URLs. This function must not generate reports.
         const pdfUrl = getGeneratedPdfUrl(order, pdfVariant);
@@ -110,7 +159,7 @@ Deno.serve(async (req) => {
         const pdfBytes = new Uint8Array(await pdfRes.arrayBuffer());
         const safeName = (order.patient_name || 'patient').replace(/[^a-zA-Z0-9_\- ]/g, '_').trim();
         const orderRef = order.order_display || order.id.slice(-6);
-        const filename = `${orderRef}_${safeName}.pdf`;
+	        const filename = `${String(index + 1).padStart(3, '0')}_${orderRef}_${safeName}.pdf`;
 
         zipFiles[filename] = pdfBytes;
         processed++;

@@ -6,13 +6,54 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 };
 
-const getGeneratedPdfUrl = (order: {
-  smart_report_url?: string | null;
-  reports?: { pdf_url?: string | null; print_pdf_url?: string | null }[] | { pdf_url?: string | null; print_pdf_url?: string | null } | null;
+const getGeneratedPrintPdfUrl = (order: {
+  reports?: { report_type?: string | null; pdf_url?: string | null; print_pdf_url?: string | null }[] | { report_type?: string | null; pdf_url?: string | null; print_pdf_url?: string | null } | null;
 }) => {
   const reports = Array.isArray(order.reports) ? order.reports : order.reports ? [order.reports] : [];
-  const reportUrl = reports.find((report) => report?.print_pdf_url || report?.pdf_url);
-  return reportUrl?.print_pdf_url || reportUrl?.pdf_url || order.smart_report_url || null;
+  const finalReports = reports.filter((report) => report?.report_type !== 'draft');
+  const draftReports = reports.filter((report) => report?.report_type === 'draft');
+  const reportWithPrintUrl =
+    finalReports.find((report) => !!report?.print_pdf_url) ||
+    draftReports.find((report) => !!report?.print_pdf_url);
+	return reportWithPrintUrl?.print_pdf_url || null;
+};
+
+type BulkPdfSortMode = 'sample_desc' | 'sample_asc' | 'order_id_asc' | 'order_id_desc' | 'date_desc' | 'patient_az';
+
+const getDailySeq = (order: { order_number?: number | null; sample_id?: string | null }) => {
+  if (typeof order.order_number === 'number' && Number.isFinite(order.order_number)) return order.order_number;
+  const tail = String(order.sample_id || '').match(/(?:^|[/-])(\d+)\s*$/)?.[1] || '';
+  const parsed = parseInt(tail, 10);
+  return Number.isFinite(parsed) ? parsed : 0;
+};
+
+const compareOrders = (
+  a: { id: string; order_display?: string | null; order_number?: number | null; sample_id?: string | null; order_date?: string | null; patient_name?: string | null },
+  b: { id: string; order_display?: string | null; order_number?: number | null; sample_id?: string | null; order_date?: string | null; patient_name?: string | null },
+  sortMode: BulkPdfSortMode,
+  orderIndex: Map<string, number>,
+) => {
+  if (sortMode === 'patient_az') {
+    return (a.patient_name || '').localeCompare(b.patient_name || '');
+  }
+
+  if (sortMode === 'date_desc') {
+    const dateDiff = new Date(b.order_date || 0).getTime() - new Date(a.order_date || 0).getTime();
+    if (dateDiff !== 0) return dateDiff;
+  }
+
+  if (sortMode === 'order_id_asc' || sortMode === 'order_id_desc') {
+    const aRef = a.order_display || a.id;
+    const bRef = b.order_display || b.id;
+    return sortMode === 'order_id_asc'
+      ? aRef.localeCompare(bRef, undefined, { numeric: true })
+      : bRef.localeCompare(aRef, undefined, { numeric: true });
+  }
+
+  const nA = getDailySeq(a);
+  const nB = getDailySeq(b);
+  if (nA !== nB) return sortMode === 'sample_asc' ? nA - nB : nB - nA;
+  return (orderIndex.get(a.id) ?? 0) - (orderIndex.get(b.id) ?? 0);
 };
 
 Deno.serve(async (req) => {
@@ -34,8 +75,11 @@ Deno.serve(async (req) => {
       });
     }
 
-    const { request_id } = await req.json();
-    if (!request_id) throw new Error('request_id is required');
+	    const { request_id, sort_mode } = await req.json();
+	    if (!request_id) throw new Error('request_id is required');
+    const sortMode: BulkPdfSortMode = ['sample_desc', 'sample_asc', 'order_id_asc', 'order_id_desc', 'date_desc', 'patient_az'].includes(sort_mode)
+      ? sort_mode
+      : 'sample_desc';
 
     const { data: userData } = await supabase
       .from('users')
@@ -63,28 +107,31 @@ Deno.serve(async (req) => {
     const { data: orders, error: ordersError } = await supabase
       .from('orders')
       .select(`
-        id,
-        order_display,
-        order_date,
+	        id,
+		        order_display,
+		        order_number,
+	        sample_id,
+	        order_date,
         patient_name,
         smart_report_url,
-        reports!reports_order_id_fkey(pdf_url, print_pdf_url)
+        reports!reports_order_id_fkey(report_type, pdf_url, print_pdf_url)
       `)
-      .in('id', orderIds)
-      .eq('lab_id', labId)
-      .order('order_date', { ascending: true })
-      .order('patient_name', { ascending: true });
+	      .in('id', orderIds)
+	      .eq('lab_id', labId);
 
-    if (ordersError) throw new Error(`Failed to fetch orders: ${ordersError.message}`);
+	    if (ordersError) throw new Error(`Failed to fetch orders: ${ordersError.message}`);
+    const orderIndex = new Map(orderIds.map((id, index) => [id, index]));
+    const sortedOrders = [...(orders || [])].sort((a, b) => compareOrders(a, b, sortMode, orderIndex));
 
     const mergedPdf = await PDFDocument.create();
     let processed = 0;
     let failed = 0;
 
-    for (const order of orders || []) {
+	    for (const order of sortedOrders) {
       try {
-        // Use only already-generated PDF URLs. This function must not generate reports.
-        const pdfUrl = getGeneratedPdfUrl(order);
+        // Merge only print PDFs. Falling back to eCopy/smart_report_url loses
+        // the print header/footer spacing these bulk files are meant to keep.
+        const pdfUrl = getGeneratedPrintPdfUrl(order);
 
         if (!pdfUrl) {
           failed++;
@@ -118,7 +165,7 @@ Deno.serve(async (req) => {
         .from('bulk_pdf_download_requests')
         .update({
           status: 'failed',
-          error_message: 'No PDFs could be merged. Reports may not be generated yet.',
+          error_message: 'No print PDFs could be merged. Print reports may not be generated yet.',
           processed_orders: 0,
           failed_orders: orderIds.length,
           completed_at: new Date().toISOString(),
@@ -126,7 +173,7 @@ Deno.serve(async (req) => {
         .eq('id', request_id);
 
       return new Response(
-        JSON.stringify({ error: 'No PDFs available for merging' }),
+        JSON.stringify({ error: 'No print PDFs available for merging' }),
         { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
     }

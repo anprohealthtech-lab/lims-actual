@@ -235,18 +235,44 @@ const AddUserModal: React.FC<AddUserModalProps> = ({ onClose, onSuccess, editUse
       } else {
         // Use admin edge function to create auth user with email pre-confirmed
         // (avoids signUp() which requires email verification and can disrupt admin session)
-        const { data: edgeData, error: edgeError } = await supabase.functions.invoke('create-auth-user', {
-          body: {
-            email: formData.email,
-            password: formData.password,
-            lab_id: labId,
-            name: formData.name,
-            role_id: formData.role_id,
-          }
-        });
 
-        if (edgeError) throw edgeError;
-        if (!edgeData?.user_id) throw new Error(edgeData?.error || 'Failed to create auth user');
+        // Check session before calling edge function
+        const { data: sessionData } = await supabase.auth.getSession();
+        if (!sessionData?.session) {
+          throw new Error('Your session has expired. Please refresh the page and log in again.');
+        }
+        console.log('[AddUserModal] Session valid, token expires:', new Date(sessionData.session.expires_at! * 1000).toISOString());
+        console.log('[AddUserModal] Calling create-auth-user with:', { email: formData.email, lab_id: labId, name: formData.name, role_id: formData.role_id });
+
+        let edgeData: any = null;
+        let edgeError: any = null;
+
+        try {
+          const result = await supabase.functions.invoke('create-auth-user', {
+            body: {
+              email: formData.email,
+              password: formData.password,
+              lab_id: labId,
+              name: formData.name,
+              role_id: formData.role_id,
+            }
+          });
+          edgeData = result.data;
+          edgeError = result.error;
+          console.log('[AddUserModal] Edge function response:', { data: edgeData, error: edgeError });
+        } catch (invokeError: any) {
+          console.error('[AddUserModal] Edge function invoke failed:', invokeError);
+          throw new Error(`Failed to send a request to the Edge Function: ${invokeError?.message || 'Network error. Please check your connection and try again.'}`);
+        }
+
+        if (edgeError) {
+          console.error('[AddUserModal] Edge function returned error:', edgeError);
+          throw new Error(edgeError?.message || edgeError?.error || 'Edge function error');
+        }
+        if (!edgeData?.user_id) {
+          console.error('[AddUserModal] No user_id in response:', edgeData);
+          throw new Error(edgeData?.error || edgeData?.message || 'Failed to create auth user - no user ID returned');
+        }
 
         const newUserId = edgeData.user_id;
 

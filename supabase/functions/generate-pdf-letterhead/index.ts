@@ -127,6 +127,16 @@ const DEFAULT_PDF_SETTINGS = {
   printBackground: true,
 };
 
+// Parse margin value - handles both "180px" strings and numeric 180 values
+function parseMarginValue(val: unknown, defaultVal = 20): number {
+  if (typeof val === "number" && !isNaN(val)) return val;
+  if (typeof val === "string") {
+    const parsed = parseInt(val, 10);
+    return isNaN(parsed) ? defaultVal : parsed;
+  }
+  return defaultVal;
+}
+
 // Comprehensive baseline CSS for report styling (server-side)
 const BASELINE_CSS = `
 /* LIMS Report Baseline CSS - Server-Side */
@@ -479,6 +489,77 @@ figure.table table thead th,
 .section-content h5 { font-size: 13px; }
 .section-content h6 { font-size: 12px; }
 		    `;
+
+const CKE_IMAGE_ALIGNMENT_CSS = `
+/* Preserve CKEditor image alignment in Chromium/PDF.co.
+   The report baseline makes images display:block, so parent text-align alone
+   does not move signature images unless margins are set explicitly. */
+.limsv2-report .image-style-align-right,
+.limsv2-report figure.image-style-align-right {
+  margin-left: auto !important;
+  margin-right: 0 !important;
+  text-align: right !important;
+}
+
+.limsv2-report .image-style-align-center,
+.limsv2-report figure.image-style-align-center {
+  margin-left: auto !important;
+  margin-right: auto !important;
+  text-align: center !important;
+}
+
+.limsv2-report .image-style-align-left,
+.limsv2-report figure.image-style-align-left {
+  margin-left: 0 !important;
+  margin-right: auto !important;
+  text-align: left !important;
+}
+
+.limsv2-report .image-style-align-right img,
+.limsv2-report figure.image-style-align-right img,
+.limsv2-report p[style*="text-align:right"] img,
+.limsv2-report p[style*="text-align: right"] img,
+.limsv2-report div[style*="text-align:right"] img,
+.limsv2-report div[style*="text-align: right"] img,
+.limsv2-report li[style*="text-align:right"] img,
+.limsv2-report li[style*="text-align: right"] img,
+.limsv2-report td[style*="text-align:right"] img,
+.limsv2-report td[style*="text-align: right"] img {
+  display: block !important;
+  margin-left: auto !important;
+  margin-right: 0 !important;
+}
+
+.limsv2-report .image-style-align-center img,
+.limsv2-report figure.image-style-align-center img,
+.limsv2-report p[style*="text-align:center"] img,
+.limsv2-report p[style*="text-align: center"] img,
+.limsv2-report div[style*="text-align:center"] img,
+.limsv2-report div[style*="text-align: center"] img,
+.limsv2-report li[style*="text-align:center"] img,
+.limsv2-report li[style*="text-align: center"] img,
+.limsv2-report td[style*="text-align:center"] img,
+.limsv2-report td[style*="text-align: center"] img {
+  display: block !important;
+  margin-left: auto !important;
+  margin-right: auto !important;
+}
+
+.limsv2-report .image-style-align-left img,
+.limsv2-report figure.image-style-align-left img,
+.limsv2-report p[style*="text-align:left"] img,
+.limsv2-report p[style*="text-align: left"] img,
+.limsv2-report div[style*="text-align:left"] img,
+.limsv2-report div[style*="text-align: left"] img,
+.limsv2-report li[style*="text-align:left"] img,
+.limsv2-report li[style*="text-align: left"] img,
+.limsv2-report td[style*="text-align:left"] img,
+.limsv2-report td[style*="text-align: left"] img {
+  display: block !important;
+  margin-left: 0 !important;
+  margin-right: auto !important;
+}
+`;
 
 // CSS injected only for CKEditor custom templates (not basic/beautiful default templates).
 // These rules are intentionally excluded from BASELINE_CSS to avoid cascade conflicts
@@ -1183,7 +1264,7 @@ function renderTemplate(html: string, context: Record<string, any>): string {
     }
   );
 
-  return result;
+  return stripBrokenPdfImages(result);
 }
 
 /**
@@ -2120,7 +2201,7 @@ function generateClassicDefaultTemplateHtml(
       flushList();
 
       const colonIdx = line.indexOf(":");
-      if (colonIdx > 0 && colonIdx < 40) {
+      if (colonIdx > 0 && colonIdx < 60) {
         parts.push(`
           <div class="narrative-kv-row">
             <div class="narrative-kv-label">${escapeNarrativeHtml(line.slice(0, colonIdx).trim())}</div>
@@ -2626,6 +2707,8 @@ function generateBasicDefaultTemplateHtml(
   const showFlagLegend = (printOptions?.showFlagLegend as boolean) ?? false;
   const testGroupTitlePosition = (printOptions?.testGroupTitlePosition as string) ?? "above_headers_center";
   const qrHorizontalOffset = Math.max(0, Math.min(80, Number(printOptions?.qrHorizontalOffset ?? 0)));
+  // Section field name width percentage for narrative/section-only reports (default 40%)
+  const sectionFieldNamePct = Math.max(20, Math.min(70, Number(printOptions?.sectionFieldNamePct ?? 40)));
   const colCount = 4;
   const basicColumnWidths = (printOptions?.basicColumnWidths || {}) as Record<string, unknown>;
   const standardColumnWidths = normalizeBasicColumnWidths(basicColumnWidths.standard, [36, 24, 12, 28], 4);
@@ -3046,7 +3129,7 @@ function generateBasicDefaultTemplateHtml(
 
 .basic-report-template .narrative-kv-row {
   display: grid !important;
-  grid-template-columns: minmax(140px, 220px) 1fr !important;
+  grid-template-columns: ${sectionFieldNamePct}% 1fr !important;
   gap: 10px !important;
   padding: 6px 0 !important;
   border-bottom: 0.5px dotted #d1d5db !important;
@@ -3236,7 +3319,7 @@ function generateBasicDefaultTemplateHtml(
       if (/^[-*â€¢]\s+/.test(line)) { lis.push(`<li>${_escHtml(line.replace(/^[-*â€¢]\s+/, "").trim())}</li>`); continue; }
       flush();
       const ci = line.indexOf(":");
-      if (ci > 0 && ci < 40) {
+      if (ci > 0 && ci < 60) {
         parts.push(`<div class="narrative-kv-row"><div class="narrative-kv-label">${_escHtml(line.slice(0, ci).trim())}</div><div class="narrative-kv-value">${_escHtml(line.slice(ci + 1).trim())}</div></div>`);
         continue;
       }
@@ -4550,14 +4633,15 @@ function buildPdfBodyDocumentV2(
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Noto+Sans:wght@400;700&display=swap" rel="stylesheet">
 <style id="lims-report-baseline">${BASELINE_CSS}</style>
 ${(!bodyHtml.includes('basic-report-template') && !bodyHtml.includes('report-table')) ? `<style id="lims-report-ckeditor">${CKEDITOR_CSS}</style>` : ''}
-${
-    normalizedCss
-      ? `<style id="lims-report-custom">${normalizedCss}</style>`
-      : ""
-  }
-${
-    letterheadStyles
-      ? `<style id="lims-letterhead">${letterheadStyles}</style>`
+	${
+	    normalizedCss
+	      ? `<style id="lims-report-custom">${normalizedCss}</style>`
+	      : ""
+	  }
+	<style id="lims-cke-image-alignment">${CKE_IMAGE_ALIGNMENT_CSS}</style>
+	${
+	    letterheadStyles
+	      ? `<style id="lims-letterhead">${letterheadStyles}</style>`
       : ""
   }
 <style id="lims-margin-overrides">
@@ -5138,6 +5222,38 @@ function stripBrokenPdfImages(html: string): string {
   return cleanedHtml;
 }
 
+function emojiToTwemojiCodepoint(emoji: string): string {
+  const codepoints = Array.from(emoji)
+    .map((char) => char.codePointAt(0))
+    .filter((codepoint): codepoint is number =>
+      typeof codepoint === "number" && codepoint !== 0xfe0e
+    );
+
+  const hasJoiner = codepoints.includes(0x200d);
+  const normalized = hasJoiner
+    ? codepoints
+    : codepoints.filter((codepoint) => codepoint !== 0xfe0f);
+
+  return normalized.map((codepoint) => codepoint.toString(16)).join("-");
+}
+
+function renderEmojiAsColorIcon(emoji: string): string {
+  const codepoint = emojiToTwemojiCodepoint(emoji);
+  if (!codepoint) return emoji;
+
+  return `<img class="report-emoji-icon" src="https://cdn.jsdelivr.net/gh/twitter/twemoji@14.0.2/assets/svg/${codepoint}.svg" alt="${emoji}" style="display:inline-block;width:1.05em;height:1.05em;vertical-align:-0.15em;margin-right:0.18em;border:0;box-shadow:none;background:transparent;" />`;
+}
+
+function colorizeReportEmojiTextNodes(html: string): string {
+  if (!html) return html;
+
+  const emojiRegex = /[\p{Extended_Pictographic}](?:\uFE0F|\uFE0E)?(?:\u200D[\p{Extended_Pictographic}](?:\uFE0F|\uFE0E)?)*\uFE0F?/gu;
+  return html.replace(/(^|>)([^<]*[\p{Extended_Pictographic}][^<]*)(?=<|$)/gu, (_match: string, prefix: string, text: string) => {
+    const colorizedText = text.replace(emojiRegex, (emoji: string) => renderEmojiAsColorIcon(emoji));
+    return `${prefix}${colorizedText}`;
+  });
+}
+
 /**
  * Send HTML to PDF.co API and get PDF URL
  */
@@ -5580,11 +5696,15 @@ function buildCascadeContentFromConfig(
         : [];
       if (selectedIds.length === 0) continue;
 
-      const selectedOptions = Array.isArray(level?.options)
-        ? level.options.filter((option: any) => selectedIds.includes(option?.id))
-        : [];
-      const values = selectedOptions
-        .map((option: any) => String(option?.value || "").trim())
+      const options = Array.isArray(level?.options) ? level.options : [];
+      const selectedOptions = options.filter((option: any) =>
+        selectedIds.includes(option?.id)
+      );
+      const values = selectedIds
+        .map((selectedId: any) => {
+          const matchedOption = options.find((option: any) => option?.id === selectedId);
+          return String(matchedOption?.value ?? selectedId ?? "").trim();
+        })
         .filter(Boolean)
         .join(", ");
 
@@ -8578,7 +8698,7 @@ serve(async (req) => {
         // Generate verification URL for QR code
         const verifyUrl = `https://app.limsapp.in/verify?id=${
           encodeURIComponent(
-            baseContext.order?.sampleId || baseContext.sampleId || orderId ||
+            orderId || baseContext.order?.sampleId || baseContext.sampleId ||
               "",
           )
         }`;
@@ -8586,10 +8706,10 @@ serve(async (req) => {
         // Create flat aliases for nested properties (for template compatibility)
 
         const sig = baseContext.signatory || {};
-        const rawSigName = sig.name || "";
-        const sigDesignation = sig.designation || "";
+        const rawSigName = sig.name || sig.signatoryName || signatoryInfo.signatoryName || "";
+        const sigDesignation = sig.designation || sig.signatoryDesignation || signatoryInfo.signatoryDesignation || "";
         let sigName = rawSigName;
-        const sigUrl = sig.signature_url || sig.url;
+        const sigUrl = sig.signature_url || sig.url || sig.signatoryImageUrl || signatoryInfo.signatoryImageUrl || "";
 
         // Logic to inject signature image directly into the name placeholder
         // This follows "User Request" to look for {{signatoryName}} and inject there.
@@ -8780,7 +8900,7 @@ serve(async (req) => {
           // Inject QR code for verification (next to signature area)
           const defaultVerifyUrl = fullContext.verifyUrl ||
             `https://app.limsapp.in/verify?id=${
-              encodeURIComponent(context.sampleId || orderId || "")
+              encodeURIComponent(orderId || context.sampleId || "")
             }`;
           renderedHtml = injectQrCode(renderedHtml, defaultVerifyUrl);
 
@@ -8805,7 +8925,7 @@ serve(async (req) => {
           // Inject QR code for verification (next to signature area)
           const singleVerifyUrl = fullContext.verifyUrl ||
             `https://app.limsapp.in/verify?id=${
-              encodeURIComponent(context.sampleId || orderId || "")
+              encodeURIComponent(orderId || context.sampleId || "")
             }`;
           renderedHtml = injectQrCode(renderedHtml, singleVerifyUrl);
         }
@@ -8831,7 +8951,7 @@ serve(async (req) => {
         );
 
         const verifyUrl = `https://app.limsapp.in/verify?id=${
-          encodeURIComponent(context.sampleId || orderId || "")
+          encodeURIComponent(orderId || context.sampleId || "")
         }`;
         const templateCss = [
           template?.gjs_css || "",
@@ -9030,7 +9150,7 @@ serve(async (req) => {
             if (!_earlyIsSamePageAsNext) {
               const groupVerifyUrl = groupFullContext.verifyUrl ||
                 `https://app.limsapp.in/verify?id=${
-                  encodeURIComponent(context.sampleId || orderId || "")
+                  encodeURIComponent(orderId || context.sampleId || "")
                 }`;
               renderedHtml = injectQrCode(renderedHtml, groupVerifyUrl);
             }
@@ -9104,7 +9224,7 @@ serve(async (req) => {
             if (!(_groupPrintOptions as any)?._suppressSignature) {
               const groupDefaultVerifyUrl = groupFullContext.verifyUrl ||
                 `https://app.limsapp.in/verify?id=${
-                  encodeURIComponent(context.sampleId || orderId || "")
+                  encodeURIComponent(orderId || context.sampleId || "")
                 }`;
               renderedHtml = injectQrCode(renderedHtml, groupDefaultVerifyUrl);
             }
@@ -9200,7 +9320,7 @@ serve(async (req) => {
           // Inject QR code for verification
           const fallbackVerifyUrl = fullContext.verifyUrl ||
             `https://app.limsapp.in/verify?id=${
-              encodeURIComponent(context.sampleId || orderId || "")
+              encodeURIComponent(orderId || context.sampleId || "")
             }`;
           renderedDefaultHtml = injectQrCode(
             renderedDefaultHtml,
@@ -9236,7 +9356,7 @@ serve(async (req) => {
         );
 
         const verifyUrl = `https://app.limsapp.in/verify?id=${
-          encodeURIComponent(context.sampleId || orderId || "")
+          encodeURIComponent(orderId || context.sampleId || "")
         }`;
         bodyHtml = buildPdfBodyDocumentV2(
           renderedSections.join("\n"),
@@ -9320,8 +9440,10 @@ serve(async (req) => {
         "\nðŸ–¼ï¸ Step 9: Skipping base64 conversion (PDF.co will fetch images directly from URLs)...",
       );
 
-      // No conversion needed - PDF.co can fetch from ImageKit URLs directly
-      const processedBody = bodyHtml;
+      // No conversion needed - PDF.co can fetch from ImageKit URLs directly.
+      // Convert report text emojis to color SVG images for e-copy PDFs; Chromium/PDF.co
+      // can otherwise fall back to monochrome emoji glyphs.
+      const processedBody = colorizeReportEmojiTextNodes(bodyHtml);
       const processedBodyHasLetterhead = processedBody.includes("page-bg");
       // Not using separate header/footer - using letterhead background instead
       const processedHeader = "";
@@ -9358,9 +9480,9 @@ serve(async (req) => {
           "ðŸ“„ Letterhead detected: Forcing 0px all margins for API, using CSS padding for content.",
         );
       } else if (pdfSettings?.margins) {
-        // Standard Mode: Use saved margins
+        // Standard Mode: Use saved margins (handle both "180px" strings and numeric values)
         margins =
-          `${pdfSettings.margins.top}px ${pdfSettings.margins.right}px ${pdfSettings.margins.bottom}px ${pdfSettings.margins.left}px`;
+          `${parseMarginValue(pdfSettings.margins.top, 180)}px ${parseMarginValue(pdfSettings.margins.right, 20)}px ${parseMarginValue(pdfSettings.margins.bottom, 150)}px ${parseMarginValue(pdfSettings.margins.left, 20)}px`;
       }
 
       const filename = `Report_${
@@ -9376,7 +9498,7 @@ serve(async (req) => {
 
       // Create verification URL for QR code (used in both e-copy and print)
       const printVerifyUrl = `https://app.limsapp.in/verify?id=${
-        encodeURIComponent(context.sampleId || orderId || "")
+        encodeURIComponent(orderId || context.sampleId || "")
       }`;
 
       if (generatePrintVersion) {
@@ -9583,7 +9705,7 @@ serve(async (req) => {
 
             // Inject QR code for verification (next to signature area)
             const printVerifyUrlForQr = `https://app.limsapp.in/verify?id=${
-              encodeURIComponent(context.sampleId || orderId || "")
+              encodeURIComponent(orderId || context.sampleId || "")
             }`;
             printRenderedHtml = injectQrCode(
               printRenderedHtml,
@@ -9622,7 +9744,7 @@ serve(async (req) => {
 
             // Inject QR code for verification (next to signature area)
             const printDefaultVerifyUrl = `https://app.limsapp.in/verify?id=${
-              encodeURIComponent(context.sampleId || orderId || "")
+              encodeURIComponent(orderId || context.sampleId || "")
             }`;
             printRenderedHtml = injectQrCode(
               printRenderedHtml,
@@ -9810,6 +9932,15 @@ serve(async (req) => {
         printHtml = printHtml.replace("</head>", `${printCss}</head>`);
         console.log("âœ… Print CSS injected (grayscale + clean styling)");
 
+        // Inject Last Page for print version (same as eCopy - after all content, before </body>)
+        if (lastPage) {
+          printHtml = printHtml.replace(
+            "</body>",
+            `<div class="report-last-page" style="page-break-before: always; width: 100vw; height: 100vh; margin: 0; padding: 0;">${lastPage}</div></body>`,
+          );
+          console.log("âœ… Last page injected into print version");
+        }
+
         printHtmlPrepared = printHtml;
       }
 
@@ -9858,26 +9989,26 @@ serve(async (req) => {
           footerHtml: hasNativeHeaderFooterAssets ? headerFooterHtml.footerHtml : processedFooter,
           margins: hasNativeHeaderFooterAssets
             ? (pdfSettings?.margins
-              ? `${pdfSettings.margins.top}px ${pdfSettings.margins.right}px ${pdfSettings.margins.bottom}px ${pdfSettings.margins.left}px`
+              ? `${parseMarginValue(pdfSettings.margins.top, 180)}px ${parseMarginValue(pdfSettings.margins.right, 20)}px ${parseMarginValue(pdfSettings.margins.bottom, 150)}px ${parseMarginValue(pdfSettings.margins.left, 20)}px`
               : DEFAULT_PDF_SETTINGS.margins)
             : margins,
           headerHeight: hasNativeHeaderFooterAssets
             ? (pdfSettings?.headerHeight
-              ? `${pdfSettings.headerHeight}px`
+              ? `${parseMarginValue(pdfSettings.headerHeight, 90)}px`
               : DEFAULT_PDF_SETTINGS.headerHeight)
             : (processedBodyHasLetterhead
               ? "0px"
               : (pdfSettings?.headerHeight
-                ? `${pdfSettings.headerHeight}px`
+                ? `${parseMarginValue(pdfSettings.headerHeight, 90)}px`
                 : DEFAULT_PDF_SETTINGS.headerHeight)),
           footerHeight: hasNativeHeaderFooterAssets
             ? (pdfSettings?.footerHeight
-              ? `${pdfSettings.footerHeight}px`
+              ? `${parseMarginValue(pdfSettings.footerHeight, 80)}px`
               : DEFAULT_PDF_SETTINGS.footerHeight)
             : (processedBodyHasLetterhead
               ? "0px"
               : (pdfSettings?.footerHeight
-                ? `${pdfSettings.footerHeight}px`
+                ? `${parseMarginValue(pdfSettings.footerHeight, 80)}px`
                 : DEFAULT_PDF_SETTINGS.footerHeight)),
           scale: pdfSettings?.scale ?? DEFAULT_PDF_SETTINGS.scale,
           displayHeaderFooter: hasNativeHeaderFooterAssets
@@ -9902,7 +10033,8 @@ serve(async (req) => {
             // Native PDF.co header/footer is reserved for eCopy only.
             headerHtml: "",
             footerHtml: "",
-            margins: `${Math.max(pdfSettings?.margins?.top ?? 20, 20)}px ${Math.max(pdfSettings?.margins?.right ?? 20, 20)}px ${Math.max(pdfSettings?.margins?.bottom ?? 20, 20)}px ${Math.max(pdfSettings?.margins?.left ?? 20, 20)}px`,
+            // Use lab's saved margins for print (with 20px minimum)
+            margins: `${Math.max(parseMarginValue(pdfSettings?.margins?.top, 20), 20)}px ${Math.max(parseMarginValue(pdfSettings?.margins?.right, 20), 20)}px ${Math.max(parseMarginValue(pdfSettings?.margins?.bottom, 20), 20)}px ${Math.max(parseMarginValue(pdfSettings?.margins?.left, 20), 20)}px`,
             headerHeight: "0px",
             footerHeight: "0px",
             scale: pdfSettings?.scale ?? DEFAULT_PDF_SETTINGS.scale,

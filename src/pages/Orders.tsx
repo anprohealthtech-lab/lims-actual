@@ -119,6 +119,14 @@ type OrderSortMode = "sample_desc" | "sample_asc" | "date_desc" | "patient_az";
 
 const ORDER_BUCKET_STATUSES: OrderBucketStatus[] = ["All Done", "Mostly Done", "Pending", "Approval"];
 
+const formatOrderCreationError = (error: any) => {
+  const message = String(error?.message || error || "Failed to create order");
+  if (message.includes("unique_sample_id_per_lab")) {
+    return "Sample ID conflict while creating the order. The system will try the next available ID; please submit again if this still appears.";
+  }
+  return message;
+};
+
 const hasMeaningfulProgressRows = (rows: ProgressRow[] | undefined) =>
   !!rows?.some((row) =>
     Number(row.expected_analytes || 0) > 0 ||
@@ -151,6 +159,7 @@ const Orders: React.FC = () => {
   const [quickEntryOrder, setQuickEntryOrder] = useState<CardOrder | null>(null);
   const [viewMode, setViewMode] = useState<'standard' | 'enhanced'>('standard');
   const [orderSortMode, setOrderSortMode] = useState<OrderSortMode>("sample_desc");
+  const [isRefreshingOrders, setIsRefreshingOrders] = useState(false);
   const progressRowsCacheRef = useRef<Map<string, ProgressRow[]>>(new Map());
 
   // Filter state
@@ -375,7 +384,9 @@ const Orders: React.FC = () => {
       if (updatedOrder && (
         updatedOrder.status !== selectedOrder.status ||
         updatedOrder.sample_collected_at !== selectedOrder.sample_collected_at ||
-        updatedOrder.sample_collected_by !== selectedOrder.sample_collected_by
+        updatedOrder.sample_collected_by !== selectedOrder.sample_collected_by ||
+        updatedOrder.tests.length !== selectedOrder.tests.length ||
+        (updatedOrder.order_tests?.length || 0) !== (selectedOrder.order_tests?.length || 0)
       )) {
         console.log(`Updating modal order data: ${selectedOrder.status} → ${updatedOrder.status}`);
         console.log(`Sample collection: ${selectedOrder.sample_collected_at} → ${updatedOrder.sample_collected_at}`);
@@ -569,17 +580,19 @@ const Orders: React.FC = () => {
   };
 
   const fetchOrders = async () => {
+    setIsRefreshingOrders(true);
     // Get current user's lab_id
-    const lab_id = await database.getCurrentUserLabId();
-    if (!lab_id) {
-      console.error('No lab_id found for current user');
-      return;
-    }
+    try {
+      const lab_id = await database.getCurrentUserLabId();
+      if (!lab_id) {
+        console.error('No lab_id found for current user');
+        return;
+      }
 
-    // 1) base orders
-    let query = supabase
-      .from("orders")
-      .select(`
+      // 1) base orders
+      let query = supabase
+        .from("orders")
+        .select(`
         id, lab_id, location_id, patient_id, patient_name, status, priority, order_date, expected_date, total_amount, final_amount, doctor, account_id,
         order_number, sample_id, color_code, color_name, sample_collected_at, sample_collected_by,
         accounts(name, billing_mode),
@@ -590,28 +603,29 @@ const Orders: React.FC = () => {
           test_groups(sample_type, sample_color)
         )
       `)
-      .eq('lab_id', lab_id)
-      .order("order_date", { ascending: false });
+        .eq('lab_id', lab_id)
+        .order("order_date", { ascending: false });
 
-    // Apply location filtering
-    const { shouldFilter, locationIds } = await database.shouldFilterByLocation();
-    if (shouldFilter && locationIds.length > 0) {
-      query = query.in('location_id', locationIds);
-    }
+      // Apply location filtering
+      const { shouldFilter, locationIds } = await database.shouldFilterByLocation();
+      if (shouldFilter && locationIds.length > 0) {
+        query = query.in('location_id', locationIds);
+      }
 
-    const { data: rows, error } = await query;
+      const { data: rows, error } = await query;
 
-    if (error) {
-      console.error("orders load error", error);
-      return;
-    }
+      if (error) {
+        console.error("orders load error", error);
+        return;
+      }
 
-    const orderRows = (rows || []) as any[]; // Use any temporarily to solve complex relation casting
-    const orderIds = orderRows.map((o) => o.id);
-    if (orderIds.length === 0) {
-      setOrders([]);
-      return;
-    }
+      const orderRows = (rows || []) as any[]; // Use any temporarily to solve complex relation casting
+      const orderIds = orderRows.map((o) => o.id);
+      if (orderIds.length === 0) {
+        setOrders([]);
+        setSummary({ allDone: 0, mostlyDone: 0, pending: 0, awaitingApproval: 0 });
+        return;
+      }
 
     // 2) view-based progress (Using ENHANCED view for TAT)
     const { data: prog, error: pErr } = await supabase
@@ -819,8 +833,15 @@ const Orders: React.FC = () => {
 	      { allDone: 0, mostlyDone: 0, pending: 0, awaitingApproval: 0 }
     );
 
-    setOrders(sorted);
-    setSummary(s);
+      setOrders(sorted);
+      setSummary(s);
+    } finally {
+      setIsRefreshingOrders(false);
+    }
+  };
+
+  const refreshOrdersData = async () => {
+    await Promise.all([fetchOrders(), fetchRerunRequests()]);
   };
 
   /* ------------- filtering + grouping ------------- */
@@ -986,7 +1007,7 @@ const Orders: React.FC = () => {
       const { data: order, error: orderError } = await database.orders.create(orderData);
       if (orderError) {
         console.error('Error creating order:', orderError);
-        const errorMessage = orderError.message || 'Failed to create order';
+        const errorMessage = formatOrderCreationError(orderError);
         alert(`❌ Order Creation Failed: ${errorMessage} `);
         throw orderError;
       }
@@ -1227,6 +1248,16 @@ const Orders: React.FC = () => {
               </button>
             </div>
           </div>
+          <button
+            type="button"
+            onClick={refreshOrdersData}
+            disabled={isRefreshingOrders}
+            className="inline-flex items-center rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm font-medium text-gray-700 shadow-sm transition-colors hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-60"
+            title="Refresh orders"
+          >
+            <RefreshCcw className={`h-4 w-4 mr-2 ${isRefreshingOrders ? "animate-spin" : ""}`} />
+            Refresh
+          </button>
         </div>
 
         {/* Filters Bar */}
@@ -1316,6 +1347,16 @@ const Orders: React.FC = () => {
             </button>
           </div>
         </div>
+        <button
+          type="button"
+          onClick={refreshOrdersData}
+          disabled={isRefreshingOrders}
+          className="inline-flex items-center justify-center rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm font-medium text-gray-700 shadow-sm transition-colors hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-60"
+          title="Refresh orders"
+        >
+          <RefreshCcw className={`h-4 w-4 mr-2 ${isRefreshingOrders ? "animate-spin" : ""}`} />
+          Refresh
+        </button>
       </div>
 
       {/* Overview cards */}
@@ -1511,6 +1552,15 @@ const Orders: React.FC = () => {
                             <span className="inline-flex items-center px-2 py-0.5 md:px-3 md:py-1.5 rounded-lg text-xs md:text-sm font-bold border bg-blue-100 text-blue-800 border-blue-200 whitespace-nowrap">
                               {o.status === "In Progress" ? "In Process" : o.status}
                             </span>
+                            {o.priority !== "Normal" && (
+                              <span className={`inline-flex items-center px-2 py-0.5 md:px-2.5 md:py-1 rounded-lg text-xs md:text-sm font-bold border whitespace-nowrap ${
+                                o.priority === "STAT"
+                                  ? "bg-red-100 text-red-800 border-red-300 animate-pulse"
+                                  : "bg-orange-100 text-orange-800 border-orange-300"
+                              }`}>
+                                {o.priority === "STAT" ? "🚨 STAT" : "⚡ Urgent"}
+                              </span>
+                            )}
                             <button
                               className="p-2 text-gray-600 hover:bg-gray-100 rounded-lg"
                               onClick={() => setExpanded((prev) => ({ ...prev, [o.id]: !prev[o.id] }))}

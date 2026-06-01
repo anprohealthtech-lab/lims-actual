@@ -28,7 +28,7 @@ const json = (data: unknown, status = 200) =>
       "Cache-Control": "no-store",
       "Access-Control-Allow-Origin": "*",
       "Access-Control-Allow-Methods": "POST, OPTIONS",
-      "Access-Control-Allow-Headers": "Content-Type, Authorization",
+      "Access-Control-Allow-Headers": "Content-Type, Authorization, apikey, x-client-info",
     },
   });
 
@@ -76,55 +76,103 @@ async function getEffectivePermissions(
 async function assertCallerIsAdminOfLab(
   supabaseAdmin: ReturnType<typeof createClient>,
   supabaseUserClient: ReturnType<typeof createClient>,
-  lab_id: string
+  lab_id: string,
+  requestId: string = ''
 ) {
+  console.log(`[CREATE-AUTH-USER][${requestId}] assertCallerIsAdminOfLab: Getting current user...`);
+
+  // Get current user from JWT
+  const { data: authData, error: authError } = await supabaseUserClient.auth.getUser();
+  if (authError) {
+    console.error(`[CREATE-AUTH-USER][${requestId}] assertCallerIsAdminOfLab: Auth error:`, authError.message);
+    throw new Error(`Auth check failed: ${authError.message}`);
+  }
+
+  const currentUserId = authData.user?.id;
+  console.log(`[CREATE-AUTH-USER][${requestId}] assertCallerIsAdminOfLab: Current user ID:`, currentUserId);
+
+  if (!currentUserId) {
+    console.error(`[CREATE-AUTH-USER][${requestId}] assertCallerIsAdminOfLab: No user ID in JWT`);
+    throw new Error("Invalid authentication - no user ID");
+  }
+
   // Query uses caller JWT (RLS enforced) to check if user belongs to lab with admin role
   const { data: userData, error: userError } = await supabaseUserClient
     .from("users")
     .select("id, lab_id, role_id, permissions, role:user_roles(role_code)")
-    .eq("id", (await supabaseUserClient.auth.getUser()).data.user?.id)
+    .eq("id", currentUserId)
     .single();
 
-  if (userError) throw new Error(`Auth check failed: ${userError.message}`);
-  if (!userData) throw new Error("User not found");
-  if (userData.lab_id !== lab_id) throw new Error("User is not a member of target lab");
-  
+  console.log(`[CREATE-AUTH-USER][${requestId}] assertCallerIsAdminOfLab: User data:`, userData);
+
+  if (userError) {
+    console.error(`[CREATE-AUTH-USER][${requestId}] assertCallerIsAdminOfLab: User query error:`, userError.message);
+    throw new Error(`Auth check failed: ${userError.message}`);
+  }
+  if (!userData) {
+    console.error(`[CREATE-AUTH-USER][${requestId}] assertCallerIsAdminOfLab: User not found`);
+    throw new Error("User not found");
+  }
+  if (userData.lab_id !== lab_id) {
+    console.error(`[CREATE-AUTH-USER][${requestId}] assertCallerIsAdminOfLab: Lab mismatch - user lab: ${userData.lab_id}, target lab: ${lab_id}`);
+    throw new Error("User is not a member of target lab");
+  }
+
   // Check if user has admin-level role
   const roleCode = (userData.role as any)?.role_code;
+  console.log(`[CREATE-AUTH-USER][${requestId}] assertCallerIsAdminOfLab: User role code:`, roleCode);
+
   const permissions = await getEffectivePermissions(
     supabaseAdmin,
     (userData as any).role_id || null,
     (userData as any).permissions || [],
   );
+  console.log(`[CREATE-AUTH-USER][${requestId}] assertCallerIsAdminOfLab: Effective permissions:`, Array.from(permissions));
 
   if (!["admin", "owner"].includes(roleCode) && !permissions.has("users.create")) {
+    console.error(`[CREATE-AUTH-USER][${requestId}] assertCallerIsAdminOfLab: Permission denied - role: ${roleCode}, has users.create: ${permissions.has("users.create")}`);
     throw new Error("User must have admin or owner role");
   }
+
+  console.log(`[CREATE-AUTH-USER][${requestId}] assertCallerIsAdminOfLab: Authorization passed`);
 }
 
 Deno.serve(async (req: Request) => {
+  const requestId = crypto.randomUUID().slice(0, 8);
+  console.log(`[CREATE-AUTH-USER][${requestId}] ========== REQUEST RECEIVED ==========`);
+  console.log(`[CREATE-AUTH-USER][${requestId}] Method: ${req.method}`);
+  console.log(`[CREATE-AUTH-USER][${requestId}] URL: ${req.url}`);
+  console.log(`[CREATE-AUTH-USER][${requestId}] Headers:`, Object.fromEntries(req.headers.entries()));
+
   // Handle CORS preflight request
   if (req.method === "OPTIONS") {
+    console.log(`[CREATE-AUTH-USER][${requestId}] Handling CORS preflight`);
     return new Response(null, {
       status: 204,
       headers: {
         "Access-Control-Allow-Origin": "*",
         "Access-Control-Allow-Methods": "POST, OPTIONS",
-        "Access-Control-Allow-Headers": "Content-Type, Authorization",
+        "Access-Control-Allow-Headers": "Content-Type, Authorization, apikey, x-client-info",
       },
     });
   }
 
   try {
-    if (req.method !== "POST") return bad("Use POST", 405);
+    if (req.method !== "POST") {
+      console.log(`[CREATE-AUTH-USER][${requestId}] Invalid method: ${req.method}`);
+      return bad("Use POST", 405);
+    }
 
+    console.log(`[CREATE-AUTH-USER][${requestId}] Creating Supabase clients...`);
     const supabaseAdmin = getSupabaseAdmin();
     const supabaseUserClient = getSupabaseForUser(req);
+    console.log(`[CREATE-AUTH-USER][${requestId}] Supabase clients created`);
 
+    console.log(`[CREATE-AUTH-USER][${requestId}] Parsing request body...`);
     const body = (await req.json()) as CreateAuthUserPayload;
     const { email, password, lab_id, name, role_id } = body;
 
-    console.log('[CREATE-AUTH-USER] Request:', { email, lab_id, name, role_id: role_id || 'auto' });
+    console.log(`[CREATE-AUTH-USER][${requestId}] Request payload:`, { email, lab_id, name, role_id: role_id || 'auto', hasPassword: !!password });
 
     if (!email) return bad("email is required");
     if (!lab_id) return bad("lab_id is required");
@@ -136,10 +184,10 @@ Deno.serve(async (req: Request) => {
       return bad("Invalid email format", 400);
     }
 
-    console.log('[CREATE-AUTH-USER] Email validation passed:', email);
+    console.log(`[CREATE-AUTH-USER][${requestId}] Email validation passed:`, email);
 
     // Verify the lab exists
-    console.log('[CREATE-AUTH-USER] Verifying lab exists:', lab_id);
+    console.log(`[CREATE-AUTH-USER][${requestId}] Verifying lab exists:`, lab_id);
     const { data: labData, error: labError } = await supabaseAdmin
       .from("labs")
       .select("id, name")
@@ -147,16 +195,16 @@ Deno.serve(async (req: Request) => {
       .single();
 
     if (labError || !labData) {
-      console.error('[CREATE-AUTH-USER] Lab not found:', lab_id, labError?.message);
+      console.error(`[CREATE-AUTH-USER][${requestId}] Lab not found:`, lab_id, labError?.message);
       return bad("Lab not found or unavailable", 404);
     }
 
-    console.log('[CREATE-AUTH-USER] Lab verified:', labData.name);
+    console.log(`[CREATE-AUTH-USER][${requestId}] Lab verified:`, labData.name);
 
     // Verify caller is admin of target lab
-    console.log('[CREATE-AUTH-USER] Verifying caller is admin of lab:', lab_id);
-    await assertCallerIsAdminOfLab(supabaseAdmin, supabaseUserClient, lab_id);
-    console.log('[CREATE-AUTH-USER] Admin verification passed');
+    console.log(`[CREATE-AUTH-USER][${requestId}] Verifying caller is admin of lab:`, lab_id);
+    await assertCallerIsAdminOfLab(supabaseAdmin, supabaseUserClient, lab_id, requestId);
+    console.log(`[CREATE-AUTH-USER][${requestId}] Admin verification passed`);
 
     // Generate strong random password if not provided
     const finalPassword = password || (crypto.randomUUID() + "!Aa1");
@@ -191,7 +239,7 @@ Deno.serve(async (req: Request) => {
       created_at: new Date().toISOString(),
     };
 
-    console.log('[CREATE-AUTH-USER] Creating auth.users record with metadata:', user_metadata);
+    console.log(`[CREATE-AUTH-USER][${requestId}] Creating auth.users record with metadata:`, user_metadata);
 
     // Create auth user with minimal metadata first (to avoid potential auth schema issues)
     let createAttempt = 0;
@@ -416,8 +464,9 @@ Deno.serve(async (req: Request) => {
     });
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
-    console.error("[CREATE-AUTH-USER] ERROR:", msg);
-    console.error("[CREATE-AUTH-USER] Stack trace:", e instanceof Error ? e.stack : 'No stack trace');
+    console.error(`[CREATE-AUTH-USER][${requestId}] ========== ERROR ==========`);
+    console.error(`[CREATE-AUTH-USER][${requestId}] Error message:`, msg);
+    console.error(`[CREATE-AUTH-USER][${requestId}] Stack trace:`, e instanceof Error ? e.stack : 'No stack trace');
     return bad(msg, 400);
   }
 });

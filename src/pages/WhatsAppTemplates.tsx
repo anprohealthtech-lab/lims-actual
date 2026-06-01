@@ -22,6 +22,7 @@ import {
   Eye,
   Save,
   AlertCircle,
+  Gift,
 } from 'lucide-react';
 import { database } from '../utils/supabase';
 import {
@@ -51,6 +52,8 @@ const CATEGORY_LABELS: Record<string, { label: string; icon: any; color: string 
   registration_confirmation: { label: 'Registration', icon: UserPlus, color: 'teal' },
   doctor_report_ready: { label: 'Doctor Report', icon: Stethoscope, color: 'cyan' },
   invoice_generated: { label: 'Invoice', icon: Receipt, color: 'orange' },
+  loyalty_points_earned: { label: 'Loyalty Earned', icon: Gift, color: 'amber' },
+  loyalty_points_redeemed: { label: 'Loyalty Redeemed', icon: Gift, color: 'amber' },
   appointment_reminder: { label: 'Appointment', icon: Calendar, color: 'purple' },
   test_results: { label: 'Test Results', icon: TestTube, color: 'green' },
   doctor_notification: { label: 'Doctor Notification', icon: User, color: 'indigo' },
@@ -74,6 +77,8 @@ const WhatsAppTemplates: React.FC = () => {
   const loadTemplates = async () => {
     setLoading(true);
     try {
+      await database.whatsappTemplates.seedDefaults();
+
       // Try to load templates
       const { data, error } = await database.whatsappTemplates.list();
       

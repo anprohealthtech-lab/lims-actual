@@ -5,6 +5,7 @@ export * from './dashboard';
 export * from './workflow';
 export * from './security';
 export * from './booking';
+export * from './payment';
 
 // Core entity interfaces
 

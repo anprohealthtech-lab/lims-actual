@@ -35,7 +35,7 @@ const HeaderFooterUpload: React.FC<HeaderFooterUploadProps> = ({
         setLoading(true);
         try {
             // Fetch header
-            const { data: headerData } = await supabase
+            const { data: headerData, error: headerError } = await supabase
                 .from('attachments')
                 .select('*')
                 .eq('entity_type', entityType)
@@ -43,12 +43,13 @@ const HeaderFooterUpload: React.FC<HeaderFooterUploadProps> = ({
                 .eq('attachment_type', 'header')
                 .order('created_at', { ascending: false })
                 .limit(1)
-                .single();
+                .maybeSingle();
 
-            if (headerData) setHeaderAttachment(headerData);
+            if (headerError) throw headerError;
+            setHeaderAttachment(headerData || null);
 
             // Fetch footer
-            const { data: footerData } = await supabase
+            const { data: footerData, error: footerError } = await supabase
                 .from('attachments')
                 .select('*')
                 .eq('entity_type', entityType)
@@ -56,9 +57,10 @@ const HeaderFooterUpload: React.FC<HeaderFooterUploadProps> = ({
                 .eq('attachment_type', 'footer')
                 .order('created_at', { ascending: false })
                 .limit(1)
-                .single();
+                .maybeSingle();
 
-            if (footerData) setFooterAttachment(footerData);
+            if (footerError) throw footerError;
+            setFooterAttachment(footerData || null);
         } catch (err) {
             console.error('Error loading attachments:', err);
         } finally {

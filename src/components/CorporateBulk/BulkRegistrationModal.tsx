@@ -1,11 +1,12 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { AlertCircle, Building2, CheckCircle2, ChevronRight, Loader2, Pencil, Plus, Search, Trash2, Upload, Users, X } from 'lucide-react';
+import { AlertCircle, Building2, CheckCircle2, ChevronRight, Loader2, Pencil, Plus, Search, Stethoscope, Trash2, Upload, Users, X } from 'lucide-react';
 import { supabase, database } from '../../utils/supabase';
 import ExcelImportPanel, { ImportedPatient } from './ExcelImportPanel';
 
 interface Account { id: string; name: string; type: string; default_discount_percent: number | null; }
 interface Package { id: string; name: string; price: number; description: string; lab_id?: string | null; package_test_groups?: { test_group_id: string }[]; }
 interface TestGroup { id: string; name: string; price: number; lab_id?: string | null; }
+interface Doctor { id: string; name: string; specialization?: string | null; is_referring_doctor?: boolean | null; }
 interface SelectionBundle { packageIds: string[]; testIds: string[]; }
 export interface PatientRow { id: string; salutation: string; name: string; age: string; age_unit: 'years' | 'months' | 'days'; gender: 'Male' | 'Female' | 'Other'; phone: string; email: string; sample_id: string; corporate_employee_id: string; }
 interface SubmitResult { patient_name: string; order_id?: string; sample_id?: string; order_display?: string; error?: string; }
@@ -13,6 +14,7 @@ interface BulkRegistrationModalProps { onClose: () => void; onSuccess: (batchId:
 
 const SALUTATIONS = ['Mr.', 'Mrs.', 'Ms.', 'Dr.', 'M/s'];
 const STEPS = ['Account & Tests', 'Patient Roster', 'Review & Submit'];
+const BULK_CREATE_CHUNK_SIZE = 25;
 const normalizeName = (v: string) => v.trim().toLowerCase().replace(/\s+/g, ' ');
 const toggleInArray = (values: string[], id: string) => values.includes(id) ? values.filter((value) => value !== id) : [...values, id];
 const dedupeByName = <T extends { id: string; name: string; lab_id?: string | null }>(items: T[], preferredLabId?: string | null) => {
@@ -31,7 +33,9 @@ const BulkRegistrationModal: React.FC<BulkRegistrationModalProps> = ({ onClose, 
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [packages, setPackages] = useState<Package[]>([]);
   const [testGroups, setTestGroups] = useState<TestGroup[]>([]);
+  const [doctors, setDoctors] = useState<Doctor[]>([]);
   const [selectedAccountId, setSelectedAccountId] = useState('');
+  const [selectedDoctorId, setSelectedDoctorId] = useState('');
   const [selectionMode, setSelectionMode] = useState<'package' | 'tests'>('package');
   const [selectedPackageIds, setSelectedPackageIds] = useState<string[]>([]);
   const [selectedTestIds, setSelectedTestIds] = useState<string[]>([]);
@@ -78,12 +82,14 @@ const BulkRegistrationModal: React.FC<BulkRegistrationModalProps> = ({ onClose, 
       setCurrentLabId(labId);
       let accsQuery = supabase.from('accounts').select('id, name, type, default_discount_percent').in('type', ['corporate', 'hospital', 'insurer', 'clinic']).eq('is_active', true).order('name');
       if (labId) accsQuery = accsQuery.eq('lab_id', labId);
-      const [{ data: accs }, { data: pkgs, error: pkgError }, { data: tgs, error: tgError }] = await Promise.all([accsQuery, database.packages.getAll(), database.testGroups.getAll()]);
+      const [{ data: accs }, { data: pkgs, error: pkgError }, { data: tgs, error: tgError }, { data: doctorRows, error: doctorError }] = await Promise.all([accsQuery, database.packages.getAll(), database.testGroups.getAll(), database.doctors.getAll()]);
       if (pkgError) console.error('Failed to load lab packages for bulk registration:', pkgError);
       if (tgError) console.error('Failed to load lab tests for bulk registration:', tgError);
+      if (doctorError) console.error('Failed to load doctors for bulk registration:', doctorError);
       setAccounts(accs || []);
       setPackages(dedupeByName((pkgs as Package[]) || [], labId));
       setTestGroups(dedupeByName((tgs as TestGroup[]) || [], labId));
+      setDoctors(((doctorRows as Doctor[]) || []).filter((doctor) => doctor.is_referring_doctor !== false));
       setLoadingAccounts(false);
     };
     loadData();
@@ -138,15 +144,28 @@ const BulkRegistrationModal: React.FC<BulkRegistrationModalProps> = ({ onClose, 
   const handleSubmit = async () => {
     setSubmitting(true); setSubmitProgress([]);
     try {
-      const payload = {
+      const patients = rows.map((r) => ({ name: `${r.salutation} ${r.name.trim()}`.trim(), age: parseInt(r.age, 10) || 0, age_unit: r.age_unit, gender: r.gender, phone: r.phone.trim() || undefined, email: r.email.trim() || undefined, sample_id: r.sample_id.trim() || undefined, corporate_employee_id: r.corporate_employee_id.trim() || undefined, additional_package_ids: rowExtras[r.id]?.packageIds || [], additional_test_group_ids: rowExtras[r.id]?.testIds || [] }));
+      const basePayload = {
         account_id: selectedAccountId,
+        referring_doctor_id: selectedDoctorId || undefined,
         ...(selectionMode === 'package' ? { package_ids: selectedPackageIds } : { test_group_ids: selectedTestIds }),
-        patients: rows.map((r) => ({ name: `${r.salutation} ${r.name.trim()}`.trim(), age: parseInt(r.age, 10) || 0, age_unit: r.age_unit, gender: r.gender, phone: r.phone.trim() || undefined, email: r.email.trim() || undefined, sample_id: r.sample_id.trim() || undefined, corporate_employee_id: r.corporate_employee_id.trim() || undefined, additional_package_ids: rowExtras[r.id]?.packageIds || [], additional_test_group_ids: rowExtras[r.id]?.testIds || [] })),
+        total_patients: patients.length,
       };
-      const { data, error } = await supabase.functions.invoke('bulk-create-corporate-orders', { body: payload });
-      if (error) throw new Error(error.message);
-      if (!data?.success) throw new Error(data?.error || 'Unknown error');
-      setSubmitProgress(data.results || []); setBatchId(data.batch_id); setSubmitted(true);
+      let activeBatchId = '';
+      const allResults: SubmitResult[] = [];
+      for (let index = 0; index < patients.length; index += BULK_CREATE_CHUNK_SIZE) {
+        const chunk = patients.slice(index, index + BULK_CREATE_CHUNK_SIZE);
+        const { data, error } = await supabase.functions.invoke('bulk-create-corporate-orders', {
+          body: { ...basePayload, batch_id: activeBatchId || undefined, patients: chunk },
+        });
+        if (error) throw new Error(error.message);
+        if (!data?.success) throw new Error(data?.error || 'Unknown error');
+        activeBatchId = data.batch_id;
+        setBatchId(activeBatchId);
+        allResults.push(...(data.results || []));
+        setSubmitProgress([...allResults]);
+      }
+      setSubmitted(true);
     } catch (err) {
       setSubmitProgress([{ patient_name: 'Submission failed', error: (err as Error).message }]);
     } finally { setSubmitting(false); }
@@ -207,6 +226,13 @@ const BulkRegistrationModal: React.FC<BulkRegistrationModalProps> = ({ onClose, 
                 </div>
               </div>}
             </div>
+            <div>
+              <label className="mb-1 flex items-center gap-1.5 text-sm font-medium text-gray-700"><Stethoscope className="h-4 w-4 text-blue-600" /> Referring Doctor</label>
+              <select value={selectedDoctorId} onChange={(e) => setSelectedDoctorId(e.target.value)} className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
+                <option value="">Self / Walk-in</option>
+                {doctors.map((doctor) => <option key={doctor.id} value={doctor.id}>{doctor.name}{doctor.specialization ? ` - ${doctor.specialization}` : ''}</option>)}
+              </select>
+            </div>
             {selectedAccountId && (selectionMode === 'package' ? selectedPackageIds.length > 0 : selectedTestIds.length > 0) && <div className="rounded-lg bg-blue-50 p-3 text-sm">
               <p className="font-medium text-blue-800">Per patient: Rs {perPatientFinal.toFixed(2)}</p>
               {discountFrac > 0 && <p className="mt-0.5 text-xs text-blue-600">After {selectedAccount?.default_discount_percent}% account discount on Rs {perPatientBase.toFixed(2)}</p>}
@@ -239,6 +265,7 @@ const BulkRegistrationModal: React.FC<BulkRegistrationModalProps> = ({ onClose, 
           {step === 2 && !submitted && <div className="space-y-4">
             <div className="space-y-2 rounded-xl bg-gray-50 p-4">
               <div className="flex justify-between text-sm"><span className="text-gray-600">Account</span><span className="font-medium">{selectedAccount?.name}</span></div>
+              <div className="flex justify-between text-sm"><span className="text-gray-600">Referring Doctor</span><span className="font-medium">{doctors.find((doctor) => doctor.id === selectedDoctorId)?.name || 'Self / Walk-in'}</span></div>
               <div className="flex justify-between text-sm"><span className="text-gray-600">{selectionMode === 'package' ? 'Packages' : 'Tests'}</span><span className="font-medium">{selectionMode === 'package' ? `${selectedPackageIds.length} package${selectedPackageIds.length === 1 ? '' : 's'} selected` : `${selectedTestIds.length} tests selected`}</span></div>
               <div className="flex justify-between text-sm"><span className="text-gray-600">Patients</span><span className="font-medium">{rows.length}</span></div>
               <div className="flex justify-between border-t pt-2 text-sm"><span className="text-gray-600">Per patient</span><span className="font-semibold text-green-700">Rs {perPatientFinal.toFixed(2)}</span></div>

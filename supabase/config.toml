@@ -382,3 +382,33 @@ verify_jwt = false
 
 [functions.auto-dispatch-analyzer]
 verify_jwt = false
+
+# Payment gateway callbacks (browser redirects) - no JWT, CCAvenue/Razorpay POST directly
+[functions.payment-callback]
+enabled = true
+verify_jwt = false
+entrypoint = "./functions/payment-callback/index.ts"
+
+# Payment gateway webhooks (server-to-server) - no JWT, called by payment providers
+[functions.payment-webhook]
+enabled = true
+verify_jwt = false
+entrypoint = "./functions/payment-webhook/index.ts"
+
+# Check B2B account credit availability
+[functions.check-b2b-credit]
+enabled = true
+verify_jwt = true
+entrypoint = "./functions/check-b2b-credit/index.ts"
+
+# Initiate payment with gateway
+[functions.initiate-payment]
+enabled = true
+verify_jwt = true
+entrypoint = "./functions/initiate-payment/index.ts"
+
+# Create auth user - admin creates users for their lab
+[functions.create-auth-user]
+enabled = true
+verify_jwt = true
+entrypoint = "./functions/create-auth-user/index.ts"

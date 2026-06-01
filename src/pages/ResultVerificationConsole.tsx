@@ -35,8 +35,8 @@ import {
   Stethoscope,
   Mail,
   Calculator,
-  Undo2,
-  Lock
+	  Undo2,
+	  Lock
 } from "lucide-react";
 import { supabase, database } from "../utils/supabase";
 import AttachmentSelector from "../components/Reports/AttachmentSelector";
@@ -64,6 +64,7 @@ type PanelRow = {
   result_id: string;
   test_group_id: string | null;
   test_group_name: string | null;
+  has_result?: boolean;
   is_section_only?: boolean;
   expected_analytes: number;
   entered_analytes: number;
@@ -74,8 +75,14 @@ type PanelRow = {
   patient_name: string;
   patient_age?: string | number | null;
   patient_gender?: string | null;
-  order_date: string;
-  department?: string | null;
+	  order_date: string;
+	  department?: string | null;
+  sample_id?: string | null;
+  order_number?: number | null;
+  doctor?: string | null;
+  account_id?: string | null;
+  account_name?: string | null;
+  priority?: "Normal" | "Urgent" | "STAT" | null;
 };
 
 type Analyte = {
@@ -122,6 +129,7 @@ type Attachment = {
 
 type StateFilter = "all" | "pending" | "partial" | "ready";
 type ViewMode = "panel" | "order";
+type PanelSortMode = "sample_desc" | "sample_asc" | "date_desc" | "patient_az";
 
 /* =========================================
    Helpers
@@ -143,6 +151,12 @@ const fmtDate = (iso: string) =>
   });
 
 const normalizeIdForSearch = (value: string) => value.replace(/-/g, "").toLowerCase();
+const getDailySeq = (row: Pick<PanelRow, "order_number" | "sample_id">) => {
+  if (typeof row.order_number === "number" && Number.isFinite(row.order_number)) return row.order_number;
+  const tail = String(row.sample_id || "").match(/(?:^|[/-])(\d+)\s*$/)?.[1] || "";
+  const parsed = parseInt(tail, 10);
+  return Number.isFinite(parsed) ? parsed : 0;
+};
 const toNumber = (raw: string | number | null | undefined): number | null => {
   if (raw === null || raw === undefined) return null;
   const parsed = Number(String(raw).replace(/,/g, "").trim());
@@ -271,6 +285,85 @@ const getFlagBadgeStyles = (flag: string | null | undefined) => {
   }
 
   return { bg: "bg-gray-100", text: "text-gray-800" };
+};
+
+const describeSupabaseError = (error: unknown) => {
+  if (!error || typeof error !== "object") return { message: String(error) };
+  const err = error as {
+    message?: string;
+    code?: string;
+    details?: string;
+    hint?: string;
+    name?: string;
+    status?: number;
+  };
+
+  return {
+    message: err.message,
+    code: err.code,
+    details: err.details,
+    hint: err.hint,
+    name: err.name,
+    status: err.status,
+  };
+};
+
+const fetchRowsByIds = async (
+  table: string,
+  select: string,
+  ids: string[],
+  chunkSize = 80,
+) => {
+  const uniqueIds = Array.from(new Set(ids.filter(Boolean)));
+  if (uniqueIds.length === 0) return [] as any[];
+
+  const rows: any[] = [];
+  for (let i = 0; i < uniqueIds.length; i += chunkSize) {
+    const chunk = uniqueIds.slice(i, i + chunkSize);
+    const { data, error } = await supabase
+      .from(table)
+      .select(select)
+      .in("id", chunk);
+
+    if (error) throw error;
+    rows.push(...(data || []));
+  }
+
+  return rows;
+};
+
+const fetchPanelStatusRows = async (
+  labId: string,
+  from: string,
+  to: string,
+  shouldFilter: boolean,
+  locationIds: string[],
+) => {
+  const pageSize = 1000;
+  const rows: any[] = [];
+
+  for (let start = 0; ; start += pageSize) {
+    let query = supabase
+      .from("v_result_panel_status")
+      .select("*")
+      .eq("lab_id", labId)
+      .gte("order_date", from)
+      .lte("order_date", to)
+      .order("order_date", { ascending: false })
+      .range(start, start + pageSize - 1);
+
+    if (shouldFilter && locationIds.length > 0) {
+      query = query.in("location_id", locationIds);
+    }
+
+    const { data, error } = await query;
+    if (error) throw error;
+
+    rows.push(...(data || []));
+    if (!data || data.length < pageSize) break;
+  }
+
+  return rows;
 };
 
 const toStoredFlagValue = (canonicalFlag: string | null | undefined): string | null => {
@@ -553,10 +646,13 @@ const ResultVerificationConsole: React.FC = () => {
   // filters
   const [from, setFrom] = useState(fromYesterdayISO());
   const [to, setTo] = useState(todayISO());
-  const [q, setQ] = useState("");
-  const [stateFilter, setStateFilter] = useState<StateFilter>("all");
-  const [viewMode, setViewMode] = useState<ViewMode>("order");
-  const [showAdvancedFilters, setShowAdvancedFilters] = useState(false);
+	  const [q, setQ] = useState("");
+	  const [stateFilter, setStateFilter] = useState<StateFilter>("all");
+	  const [viewMode, setViewMode] = useState<ViewMode>("order");
+	  const [showAdvancedFilters, setShowAdvancedFilters] = useState(false);
+  const [doctorFilter, setDoctorFilter] = useState("all");
+  const [accountFilter, setAccountFilter] = useState("all");
+  const [panelSortMode, setPanelSortMode] = useState<PanelSortMode>("sample_desc");
 
   // attachment view mode
   const [attachmentViewMode, setAttachmentViewMode] = useState<'test' | 'all'>('test');
@@ -681,57 +777,60 @@ const ResultVerificationConsole: React.FC = () => {
     // ✅ Apply location filtering for access control
     const { shouldFilter, locationIds } = await database.shouldFilterByLocation();
 
-    // Build query with optional location filter
-    let query = supabase
-      .from("v_result_panel_status")
-      .select("*")
-      .eq("lab_id", labId)
-      .gte("order_date", from)
-      .lte("order_date", to)
-      .order("order_date", { ascending: false });
+    try {
+      const data = await fetchPanelStatusRows(labId, from, to, shouldFilter, locationIds);
+      const basePanels = (data || []) as PanelRow[];
+      const needsStatusFallback = basePanels.some((row) => !Object.prototype.hasOwnProperty.call(row, "result_verification_status"));
+      const statusFallbackIds = needsStatusFallback
+        ? Array.from(new Set(basePanels
+          .filter((row) =>
+            row.has_result === true ||
+            (row.has_result === undefined && (
+              (row.entered_analytes || 0) > 0 ||
+              row.panel_ready ||
+              !!row.is_section_only
+            ))
+          )
+          .map((row) => row.result_id)
+          .filter(Boolean)))
+        : [];
+      const patientIds = Array.from(new Set(basePanels.map((row) => row.patient_id).filter(Boolean)));
+	      const orderIds = Array.from(new Set(basePanels.map((row) => row.order_id).filter(Boolean)));
 
-    // Apply location filter if user is restricted
-    if (shouldFilter && locationIds.length > 0) {
-      query = query.in("location_id", locationIds);
-    }
-
-    const { data, error } = await query;
-
-    if (error) {
-      setErr(error.message);
-      setPanels([]);
-	    } else {
-	      const basePanels = (data || []) as PanelRow[];
-	      const resultIds = Array.from(new Set(basePanels.map((row) => row.result_id).filter(Boolean)));
-	      const patientIds = Array.from(new Set(basePanels.map((row) => row.patient_id).filter(Boolean)));
-	
-	      const [{ data: resultStatuses }, { data: patientRows }] = await Promise.all([
-	        resultIds.length > 0
-	          ? supabase
-	              .from("results")
-	              .select("id, verification_status")
-	              .in("id", resultIds)
-	          : Promise.resolve({ data: [] as any[] }),
-	        patientIds.length > 0
-	          ? supabase
-	              .from("patients")
-	              .select("id, age, gender")
-	              .in("id", patientIds)
-	          : Promise.resolve({ data: [] as any[] }),
+	      const [resultStatuses, patientRows, orderRows] = await Promise.all([
+	        fetchRowsByIds("results", "id, verification_status", statusFallbackIds),
+	        fetchRowsByIds("patients", "id, age, gender", patientIds),
+	        fetchRowsByIds("orders", "id, sample_id, order_number, doctor, account_id, priority, accounts(name)", orderIds),
 	      ]);
-	
-	      const statusMap = new Map((resultStatuses || []).map((row: any) => [row.id, row.verification_status || null]));
-	      const patientMap = new Map((patientRows || []).map((patient: any) => [patient.id, patient]));
-	      setPanels(basePanels.map((row) => {
-	        const patient = patientMap.get(row.patient_id) as any;
-	        return {
-	          ...row,
-	          result_verification_status: statusMap.has(row.result_id) ? statusMap.get(row.result_id) ?? null : null,
-	          patient_age: row.patient_age ?? patient?.age ?? null,
-	          patient_gender: row.patient_gender ?? patient?.gender ?? null,
+
+	      const statusMap = new Map(resultStatuses.map((row: any) => [row.id, row.verification_status || null]));
+	      const patientMap = new Map(patientRows.map((patient: any) => [patient.id, patient]));
+	      const orderMap = new Map(orderRows.map((order: any) => {
+        const accountInfo = Array.isArray(order.accounts) ? order.accounts[0] : order.accounts;
+        return [order.id, {
+          sample_id: order.sample_id || null,
+          order_number: order.order_number ?? null,
+          doctor: order.doctor || null,
+          account_id: order.account_id || null,
+          account_name: accountInfo?.name || null,
+          priority: order.priority || "Normal",
+        }];
+      }));
+      setPanels(basePanels.map((row) => {
+        const patient = patientMap.get(row.patient_id) as any;
+        const order = orderMap.get(row.order_id) as Partial<PanelRow> | undefined;
+        return {
+          ...row,
+	          ...(order || {}),
+          result_verification_status: row.result_verification_status ?? (statusMap.has(row.result_id) ? statusMap.get(row.result_id) ?? null : null),
+          patient_age: row.patient_age ?? patient?.age ?? null,
+		          patient_gender: row.patient_gender ?? patient?.gender ?? null,
 	        };
 	      }));
-	    }
+    } catch (error: any) {
+      setErr(error?.message || "Failed to load verification panels");
+      setPanels([]);
+    }
     if (!silent) setLoading(false);
   };
 
@@ -746,21 +845,33 @@ const ResultVerificationConsole: React.FC = () => {
     const k = q.trim().toLowerCase();
     const normalizedSearchId = normalizeIdForSearch(k);
 
-    // Show analyte-backed panels once values are entered, and always allow
-    // section-only panels because they are verified via report sections.
-    let list = (panels || []).filter((r) =>
-      (r?.entered_analytes || 0) > 0 ||
-      !!r.is_section_only
-    );
+	    // Prefer the view's real-result marker. Older databases do not expose it,
+	    // so fall back to the previous entered-analyte/section-only behavior.
+	    let list = (panels || []).filter((r) =>
+	      r.has_result === true ||
+	      (r.has_result === undefined && (
+	        (r?.entered_analytes || 0) > 0 ||
+	        !!r.is_section_only
+	      ))
+	    );
 
     if (k) {
       list = list.filter(
         (r) =>
-          (r.patient_name || "").toLowerCase().includes(k) ||
-          (r.test_group_name || "").toLowerCase().includes(k) ||
-          (r.order_id || "").toLowerCase().includes(k) ||
-          normalizeIdForSearch(r.order_id || "").includes(normalizedSearchId)
-      );
+	          (r.patient_name || "").toLowerCase().includes(k) ||
+	          (r.test_group_name || "").toLowerCase().includes(k) ||
+          (r.sample_id || "").toLowerCase().includes(k) ||
+	          (r.order_id || "").toLowerCase().includes(k) ||
+	          normalizeIdForSearch(r.order_id || "").includes(normalizedSearchId)
+	      );
+	    }
+
+    if (doctorFilter !== "all") {
+      list = list.filter((r) => (r.doctor || "").toLowerCase().includes(doctorFilter.toLowerCase()));
+    }
+
+    if (accountFilter !== "all") {
+      list = list.filter((r) => (r.account_name || "").toLowerCase().includes(accountFilter.toLowerCase()));
     }
 
     if (stateFilter === "ready") {
@@ -783,8 +894,29 @@ const ResultVerificationConsole: React.FC = () => {
       );
     }
 
-	    return list;
-	  }, [panels, q, stateFilter]);
+    list = [...list].sort((a, b) => {
+      if (panelSortMode === "patient_az") return (a.patient_name || "").localeCompare(b.patient_name || "");
+      if (panelSortMode === "date_desc") {
+        const dateDiff = new Date(b.order_date).getTime() - new Date(a.order_date).getTime();
+        if (dateDiff !== 0) return dateDiff;
+      }
+
+      const nA = getDailySeq(a);
+      const nB = getDailySeq(b);
+      if (nA !== nB) return panelSortMode === "sample_asc" ? nA - nB : nB - nA;
+      return new Date(b.order_date).getTime() - new Date(a.order_date).getTime();
+    });
+
+		    return list;
+		  }, [panels, q, stateFilter, doctorFilter, accountFilter, panelSortMode]);
+
+  const doctorOptions = useMemo(() => (
+    Array.from(new Set((panels || []).map(row => row.doctor).filter(Boolean) as string[])).sort()
+  ), [panels]);
+
+  const accountOptions = useMemo(() => (
+    Array.from(new Set((panels || []).map(row => row.account_name).filter(Boolean) as string[])).sort()
+  ), [panels]);
 
 	  const allFilteredPanelsSelected = useMemo(
 	    () => filteredPanels.length > 0 && filteredPanels.every((panel) => selectedPanels.has(panel.result_id)),
@@ -792,8 +924,8 @@ const ResultVerificationConsole: React.FC = () => {
 	  );
 
 	  /* ----------------- Load analytes for panel ----------------- */
-  const ensureAnalytesLoaded = async (result_id: string) => {
-    if (rowsByResult[result_id]) return;
+  const ensureAnalytesLoaded = async (result_id: string): Promise<Analyte[]> => {
+    if (rowsByResult[result_id]) return rowsByResult[result_id];
 
     const { data, error } = await supabase
       .from("result_values")
@@ -823,7 +955,9 @@ const ResultVerificationConsole: React.FC = () => {
       .order("parameter", { ascending: true });
 
     if (!error && data) {
-      setRowsByResult((s) => ({ ...s, [result_id]: data as unknown as Analyte[] }));
+      const analytes = data as unknown as Analyte[];
+      setRowsByResult((s) => ({ ...s, [result_id]: analytes }));
+      return analytes;
     } else {
       // Fallback if verify_* columns do not exist
       if (String(error.message || "").includes("column") && String(error.message).includes("verify_status")) {
@@ -855,9 +989,13 @@ const ResultVerificationConsole: React.FC = () => {
 	            hidden_reason: null,
 	          })) as Analyte[];
           setRowsByResult((s) => ({ ...s, [result_id]: mapped }));
+          return mapped;
         }
       }
     }
+
+    console.warn("[ResultVerification] No analytes loaded for result", { result_id, error });
+    return [];
   };
 
   /* ----------------- Load trend data for analyte ----------------- */
@@ -1171,17 +1309,41 @@ const ResultVerificationConsole: React.FC = () => {
       return;
     }
 
-    const list = rowsByResult[row.result_id] || [];
-    if (!list.length) return;
+    const list = rowsByResult[row.result_id] || await ensureAnalytesLoaded(row.result_id);
+    if (!list.length) {
+      console.warn("[ResultVerification] Approval skipped because no analytes were found", {
+        result_id: row.result_id,
+        order_id: row.order_id,
+        test_group_name: row.test_group_name,
+      });
+      return;
+    }
     const ids = list.map((a) => a.id);
     setBusyFor(row.result_id, true);
     setSavingReportExtras(prev => ({ ...prev, [row.order_id]: true }));
 
     try {
+      console.info("[ResultVerification] Approving panel analytes", {
+        result_id: row.result_id,
+        order_id: row.order_id,
+        test_group_name: row.test_group_name,
+        analyte_count: ids.length,
+      });
+
       const { error } = await supabase
         .from("result_values")
         .update({ verify_status: "approved", verified_at: new Date().toISOString() })
         .in("id", ids);
+
+      if (error) {
+        console.error("[ResultVerification] Failed to approve panel analytes", {
+          result_id: row.result_id,
+          order_id: row.order_id,
+          error: describeSupabaseError(error),
+          raw_error: error,
+        });
+        throw error;
+      }
 
       if (!error) {
         setRowsByResult((s) => ({
@@ -1531,7 +1693,7 @@ const ResultVerificationConsole: React.FC = () => {
 	              scope[contextKey] = contextValue;
 	            }
 	          }
-	
+
 	          if (!allFound || Object.keys(scope).length === 0) {
             debugHintsForResult[calcRow.id] = missingVariables.length > 0 ? missingVariables : ["source values"];
             console.warn(`${recalcLogPrefix} Not calculated: missing source values`, {
@@ -1658,17 +1820,65 @@ const ResultVerificationConsole: React.FC = () => {
   };
 
   const bulkApproveSelected = async () => {
-    if (selectedPanels.size === 0) return;
-
-    setBulkProcessing(true);
-    const promises = Array.from(selectedPanels).map(resultId => {
-      const row = filteredPanels.find(p => p.result_id === resultId);
-      return row ? approveAllInPanel(row) : Promise.resolve();
+    const selectedResultIds = Array.from(selectedPanels);
+    console.info("[ResultVerification] Bulk approve selected clicked", {
+      selected_count: selectedResultIds.length,
+      selected_result_ids: selectedResultIds,
     });
 
-    await Promise.all(promises);
-    clearSelection();
-    setBulkProcessing(false);
+    if (selectedResultIds.length === 0) return;
+
+    setBulkProcessing(true);
+    try {
+      const selectedRows = selectedResultIds
+        .map(resultId => filteredPanels.find(p => p.result_id === resultId))
+        .filter((row): row is PanelRow => !!row);
+
+      const missingRows = selectedResultIds.length - selectedRows.length;
+      if (missingRows > 0) {
+        console.warn("[ResultVerification] Some selected panels were not found in the current filter", {
+          missing_count: missingRows,
+          selected_result_ids: selectedResultIds,
+        });
+      }
+
+      const failedRows: Array<{ row: PanelRow; error: unknown }> = [];
+
+      for (const row of selectedRows) {
+        try {
+          await approveAllInPanel(row);
+        } catch (error) {
+          failedRows.push({ row, error });
+          console.error("[ResultVerification] Bulk approve panel failed", {
+            result_id: row.result_id,
+            order_id: row.order_id,
+            test_group_name: row.test_group_name,
+            error: describeSupabaseError(error),
+            raw_error: error,
+          });
+        }
+      }
+
+      if (failedRows.length === 0) {
+        clearSelection();
+      } else {
+        setSelectedPanels(new Set(failedRows.map(({ row }) => row.result_id)));
+        alert(`${failedRows.length} of ${selectedRows.length} selected panels failed approval. The failed panels are still selected. Check the console for the database error message.`);
+      }
+
+      console.info("[ResultVerification] Bulk approve selected completed", {
+        attempted_count: selectedRows.length,
+        failed_count: failedRows.length,
+      });
+    } catch (error) {
+      console.error("[ResultVerification] Bulk approve selected failed", {
+        error: describeSupabaseError(error),
+        raw_error: error,
+      });
+      alert("Bulk approval failed. Please check the console for details.");
+    } finally {
+      setBulkProcessing(false);
+    }
   };
 
   const handleEmailReport = async (row: PanelRow) => {
@@ -2232,6 +2442,15 @@ const ResultVerificationConsole: React.FC = () => {
                       <FileText className="h-4 w-4 mr-1" />
                       #{row.order_id.slice(-8)}
                     </span>
+                    {row.priority && row.priority !== "Normal" && (
+                      <span className={`inline-flex items-center px-2 py-0.5 rounded-lg text-xs font-bold border ${
+                        row.priority === "STAT"
+                          ? "bg-red-100 text-red-800 border-red-300 animate-pulse"
+                          : "bg-orange-100 text-orange-800 border-orange-300"
+                      }`}>
+                        {row.priority === "STAT" ? "🚨 STAT" : "⚡ Urgent"}
+                      </span>
+                    )}
                   </div>
                 </div>
               </div>
@@ -3468,7 +3687,7 @@ const ResultVerificationConsole: React.FC = () => {
                 <input
                   value={q}
                   onChange={(e) => setQ(e.target.value)}
-                  placeholder="Search patients, tests, or order IDs..."
+	                  placeholder="Search patients, tests, sample IDs, or order IDs..."
                   className="w-full pl-12 pr-4 py-3 sm:py-4 text-base sm:text-lg border-2 border-gray-200 rounded-xl focus:border-blue-500 focus:ring-4 focus:ring-blue-100 transition-all duration-200"
                 />
                 {q && (
@@ -3523,7 +3742,7 @@ const ResultVerificationConsole: React.FC = () => {
             {/* Advanced Filters Panel */}
             {showAdvancedFilters && (
               <div className="mt-6 pt-6 border-t border-gray-100">
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+	                <div className="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-4 gap-6">
                   <div>
                     <label className="block text-sm font-semibold text-gray-700 mb-3">Date Range</label>
                     <div className="space-y-3">
@@ -3549,8 +3768,8 @@ const ResultVerificationConsole: React.FC = () => {
                     </div>
                   </div>
 
-                  <div>
-                    <label className="block text-sm font-semibold text-gray-700 mb-3">Quick Presets</label>
+	                  <div>
+	                    <label className="block text-sm font-semibold text-gray-700 mb-3">Quick Presets</label>
                     <div className="grid grid-cols-2 gap-2">
                       <button
                         onClick={setToday}
@@ -3577,9 +3796,51 @@ const ResultVerificationConsole: React.FC = () => {
                         90 Days
                       </button>
                     </div>
+	                  </div>
+
+                  <div>
+                    <label className="block text-sm font-semibold text-gray-700 mb-3">Ref Doctor</label>
+                    <select
+                      value={doctorFilter}
+                      onChange={(e) => setDoctorFilter(e.target.value)}
+                      className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                    >
+                      <option value="all">All Doctors</option>
+                      {doctorOptions.map(doctor => (
+                        <option key={doctor} value={doctor}>{doctor}</option>
+                      ))}
+                    </select>
                   </div>
 
                   <div>
+                    <label className="block text-sm font-semibold text-gray-700 mb-3">B2B Client</label>
+                    <select
+                      value={accountFilter}
+                      onChange={(e) => setAccountFilter(e.target.value)}
+                      className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                    >
+                      <option value="all">All B2B Clients</option>
+                      {accountOptions.map(account => (
+                        <option key={account} value={account}>{account}</option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="block text-sm font-semibold text-gray-700 mb-3">Sort By</label>
+                    <select
+                      value={panelSortMode}
+                      onChange={(e) => setPanelSortMode(e.target.value as PanelSortMode)}
+                      className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                    >
+                      <option value="sample_desc">Sample ID newest first</option>
+                      <option value="sample_asc">Sample ID oldest first</option>
+                      <option value="date_desc">Order date newest first</option>
+                      <option value="patient_az">Patient A-Z</option>
+                    </select>
+                  </div>
+
+	                  <div>
                     <label className="block text-sm font-semibold text-gray-700 mb-3">Bulk Actions</label>
                     <div className="space-y-2">
                       <button

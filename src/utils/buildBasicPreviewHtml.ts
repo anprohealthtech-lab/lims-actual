@@ -229,7 +229,7 @@ function formatNarrativeHtml(rawContent: string): string {
     flushList();
 
     const colonIdx = line.indexOf(":");
-    if (colonIdx > 0 && colonIdx < 40) {
+    if (colonIdx > 0 && colonIdx < 60) {
       parts.push(`
         <div class="narrative-kv-row">
           <div class="narrative-kv-label">${escapeHtml(line.slice(0, colonIdx).trim())}</div>
@@ -330,6 +330,8 @@ export function buildBasicPreviewHtml(params: BuildBasicPreviewParams): string {
   const flagAsteriskCritical = (printOptions.flagAsteriskCritical as boolean) ?? false;
   const testGroupTitlePosition = (printOptions.testGroupTitlePosition as string) ?? "above_headers_center";
   const qrHorizontalOffset = Math.max(0, Math.min(80, Number(printOptions.qrHorizontalOffset ?? 0)));
+  // Section field name width percentage for narrative/section-only reports (default 40%)
+  const sectionFieldNamePct = Math.max(20, Math.min(70, Number(printOptions.sectionFieldNamePct ?? 40)));
   const colCount = 4;
   const basicColumnWidths = (printOptions.basicColumnWidths || {}) as Record<string, unknown>;
   const standardColumnWidths = normalizeBasicColumnWidths(basicColumnWidths.standard, [36, 24, 12, 28], 4);
@@ -568,7 +570,7 @@ th { padding: 3px 4px !important; }
 }
 .narrative-kv-row {
   display: grid;
-  grid-template-columns: minmax(140px, 220px) 1fr;
+  grid-template-columns: ${sectionFieldNamePct}% 1fr;
   gap: 10px;
   padding: 6px 0;
   border-bottom: 0.5px dotted #d1d5db;

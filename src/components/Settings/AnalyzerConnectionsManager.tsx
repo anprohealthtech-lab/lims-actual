@@ -49,6 +49,14 @@ const EMPTY_FORM = {
   port: '5000',
   device_path: '',
   host_mode: 'client' as 'client' | 'server',
+  framing: 'mllp' as 'mllp' | 'raw',
+  instrument_identifier: '',
+  analyzer_type: '',
+  worklist_flow: 'lims_push' as 'lims_push' | 'analyzer_initiated',
+  baud_rate: '9600',
+  data_bits: '8',
+  stop_bits: '1',
+  parity: 'none' as 'none' | 'even' | 'odd',
   status: 'active' as 'active' | 'inactive',
 };
 
@@ -109,6 +117,14 @@ export default function AnalyzerConnectionsManager({ labId }: { labId: string })
       port: conn.config?.port?.toString() ?? '5000',
       device_path: conn.config?.device ?? '',
       host_mode: conn.host_mode ?? 'client',
+      framing: (String(conn.config?.framing ?? 'mllp').toLowerCase() === 'raw' ? 'raw' : 'mllp') as 'mllp' | 'raw',
+      instrument_identifier: conn.config?.instrument_identifier ?? '',
+      analyzer_type: conn.config?.type ?? '',
+      worklist_flow: (conn.config?.worklist_flow ?? 'lims_push') as 'lims_push' | 'analyzer_initiated',
+      baud_rate: conn.config?.baud_rate?.toString() ?? conn.config?.baudRate?.toString() ?? '9600',
+      data_bits: conn.config?.data_bits?.toString() ?? conn.config?.dataBits?.toString() ?? '8',
+      stop_bits: conn.config?.stop_bits?.toString() ?? conn.config?.stopBits?.toString() ?? '1',
+      parity: (conn.config?.parity ?? 'none') as 'none' | 'even' | 'odd',
       status: conn.status ?? 'active',
     });
     setEditingId(conn.id);
@@ -123,18 +139,37 @@ export default function AnalyzerConnectionsManager({ labId }: { labId: string })
   }
 
   function buildConfig() {
+    const common = {
+      framing: form.framing,
+      instrument_identifier: form.instrument_identifier.trim() || undefined,
+      type: form.analyzer_type.trim() || undefined,
+      worklist_flow: form.worklist_flow,
+      mode: form.connection_type === 'tcp'
+        ? (form.host_mode === 'server' ? 'tcp_server' : 'tcp_client')
+        : form.connection_type === 'serial'
+          ? 'serial'
+          : 'file',
+    };
+
     if (form.connection_type === 'tcp') {
-      return { host: form.host.trim(), port: parseInt(form.port, 10) || 5000 };
+      return { ...common, host: form.host.trim(), port: parseInt(form.port, 10) || 5000 };
     }
     if (form.connection_type === 'serial') {
-      return { device: form.device_path.trim() };
+      return {
+        ...common,
+        device: form.device_path.trim(),
+        baud_rate: parseInt(form.baud_rate, 10) || 9600,
+        data_bits: parseInt(form.data_bits, 10) || 8,
+        stop_bits: parseInt(form.stop_bits, 10) || 1,
+        parity: form.parity,
+      };
     }
-    return {};
+    return common;
   }
 
   async function handleSave() {
     if (!form.name.trim()) { setError('Name is required.'); return; }
-    if (form.connection_type === 'tcp' && !form.host.trim()) { setError('Host / IP address is required for TCP.'); return; }
+    if (form.connection_type === 'tcp' && form.host_mode === 'client' && !form.host.trim()) { setError('Analyzer IP / Hostname is required for TCP client mode.'); return; }
     setSaving(true);
     setError(null);
 
@@ -286,10 +321,10 @@ export default function AnalyzerConnectionsManager({ labId }: { labId: string })
             {form.connection_type === 'tcp' && (
               <>
                 <div>
-                  <label className="block text-xs font-medium text-gray-600 mb-1">Analyzer IP / Hostname *</label>
+                  <label className="block text-xs font-medium text-gray-600 mb-1">Analyzer IP / Hostname{form.host_mode === 'client' ? ' *' : ''}</label>
                   <input
                     type="text"
-                    placeholder="e.g. 192.168.1.100"
+                    placeholder={form.host_mode === 'client' ? 'e.g. 192.168.1.100' : 'optional, e.g. bridge bind IP'}
                     value={form.host}
                     onChange={e => setForm(f => ({ ...f, host: e.target.value }))}
                     className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
@@ -308,18 +343,59 @@ export default function AnalyzerConnectionsManager({ labId }: { labId: string })
               </>
             )}
 
-            {/* Serial field */}
+            {/* Serial fields */}
             {form.connection_type === 'serial' && (
-              <div className="col-span-2">
-                <label className="block text-xs font-medium text-gray-600 mb-1">Device Path</label>
-                <input
-                  type="text"
-                  placeholder="e.g. COM3 or /dev/ttyUSB0"
-                  value={form.device_path}
-                  onChange={e => setForm(f => ({ ...f, device_path: e.target.value }))}
-                  className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-                />
-              </div>
+              <>
+                <div>
+                  <label className="block text-xs font-medium text-gray-600 mb-1">Device Path</label>
+                  <input
+                    type="text"
+                    placeholder="e.g. COM3 or /dev/ttyUSB0"
+                    value={form.device_path}
+                    onChange={e => setForm(f => ({ ...f, device_path: e.target.value }))}
+                    className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-gray-600 mb-1">Baud Rate</label>
+                  <input
+                    type="number"
+                    value={form.baud_rate}
+                    onChange={e => setForm(f => ({ ...f, baud_rate: e.target.value }))}
+                    className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-gray-600 mb-1">Data Bits</label>
+                  <input
+                    type="number"
+                    value={form.data_bits}
+                    onChange={e => setForm(f => ({ ...f, data_bits: e.target.value }))}
+                    className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-gray-600 mb-1">Parity</label>
+                  <select
+                    value={form.parity}
+                    onChange={e => setForm(f => ({ ...f, parity: e.target.value as any }))}
+                    className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  >
+                    <option value="none">None</option>
+                    <option value="even">Even</option>
+                    <option value="odd">Odd</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-gray-600 mb-1">Stop Bits</label>
+                  <input
+                    type="number"
+                    value={form.stop_bits}
+                    onChange={e => setForm(f => ({ ...f, stop_bits: e.target.value }))}
+                    className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  />
+                </div>
+              </>
             )}
 
             {/* Host mode */}
@@ -346,6 +422,52 @@ export default function AnalyzerConnectionsManager({ labId }: { labId: string })
                 <option value="active">Active</option>
                 <option value="inactive">Inactive</option>
               </select>
+            </div>
+
+            <div>
+              <label className="block text-xs font-medium text-gray-600 mb-1">Protocol Framing</label>
+              <select
+                value={form.framing}
+                onChange={e => setForm(f => ({ ...f, framing: e.target.value as any }))}
+                className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+              >
+                <option value="mllp">MLLP</option>
+                <option value="raw">Raw</option>
+              </select>
+            </div>
+
+            <div>
+              <label className="block text-xs font-medium text-gray-600 mb-1">Workflow</label>
+              <select
+                value={form.worklist_flow}
+                onChange={e => setForm(f => ({ ...f, worklist_flow: e.target.value as any }))}
+                className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+              >
+                <option value="lims_push">LIMS pushes order</option>
+                <option value="analyzer_initiated">Analyzer queries worklist</option>
+              </select>
+            </div>
+
+            <div>
+              <label className="block text-xs font-medium text-gray-600 mb-1">Instrument Identifier</label>
+              <input
+                type="text"
+                placeholder="e.g. BM850^HL7MW"
+                value={form.instrument_identifier}
+                onChange={e => setForm(f => ({ ...f, instrument_identifier: e.target.value }))}
+                className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+              />
+            </div>
+
+            <div>
+              <label className="block text-xs font-medium text-gray-600 mb-1">Analyzer Type</label>
+              <input
+                type="text"
+                placeholder="e.g. hematology"
+                value={form.analyzer_type}
+                onChange={e => setForm(f => ({ ...f, analyzer_type: e.target.value }))}
+                className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+              />
             </div>
           </div>
 

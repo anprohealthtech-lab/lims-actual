@@ -210,39 +210,28 @@ export async function fetchFrontBackPages(
 }
 
 /**
- * Helper to wrap full page image in HTML
+ * Helper to wrap full page image in HTML content (NOT a full document)
+ * This generates just the content div that can be injected into an existing HTML document
  */
 function wrapImageInFullPageHTML(url: string): string {
-    return `
-<!DOCTYPE html>
-<html>
-<head>
-  <style>
-    body, html {
-      margin: 0;
-      padding: 0;
-      width: 100%;
-      height: 100%;
-      overflow: hidden;
-    }
-    .full-page-bg {
-      position: absolute;
-      top: 0;
-      left: 0;
-      width: 100%;
-      height: 100%;
-      background-image: url('${url}');
-      background-size: cover;
-      background-position: center;
-      background-repeat: no-repeat;
-      z-index: -1;
-    }
-  </style>
-</head>
-<body>
-  <div class="full-page-bg"></div>
-</body>
-</html>`;
+  return `
+<style>
+  .full-page-branding {
+    width: 210mm;
+    height: 297mm;
+    margin: 0;
+    padding: 0;
+    position: relative;
+    overflow: hidden;
+    background-image: url('${url}');
+    background-size: 210mm 297mm;
+    background-position: top left;
+    background-repeat: no-repeat;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+</style>
+<div class="full-page-branding"></div>`;
 }
 
 /**

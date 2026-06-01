@@ -9,6 +9,7 @@ import HeaderFooterUpload from '../Settings/HeaderFooterUpload';
 
 interface Account {
     id: string;
+    lab_id?: string;
     name: string;
     code: string | null;
     type: string | null; // 'hospital', 'corporate', 'insurer'
@@ -72,6 +73,22 @@ const initialPortalData = {
     portalPassword: '',
 };
 
+const buildAccountSavePayload = (data: Partial<Account>) => ({
+    name: (data.name || '').trim(),
+    code: data.code || null,
+    type: data.type || 'hospital',
+    contact_person: data.contact_person || null,
+    billing_phone: data.billing_phone || null,
+    billing_email: data.billing_email || null,
+    address_line1: data.address_line1 || null,
+    default_discount_percent: Number(data.default_discount_percent || 0),
+    credit_limit: Number(data.credit_limit || 0),
+    payment_terms: Number(data.payment_terms || 0),
+    is_active: data.is_active ?? true,
+    billing_mode: data.billing_mode || 'standard',
+    price_master_id: data.price_master_id || null,
+});
+
 const AccountMaster: React.FC = () => {
     const [accounts, setAccounts] = useState<Account[]>([]);
     const [loading, setLoading] = useState(true);
@@ -81,6 +98,7 @@ const AccountMaster: React.FC = () => {
     const [formData, setFormData] = useState<Partial<Account>>(initialFormData);
     const [portalData, setPortalData] = useState(initialPortalData);
     const [submitting, setSubmitting] = useState(false);
+    const [portalSubmitting, setPortalSubmitting] = useState(false);
     const [error, setError] = useState<string | null>(null);
     const [labId, setLabId] = useState<string | null>(null);
 
@@ -161,8 +179,56 @@ const AccountMaster: React.FC = () => {
     const handleEdit = (account: Account) => {
         setEditingAccount(account);
         setFormData(account);
+        setPortalData({
+            ...initialPortalData,
+            portalEmail: account.billing_email || '',
+        });
         setShowForm(true);
         setError(null);
+    };
+
+    const handleCreatePortalUser = async () => {
+        if (!editingAccount) return;
+
+        setPortalSubmitting(true);
+        setError(null);
+
+        try {
+            if (!portalData.portalEmail) {
+                setError('Portal email is required when creating portal access.');
+                return;
+            }
+            if (!portalData.portalPassword || portalData.portalPassword.length < 8) {
+                setError('Portal password must be at least 8 characters.');
+                return;
+            }
+
+            const activeLabId = labId || editingAccount.lab_id;
+            if (!activeLabId) {
+                setError('Lab ID missing. Cannot enable portal access.');
+                return;
+            }
+
+            const result = await createB2BAccountUser({
+                email: portalData.portalEmail,
+                password: portalData.portalPassword,
+                accountId: editingAccount.id,
+                accountName: formData.name || editingAccount.name,
+                labId: activeLabId,
+            });
+
+            if (result.success) {
+                setPortalData(prev => ({ ...prev, portalPassword: '' }));
+                alert(`B2B Portal Access Enabled\nLogin URL: ${window.location.origin}/b2b\nEmail: ${portalData.portalEmail}`);
+            } else {
+                alert(`Portal access failed: ${result.error}\n\nPlease contact support to enable portal access.`);
+            }
+        } catch (err: any) {
+            console.error('Error creating portal user:', err);
+            setError(err.message || 'Failed to create portal access.');
+        } finally {
+            setPortalSubmitting(false);
+        }
     };
 
     const handleSubmit = async (e: React.FormEvent) => {
@@ -171,8 +237,23 @@ const AccountMaster: React.FC = () => {
         setError(null);
 
         try {
+            if (!editingAccount && portalData.enablePortal) {
+                if (!portalData.portalEmail) {
+                    setError('Portal email is required when enabling portal access.');
+                    setSubmitting(false);
+                    return;
+                }
+                if (!portalData.portalPassword || portalData.portalPassword.length < 8) {
+                    setError('Portal password must be at least 8 characters.');
+                    setSubmitting(false);
+                    return;
+                }
+            }
+
+            const accountPayload = buildAccountSavePayload(formData);
+
             if (editingAccount) {
-                const { data, error } = await supabase.from('accounts').update(formData).eq('id', editingAccount.id).select();
+                const { data, error } = await supabase.from('accounts').update(accountPayload).eq('id', editingAccount.id).select();
                 if (error) throw error;
                 setAccounts(prev => prev.map(a => a.id === editingAccount.id ? { ...a, ...data[0] } : a));
             } else {
@@ -181,21 +262,7 @@ const AccountMaster: React.FC = () => {
                     return;
                 }
 
-                // Validate portal access fields if enabled
-                if (portalData.enablePortal) {
-                    if (!portalData.portalEmail) {
-                        setError('Portal email is required when enabling portal access.');
-                        setSubmitting(false);
-                        return;
-                    }
-                    if (!portalData.portalPassword || portalData.portalPassword.length < 8) {
-                        setError('Portal password must be at least 8 characters.');
-                        setSubmitting(false);
-                        return;
-                    }
-                }
-
-                const newAccount = { ...formData, lab_id: labId };
+                const newAccount = { ...accountPayload, lab_id: labId };
                 const { data, error } = await supabase.from('accounts').insert([newAccount]).select();
                 if (error) throw error;
 
@@ -620,9 +687,8 @@ const AccountMaster: React.FC = () => {
                                         </div>
                                     </div>
 
-                                    {/* B2B Portal Access Section - Only for new accounts */}
-                                    {!editingAccount && (
-                                        <div className="col-span-2 border-t pt-4 mt-2">
+                                    <div className="col-span-2 border-t pt-4 mt-2">
+                                        {!editingAccount ? (
                                             <div className="flex items-center mb-4">
                                                 <input
                                                     type="checkbox"
@@ -636,47 +702,64 @@ const AccountMaster: React.FC = () => {
                                                     Enable B2B Portal Access
                                                 </label>
                                             </div>
-                                            <p className="text-xs text-gray-500 mb-4">
-                                                Allow this account to access the B2B portal to view their orders and download reports.
-                                            </p>
+                                        ) : (
+                                            <div className="flex items-center mb-4">
+                                                <Lock className="w-4 h-4 mr-2 text-blue-600" />
+                                                <span className="text-sm font-medium text-gray-700">B2B Portal Access</span>
+                                            </div>
+                                        )}
+                                        <p className="text-xs text-gray-500 mb-4">
+                                            Allow this account to access the B2B portal to view their orders and download reports.
+                                        </p>
 
-                                            {portalData.enablePortal && (
-                                                <div className="grid grid-cols-2 gap-4 bg-blue-50 p-4 rounded-lg">
-                                                    <div className="col-span-2">
-                                                        <label className="block text-sm font-medium mb-1 text-gray-700">Portal Login Email *</label>
-                                                        <input
-                                                            type="email"
-                                                            required={portalData.enablePortal}
-                                                            value={portalData.portalEmail}
-                                                            onChange={(e) => setPortalData({ ...portalData, portalEmail: e.target.value })}
-                                                            className="w-full border rounded p-2"
-                                                            placeholder="portal@hospital.com"
-                                                        />
-                                                        <p className="text-xs text-gray-500 mt-1">This email will be used to login to the B2B portal</p>
-                                                    </div>
-                                                    <div className="col-span-2">
-                                                        <label className="block text-sm font-medium mb-1 text-gray-700">Portal Password *</label>
-                                                        <input
-                                                            type="password"
-                                                            required={portalData.enablePortal}
-                                                            value={portalData.portalPassword}
-                                                            onChange={(e) => setPortalData({ ...portalData, portalPassword: e.target.value })}
-                                                            className="w-full border rounded p-2"
-                                                            placeholder="Minimum 8 characters"
-                                                            minLength={8}
-                                                        />
-                                                        <p className="text-xs text-gray-500 mt-1">Minimum 8 characters. Share this securely with the account.</p>
-                                                    </div>
-                                                    <div className="col-span-2 bg-blue-100 p-3 rounded">
-                                                        <p className="text-xs text-blue-800">
-                                                            <strong>Portal URL:</strong> {window.location.origin}/b2b<br />
-                                                            The account will be able to view their orders, track status, and download reports.
-                                                        </p>
-                                                    </div>
+                                        {(editingAccount || portalData.enablePortal) && (
+                                            <div className="grid grid-cols-2 gap-4 bg-blue-50 p-4 rounded-lg">
+                                                <div className="col-span-2">
+                                                    <label className="block text-sm font-medium mb-1 text-gray-700">Portal Login Email *</label>
+                                                    <input
+                                                        type="email"
+                                                        required={!editingAccount && portalData.enablePortal}
+                                                        value={portalData.portalEmail}
+                                                        onChange={(e) => setPortalData({ ...portalData, portalEmail: e.target.value })}
+                                                        className="w-full border rounded p-2"
+                                                        placeholder="portal@hospital.com"
+                                                    />
+                                                    <p className="text-xs text-gray-500 mt-1">This email will be used to login to the B2B portal</p>
                                                 </div>
-                                            )}
-                                        </div>
-                                    )}
+                                                <div className="col-span-2">
+                                                    <label className="block text-sm font-medium mb-1 text-gray-700">Portal Password *</label>
+                                                    <input
+                                                        type="password"
+                                                        required={!editingAccount && portalData.enablePortal}
+                                                        value={portalData.portalPassword}
+                                                        onChange={(e) => setPortalData({ ...portalData, portalPassword: e.target.value })}
+                                                        className="w-full border rounded p-2"
+                                                        placeholder="Minimum 8 characters"
+                                                        minLength={8}
+                                                    />
+                                                    <p className="text-xs text-gray-500 mt-1">Minimum 8 characters. Share this securely with the account.</p>
+                                                </div>
+                                                <div className="col-span-2 bg-blue-100 p-3 rounded">
+                                                    <p className="text-xs text-blue-800">
+                                                        <strong>Portal URL:</strong> {window.location.origin}/b2b<br />
+                                                        The account will be able to view their orders, track status, and download reports.
+                                                    </p>
+                                                </div>
+                                                {editingAccount && (
+                                                    <div className="col-span-2 flex justify-end">
+                                                        <button
+                                                            type="button"
+                                                            onClick={handleCreatePortalUser}
+                                                            disabled={portalSubmitting}
+                                                            className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-50"
+                                                        >
+                                                            {portalSubmitting ? 'Creating...' : 'Create Portal User'}
+                                                        </button>
+                                                    </div>
+                                                )}
+                                            </div>
+                                        )}
+                                    </div>
                                 </div>
 
                                 {/* Report Customization - Only for existing accounts */}

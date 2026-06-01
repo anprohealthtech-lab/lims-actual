@@ -21,7 +21,6 @@ import {
   Loader2,
   CheckCircle2,
   AlertCircle,
-  FileDown,
   ArrowRight,
   Info
 } from 'lucide-react';
@@ -58,20 +57,32 @@ interface CascadeLevel {
 interface SectionConfig {
   mode?: 'flat' | 'cascading' | 'matrix';
   cascade_levels?: CascadeLevel[];
+  matrix?: MatrixConfig;
+}
+
+interface MatrixConfig {
+  rows?: string[];
+  columns?: string[];
+  cellOptions?: string[];
 }
 
 interface ColumnInfo {
   id: string; // analyte_id or section_id
+  lab_analyte_id?: string | null;
   name: string;
-  type: 'analyte' | 'section' | 'cascade_field';
+  type: 'analyte' | 'section' | 'cascade_field' | 'matrix_cell' | 'matrix_note';
   unit?: string;
   reference_range?: string;
+  is_calculated?: boolean;
   section_type?: string;
+  section_config?: SectionConfig | null;
   // For cascade fields
   section_id?: string; // parent section ID
   cascade_level_id?: string;
   cascade_options?: string[]; // allowed values
   multi_select?: boolean;
+  matrix_row?: string;
+  matrix_column?: string;
 }
 
 interface ParsedRow {
@@ -92,6 +103,66 @@ interface SaveResult {
   success: boolean;
   saved_count: number;
   error?: string;
+}
+
+const MATRIX_CELL_PREFIX = 'matrix:';
+const MATRIX_COL_LABEL_PREFIX = 'col_label:';
+const MATRIX_COL_ORDER_KEY = 'matrix_col_order';
+
+function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function matrixCellKey(row: string, column: string): string {
+  return `${MATRIX_CELL_PREFIX}${row}::${column}`;
+}
+
+function matrixColLabelKey(column: string): string {
+  return `${MATRIX_COL_LABEL_PREFIX}${column}`;
+}
+
+function buildMatrixHtml(config: MatrixConfig | undefined, selections: Record<string, unknown> | undefined, customText: string): string {
+  const rows = (config?.rows || []).map(row => row.trim()).filter(Boolean);
+  const columns = (config?.columns || []).map(column => column.trim()).filter(Boolean);
+  if (rows.length === 0 || columns.length === 0) return customText.trim();
+
+  const cellOptions = config?.cellOptions || [];
+  const cellOptionColor = (value: string) => {
+    if (!cellOptions.length) return '';
+    const idx = cellOptions.findIndex(option => option.trim().toUpperCase() === value.trim().toUpperCase());
+    if (idx === -1) return '';
+    if (cellOptions.length === 1 || idx === 0) return 'background:#d1fae5;color:#065f46;font-weight:600;';
+    if (idx === cellOptions.length - 1) return 'background:#fee2e2;color:#991b1b;font-weight:600;';
+    return 'background:#fff3cd;color:#92400e;font-weight:600;';
+  };
+
+  const headerHtml = columns
+    .map(column => `<th style="border:1px solid #9ca3af;padding:8px;text-align:left;background:#f8fafc;">${escapeHtml(column)}</th>`)
+    .join('');
+
+  const bodyHtml = rows
+    .map(row => {
+      const cells = columns
+        .map(column => {
+          const raw = selections?.[matrixCellKey(row, column)];
+          const value = Array.isArray(raw) ? String(raw[0] || '') : typeof raw === 'string' ? raw : '';
+          return `<td style="border:1px solid #9ca3af;padding:8px;min-width:80px;text-align:center;${value ? cellOptionColor(value) : ''}">${escapeHtml(value)}</td>`;
+        })
+        .join('');
+      return `<tr><th style="border:1px solid #9ca3af;padding:8px;text-align:left;background:#f8fafc;">${escapeHtml(row)}</th>${cells}</tr>`;
+    })
+    .join('');
+
+  const notesHtml = customText.trim()
+    ? `<div style="margin-top:12px;white-space:pre-wrap;">${escapeHtml(customText.trim()).replace(/\n/g, '<br/>')}</div>`
+    : '';
+
+  return `<table style="width:100%;border-collapse:collapse;font-size:13px;"><thead><tr><th style="border:1px solid #9ca3af;padding:8px;background:#f8fafc;"></th>${headerHtml}</tr></thead><tbody>${bodyHtml}</tbody></table>${notesHtml}`;
 }
 
 interface BulkResultExcelModalProps {
@@ -136,26 +207,26 @@ const BulkResultExcelModal: React.FC<BulkResultExcelModalProps> = ({
           id, order_display, patient_name, patient_id,
           patients(id, age, gender),
           samples(id, barcode),
-          order_test_groups(
-            id, test_group_id,
-            test_groups(
-              id, name, is_section_only,
-              test_group_analytes(
-                analyte_id, lab_analyte_id, sort_order,
-                analytes(id, name, unit, reference_range),
-                lab_analytes(id, name, unit, reference_range)
-              )
-            )
-          ),
-          order_tests(
-            id, test_group_id, is_canceled, outsourced_lab_id,
-            test_groups(
-              id, name, is_section_only,
-              test_group_analytes(
-                analyte_id, lab_analyte_id, sort_order,
-                analytes(id, name, unit, reference_range),
-                lab_analytes(id, name, unit, reference_range)
-              )
+	          order_test_groups(
+	            id, test_group_id,
+	            test_groups(
+	              id, name, is_section_only,
+	              test_group_analytes(
+	                analyte_id, lab_analyte_id, sort_order,
+	                analytes(id, name, unit, reference_range, is_calculated),
+	                lab_analytes(id, name, unit, reference_range, is_calculated)
+	              )
+	            )
+	          ),
+	          order_tests(
+	            id, test_group_id, is_canceled, outsourced_lab_id,
+	            test_groups(
+	              id, name, is_section_only,
+	              test_group_analytes(
+	                analyte_id, lab_analyte_id, sort_order,
+	                analytes(id, name, unit, reference_range, is_calculated),
+	                lab_analytes(id, name, unit, reference_range, is_calculated)
+	              )
             )
           )
         `)
@@ -270,10 +341,12 @@ const BulkResultExcelModal: React.FC<BulkResultExcelModalProps> = ({
 
         columns.push({
           id: a.id,
+          lab_analyte_id: la?.id || tga.lab_analyte_id || null,
           name: la?.name || a.name,
           type: 'analyte',
           unit: la?.unit || a.unit || '',
-          reference_range: la?.reference_range || a.reference_range || ''
+          reference_range: la?.reference_range || a.reference_range || '',
+          is_calculated: la?.is_calculated ?? a.is_calculated ?? false
         });
       }
     }
@@ -298,28 +371,54 @@ const BulkResultExcelModal: React.FC<BulkResultExcelModalProps> = ({
         } catch { /* ignore */ }
       }
 
-      // If cascading mode with levels, expand each level to a column
-      if (config?.mode === 'cascading' && config.cascade_levels?.length) {
-        for (const level of config.cascade_levels) {
-          const optionValues = level.options?.map(o => o.value) || [];
+	      // If cascading mode with levels, expand each level to a column
+	      if (config?.mode === 'cascading' && config.cascade_levels?.length) {
+	        for (const level of config.cascade_levels) {
+	          const optionValues = level.options?.map(o => o.value) || [];
           columns.push({
             id: `${sec.id}:${level.id}`,
             name: level.label || level.id,
             type: 'cascade_field',
-            section_id: sec.id,
-            cascade_level_id: level.id,
-            cascade_options: optionValues,
-            multi_select: !!level.multi_select,
-          });
-        }
-      } else {
+	            section_id: sec.id,
+	            cascade_level_id: level.id,
+	            cascade_options: optionValues,
+	            multi_select: !!level.multi_select,
+	            section_config: config,
+	          });
+	        }
+	      } else if (config?.mode === 'matrix' && config.matrix?.rows?.length && config.matrix?.columns?.length) {
+	        const rows = config.matrix.rows.map(row => row.trim()).filter(Boolean);
+	        const matrixColumns = config.matrix.columns.map(column => column.trim()).filter(Boolean);
+	        for (const row of rows) {
+	          for (const matrixColumn of matrixColumns) {
+	            columns.push({
+	              id: `${sec.id}:${matrixCellKey(row, matrixColumn)}`,
+	              name: `${sec.section_name} - ${row} - ${matrixColumn}`,
+	              type: 'matrix_cell',
+	              section_id: sec.id,
+	              matrix_row: row,
+	              matrix_column: matrixColumn,
+	              cascade_options: config.matrix.cellOptions || [],
+	              section_config: config,
+	            });
+	          }
+	        }
+	        columns.push({
+	          id: `${sec.id}:matrix_notes`,
+	          name: `${sec.section_name} - Notes`,
+	          type: 'matrix_note',
+	          section_id: sec.id,
+	          section_config: config,
+	        });
+	      } else {
         // Flat or unknown mode - single column for the section
         columns.push({
           id: sec.id,
           name: sec.section_name,
-          type: 'section',
-          section_type: sec.section_type
-        });
+	          type: 'section',
+	          section_type: sec.section_type,
+	          section_config: config
+	        });
       }
     }
 
@@ -331,6 +430,28 @@ const BulkResultExcelModal: React.FC<BulkResultExcelModalProps> = ({
   }, [loadData]);
 
   // ─── Generate and download Excel template ──────────────────────────────────
+
+  function compareSampleIds(a: OrderInfo, b: OrderInfo): number {
+    const aSample = (a.sample_id || '').trim();
+    const bSample = (b.sample_id || '').trim();
+    const aNumber = Number(aSample);
+    const bNumber = Number(bSample);
+    const aIsNumeric = aSample !== '' && Number.isFinite(aNumber);
+    const bIsNumeric = bSample !== '' && Number.isFinite(bNumber);
+
+    if (aIsNumeric && bIsNumeric && aNumber !== bNumber) {
+      return aNumber - bNumber;
+    }
+
+    if (aIsNumeric !== bIsNumeric) {
+      return aIsNumeric ? -1 : 1;
+    }
+
+    const sampleCompare = aSample.localeCompare(bSample, undefined, { numeric: true, sensitivity: 'base' });
+    if (sampleCompare !== 0) return sampleCompare;
+
+    return (a.order_display || a.id).localeCompare(b.order_display || b.id, undefined, { numeric: true, sensitivity: 'base' });
+  }
 
   const handleDownloadTemplate = useCallback(() => {
     if (testGroups.length === 0) return;
@@ -366,7 +487,7 @@ const BulkResultExcelModal: React.FC<BulkResultExcelModalProps> = ({
 
       // Build data rows
       const dataRows: string[][] = [];
-      for (const order of group.orders) {
+      for (const order of [...group.orders].sort(compareSampleIds)) {
         const row: string[] = [
           order.order_display || order.id.slice(-6),
           order.patient_name,
@@ -533,6 +654,19 @@ const BulkResultExcelModal: React.FC<BulkResultExcelModalProps> = ({
     return partialMatch?.id || null;
   }
 
+  // Normalize Excel headers so unit variants like m2/m² and copied spaces still match.
+  function normalizeHeader(value: string): string {
+    return value
+      .toLowerCase()
+      .replace(/\u00b2/g, '2')
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+
+  function stripTrailingUnit(value: string): string {
+    return normalizeHeader(value).replace(/\s*\([^)]*\)\s*$/, '').trim();
+  }
+
   // Find column value from row with flexible header matching
   function findColumnValue(row: Record<string, any>, colName: string, unit?: string, isMultiSelect?: boolean): any {
     // Try exact match
@@ -549,10 +683,15 @@ const BulkResultExcelModal: React.FC<BulkResultExcelModalProps> = ({
     }
 
     // Try case-insensitive match
-    const lowerName = colName.toLowerCase();
+    const lowerName = normalizeHeader(colName);
+    const lowerNameWithoutUnit = stripTrailingUnit(colName);
     for (const [key, value] of Object.entries(row)) {
-      const lowerKey = key.toLowerCase();
+      const lowerKey = normalizeHeader(key);
+      const lowerKeyWithoutUnit = stripTrailingUnit(key);
       if (lowerKey === lowerName ||
+          lowerKeyWithoutUnit === lowerName ||
+          lowerKey === lowerNameWithoutUnit ||
+          lowerKeyWithoutUnit === lowerNameWithoutUnit ||
           lowerKey === `${lowerName} (multi)` ||
           lowerKey.startsWith(lowerName) ||
           lowerKey.includes(lowerName)) {
@@ -560,10 +699,36 @@ const BulkResultExcelModal: React.FC<BulkResultExcelModalProps> = ({
       }
     }
 
+	    return null;
+	  }
+
+  function getMatrixConfigForSection(group: TestGroupInfo, sectionId: string): MatrixConfig | undefined {
+    return group.columns.find(col => col.section_id === sectionId)?.section_config?.matrix;
+  }
+
+  function findCascadeLevel(levels: CascadeLevel[] | undefined, levelId: string): CascadeLevel | null {
+    for (const level of levels || []) {
+      if (level.id === levelId) return level;
+      for (const option of level.options || []) {
+        const nested = findCascadeLevel((option as any).sub_levels || [], levelId);
+        if (nested) return nested;
+      }
+    }
     return null;
   }
 
-  // ─── Save results to database ──────────────────────────────────────────────
+  function getCascadeOptionId(group: TestGroupInfo, levelId: string, value: string): string {
+    const sectionConfig = group.columns.find(col => col.cascade_level_id === levelId)?.section_config;
+    const level = findCascadeLevel(sectionConfig?.cascade_levels, levelId);
+    const normalized = value.trim().toLowerCase();
+    const option = level?.options?.find(opt =>
+      opt.id.toLowerCase() === normalized ||
+      opt.value.trim().toLowerCase() === normalized
+    );
+    return option?.id || value;
+  }
+
+  // ─── Submit results to database ────────────────────────────────────────────
 
   const handleSaveResults = useCallback(async () => {
     if (parsedSheets.length === 0) return;
@@ -644,8 +809,8 @@ const BulkResultExcelModal: React.FC<BulkResultExcelModalProps> = ({
       }
 
     } catch (err: any) {
-      console.error('Save failed:', err);
-      setError(err.message || 'Failed to save results');
+      console.error('Submit failed:', err);
+      setError(err.message || 'Failed to submit results');
       setStep('ready');
     }
   }, [parsedSheets, testGroups, onSaved]);
@@ -690,6 +855,7 @@ const BulkResultExcelModal: React.FC<BulkResultExcelModalProps> = ({
           test_group_id: group.id,
           lab_id: userLabId,
           status: 'pending_verification',
+          verification_status: 'pending_verification',
           entered_by: currentUser?.email || 'Bulk Excel Import',
           entered_date: new Date().toISOString().split('T')[0],
         })
@@ -698,6 +864,19 @@ const BulkResultExcelModal: React.FC<BulkResultExcelModalProps> = ({
 
       if (createError) throw createError;
       resultId = newResult.id;
+    } else {
+      const { error: updateError } = await supabase
+        .from('results')
+        .update({
+          status: 'pending_verification',
+          verification_status: 'pending_verification',
+          entered_by: currentUser?.email || 'Bulk Excel Import',
+          entered_date: new Date().toISOString().split('T')[0],
+          lab_id: userLabId,
+        })
+        .eq('id', resultId);
+
+      if (updateError) throw updateError;
     }
 
     // Prepare result values
@@ -718,6 +897,7 @@ const BulkResultExcelModal: React.FC<BulkResultExcelModalProps> = ({
       resultValues.push({
         result_id: resultId,
         analyte_id: col.id,
+        lab_analyte_id: col.lab_analyte_id || null,
         analyte_name: col.name,
         parameter: col.name,
         value: value,
@@ -729,6 +909,8 @@ const BulkResultExcelModal: React.FC<BulkResultExcelModalProps> = ({
         order_id: orderId,
         test_group_id: group.id,
         lab_id: userLabId,
+        is_auto_calculated: !!col.is_calculated,
+        calculated_at: col.is_calculated ? new Date().toISOString() : null,
       });
     }
 
@@ -787,6 +969,7 @@ const BulkResultExcelModal: React.FC<BulkResultExcelModalProps> = ({
           test_group_id: group.id,
           lab_id: userLabId,
           status: 'pending_verification',
+          verification_status: 'pending_verification',
           entered_by: 'Bulk Excel Import',
           entered_date: new Date().toISOString().split('T')[0],
         })
@@ -795,24 +978,62 @@ const BulkResultExcelModal: React.FC<BulkResultExcelModalProps> = ({
 
       if (createError) throw createError;
       resultId = newResult.id;
+    } else {
+      const { error: updateError } = await supabase
+        .from('results')
+        .update({
+          status: 'pending_verification',
+          verification_status: 'pending_verification',
+          entered_by: 'Bulk Excel Import',
+          entered_date: new Date().toISOString().split('T')[0],
+          lab_id: userLabId,
+        })
+        .eq('id', resultId);
+
+      if (updateError) throw updateError;
     }
 
     // Group columns by section_id for cascade fields
-    const sectionGroups = new Map<string, { sectionId: string; cascadeValues: Map<string, string> }>();
-    const flatSections: ColumnInfo[] = [];
+	    const sectionGroups = new Map<string, { sectionId: string; cascadeValues: Map<string, string> }>();
+	    const matrixGroups = new Map<string, { sectionId: string; cellValues: Map<string, string>; note: string; config?: MatrixConfig }>();
+	    const flatSections: ColumnInfo[] = [];
 
-    for (const col of group.columns) {
-      if (col.type === 'cascade_field' && col.section_id && col.cascade_level_id) {
+	    for (const col of group.columns) {
+	      if (col.type === 'cascade_field' && col.section_id && col.cascade_level_id) {
         const content = values[col.name];
         if (!content) continue;
 
         if (!sectionGroups.has(col.section_id)) {
           sectionGroups.set(col.section_id, { sectionId: col.section_id, cascadeValues: new Map() });
-        }
-        sectionGroups.get(col.section_id)!.cascadeValues.set(col.cascade_level_id, content);
-      } else if (col.type === 'section') {
-        flatSections.push(col);
-      }
+	        }
+	        sectionGroups.get(col.section_id)!.cascadeValues.set(col.cascade_level_id, content);
+	      } else if (col.type === 'matrix_cell' && col.section_id && col.matrix_row && col.matrix_column) {
+	        const content = values[col.name];
+	        if (!content) continue;
+	        if (!matrixGroups.has(col.section_id)) {
+	          matrixGroups.set(col.section_id, {
+	            sectionId: col.section_id,
+	            cellValues: new Map(),
+	            note: '',
+	            config: getMatrixConfigForSection(group, col.section_id),
+	          });
+	        }
+	        matrixGroups.get(col.section_id)!.cellValues.set(matrixCellKey(col.matrix_row, col.matrix_column), content);
+	      } else if (col.type === 'matrix_note' && col.section_id) {
+	        const content = values[col.name];
+	        if (!content) continue;
+	        if (!matrixGroups.has(col.section_id)) {
+	          matrixGroups.set(col.section_id, {
+	            sectionId: col.section_id,
+	            cellValues: new Map(),
+	            note: '',
+	            config: getMatrixConfigForSection(group, col.section_id),
+	          });
+	        }
+	        matrixGroups.get(col.section_id)!.note = content;
+	      } else if (col.type === 'section') {
+	        flatSections.push(col);
+	      }
     }
 
     let savedCount = 0;
@@ -821,21 +1042,20 @@ const BulkResultExcelModal: React.FC<BulkResultExcelModalProps> = ({
     for (const [sectionId, { cascadeValues }] of sectionGroups) {
       if (cascadeValues.size === 0) continue;
 
-      // Build cascading_selections in the format expected by SectionEditor
-      // Format: { level_id: [option_id], ... } - we use the value text as option_id for simplicity
-      const cascadingSelections: Record<string, string[]> = {};
-      const contentParts: string[] = [];
+	      // Build cascading_selections in the format expected by SectionEditor.
+	      const cascadingSelections: Record<string, string[]> = {};
+	      const contentParts: string[] = [];
 
       for (const [levelId, value] of cascadeValues) {
         // Find the column to get the label
         const col = group.columns.find(c => c.cascade_level_id === levelId);
         const label = col?.name || levelId;
 
-        // Handle multi-select (comma-separated values)
-        const valueList = value.split(',').map(v => v.trim()).filter(Boolean);
-        cascadingSelections[levelId] = valueList;
-        contentParts.push(`${label}: ${valueList.join(', ')}`);
-      }
+	        // Handle multi-select (comma-separated values). Convert display values to option IDs.
+	        const valueList = value.split(',').map(v => v.trim()).filter(Boolean);
+	        cascadingSelections[levelId] = valueList.map(item => getCascadeOptionId(group, levelId, item));
+	        contentParts.push(`${label}: ${valueList.join(', ')}`);
+	      }
 
       const finalContent = contentParts.join('\n');
 
@@ -849,8 +1069,38 @@ const BulkResultExcelModal: React.FC<BulkResultExcelModalProps> = ({
         cascading_selections: cascadingSelections,
       }, userId);
 
-      if (!error) savedCount += cascadeValues.size;
-    }
+	      if (!error) savedCount += cascadeValues.size;
+	    }
+
+	    // Save matrix sections
+	    for (const [sectionId, { cellValues, note, config }] of matrixGroups) {
+	      if (cellValues.size === 0 && !note.trim()) continue;
+
+	      const matrixSelections: Record<string, unknown> = {};
+	      const matrixColumns = (config?.columns || []).map(column => column.trim()).filter(Boolean);
+	      if (matrixColumns.length > 0) {
+	        matrixSelections[MATRIX_COL_ORDER_KEY] = matrixColumns;
+	        for (const column of matrixColumns) {
+	          matrixSelections[matrixColLabelKey(column)] = column;
+	        }
+	      }
+	      for (const [key, value] of cellValues) {
+	        matrixSelections[key] = value ? [value] : [];
+	      }
+
+	      const finalContent = buildMatrixHtml(config, matrixSelections, note);
+	      const { error } = await database.resultSectionContent.upsert({
+	        result_id: resultId,
+	        section_id: sectionId,
+	        selected_options: [],
+	        custom_text: note,
+	        final_content: finalContent,
+	        image_urls: [],
+	        cascading_selections: matrixSelections as Record<string, string[]>,
+	      }, userId);
+
+	      if (!error) savedCount += cellValues.size + (note.trim() ? 1 : 0);
+	    }
 
     // Save flat sections
     for (const col of flatSections) {
@@ -1064,7 +1314,7 @@ const BulkResultExcelModal: React.FC<BulkResultExcelModalProps> = ({
           {step === 'saving' && (
             <div className="py-8 text-center">
               <Loader2 className="w-10 h-10 animate-spin text-indigo-600 mx-auto mb-4" />
-              <p className="text-gray-700 font-medium">Saving results...</p>
+                <p className="text-gray-700 font-medium">Submitting results...</p>
               <p className="text-sm text-gray-500 mt-1">
                 {savingProgress.current} / {savingProgress.total} orders processed
               </p>
@@ -1082,7 +1332,7 @@ const BulkResultExcelModal: React.FC<BulkResultExcelModalProps> = ({
             <div className="py-4">
               <div className="text-center mb-6">
                 <CheckCircle2 className="w-12 h-12 text-green-500 mx-auto mb-3" />
-                <h3 className="text-lg font-semibold text-gray-800">Results Saved Successfully</h3>
+                <h3 className="text-lg font-semibold text-gray-800">Results Submitted Successfully</h3>
                 <p className="text-sm text-gray-500 mt-1">
                   {successCount} orders saved, {failedCount > 0 ? `${failedCount} failed` : 'no errors'}
                 </p>
@@ -1105,7 +1355,7 @@ const BulkResultExcelModal: React.FC<BulkResultExcelModalProps> = ({
                         <td className="py-2">
                           {result.success ? (
                             <span className="text-green-600 flex items-center gap-1">
-                              <CheckCircle2 className="w-4 h-4" /> Saved
+                              <CheckCircle2 className="w-4 h-4" /> Submitted
                             </span>
                           ) : (
                             <span className="text-red-600 flex items-center gap-1">
@@ -1145,8 +1395,8 @@ const BulkResultExcelModal: React.FC<BulkResultExcelModalProps> = ({
                   onClick={handleSaveResults}
                   className="flex items-center gap-2 px-5 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 text-sm font-medium"
                 >
-                  <FileDown className="w-4 h-4" />
-                  Save {totalValues} Results
+                  <CheckCircle2 className="w-4 h-4" />
+                  Submit {totalValues} Results
                   <ArrowRight className="w-4 h-4" />
                 </button>
               )}

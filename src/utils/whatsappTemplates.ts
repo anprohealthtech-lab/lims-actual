@@ -34,6 +34,14 @@ export interface TemplateData {
   DueAmount?: string | number;
   PaidAmount?: string | number;
   InvoiceNumber?: string;
+
+  // Loyalty info
+  LoyaltyPointsEarned?: string | number;
+  LoyaltyPointsRedeemed?: string | number;
+  LoyaltyBalance?: string | number;
+  LoyaltyValue?: string | number;
+  LoyaltyDiscountAmount?: string | number;
+  LoyaltyMinRedeemPoints?: string | number;
   
   // Appointment info
   AppointmentDate?: string;
@@ -166,6 +174,12 @@ export function previewTemplate(template: string, sampleData?: Partial<TemplateD
     DoctorName: 'Dr. Sarah Smith',
     LabName: 'MediLab Diagnostics',
     Amount: '2500',
+    LoyaltyPointsEarned: 25,
+    LoyaltyPointsRedeemed: 100,
+    LoyaltyBalance: 250,
+    LoyaltyValue: '250',
+    LoyaltyDiscountAmount: '100',
+    LoyaltyMinRedeemPoints: 100,
     ReportDate: new Date().toLocaleDateString('en-IN'),
     ...sampleData
   };
@@ -203,6 +217,13 @@ export const STANDARD_PLACEHOLDERS = [
   { name: 'DueAmount', description: 'Amount due/pending', category: 'billing' },
   { name: 'PaidAmount', description: 'Amount paid', category: 'billing' },
   { name: 'InvoiceNumber', description: 'Invoice number', category: 'billing' },
+
+  { name: 'LoyaltyPointsEarned', description: 'Points earned from this order', category: 'loyalty' },
+  { name: 'LoyaltyPointsRedeemed', description: 'Points redeemed on this order', category: 'loyalty' },
+  { name: 'LoyaltyBalance', description: 'Current loyalty points balance', category: 'loyalty' },
+  { name: 'LoyaltyValue', description: 'Approximate discount value of available points', category: 'loyalty' },
+  { name: 'LoyaltyDiscountAmount', description: 'Discount amount from redeemed points', category: 'loyalty' },
+  { name: 'LoyaltyMinRedeemPoints', description: 'Minimum points required before redemption', category: 'loyalty' },
   
   { name: 'AppointmentDate', description: 'Appointment date', category: 'appointment' },
   { name: 'AppointmentTime', description: 'Appointment time', category: 'appointment' },
@@ -249,6 +270,16 @@ export const DEFAULT_TEMPLATES = {
     message: 'Hello [PatientName],\n\nYour invoice for Order #[OrderNumber] has been generated.\nTotal Amount: ₹[Amount]\n\nPlease find the invoice attached.\n\nThank you,\n[LabName]',
     requires_attachment: true,
   },
+  loyalty_points_earned: {
+    name: 'Loyalty Points Earned',
+    message: 'Hello [PatientName],\n\nYou earned [LoyaltyPointsEarned] loyalty points on Order #[OrderNumber].\nCurrent balance: [LoyaltyBalance] points.\nRedeem from [LoyaltyMinRedeemPoints] points onward.\n\nThank you,\n[LabName]',
+    requires_attachment: false,
+  },
+  loyalty_points_redeemed: {
+    name: 'Loyalty Points Redeemed',
+    message: 'Hello [PatientName],\n\nYou redeemed [LoyaltyPointsRedeemed] loyalty points on Order #[OrderNumber].\nDiscount applied: Rs. [LoyaltyDiscountAmount]\nRemaining balance: [LoyaltyBalance] points.\n\nThank you,\n[LabName]',
+    requires_attachment: false,
+  },
   registration_confirmation: {
     name: 'Registration Confirmation',
     message: 'Hello [PatientName],\n\nYour order has been registered successfully!\n\nOrder #: [OrderNumber]\nTests: [TestName]\nExpected Date: [ExpectedDate]\n\nThank you for choosing [LabName]!',
@@ -263,6 +294,8 @@ export const TEMPLATE_CATEGORIES = [
   { key: 'report_ready', label: 'Report Ready (Patient)', description: 'Sent to patient when report is ready' },
   { key: 'doctor_report_ready', label: 'Report Ready (Doctor)', description: 'Sent to referring doctor when report is ready' },
   { key: 'invoice_generated', label: 'Invoice Generated', description: 'Sent to patient when invoice is created' },
+  { key: 'loyalty_points_earned', label: 'Loyalty Points Earned', description: 'Sent to patient when points are awarded' },
+  { key: 'loyalty_points_redeemed', label: 'Loyalty Points Redeemed', description: 'Sent to patient when points are redeemed' },
   { key: 'registration_confirmation', label: 'Registration Confirmation', description: 'Sent to patient when order is registered' },
   { key: 'payment_reminder', label: 'Payment Reminder', description: 'Sent for pending payments' },
   { key: 'appointment_reminder', label: 'Appointment Reminder', description: 'Sent before scheduled appointments' },

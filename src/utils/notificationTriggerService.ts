@@ -14,6 +14,8 @@ export interface NotificationSettings {
   send_report_on_status: 'Approved' | 'Completed' | 'Delivered';
   auto_send_invoice_to_patient: boolean;
   auto_send_registration_confirmation: boolean;
+  auto_send_loyalty_points: boolean;
+  auto_send_loyalty_redemption: boolean;
   include_test_details_in_registration: boolean;
   include_invoice_in_registration: boolean;
   default_patient_channel: 'whatsapp' | 'email' | 'both';
@@ -34,7 +36,7 @@ export interface QueuedNotification {
   recipient_phone: string;
   recipient_name: string | null;
   recipient_id: string | null;
-  trigger_type: 'report_ready' | 'invoice_generated' | 'order_registered' | 'payment_reminder';
+  trigger_type: 'report_ready' | 'invoice_generated' | 'order_registered' | 'payment_reminder' | 'loyalty_points_earned' | 'loyalty_points_redeemed';
   order_id: string | null;
   report_id: string | null;
   invoice_id: string | null;
@@ -626,6 +628,119 @@ export const notificationTriggerService = {
       }
       return { sent: false, queued: false, skipped: true, reason: sendResult.error };
     }
+  },
+
+  // Triggered when loyalty points are earned or redeemed
+  triggerLoyaltyPoints: async (
+    patientId: string,
+    orderId: string,
+    labId: string,
+    eventType: 'earned' | 'redeemed',
+    details: {
+      points: number;
+      balance: number;
+      discountAmount?: number;
+    },
+  ) => {
+    console.log(`[NotificationTrigger] Loyalty ${eventType}: patient=${patientId}, order=${orderId}`);
+
+    const settings = await notificationTriggerService.getSettings(labId);
+    const enabled = eventType === 'earned'
+      ? settings?.auto_send_loyalty_points
+      : settings?.auto_send_loyalty_redemption;
+
+    if (!settings || !enabled) {
+      return { sent: false, reason: 'disabled' };
+    }
+
+    const withinWindow = isWithinSendWindow(settings);
+    const shouldAttemptNow = withinWindow;
+    const scheduledFor = withinWindow ? new Date().toISOString() : getNextWindowStartIso(settings);
+
+    const { data: patient, error: patientError } = await supabase
+      .from('patients')
+      .select('id, name, phone')
+      .eq('id', patientId)
+      .maybeSingle();
+
+    if (patientError || !patient?.phone) {
+      return { sent: false, reason: 'patient_phone_not_found' };
+    }
+
+    const { data: order } = await supabase
+      .from('orders')
+      .select('id, order_display')
+      .eq('id', orderId)
+      .maybeSingle();
+
+    const { data: lab } = await supabase
+      .from('labs')
+      .select('name, phone, loyalty_point_value, loyalty_min_redeem_points')
+      .eq('id', labId)
+      .maybeSingle();
+
+    const pointValue = Number(lab?.loyalty_point_value ?? 1);
+    const category = eventType === 'earned' ? 'loyalty_points_earned' : 'loyalty_points_redeemed';
+    const defaultTemplate = eventType === 'earned'
+      ? DEFAULT_TEMPLATES.loyalty_points_earned
+      : DEFAULT_TEMPLATES.loyalty_points_redeemed;
+
+    let templateMessage = defaultTemplate.message;
+    let templateId: string | null = null;
+    try {
+      const { data: dbTemplate } = await database.whatsappTemplates.getDefault(category, labId);
+      if (dbTemplate?.message_content) {
+        templateMessage = dbTemplate.message_content;
+        templateId = dbTemplate.id;
+      }
+    } catch (e) {
+      console.warn('[NotificationTrigger] Failed to fetch loyalty DB template, using default:', e);
+    }
+
+    const templateData: TemplateData = {
+      PatientName: patient.name || 'Patient',
+      PatientId: patient.id,
+      PatientPhone: patient.phone,
+      OrderId: order?.id?.slice(-6).toUpperCase() || orderId.slice(-6).toUpperCase(),
+      OrderNumber: order?.order_display || orderId.slice(-6),
+      LabName: lab?.name || 'Lab',
+      LabPhone: lab?.phone || '',
+      LoyaltyPointsEarned: eventType === 'earned' ? details.points : 0,
+      LoyaltyPointsRedeemed: eventType === 'redeemed' ? details.points : 0,
+      LoyaltyBalance: details.balance,
+      LoyaltyValue: (details.balance * pointValue).toFixed(0),
+      LoyaltyDiscountAmount: (details.discountAmount || 0).toFixed(2),
+      LoyaltyMinRedeemPoints: lab?.loyalty_min_redeem_points || 100,
+    };
+
+    const message = replacePlaceholders(templateMessage, templateData);
+
+    const sendResult = shouldAttemptNow
+      ? await notificationTriggerService.sendWithFallback(patient.phone, message)
+      : { success: false, error: 'Outside send window' };
+
+    if (sendResult.success) {
+      return { sent: true, messageId: sendResult.messageId };
+    }
+
+    if (settings.queue_outside_window !== false) {
+      await notificationTriggerService.queueNotification({
+        lab_id: labId,
+        recipient_type: 'patient',
+        recipient_phone: patient.phone,
+        recipient_name: patient.name,
+        recipient_id: patient.id,
+        trigger_type: category,
+        order_id: orderId,
+        template_id: templateId,
+        message_content: message,
+        scheduled_for: scheduledFor,
+        last_error: sendResult.error,
+      });
+      return { sent: false, queued: true, error: sendResult.error };
+    }
+
+    return { sent: false, queued: false, skipped: true, reason: sendResult.error };
   },
 
   // Process failed notifications in queue

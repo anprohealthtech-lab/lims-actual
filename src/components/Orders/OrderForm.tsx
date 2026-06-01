@@ -21,7 +21,9 @@ import {
   Gift,
   UserPlus,
   Truck,
-  ChevronDown
+  ChevronDown,
+  Camera,
+  Stethoscope
 } from 'lucide-react';
 import { database, supabase, formatAge, LabPatientFieldConfig, DEFAULT_PATIENT_FORM_SETTINGS, type LabPatientFormSettings } from '../../utils/supabase';
 import { notificationTriggerService, formatName } from '../../utils/notificationTriggerService';
@@ -34,7 +36,9 @@ import {
   formatConfidence,
   validatePatientData,
   autoCreatePatientFromTRF,
+  autoCreateDoctorFromTRF,
   findDoctorByName,
+  validateTRFExtractionData,
   type TRFExtractionResult,
   type TRFProcessingProgress
 } from '../../utils/trfProcessor';
@@ -235,6 +239,7 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
   const [showTRFReview, setShowTRFReview] = useState<boolean>(false);
   const [trfUnmatchedTests, setTrfUnmatchedTests] = useState<string[]>([]);
   const [enableTRFOptimization, setEnableTRFOptimization] = useState<boolean>(true); // Image optimization
+  const [trfCreateNewDoctor, setTrfCreateNewDoctor] = useState<boolean>(false); // Whether to create new doctor from TRF
 
 
   // Currency
@@ -383,9 +388,13 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
               .single();
 
             if (userRecord?.lab_id) {
-              // Create new patient with edited data
+              // Create new patient with edited data (include ageUnit from modal)
+              const patientData = {
+                ...trfExtraction.patientInfo,
+                ageUnit: (trfExtraction as any).patientInfo?.ageUnit || 'years'
+              };
               const newPatient = await autoCreatePatientFromTRF(
-                trfExtraction.patientInfo,
+                patientData,
                 userRecord.lab_id
               );
 
@@ -441,8 +450,7 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
         console.log(`✓ Using matched doctor (${Math.round(trfExtraction.matchedDoctor.matchConfidence * 100)}% confidence):`, trfExtraction.matchedDoctor.name);
         setSelectedDoctor(trfExtraction.matchedDoctor.id);
       } else if (trfExtraction.doctorInfo?.name) {
-        // Fallback: No match or low confidence, try searching manually
-        console.log('⚠ No confident doctor match from TRF, trying manual search for:', trfExtraction.doctorInfo.name);
+        // No match or low confidence - check if user wants to create new doctor
         const { data: { user } } = await supabase.auth.getUser();
         if (user) {
           const { data: userRecord } = await supabase
@@ -452,6 +460,7 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
             .single();
 
           if (userRecord?.lab_id) {
+            // First try to find existing doctor
             const matchedDoctor = await findDoctorByName(
               trfExtraction.doctorInfo.name,
               userRecord.lab_id
@@ -460,12 +469,34 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
             if (matchedDoctor) {
               setSelectedDoctor(matchedDoctor.id);
               console.log('✓ Matched doctor with manual search:', matchedDoctor.name);
+            } else if (trfCreateNewDoctor && trfExtraction.doctorInfo.name.trim().length >= 2) {
+              // User opted to create new doctor
+              console.log('Creating NEW doctor from TRF:', trfExtraction.doctorInfo.name);
+              const newDoctor = await autoCreateDoctorFromTRF(
+                trfExtraction.doctorInfo,
+                userRecord.lab_id
+              );
+
+              if (newDoctor) {
+                console.log('✓ Doctor created successfully:', newDoctor);
+                // Refresh doctors list
+                const { data: refreshedDoctors } = await database.doctors.getAll();
+                if (refreshedDoctors) {
+                  setDoctors(refreshedDoctors);
+                }
+                setSelectedDoctor(newDoctor.id);
+              } else {
+                console.error('Failed to create doctor from TRF');
+              }
             } else {
-              console.log('⚠ No matching doctor found for:', trfExtraction.doctorInfo.name);
+              console.log('⚠ No matching doctor found and user did not opt to create:', trfExtraction.doctorInfo.name);
             }
           }
         }
       }
+
+      // Reset the create new doctor flag
+      setTrfCreateNewDoctor(false);
 
       // Apply edited test selections (only selected tests)
       if (trfExtraction.requestedTests) {
@@ -1064,6 +1095,48 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
     setTimeout(() => searchInputRef.current?.focus(), 50);
   };
 
+  const createPatientFromBooking = async (): Promise<Patient | null> => {
+    const info = initialBookingData?.patient_info;
+    const name = String(info?.name || '').trim();
+
+    if (!name) return null;
+
+    const ageValue = parseInt(String(info?.age || newPatient.age || '0'), 10);
+    const payload: any = {
+      name: formatName(name, nameCaseFormat),
+      age: Number.isFinite(ageValue) ? ageValue : 0,
+      age_unit: info?.age_unit || newPatient.age_unit || 'years',
+      gender: info?.gender || newPatient.gender || 'Male',
+      phone: String(info?.phone || newPatient.phone || '').trim(),
+      email: info?.email || newPatient.email || null,
+      date_of_birth: info?.dob || info?.date_of_birth || newPatient.dob || null,
+      custom_fields: info?.custom_fields || null,
+      address: info?.address || '',
+      city: info?.city || '',
+      state: info?.state || '',
+      pincode: info?.pincode || '',
+      emergency_contact: null,
+      emergency_phone: null,
+      blood_group: null,
+      allergies: null,
+      medical_history: null,
+      total_tests: 0,
+      is_active: true,
+      referring_doctor: null,
+      default_doctor_id: (selectedDoctor && selectedDoctor !== SELF_DOCTOR_ID) ? selectedDoctor : null,
+      default_location_id: selectedLocation || null,
+      default_payment_type: paymentType || 'credit',
+    };
+
+    const { data, error } = await (database as any).patients?.create?.(payload);
+    if (error) throw error;
+    if (!data) return null;
+
+    setPatients((prev) => [...prev, data]);
+    onPickPatient(data as Patient);
+    return data as Patient;
+  };
+
   const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0] ?? null;
     if (!file) return;
@@ -1269,9 +1342,26 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
     // Clear previous errors
     setValidationErrors([]);
     const errors: string[] = [];
+    let patientForOrder = selectedPatient;
+
+    if (!patientForOrder?.id && initialBookingData?.patient_info?.name) {
+      try {
+        setIsSubmitting(true);
+        setSubmissionProgress('Creating patient from booking...');
+        const createdPatient = await createPatientFromBooking();
+        if (createdPatient?.id) {
+          patientForOrder = createdPatient;
+        }
+      } catch (err) {
+        console.error('Failed to create patient from booking:', err);
+        errors.push('❌ Patient: Failed to create patient from booking details');
+      } finally {
+        setIsSubmitting(false);
+      }
+    }
 
     // Comprehensive validation
-    if (!selectedPatient?.id) {
+    if (!patientForOrder?.id) {
       errors.push('❌ Patient: Please select a patient');
     }
 
@@ -1295,7 +1385,7 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
       );
     }
 
-    if (!selectedPatient) {
+    if (!patientForOrder) {
       errors.push('❌ Patient is required');
     }
 
@@ -1353,8 +1443,8 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
       const computedExpectedDate = orderDateObj.toISOString().split('T')[0];
 
       const orderData: any = {
-        patient_id: selectedPatient!.id,
-        patient_name: selectedPatient!.name,
+        patient_id: patientForOrder!.id,
+        patient_name: patientForOrder!.name,
         referring_doctor_id: (selectedDoctor && selectedDoctor !== SELF_DOCTOR_ID) ? selectedDoctor : null,
         location_id: selectedLocation || null, // collection/origin
         collected_at_location_id: selectedLocation || null, // for intra-lab transit tracking
@@ -1376,20 +1466,20 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
         } : {}),
         // AI Patient Context
         patient_context: {
-          age: selectedPatient!.age,
-          age_unit: selectedPatient!.age_unit || 'years',
-          gender: selectedPatient!.gender,
+          age: patientForOrder!.age,
+          age_unit: patientForOrder!.age_unit || 'years',
+          gender: patientForOrder!.gender,
           weight: additionalInputs.weight,
           height: additionalInputs.height,
           pregnancy_status: additionalInputs.pregnancy_status,
           lmp: additionalInputs.lmp,
-          date_of_birth: selectedPatient!.dob || selectedPatient!.date_of_birth || null,
+          date_of_birth: patientForOrder!.dob || patientForOrder!.date_of_birth || null,
           additional_inputs: additionalInputs, // Catch-all
           // Custom patient fields marked for AI ref range context (e.g. species, breed)
           ...(() => {
             const aiFields = allPatientFieldConfigs.filter(f => f.use_for_ai_ref_range);
             if (aiFields.length === 0) return {};
-            const cf = (selectedPatient as any).custom_fields;
+            const cf = (patientForOrder as any).custom_fields;
             const parsed = typeof cf === 'string' ? (() => { try { return JSON.parse(cf); } catch { return {}; } })() : (cf || {});
             const custom_patient_data: Record<string, any> = {};
             for (const f of aiFields) {
@@ -1438,7 +1528,7 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
             if (orderRow?.sample_id) {
               autoPrintBarcode({
                 sampleId: orderRow.sample_id,
-                patientName: selectedPatient?.name || '',
+                patientName: patientForOrder?.name || '',
                 sampleType: orderRow.sample_type || undefined,
               });
             }
@@ -1480,8 +1570,8 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
           // Create invoice
           const invoiceData = {
             order_id: orderId,
-            patient_id: selectedPatient!.id,
-            patient_name: selectedPatient!.name,
+            patient_id: patientForOrder!.id,
+            patient_name: patientForOrder!.name,
             lab_id: labId,
             subtotal: invoiceSubtotal,
             total_before_discount: invoiceSubtotal,
@@ -1705,19 +1795,19 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
           }
 
           // Handle loyalty points: redeem & earn
-          if (loyaltyEnabled && selectedPatient?.id && orderId) {
+          if (loyaltyEnabled && patientForOrder?.id && orderId) {
             try {
               // Redeem points if used
               if (loyaltyRedeemEnabled && loyaltyPointsToRedeem > 0) {
                 setSubmissionProgress('Redeeming loyalty points...');
-                await database.loyaltyPoints.redeemPoints(selectedPatient.id, orderId, loyaltyPointsToRedeem);
+                await database.loyaltyPoints.redeemPoints(patientForOrder.id, orderId, loyaltyPointsToRedeem);
                 console.log(`✅ Redeemed ${loyaltyPointsToRedeem} loyalty points`);
               }
 
               // Earn points on the paid amount (excluding loyalty discount)
               if (amountPaid > 0) {
                 setSubmissionProgress('Awarding loyalty points...');
-                await database.loyaltyPoints.earnPoints(selectedPatient.id, orderId, amountPaid);
+                await database.loyaltyPoints.earnPoints(patientForOrder.id, orderId, amountPaid);
                 console.log(`✅ Earned loyalty points on ${currencySymbol}${amountPaid} payment`);
               }
             } catch (loyaltyErr) {
@@ -1755,10 +1845,10 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
           }
         }
         // No invoice created, but still handle loyalty redemption if applicable
-        if (loyaltyEnabled && selectedPatient?.id && orderId && loyaltyRedeemEnabled && loyaltyPointsToRedeem > 0) {
+        if (loyaltyEnabled && patientForOrder?.id && orderId && loyaltyRedeemEnabled && loyaltyPointsToRedeem > 0) {
           try {
             setSubmissionProgress('Redeeming loyalty points...');
-            await database.loyaltyPoints.redeemPoints(selectedPatient.id, orderId, loyaltyPointsToRedeem);
+            await database.loyaltyPoints.redeemPoints(patientForOrder.id, orderId, loyaltyPointsToRedeem);
             console.log(`✅ Redeemed ${loyaltyPointsToRedeem} loyalty points (no invoice)`);
           } catch (loyaltyErr) {
             console.error('Loyalty points redemption error (non-critical):', loyaltyErr);
@@ -2023,11 +2113,20 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
 
           {/* ── Patient + Add + AI Upload — compact top row ── */}
           <section className="space-y-2">
-            {/* Hidden file input for AI TRF */}
+            {/* Hidden file input for AI TRF - gallery/file picker */}
             <input
               type="file"
               id="trf-upload-top"
               accept="image/*,.pdf"
+              onChange={handleFileChange}
+              className="hidden"
+            />
+            {/* Hidden file input for AI TRF - camera capture (mobile) */}
+            <input
+              type="file"
+              id="trf-camera-capture"
+              accept="image/*"
+              capture="environment"
               onChange={handleFileChange}
               className="hidden"
             />
@@ -2143,13 +2242,24 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
                     <CheckCircle className="w-3.5 h-3.5" /> Review TRF
                   </button>
                 ) : (
-                  <label
-                    htmlFor="trf-upload-top"
-                    className="flex items-center gap-1.5 px-3 py-2 bg-purple-50 border border-purple-200 rounded-md text-xs text-purple-700 hover:bg-purple-100 cursor-pointer whitespace-nowrap"
-                    title="Upload TRF to auto-fill patient, doctor and tests"
-                  >
-                    <Sparkles className="w-3.5 h-3.5" /> AI TRF
-                  </label>
+                  <div className="flex items-center gap-1">
+                    {/* Camera capture for mobile */}
+                    <label
+                      htmlFor="trf-camera-capture"
+                      className="flex items-center gap-1 px-2 py-2 bg-purple-50 border border-purple-200 rounded-l-md text-xs text-purple-700 hover:bg-purple-100 cursor-pointer whitespace-nowrap"
+                      title="Capture TRF with camera"
+                    >
+                      <Camera className="w-3.5 h-3.5" />
+                    </label>
+                    {/* File/gallery upload */}
+                    <label
+                      htmlFor="trf-upload-top"
+                      className="flex items-center gap-1.5 px-2 py-2 bg-purple-50 border border-purple-200 border-l-0 rounded-r-md text-xs text-purple-700 hover:bg-purple-100 cursor-pointer whitespace-nowrap"
+                      title="Upload TRF from gallery or files"
+                    >
+                      <Sparkles className="w-3.5 h-3.5" /> AI TRF
+                    </label>
+                  </div>
                 )}
               </div>
             )}
@@ -2315,10 +2425,47 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
             {(selectedTests.length > 0 || selectedBillingItems.length > 0 || billingItemTypes.length > 0) && (
               <div className="bg-green-50 border border-green-200 rounded-lg p-4">
                 {selectedTests.length > 0 && (<>
-                <h4 className="font-medium text-green-900 mb-2 flex items-center gap-2">
-                  <TestTube className="h-4 w-4" />
-                  Selected Tests & Packages ({selectedTests.length})
-                </h4>
+                <div className="flex items-center justify-between mb-3">
+                  <h4 className="font-medium text-green-900 flex items-center gap-2">
+                    <TestTube className="h-4 w-4" />
+                    Selected Tests & Packages ({selectedTests.length})
+                  </h4>
+                  <div className="flex items-center gap-1 bg-white rounded-lg p-1 border border-gray-200 shadow-sm">
+                    <button
+                      type="button"
+                      onClick={() => setPriority('Normal')}
+                      className={`px-3 py-1 text-xs font-medium rounded-md transition-all ${
+                        priority === 'Normal'
+                          ? 'bg-gray-600 text-white shadow-sm'
+                          : 'text-gray-600 hover:bg-gray-100'
+                      }`}
+                    >
+                      Normal
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setPriority('Urgent')}
+                      className={`px-3 py-1 text-xs font-medium rounded-md transition-all ${
+                        priority === 'Urgent'
+                          ? 'bg-orange-500 text-white shadow-sm'
+                          : 'text-orange-600 hover:bg-orange-50'
+                      }`}
+                    >
+                      ⚡ Urgent
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setPriority('STAT')}
+                      className={`px-3 py-1 text-xs font-medium rounded-md transition-all ${
+                        priority === 'STAT'
+                          ? 'bg-red-500 text-white shadow-sm animate-pulse'
+                          : 'text-red-600 hover:bg-red-50'
+                      }`}
+                    >
+                      🚨 STAT
+                    </button>
+                  </div>
+                </div>
                 <div className="space-y-2 text-sm">
                   {testGroups
                     .filter((t) => selectedTests.includes(t.id))
@@ -3810,134 +3957,238 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
             </div>
 
             <div className="flex-1 overflow-y-auto p-6 space-y-6">
-              {/* Patient Information */}
-              {trfExtraction.patientInfo && (
-                <div className="space-y-3">
-                  <div className="flex items-center justify-between">
-                    <h4 className="font-medium text-gray-900 flex items-center gap-2">
-                      <User className="w-4 h-4" />
-                      Patient Information
-                    </h4>
-                    <span className={`text-xs px-2 py-1 rounded-full ${formatConfidence(trfExtraction.patientInfo.confidence).bgColor
-                      } ${formatConfidence(trfExtraction.patientInfo.confidence).color}`}>
-                      {formatConfidence(trfExtraction.patientInfo.confidence).label}
-                    </span>
-                  </div>
+              {/* Validation Summary */}
+              {(() => {
+                const validation = validateTRFExtractionData(trfExtraction);
+                const hasPatientIssues = !validation.hasMatchedPatient && !validation.patientValid;
+                const hasDoctorIssues = !validation.hasMatchedDoctor && trfExtraction.doctorInfo?.name && !trfCreateNewDoctor;
 
-                  <div className="grid grid-cols-2 gap-4 bg-gray-50 p-4 rounded-lg">
-                    <div>
-                      <label className="text-xs text-gray-500 block mb-1">Name</label>
-                      <input
-                        type="text"
-                        value={trfExtraction.patientInfo.name || ''}
-                        onChange={(e) => setTrfExtraction({
-                          ...trfExtraction,
-                          patientInfo: { ...trfExtraction.patientInfo!, name: e.target.value }
-                        })}
-                        className="w-full text-sm font-medium border border-gray-300 rounded px-2 py-1.5 focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                        placeholder="Enter name"
-                      />
-                    </div>
-                    <div>
-                      <label className="text-xs text-gray-500 block mb-1">Age</label>
-                      <input
-                        type="number"
-                        value={trfExtraction.patientInfo.age || ''}
-                        onChange={(e) => setTrfExtraction({
-                          ...trfExtraction,
-                          patientInfo: { ...trfExtraction.patientInfo!, age: parseInt(e.target.value) || 0 }
-                        })}
-                        className="w-full text-sm font-medium border border-gray-300 rounded px-2 py-1.5 focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                        placeholder="Enter age"
-                      />
-                    </div>
-                    <div>
-                      <label className="text-xs text-gray-500 block mb-1">Gender</label>
-                      <select
-                        value={trfExtraction.patientInfo.gender || 'Male'}
-                        onChange={(e) => setTrfExtraction({
-                          ...trfExtraction,
-                          patientInfo: { ...trfExtraction.patientInfo!, gender: e.target.value as 'Male' | 'Female' | 'Other' }
-                        })}
-                        className="w-full text-sm font-medium border border-gray-300 rounded px-2 py-1.5 focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                      >
-                        <option value="Male">Male</option>
-                        <option value="Female">Female</option>
-                        <option value="Other">Other</option>
-                      </select>
-                    </div>
-                    <div>
-                      <label className="text-xs text-gray-500 block mb-1">Phone</label>
-                      <input
-                        type="tel"
-                        value={trfExtraction.patientInfo.phone || ''}
-                        onChange={(e) => setTrfExtraction({
-                          ...trfExtraction,
-                          patientInfo: { ...trfExtraction.patientInfo!, phone: e.target.value }
-                        })}
-                        className="w-full text-sm font-medium border border-gray-300 rounded px-2 py-1.5 focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                        placeholder="Enter phone"
-                      />
-                    </div>
-                    <div className="col-span-2">
-                      <label className="text-xs text-gray-500 block mb-1">Email (optional)</label>
-                      <input
-                        type="email"
-                        value={trfExtraction.patientInfo.email || ''}
-                        onChange={(e) => setTrfExtraction({
-                          ...trfExtraction,
-                          patientInfo: { ...trfExtraction.patientInfo!, email: e.target.value }
-                        })}
-                        className="w-full text-sm font-medium border border-gray-300 rounded px-2 py-1.5 focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                        placeholder="Enter email"
-                      />
-                    </div>
-                  </div>
-
-                  {/* Matched Patient */}
-                  {trfExtraction.matchedPatient && (
-                    <div className="bg-green-50 border border-green-200 rounded-lg p-3">
-                      <div className="flex items-center gap-2">
-                        <CheckCircle className="w-4 h-4 text-green-600" />
+                if (hasPatientIssues || hasDoctorIssues) {
+                  return (
+                    <div className="bg-amber-50 border border-amber-200 rounded-lg p-4 mb-4">
+                      <div className="flex items-start gap-3">
+                        <AlertCircle className="w-5 h-5 text-amber-600 mt-0.5 flex-shrink-0" />
                         <div className="flex-1">
-                          <p className="text-sm font-medium text-green-800">
-                            Matched Existing Patient
-                          </p>
-                          <p className="text-xs text-green-700">
-                            {trfExtraction.matchedPatient.name} • {trfExtraction.matchedPatient.phone}
-                            {' '} • {Math.round(trfExtraction.matchedPatient.matchConfidence * 100)}% match
-                          </p>
-                          {trfExtraction.matchedPatient.matchReason && (
-                            <p className="text-xs text-green-600 mt-1">
-                              {trfExtraction.matchedPatient.matchReason === 'phone_and_name' && '✓ Matched by phone and name'}
-                              {trfExtraction.matchedPatient.matchReason === 'phone_only' && '⚠ Matched by phone only (no name in TRF)'}
-                              {trfExtraction.matchedPatient.matchReason === 'phone_only_name_mismatch' && '⚠ Phone matches but name differs - please verify'}
-                              {trfExtraction.matchedPatient.matchReason === 'name_only' && '✓ Matched by name only'}
-                            </p>
-                          )}
+                          <p className="font-medium text-amber-800">Action Required</p>
+                          <ul className="text-sm text-amber-700 mt-1 space-y-1">
+                            {hasPatientIssues && validation.patientMissingFields.length > 0 && (
+                              <li>• Patient: Please fill in {validation.patientMissingFields.join(', ')}</li>
+                            )}
+                            {hasDoctorIssues && (
+                              <li>• Doctor "{trfExtraction.doctorInfo?.name}" not found. Check "Create New Doctor" to add them.</li>
+                            )}
+                          </ul>
                         </div>
                       </div>
                     </div>
-                  )}
+                  );
+                }
+                return null;
+              })()}
+              {/* Patient Information - Always show, initialize if needed */}
+              {(() => {
+                // Ensure patientInfo exists for form fields
+                const patientInfo = trfExtraction.patientInfo || { name: '', confidence: 0 };
+                const validation = validateTRFExtractionData(trfExtraction);
+                const isNewPatient = !trfExtraction.matchedPatient;
 
-                  {/* New Patient Warning */}
-                  {!trfExtraction.matchedPatient && trfExtraction.patientInfo.name && (
-                    <div className="bg-blue-50 border border-blue-200 rounded-lg p-3">
-                      <div className="flex items-center gap-2">
-                        <AlertTriangle className="w-4 h-4 text-blue-600" />
-                        <div>
-                          <p className="text-sm font-medium text-blue-800">
-                            New Patient
-                          </p>
-                          <p className="text-xs text-blue-700">
-                            No existing patient found. A new patient record will be created.
-                          </p>
+                // Helper to check if field is missing/invalid
+                const isFieldMissing = (field: string) => {
+                  if (trfExtraction.matchedPatient) return false; // Don't show errors for matched patients
+                  return validation.patientMissingFields.some(f => f.toLowerCase().includes(field.toLowerCase()));
+                };
+
+                return (
+                  <div className="space-y-3">
+                    <div className="flex items-center justify-between">
+                      <h4 className="font-medium text-gray-900 flex items-center gap-2">
+                        <User className="w-4 h-4" />
+                        Patient Information
+                        {isNewPatient && (
+                          <span className="text-xs bg-blue-100 text-blue-700 px-2 py-0.5 rounded">New Patient</span>
+                        )}
+                      </h4>
+                      {patientInfo.confidence > 0 && (
+                        <span className={`text-xs px-2 py-1 rounded-full ${formatConfidence(patientInfo.confidence).bgColor
+                          } ${formatConfidence(patientInfo.confidence).color}`}>
+                          {formatConfidence(patientInfo.confidence).label}
+                        </span>
+                      )}
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-4 bg-gray-50 p-4 rounded-lg">
+                      <div>
+                        <label className="text-xs text-gray-500 block mb-1">
+                          Name <span className="text-red-500">*</span>
+                          {isFieldMissing('name') && <span className="text-red-500 ml-1">(Required)</span>}
+                        </label>
+                        <input
+                          type="text"
+                          value={patientInfo.name || ''}
+                          onChange={(e) => setTrfExtraction({
+                            ...trfExtraction,
+                            patientInfo: { ...patientInfo, name: e.target.value, confidence: patientInfo.confidence || 0.5 }
+                          })}
+                          className={`w-full text-sm font-medium border rounded px-2 py-1.5 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 ${
+                            isFieldMissing('name') ? 'border-red-300 bg-red-50' : 'border-gray-300'
+                          }`}
+                          placeholder="Enter patient name"
+                        />
+                      </div>
+                      <div className="flex gap-2">
+                        <div className="flex-1">
+                          <label className="text-xs text-gray-500 block mb-1">
+                            Age <span className="text-red-500">*</span>
+                            {isFieldMissing('age') && <span className="text-red-500 ml-1">(Required)</span>}
+                          </label>
+                          <input
+                            type="number"
+                            value={patientInfo.age || ''}
+                            onChange={(e) => setTrfExtraction({
+                              ...trfExtraction,
+                              patientInfo: { ...patientInfo, age: parseInt(e.target.value) || 0, confidence: patientInfo.confidence || 0.5 }
+                            })}
+                            className={`w-full text-sm font-medium border rounded px-2 py-1.5 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 ${
+                              isFieldMissing('age') ? 'border-red-300 bg-red-50' : 'border-gray-300'
+                            }`}
+                            placeholder="Age"
+                            min="0"
+                            max="150"
+                          />
+                        </div>
+                        <div className="w-24">
+                          <label className="text-xs text-gray-500 block mb-1">Unit</label>
+                          <select
+                            value={(trfExtraction as any).patientInfo?.ageUnit || 'years'}
+                            onChange={(e) => setTrfExtraction({
+                              ...trfExtraction,
+                              patientInfo: {
+                                ...patientInfo,
+                                confidence: patientInfo.confidence || 0.5,
+                                ageUnit: e.target.value as 'years' | 'months' | 'days'
+                              }
+                            } as any)}
+                            className="w-full text-sm border border-gray-300 rounded px-2 py-1.5 focus:ring-2 focus:ring-blue-500"
+                          >
+                            <option value="years">Years</option>
+                            <option value="months">Months</option>
+                            <option value="days">Days</option>
+                          </select>
                         </div>
                       </div>
+                      <div>
+                        <label className="text-xs text-gray-500 block mb-1">
+                          Gender <span className="text-red-500">*</span>
+                        </label>
+                        <select
+                          value={patientInfo.gender || 'Male'}
+                          onChange={(e) => setTrfExtraction({
+                            ...trfExtraction,
+                            patientInfo: { ...patientInfo, gender: e.target.value as 'Male' | 'Female' | 'Other', confidence: patientInfo.confidence || 0.5 }
+                          })}
+                          className="w-full text-sm font-medium border border-gray-300 rounded px-2 py-1.5 focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                        >
+                          <option value="Male">Male</option>
+                          <option value="Female">Female</option>
+                          <option value="Other">Other</option>
+                        </select>
+                      </div>
+                      <div>
+                        <label className="text-xs text-gray-500 block mb-1">
+                          Phone <span className="text-red-500">*</span>
+                          {isFieldMissing('phone') && <span className="text-red-500 ml-1">(10 digits required)</span>}
+                        </label>
+                        <input
+                          type="tel"
+                          value={patientInfo.phone || ''}
+                          onChange={(e) => setTrfExtraction({
+                            ...trfExtraction,
+                            patientInfo: { ...patientInfo, phone: e.target.value, confidence: patientInfo.confidence || 0.5 }
+                          })}
+                          className={`w-full text-sm font-medium border rounded px-2 py-1.5 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 ${
+                            isFieldMissing('phone') ? 'border-red-300 bg-red-50' : 'border-gray-300'
+                          }`}
+                          placeholder="10-digit phone number"
+                          maxLength={10}
+                        />
+                      </div>
+                      <div className="col-span-2">
+                        <label className="text-xs text-gray-500 block mb-1">Email (optional)</label>
+                        <input
+                          type="email"
+                          value={patientInfo.email || ''}
+                          onChange={(e) => setTrfExtraction({
+                            ...trfExtraction,
+                            patientInfo: { ...patientInfo, email: e.target.value, confidence: patientInfo.confidence || 0.5 }
+                          })}
+                          className="w-full text-sm font-medium border border-gray-300 rounded px-2 py-1.5 focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                          placeholder="Enter email (optional)"
+                        />
+                      </div>
                     </div>
-                  )}
-                </div>
-              )}
+
+                    {/* Matched Patient */}
+                    {trfExtraction.matchedPatient && (
+                      <div className="bg-green-50 border border-green-200 rounded-lg p-3">
+                        <div className="flex items-center gap-2">
+                          <CheckCircle className="w-4 h-4 text-green-600" />
+                          <div className="flex-1">
+                            <p className="text-sm font-medium text-green-800">
+                              Matched Existing Patient
+                            </p>
+                            <p className="text-xs text-green-700">
+                              {trfExtraction.matchedPatient.name} • {trfExtraction.matchedPatient.phone}
+                              {' '} • {Math.round(trfExtraction.matchedPatient.matchConfidence * 100)}% match
+                            </p>
+                            {trfExtraction.matchedPatient.matchReason && (
+                              <p className="text-xs text-green-600 mt-1">
+                                {trfExtraction.matchedPatient.matchReason === 'phone_and_name' && '✓ Matched by phone and name'}
+                                {trfExtraction.matchedPatient.matchReason === 'phone_only' && '⚠ Matched by phone only (no name in TRF)'}
+                                {trfExtraction.matchedPatient.matchReason === 'phone_only_name_mismatch' && '⚠ Phone matches but name differs - please verify'}
+                                {trfExtraction.matchedPatient.matchReason === 'name_only' && '✓ Matched by name only'}
+                              </p>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* New Patient Info */}
+                    {isNewPatient && patientInfo.name && validation.patientValid && (
+                      <div className="bg-blue-50 border border-blue-200 rounded-lg p-3">
+                        <div className="flex items-center gap-2">
+                          <UserPlus className="w-4 h-4 text-blue-600" />
+                          <div>
+                            <p className="text-sm font-medium text-blue-800">
+                              New Patient Will Be Created
+                            </p>
+                            <p className="text-xs text-blue-700">
+                              No existing patient found. A new patient record will be created when you continue.
+                            </p>
+                          </div>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Missing Fields Warning for New Patient */}
+                    {isNewPatient && !validation.patientValid && (
+                      <div className="bg-red-50 border border-red-200 rounded-lg p-3">
+                        <div className="flex items-center gap-2">
+                          <AlertCircle className="w-4 h-4 text-red-600" />
+                          <div>
+                            <p className="text-sm font-medium text-red-800">
+                              Missing Required Information
+                            </p>
+                            <p className="text-xs text-red-700">
+                              Please fill in: {validation.patientMissingFields.join(', ')}
+                            </p>
+                          </div>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                );
+              })()}
 
               {/* Requested Tests */}
               {trfExtraction.requestedTests && trfExtraction.requestedTests.length > 0 && (
@@ -4010,31 +4261,110 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
               )}
 
               {/* Doctor Information */}
-              {trfExtraction.doctorInfo && trfExtraction.doctorInfo.name && (
+              {(trfExtraction.doctorInfo?.name || trfExtraction.matchedDoctor) && (
                 <div className="space-y-3">
-                  <h4 className="font-medium text-gray-900">Referring Doctor</h4>
-                  <div className="bg-gray-50 p-4 rounded-lg">
-                    <input
-                      type="text"
-                      value={trfExtraction.doctorInfo.name}
-                      onChange={(e) => setTrfExtraction({
-                        ...trfExtraction,
-                        doctorInfo: { ...trfExtraction.doctorInfo!, name: e.target.value }
-                      })}
-                      className="w-full text-sm font-medium border border-gray-300 rounded px-2 py-1.5 focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                      placeholder="Enter doctor name"
-                    />
-                    {trfExtraction.doctorInfo.specialization && (
-                      <input
-                        type="text"
-                        value={trfExtraction.doctorInfo.specialization}
-                        onChange={(e) => setTrfExtraction({
-                          ...trfExtraction,
-                          doctorInfo: { ...trfExtraction.doctorInfo!, specialization: e.target.value }
-                        })}
-                        className="w-full text-xs text-gray-600 mt-2 border border-gray-300 rounded px-2 py-1 focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                        placeholder="Enter specialization"
-                      />
+                  <div className="flex items-center justify-between">
+                    <h4 className="font-medium text-gray-900 flex items-center gap-2">
+                      <Stethoscope className="w-4 h-4" />
+                      Referring Doctor
+                    </h4>
+                    {trfExtraction.doctorInfo && (
+                      <span className={`text-xs px-2 py-1 rounded-full ${formatConfidence(trfExtraction.doctorInfo.confidence || 0.5).bgColor
+                        } ${formatConfidence(trfExtraction.doctorInfo.confidence || 0.5).color}`}>
+                        {formatConfidence(trfExtraction.doctorInfo.confidence || 0.5).label}
+                      </span>
+                    )}
+                  </div>
+
+                  <div className="bg-gray-50 p-4 rounded-lg space-y-3">
+                    <div className="grid grid-cols-2 gap-4">
+                      <div>
+                        <label className="text-xs text-gray-500 block mb-1">Doctor Name</label>
+                        <input
+                          type="text"
+                          value={trfExtraction.doctorInfo?.name || ''}
+                          onChange={(e) => setTrfExtraction({
+                            ...trfExtraction,
+                            doctorInfo: {
+                              ...trfExtraction.doctorInfo!,
+                              name: e.target.value,
+                              confidence: trfExtraction.doctorInfo?.confidence || 0.5
+                            }
+                          })}
+                          className="w-full text-sm font-medium border border-gray-300 rounded px-2 py-1.5 focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                          placeholder="Enter doctor name"
+                        />
+                      </div>
+                      <div>
+                        <label className="text-xs text-gray-500 block mb-1">Specialization (optional)</label>
+                        <input
+                          type="text"
+                          value={trfExtraction.doctorInfo?.specialization || ''}
+                          onChange={(e) => setTrfExtraction({
+                            ...trfExtraction,
+                            doctorInfo: {
+                              ...trfExtraction.doctorInfo!,
+                              specialization: e.target.value,
+                              confidence: trfExtraction.doctorInfo?.confidence || 0.5
+                            }
+                          })}
+                          className="w-full text-sm border border-gray-300 rounded px-2 py-1.5 focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                          placeholder="Enter specialization"
+                        />
+                      </div>
+                    </div>
+
+                    {/* Matched Doctor */}
+                    {trfExtraction.matchedDoctor && trfExtraction.matchedDoctor.matchConfidence >= 0.7 && (
+                      <div className="bg-green-50 border border-green-200 rounded-lg p-3">
+                        <div className="flex items-center gap-2">
+                          <CheckCircle className="w-4 h-4 text-green-600" />
+                          <div className="flex-1">
+                            <p className="text-sm font-medium text-green-800">
+                              Matched Existing Doctor
+                            </p>
+                            <p className="text-xs text-green-700">
+                              {trfExtraction.matchedDoctor.name}
+                              {trfExtraction.matchedDoctor.specialization && ` • ${trfExtraction.matchedDoctor.specialization}`}
+                              {' '} • {Math.round(trfExtraction.matchedDoctor.matchConfidence * 100)}% match
+                            </p>
+                          </div>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* New Doctor - option to create */}
+                    {!trfExtraction.matchedDoctor && trfExtraction.doctorInfo?.name && trfExtraction.doctorInfo.name.trim().length >= 2 && (
+                      <div className="bg-amber-50 border border-amber-200 rounded-lg p-3">
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-2">
+                            <AlertTriangle className="w-4 h-4 text-amber-600" />
+                            <div>
+                              <p className="text-sm font-medium text-amber-800">
+                                Doctor Not Found
+                              </p>
+                              <p className="text-xs text-amber-700">
+                                No existing doctor matches "{trfExtraction.doctorInfo.name}"
+                              </p>
+                            </div>
+                          </div>
+                          <label className="flex items-center gap-2 cursor-pointer">
+                            <input
+                              type="checkbox"
+                              checked={trfCreateNewDoctor}
+                              onChange={(e) => setTrfCreateNewDoctor(e.target.checked)}
+                              className="w-4 h-4 text-blue-600 rounded border-gray-300 focus:ring-2 focus:ring-blue-500"
+                            />
+                            <span className="text-sm text-amber-800 font-medium">Create New Doctor</span>
+                          </label>
+                        </div>
+                        {trfCreateNewDoctor && (
+                          <p className="text-xs text-green-700 mt-2 flex items-center gap-1">
+                            <CheckCircle className="w-3 h-3" />
+                            A new doctor record will be created when you continue
+                          </p>
+                        )}
+                      </div>
                     )}
                   </div>
                 </div>
@@ -4097,9 +4427,32 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
             </div>
 
             <div className="border-t border-gray-200 p-4 flex items-center justify-between bg-gray-50">
-              <p className="text-xs text-gray-600">
-                ✓ Changes saved automatically. Click "Continue" to create patient and apply values to order form.
-              </p>
+              <div className="text-xs text-gray-600 space-y-1">
+                <p className="flex items-center gap-1">
+                  <CheckCircle className="w-3 h-3 text-green-600" />
+                  Changes saved automatically
+                </p>
+                {(() => {
+                  const actions: string[] = [];
+                  if (!trfExtraction.matchedPatient && trfExtraction.patientInfo?.name) {
+                    actions.push('Create new patient');
+                  }
+                  if (trfCreateNewDoctor && trfExtraction.doctorInfo?.name) {
+                    actions.push('Create new doctor');
+                  }
+                  if (trfExtraction.matchedPatient) {
+                    actions.push('Use existing patient');
+                  }
+                  if (trfExtraction.matchedDoctor) {
+                    actions.push('Use existing doctor');
+                  }
+                  return actions.length > 0 ? (
+                    <p className="text-blue-700 font-medium">
+                      Will: {actions.join(', ')}
+                    </p>
+                  ) : null;
+                })()}
+              </div>
               <button
                 onClick={handleTRFReviewClose}
                 className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 text-sm font-medium"

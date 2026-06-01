@@ -140,6 +140,64 @@ export interface DeltaCheckResponse {
 }
 
 /**
+ * Inter-test group validation issue - Issues found when comparing results across test groups
+ */
+export interface InterTestGroupIssue {
+  /** Type of cross-test issue */
+  issue_type: 'conflicting_results' | 'pattern_mismatch' | 'physiological_inconsistency' | 'sample_integrity';
+  /** Severity level */
+  severity: 'critical' | 'warning' | 'info';
+  /** Test groups involved in the conflict */
+  test_groups_involved: string[];
+  /** Specific analytes involved */
+  affected_analytes: string[];
+  /** Description of the issue */
+  description: string;
+  /** Suggested resolution */
+  suggested_action: string;
+  /** Clinical rationale for the concern */
+  clinical_rationale: string;
+}
+
+/**
+ * Order Delta Check Response - Comprehensive order-level quality validation
+ * Validates ALL test groups in an order together with inter-test group analysis
+ */
+export interface OrderDeltaCheckResponse {
+  /** Overall confidence in the order results (0-100) */
+  confidence_score: number;
+  /** Confidence level description */
+  confidence_level: 'high' | 'medium' | 'low';
+  /** Executive summary of findings */
+  summary: string;
+  /** Per-test-group issues */
+  test_group_issues: Array<{
+    test_group_name: string;
+    issues: DeltaCheckIssue[];
+  }>;
+  /** Inter-test-group validation issues */
+  inter_test_group_issues: InterTestGroupIssue[];
+  /** All analytes that passed validation */
+  validated_results: string[];
+  /** Results requiring attention */
+  attention_required: Array<{
+    test_group: string;
+    analyte: string;
+    reason: string;
+  }>;
+  /** Overall recommendation */
+  recommendation: 'approve' | 'review_required' | 'reject';
+  /** Detailed notes for the verifier */
+  verifier_notes: string;
+  /** Quality score breakdown by test group */
+  quality_breakdown: Array<{
+    test_group: string;
+    score: number;
+    status: 'pass' | 'warning' | 'fail';
+  }>;
+}
+
+/**
  * Patient Summary Response - Patient-friendly summary in selected language
  * Medical/pathology terms remain in English for accuracy
  */
@@ -538,6 +596,46 @@ export function useAIResultIntelligence() {
     });
   }, [callAIFunction]);
 
+  /**
+   * Perform Order-Level AI Delta Check - Comprehensive quality validation for entire order
+   * Validates ALL test groups together and performs inter-test-group analysis:
+   * - Cross-validates related tests (e.g., renal panel vs lipid panel consistency)
+   * - Identifies physiological inconsistencies across test groups
+   * - Validates CBC differential totals, LFT/KFT relationships, etc.
+   * - Compares ALL current results with historical data
+   *
+   * @param testGroups - Array of test groups with their result values
+   * @param patient - Patient context (age, gender, clinical notes)
+   * @param historicalData - Historical data for delta comparison
+   */
+  const performOrderDeltaCheck = useCallback(async (
+    testGroups: Array<{
+      test_group_name: string;
+      test_group_code: string;
+      category?: string;
+      result_values: ResultValue[];
+    }>,
+    patient?: PatientContext,
+    historicalData?: Array<{
+      test_date: string;
+      source: 'in-house' | 'external';
+      analytes: Array<{
+        name: string;
+        value: string;
+        unit: string;
+        reference_range?: string;
+        flag?: string | null;
+      }>;
+    }>
+  ): Promise<OrderDeltaCheckResponse> => {
+    return callAIFunction<OrderDeltaCheckResponse>({
+      action: 'order_delta_check',
+      test_groups: testGroups,
+      patient,
+      historical_data: historicalData,
+    });
+  }, [callAIFunction]);
+
   return {
     // State
     loading: state.loading,
@@ -551,6 +649,7 @@ export function useAIResultIntelligence() {
     getClinicalSummary,
     getPatientSummary,
     performDeltaCheck,
+    performOrderDeltaCheck,
 
     // Clear error utility
     clearError: useCallback(() => {

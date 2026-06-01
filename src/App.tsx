@@ -70,6 +70,8 @@ import CorporateBulkRegistration from './pages/CorporateBulkRegistration';
 // ⬇️ B2B Portal
 import B2BLogin from './pages/B2BLogin';
 import B2BPortal from './pages/B2BPortal';
+import B2BPaymentSuccess from './pages/B2BPaymentSuccess';
+import B2BPaymentFailed from './pages/B2BPaymentFailed';
 import ProtectedB2BRoute from './components/Auth/ProtectedB2BRoute';
 
 // ⬇️ Patient Portal
@@ -169,6 +171,9 @@ const AppRoutes: React.FC = () => {
           </ProtectedB2BRoute>
         }
       />
+      <Route path="/b2b/payment/success" element={<B2BPaymentSuccess />} />
+      <Route path="/b2b/payment/failed" element={<B2BPaymentFailed />} />
+      <Route path="/b2b/payment/cancelled" element={<B2BPaymentFailed />} />
 
       {/* Patient Portal routes */}
       <Route

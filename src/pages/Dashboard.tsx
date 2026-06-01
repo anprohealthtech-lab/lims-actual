@@ -232,6 +232,14 @@ type CardOrder = {
   tatStarted?: boolean;
 };
 
+const formatOrderCreationError = (error: any) => {
+  const message = String(error?.message || error || "Failed to create order");
+  if (message.includes("unique_sample_id_per_lab")) {
+    return "Sample ID conflict while creating the order. The system will try the next available ID; please submit again if this still appears.";
+  }
+  return message;
+};
+
 
 
 /* ===========================
@@ -736,7 +744,7 @@ id, patient_id, patient_name, status, priority, order_date, expected_date, total
 
       const { data: order, error: orderError } = await database.orders.create(orderDataWithLab);
       if (orderError) {
-        const errorMessage = orderError.message || "Failed to create order";
+        const errorMessage = formatOrderCreationError(orderError);
         alert(`❌ Order Creation Failed: ${errorMessage} `);
         throw orderError;
       }

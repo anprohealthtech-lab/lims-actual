@@ -53,6 +53,21 @@ function generateOrderSampleId(date: Date, dailySequence: number, labCode?: stri
   return labCode ? `${labCode}-${datePart}` : datePart;
 }
 
+function isSampleIdConflictError(error: any): boolean {
+  return error?.code === '23505' &&
+    String(error?.message || error?.details || '').includes('unique_sample_id_per_lab');
+}
+
+function getDailySequenceFromOrder(order: any): number {
+  if (typeof order?.order_number === 'number' && Number.isFinite(order.order_number)) {
+    return order.order_number;
+  }
+
+  const tail = String(order?.sample_id || '').match(/(?:^|[/-])(\d+)\s*$/)?.[1] || '';
+  const parsed = parseInt(tail, 10);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
 function generateOrderQRCodeData(order: {
   id: string;
   patientId: string;
@@ -258,9 +273,9 @@ Deno.serve(async (req) => {
       .eq('id', labId)
       .maybeSingle();
 
-    const { count: dailyOrderCount, error: countError } = await supabaseClient
+    const { data: dailyOrders, error: sequenceError } = await supabaseClient
       .from('orders')
-      .select('id', { count: 'exact', head: true })
+      .select('sample_id, order_number')
       .eq('lab_id', labId)
       .gte('order_date', orderDate)
       .lt(
@@ -270,36 +285,66 @@ Deno.serve(async (req) => {
           .split('T')[0],
       );
 
-    if (countError) {
-      throw new Error(`Failed to generate sample ID: ${countError.message}`);
+    if (sequenceError) {
+      throw new Error(`Failed to generate sample ID: ${sequenceError.message}`);
     }
 
-    const dailySequence = (dailyOrderCount || 0) + 1;
-    const sampleId = generateOrderSampleId(new Date(orderDate), dailySequence, labData?.code);
-    const { color_code, color_name } = getOrderAssignedColor(dailySequence);
+    let dailySequence = Math.max(
+      dailyOrders?.length || 0,
+      ...(dailyOrders || []).map(getDailySequenceFromOrder),
+    ) + 1;
 
     // 1. Create Order
-    const { data: order, error: orderError } = await supabaseClient
-      .from('orders')
-      .insert({
-        patient_id: orderData.patient_id,
-        lab_id: labId,
-        referring_doctor_id: orderData.referring_doctor_id,
-        location_id: orderData.location_id,
-        created_by: user.id,
-        total_amount: subtotal,
-        final_amount: finalAmount,
-        order_date: orderDate,
-        sample_id: sampleId,
-        color_code,
-        color_name,
-        status: 'created',
-      })
-      .select()
-      .single();
+    let order: any = null;
+    let sampleId = '';
+    let color_code = '';
+    let color_name = '';
+    let lastOrderError: any = null;
 
-    if (orderError) {
-      throw new Error(`Order creation failed: ${orderError.message}`);
+    for (let attempt = 0; attempt < 10; attempt += 1) {
+      sampleId = generateOrderSampleId(new Date(orderDate), dailySequence, labData?.code);
+      const assignedColor = getOrderAssignedColor(dailySequence);
+      color_code = assignedColor.color_code;
+      color_name = assignedColor.color_name;
+
+      const { data: insertedOrder, error: orderError } = await supabaseClient
+        .from('orders')
+        .insert({
+          patient_id: orderData.patient_id,
+          lab_id: labId,
+          referring_doctor_id: orderData.referring_doctor_id,
+          location_id: orderData.location_id,
+          created_by: user.id,
+          total_amount: subtotal,
+          final_amount: finalAmount,
+          order_date: orderDate,
+          sample_id: sampleId,
+          color_code,
+          color_name,
+          status: 'created',
+        })
+        .select()
+        .single();
+
+      if (!orderError) {
+        order = insertedOrder;
+        break;
+      }
+
+      lastOrderError = orderError;
+      if (!isSampleIdConflictError(orderError)) {
+        throw new Error(`Order creation failed: ${orderError.message}`);
+      }
+
+      dailySequence += 1;
+    }
+
+    if (!order) {
+      throw new Error(
+        lastOrderError
+          ? 'Order creation failed: could not assign a unique sample ID. Please try again.'
+          : 'Order creation failed',
+      );
     }
 
     console.log('✅ Order created:', order.id);
@@ -612,9 +657,10 @@ Deno.serve(async (req) => {
     );
   } catch (error) {
     console.error('Error:', error);
+    const message = error instanceof Error ? error.message : String(error);
     return new Response(
       JSON.stringify({
-        error: error.message,
+        error: message,
       }),
       {
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },

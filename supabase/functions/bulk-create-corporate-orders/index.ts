@@ -22,12 +22,14 @@ interface PatientInput {
 
 interface BulkCorporateOrderRequest {
   account_id: string;
+  batch_id?: string;
   package_id?: string;
   package_ids?: string[];
   test_group_ids?: string[];
   referring_doctor_id?: string;
   notes?: string;
   excel_filename?: string;
+  total_patients?: number;
   patients: PatientInput[];
 }
 
@@ -62,6 +64,13 @@ interface ChargeLine {
   id: string;
   name: string;
   price: number;
+}
+
+interface BatchProgress {
+  id: string;
+  total_patients: number;
+  created_orders: number;
+  failed_orders: number;
 }
 
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
@@ -187,7 +196,7 @@ const generateNumericBarcode = (date: Date, sequence: number) =>
   `${formatShortSampleDate(date)}${String(sequence).padStart(4, '0')}`;
 
 async function createSamplesForBulkOrder(
-  supabase: ReturnType<typeof createClient>,
+  supabase: any,
   orderId: string,
   orderTests: Array<{ id: string; test_name: string; test_group_id: string | null }>,
   testGroupMap: Map<string, TestGroupMeta>,
@@ -358,6 +367,20 @@ Deno.serve(async (req) => {
       .single();
     if (accountError || !account) throw new Error('Account not found or inactive');
 
+    let referringDoctor: { id: string; name: string } | null = null;
+    if (body.referring_doctor_id) {
+      const { data: doctorRow, error: doctorError } = await supabase
+        .from('doctors')
+        .select('id, name')
+        .eq('id', body.referring_doctor_id)
+        .eq('lab_id', labId)
+        .eq('is_active', true)
+        .maybeSingle();
+      if (doctorError) throw new Error(`Failed to fetch referring doctor: ${formatSupabaseError(doctorError, 'Unknown doctor error')}`);
+      if (!doctorRow) throw new Error('Referring doctor not found or inactive');
+      referringDoctor = doctorRow as { id: string; name: string };
+    }
+
     const allPackageIds = dedupeIds([...basePackageIds, ...body.patients.flatMap((p) => p.additional_package_ids || [])]);
     const allDirectTestIds = dedupeIds([...baseDirectTestIds, ...body.patients.flatMap((p) => p.additional_test_group_ids || [])]);
 
@@ -490,20 +513,43 @@ Deno.serve(async (req) => {
     }
     let nextCorporatePatientSequence = (existingCorporatePatientCount || 0) + 1;
 
-    const batchInsertPayload = {
-      lab_id: labId,
-      account_id: body.account_id,
-      package_id: baseSelection.packageIds[0] || null,
-      test_group_ids: baseSelection.finalTestGroupIds,
-      batch_source: body.excel_filename ? 'excel_upload' : 'manual',
-      total_patients: body.patients.length,
-      status: 'processing',
-      excel_filename: body.excel_filename || null,
-      notes: body.notes || null,
-      created_by: user.id,
-    };
-    const { data: batch, error: batchError } = await supabase.from('bulk_registration_batches').insert(batchInsertPayload).select('id').maybeSingle();
-    if (batchError || !batch?.id) throw new Error(`Failed to create batch: ${formatSupabaseError(batchError, 'No row returned from insert')}`);
+    let batch: BatchProgress;
+
+    if (body.batch_id) {
+      const { data: existingBatch, error: existingBatchError } = await supabase
+        .from('bulk_registration_batches')
+        .select('id, total_patients, created_orders, failed_orders, lab_id, account_id')
+        .eq('id', body.batch_id)
+        .eq('lab_id', labId)
+        .eq('account_id', body.account_id)
+        .single();
+
+      if (existingBatchError || !existingBatch) {
+        throw new Error(`Bulk batch not found for append: ${formatSupabaseError(existingBatchError, 'No matching batch')}`);
+      }
+
+      batch = existingBatch as BatchProgress;
+    } else {
+      const batchInsertPayload = {
+        lab_id: labId,
+        account_id: body.account_id,
+        package_id: baseSelection.packageIds[0] || null,
+        test_group_ids: baseSelection.finalTestGroupIds,
+        batch_source: body.excel_filename ? 'excel_upload' : 'manual',
+        total_patients: Math.max(body.total_patients || body.patients.length, body.patients.length),
+        status: 'processing',
+        excel_filename: body.excel_filename || null,
+        notes: body.notes || null,
+        created_by: user.id,
+      };
+      const { data: newBatch, error: batchError } = await supabase
+        .from('bulk_registration_batches')
+        .insert(batchInsertPayload)
+        .select('id, total_patients, created_orders, failed_orders')
+        .maybeSingle();
+      if (batchError || !newBatch?.id) throw new Error(`Failed to create batch: ${formatSupabaseError(batchError, 'No row returned from insert')}`);
+      batch = newBatch as BatchProgress;
+    }
 
     const results: PatientResult[] = [];
     let createdCount = 0;
@@ -549,8 +595,8 @@ Deno.serve(async (req) => {
           lab_id: labId,
           patient_id: patientId,
           patient_name: patientInput.name,
-          doctor: account.name,
-          referring_doctor_id: body.referring_doctor_id || null,
+          doctor: referringDoctor?.name || 'Self',
+          referring_doctor_id: referringDoctor?.id || null,
           location_id: null,
           collected_at_location_id: null,
           account_id: body.account_id,
@@ -648,7 +694,7 @@ Deno.serve(async (req) => {
           testGroupMap,
           labId,
           labCode || 'LIMSLAB',
-          patientId,
+          patientId!,
         );
 
         // PATCH: force price=0 for package-covered tests (overrides any DB triggers)
@@ -711,12 +757,21 @@ Deno.serve(async (req) => {
       }
     }
 
-    const batchStatus = failedCount === 0 ? 'completed' : createdCount === 0 ? 'failed' : 'partial';
+    const cumulativeCreated = Number(batch.created_orders || 0) + createdCount;
+    const cumulativeFailed = Number(batch.failed_orders || 0) + failedCount;
+    const processedPatients = cumulativeCreated + cumulativeFailed;
+    const batchStatus = processedPatients < batch.total_patients
+      ? 'processing'
+      : cumulativeFailed === 0
+        ? 'completed'
+        : cumulativeCreated === 0
+          ? 'failed'
+          : 'partial';
     await supabase.from('bulk_registration_batches').update({
-      created_orders: createdCount,
-      failed_orders: failedCount,
+      created_orders: cumulativeCreated,
+      failed_orders: cumulativeFailed,
       status: batchStatus,
-      completed_at: new Date().toISOString(),
+      completed_at: processedPatients >= batch.total_patients ? new Date().toISOString() : null,
     }).eq('id', batch.id);
 
     return new Response(JSON.stringify({

@@ -1,5 +1,21 @@
 import { supabase } from './supabase';
 
+async function getFunctionErrorMessage(error: any): Promise<string> {
+  const fallback = error?.message || 'Failed to create B2B portal user';
+
+  try {
+    const context = error?.context;
+    if (context && typeof context.json === 'function') {
+      const body = await context.json();
+      return body?.error || body?.message || fallback;
+    }
+  } catch (parseError) {
+    console.warn('Could not parse B2B auth error response:', parseError);
+  }
+
+  return fallback;
+}
+
 /**
  * Create an auth user for a B2B account
  * This allows the account to access the B2B portal
@@ -20,13 +36,14 @@ export async function createB2BAccountUser(accountData: {
         password: accountData.password,
         account_id: accountData.accountId,
         account_name: accountData.accountName,
+        name: accountData.accountName,
         lab_id: accountData.labId,
       }
     });
 
     if (error) {
       console.error('Error creating B2B auth user:', error);
-      return { success: false, error: error.message };
+      return { success: false, error: await getFunctionErrorMessage(error) };
     }
 
     return { success: true, data };

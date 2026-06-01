@@ -73,7 +73,7 @@ const safeFormatDate = (dateValue: string | null | undefined, formatString: stri
 };
 
 type DateFilter = CalendarDateFilter;
-type SortField = 'patient_name' | 'order_date' | 'verified_at' | 'test_name';
+type SortField = 'sample_id' | 'patient_name' | 'order_date' | 'verified_at' | 'test_name';
 type SortDirection = 'asc' | 'desc';
 
 interface ApprovedResult {
@@ -94,6 +94,9 @@ interface ApprovedResult {
   sample_id: string;
   order_date: string;
   doctor: string;
+  account_id?: string | null;
+  account_name?: string | null;
+  order_number?: number | null;
   patient_full_name: string;
   age: number;
   gender: string;
@@ -129,6 +132,8 @@ interface OrderGroup {
   gender: string;
   order_date: string;
   sample_ids: string[];
+  account_names: string[];
+  order_numbers: number[];
   verified_at: string;
   verified_by: string;
   test_names: string[];
@@ -163,13 +168,15 @@ const Reports: React.FC = () => {
   const [selectedStatus, setSelectedStatus] = useState<'all' | 'ready' | 'pending' | 'processing'>('all');
   const [selectedTestType, setSelectedTestType] = useState('all');
   const [selectedDoctor, setSelectedDoctor] = useState('all');
+  const [selectedAccount, setSelectedAccount] = useState('all');
   const [dateFilter, setDateFilter] = useState<DateFilter>('today');
-  const [sortField, setSortField] = useState<SortField>('verified_at');
+  const [sortField, setSortField] = useState<SortField>('sample_id');
   const [sortDirection, setSortDirection] = useState<SortDirection>('desc');
   const [showFilters, setShowFilters] = useState(false);
   const [selectedOrders, setSelectedOrders] = useState<Set<string>>(new Set());
   const [isQueueingSelectedReports, setIsQueueingSelectedReports] = useState(false);
   const [isDeletingSelectedReports, setIsDeletingSelectedReports] = useState(false);
+  const [isGeneratingSelectedReports, setIsGeneratingSelectedReports] = useState(false);
   const [isTestingTemplate, setIsTestingTemplate] = useState(false);
   const [previewingOrderId, setPreviewingOrderId] = useState<string | null>(null);
   const [isAdmin, setIsAdmin] = useState(false);
@@ -202,6 +209,15 @@ const Reports: React.FC = () => {
   const [reportStudioOrderId, setReportStudioOrderId] = useState<string | null>(null);
   const [viewingOrder, setViewingOrder] = useState<OrderGroup | null>(null);
   const [sendReportModalData, setSendReportModalData] = useState<{ orderId: string, patientName: string, doctorName: string, doctorPhone: string, clinicalSummary?: string, includeClinicalSummary?: boolean, reportUrl: string } | null>(null);
+
+  const getSampleSeqFromGroup = (group: OrderGroup) => {
+    const explicit = group.order_numbers.find((n) => typeof n === 'number' && Number.isFinite(n));
+    if (typeof explicit === 'number') return explicit;
+    const sample = group.sample_ids[0] || '';
+    const tail = String(sample).match(/(?:^|[/-])(\d+)\s*$/)?.[1] || '';
+    const parsed = parseInt(tail, 10);
+    return Number.isFinite(parsed) ? parsed : 0;
+  };
 
   const handleOpenSendDoctor = async (group: OrderGroup) => {
     try {
@@ -410,17 +426,25 @@ const Reports: React.FC = () => {
           }
         }
 
-        // 4. Bulk Fetch Smart Report URLs from orders table
+        // 4. Bulk Fetch Smart Report URLs and order metadata
         const smartReportMap = new Map<string, { url: string; generated_at: string }>();
+        const orderMetaMap = new Map<string, { account_id?: string | null; account_name?: string | null; order_number?: number | null; sample_id?: string | null; doctor?: string | null }>();
         if (orderIds.length > 0) {
           const { data: ordersData } = await supabase
             .from('orders')
-            .select('id, smart_report_url, smart_report_generated_at')
-            .in('id', orderIds)
-            .not('smart_report_url', 'is', null);
+            .select('id, smart_report_url, smart_report_generated_at, account_id, order_number, sample_id, doctor, accounts(name)')
+            .in('id', orderIds);
 
           if (ordersData) {
             ordersData.forEach((order: any) => {
+              const accountInfo = Array.isArray(order.accounts) ? order.accounts[0] : order.accounts;
+              orderMetaMap.set(order.id, {
+                account_id: order.account_id || null,
+                account_name: accountInfo?.name || null,
+                order_number: order.order_number ?? null,
+                sample_id: order.sample_id || null,
+                doctor: order.doctor || null,
+              });
               if (order.smart_report_url) {
                 smartReportMap.set(order.id, {
                   url: order.smart_report_url,
@@ -451,9 +475,15 @@ const Reports: React.FC = () => {
           const isReady = readinessMap.get(result.order_id) || false;
           const resolvedPhone = result.phone || patientPhoneMap.get(result.patient_id) || '';
           const smartReport = smartReportMap.get(result.order_id);
+          const orderMeta = orderMetaMap.get(result.order_id);
 
           return {
             ...result,
+            sample_id: result.sample_id || orderMeta?.sample_id || '',
+            doctor: result.doctor || orderMeta?.doctor || '',
+            account_id: orderMeta?.account_id || null,
+            account_name: orderMeta?.account_name || null,
+            order_number: orderMeta?.order_number ?? null,
             has_report: !!report,
             report_status: report?.status,
             report_generated_at: report?.generated_date,
@@ -627,6 +657,12 @@ const Reports: React.FC = () => {
       );
     }
 
+    if (selectedAccount !== 'all') {
+      filtered = filtered.filter(result =>
+        (result.account_name || '').toLowerCase().includes(selectedAccount.toLowerCase())
+      );
+    }
+
     // Apply status filter
     if (selectedStatus !== 'all') {
       filtered = filtered.filter(result => {
@@ -655,6 +691,8 @@ const Reports: React.FC = () => {
           gender: r.gender,
           order_date: r.order_date,
           sample_ids: r.sample_id ? [r.sample_id] : [],
+          account_names: r.account_name ? [r.account_name] : [],
+          order_numbers: typeof r.order_number === 'number' ? [r.order_number] : [],
           verified_at: r.verified_at,
           verified_by: r.verified_by,
           test_names: r.test_name ? [r.test_name] : [],
@@ -669,6 +707,8 @@ const Reports: React.FC = () => {
           group.results.push(r);
         }
         if (r.sample_id && !group.sample_ids.includes(r.sample_id)) group.sample_ids.push(r.sample_id);
+        if (r.account_name && !group.account_names.includes(r.account_name)) group.account_names.push(r.account_name);
+        if (typeof r.order_number === 'number' && !group.order_numbers.includes(r.order_number)) group.order_numbers.push(r.order_number);
         if (r.test_name && !group.test_names.includes(r.test_name)) group.test_names.push(r.test_name);
         if (new Date(r.verified_at) > new Date(group.verified_at)) {
           group.verified_at = r.verified_at;
@@ -686,6 +726,10 @@ const Reports: React.FC = () => {
         case 'patient_name':
           aValue = a.patient_full_name;
           bValue = b.patient_full_name;
+          break;
+        case 'sample_id':
+          aValue = getSampleSeqFromGroup(a);
+          bValue = getSampleSeqFromGroup(b);
           break;
         case 'order_date':
           aValue = new Date(a.order_date).getTime();
@@ -708,7 +752,7 @@ const Reports: React.FC = () => {
     });
 
     return sorted;
-  }, [approvedResults, searchTerm, selectedTestType, selectedDoctor, selectedStatus, sortField, sortDirection]);
+  }, [approvedResults, searchTerm, selectedTestType, selectedDoctor, selectedAccount, selectedStatus, sortField, sortDirection]);
 
   // Get unique values for filters
   const uniqueTestTypes = useMemo(() => {
@@ -719,6 +763,11 @@ const Reports: React.FC = () => {
   const uniqueDoctors = useMemo(() => {
     const doctors = new Set(approvedResults.map(r => r.doctor).filter(Boolean));
     return Array.from(doctors).sort();
+  }, [approvedResults]);
+
+  const uniqueAccounts = useMemo(() => {
+    const accounts = new Set(approvedResults.map(r => r.account_name).filter(Boolean));
+    return Array.from(accounts).sort();
   }, [approvedResults]);
 
   // Statistics for dashboard
@@ -1450,7 +1499,10 @@ const Reports: React.FC = () => {
     setSelectedStatus('all');
     setSelectedTestType('all');
     setSelectedDoctor('all');
+    setSelectedAccount('all');
     setDateFilter('today');
+    setSortField('sample_id');
+    setSortDirection('desc');
   };
 
   const getReportUrlForQueue = (result?: ApprovedResult | null): string | null => {
@@ -1593,63 +1645,76 @@ const Reports: React.FC = () => {
       return;
     }
 
+    if (!userLabId) {
+      alert('Lab context not available. Please refresh and try again.');
+      return;
+    }
+
+    setIsGeneratingSelectedReports(true);
+
     try {
-      const userId = (await supabase.auth.getUser()).data.user?.id;
-      if (!userId) {
+      const { data: userData } = await supabase.auth.getUser();
+      const triggeredByUserId = userData.user?.id;
+      if (!triggeredByUserId) {
         alert('User not authenticated');
         return;
       }
 
-      let successCount = 0;
+      const selectedOrderIds = Array.from(selectedOrders);
+      let queuedCount = 0;
       let errorCount = 0;
+      const skipped: string[] = [];
 
-      for (const orderId of selectedOrders) {
+      for (const orderId of selectedOrderIds) {
         const group = orderGroups.find((g) => g.order_id === orderId);
         if (!group) continue;
 
+        if (!group.is_report_ready) {
+          skipped.push(`${group.patient_full_name}: panels not ready`);
+          errorCount++;
+          continue;
+        }
+
         try {
-          const { error } = await supabase.from('reports').upsert(
-            {
-              order_id: orderId,
-              patient_id: group.patient_id,
-              doctor: group.results[0]?.doctor || 'Unknown',
-              status: 'pending',
-              report_status: 'generating',
-              generated_date: new Date().toISOString(),
-              report_type: group.is_report_ready ? 'final' : 'draft',
-              notes: JSON.stringify({
-                test_names: group.test_names,
-                sample_ids: group.sample_ids,
-                verified_at: group.verified_at,
-                verified_by: group.verified_by,
-              }),
+          const { data, error } = await supabase.functions.invoke('generate-pdf-letterhead', {
+            body: {
+              orderId,
+              triggeredByUserId,
             },
-            {
-              onConflict: 'order_id',
-              ignoreDuplicates: false,
-            }
-          );
+          });
 
           if (error) {
             console.error(`Error generating report for order ${orderId}:`, error);
+            skipped.push(`${group.patient_full_name}: ${error.message || 'edge function failed'}`);
             errorCount++;
-          } else {
-            successCount++;
+            continue;
           }
+
+          if (data?.error || data?.success === false) {
+            const message = data?.message || data?.details || data?.error || 'generation rejected';
+            console.error(`Report generation rejected for order ${orderId}:`, data);
+            skipped.push(`${group.patient_full_name}: ${message}`);
+            errorCount++;
+            continue;
+          }
+
+          queuedCount++;
         } catch (e) {
           console.error(`Exception for order ${orderId}:`, e);
+          skipped.push(`${group.patient_full_name}: ${e instanceof Error ? e.message : 'unknown error'}`);
           errorCount++;
         }
       }
 
       clearSelection();
+      await pollPDFQueueStatus(selectedOrderIds, false);
 
-      if (successCount > 0 && errorCount === 0) {
-        alert(`Successfully generated ${successCount} report(s)`);
-      } else if (successCount > 0 && errorCount > 0) {
-        alert(`Generated ${successCount} report(s), ${errorCount} failed`);
+      if (queuedCount > 0 && errorCount === 0) {
+        alert(`Started PDF generation for ${queuedCount} report(s)`);
+      } else if (queuedCount > 0 && errorCount > 0) {
+        alert(`Started PDF generation for ${queuedCount} report(s), ${errorCount} skipped or failed.\n\n${skipped.slice(0, 8).join('\n')}`);
       } else {
-        alert('Failed to generate reports. Please try again.');
+        alert(`No reports were generated.\n\n${skipped.slice(0, 8).join('\n') || 'Please try again.'}`);
       }
 
       // Refresh the data to show updated report status
@@ -1657,6 +1722,8 @@ const Reports: React.FC = () => {
     } catch (e) {
       console.error('Error generating reports:', e);
       alert('An error occurred while generating reports');
+    } finally {
+      setIsGeneratingSelectedReports(false);
     }
   };
 
@@ -2179,7 +2246,7 @@ const Reports: React.FC = () => {
 	            >
 	              <Filter className="w-4 h-4" />
 	              <span>Filters</span>
-	              {(selectedStatus !== 'all' || selectedTestType !== 'all' || selectedDoctor !== 'all' || dateFilter !== 'today') && (
+	              {(selectedStatus !== 'all' || selectedTestType !== 'all' || selectedDoctor !== 'all' || selectedAccount !== 'all' || dateFilter !== 'today') && (
 	                <span className="w-2 h-2 bg-blue-500 rounded-full"></span>
 	              )}
 	            </button>
@@ -2196,7 +2263,7 @@ const Reports: React.FC = () => {
           {/* Advanced Filters */}
           {showFilters && (
             <div className="bg-gray-50 rounded-lg p-4 border border-gray-200">
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+	              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-2">Date Range</label>
                   <select
@@ -2240,8 +2307,8 @@ const Reports: React.FC = () => {
                   </select>
                 </div>
 
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-2">Doctor</label>
+	                <div>
+	                  <label className="block text-sm font-medium text-gray-700 mb-2">Doctor</label>
                   <select
                     value={selectedDoctor}
                     onChange={(e) => setSelectedDoctor(e.target.value)}
@@ -2251,9 +2318,42 @@ const Reports: React.FC = () => {
                     {uniqueDoctors.map(doctor => (
                       <option key={doctor} value={doctor}>{doctor}</option>
                     ))}
-                  </select>
-                </div>
-              </div>
+	                  </select>
+	                </div>
+
+	                <div>
+	                  <label className="block text-sm font-medium text-gray-700 mb-2">B2B Client</label>
+	                  <select
+	                    value={selectedAccount}
+	                    onChange={(e) => setSelectedAccount(e.target.value)}
+	                    className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+	                  >
+	                    <option value="all">All B2B Clients</option>
+	                    {uniqueAccounts.map(account => (
+	                      <option key={account} value={account}>{account}</option>
+	                    ))}
+	                  </select>
+	                </div>
+
+	                <div>
+	                  <label className="block text-sm font-medium text-gray-700 mb-2">Sort By</label>
+	                  <select
+	                    value={`${sortField}:${sortDirection}`}
+	                    onChange={(e) => {
+	                      const [field, direction] = e.target.value.split(':') as [SortField, SortDirection];
+	                      setSortField(field);
+	                      setSortDirection(direction);
+	                    }}
+	                    className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+	                  >
+	                    <option value="sample_id:desc">Sample ID newest first</option>
+	                    <option value="sample_id:asc">Sample ID oldest first</option>
+	                    <option value="verified_at:desc">Verified newest first</option>
+	                    <option value="order_date:desc">Order date newest first</option>
+	                    <option value="patient_name:asc">Patient A-Z</option>
+	                  </select>
+	                </div>
+	              </div>
 
               <div className="flex items-center justify-between mt-4 pt-4 border-t border-gray-200">
                 <div className="text-sm text-gray-600">
@@ -2327,10 +2427,19 @@ const Reports: React.FC = () => {
                   </button>
                   <button
                     onClick={generateReport}
-                    className="flex items-center space-x-2 px-4 py-2 bg-green-600 text-white rounded-md hover:bg-green-700 transition-colors"
+                    disabled={isGeneratingSelectedReports}
+                    className={`flex items-center space-x-2 px-4 py-2 rounded-md transition-colors ${
+                      isGeneratingSelectedReports
+                        ? 'bg-green-300 text-white cursor-not-allowed'
+                        : 'bg-green-600 text-white hover:bg-green-700'
+                    }`}
                   >
-                    <FileText className="w-4 h-4" />
-                    <span>Generate Reports</span>
+                    {isGeneratingSelectedReports ? (
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                    ) : (
+                      <FileText className="w-4 h-4" />
+                    )}
+                    <span>{isGeneratingSelectedReports ? 'Generating...' : 'Generate Reports'}</span>
                   </button>
                 </div>
               </div>

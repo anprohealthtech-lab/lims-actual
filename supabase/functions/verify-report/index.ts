@@ -29,6 +29,20 @@ interface VerificationResponse {
   message?: string
 }
 
+const ORDER_SELECT = `
+  id,
+  sample_id,
+  created_at,
+  lab_id,
+  patient:patients (
+    name,
+    gender,
+    age,
+    patient_number
+  ),
+  doctor
+`
+
 serve(async (req) => {
   // Handle CORS preflight
   if (req.method === 'OPTIONS') {
@@ -39,12 +53,16 @@ serve(async (req) => {
     // Get sample_id from query params OR request body
     const url = new URL(req.url)
     let sampleId = url.searchParams.get('id') || url.searchParams.get('sample_id')
+    let labId = url.searchParams.get('lab_id')
+    let labCode = url.searchParams.get('lab_code') || url.searchParams.get('lab')
 
-    // If not in query params, check request body
-    if (!sampleId && req.method === 'POST') {
+    // If POST, merge request body with query params.
+    if (req.method === 'POST') {
       try {
         const body = await req.json()
-        sampleId = body.id || body.sample_id
+        sampleId = sampleId || body.id || body.sample_id
+        labId = body.lab_id || labId
+        labCode = body.lab_code || body.lab || labCode
       } catch (_e) {
         // Body parsing failed, continue with null sampleId
       }
@@ -79,52 +97,76 @@ serve(async (req) => {
     // Check if sampleId looks like a UUID (contains hyphens and hex chars in UUID format)
     const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(sampleId)
 
+    if (!labId && labCode) {
+      const { data: scopedLab, error: labLookupError } = await supabaseClient
+        .from('labs')
+        .select('id')
+        .eq('code', labCode)
+        .maybeSingle()
+
+      if (labLookupError) {
+        throw labLookupError
+      }
+
+      labId = scopedLab?.id || null
+    }
+
     let order = null
     let orderError = null
+    let isAmbiguous = false
 
     if (isUUID) {
-      // If it's a UUID, search by id OR sample_id
+      // Prefer immutable order UUIDs. They are globally unique, unlike sample_id.
       const result = await supabaseClient
         .from('orders')
-        .select(`
-          id,
-          sample_id,
-          created_at,
-          lab_id,
-          patient:patients (
-            name,
-            gender,
-            age,
-            patient_number
-          ),
-          doctor
-        `)
-        .or(`id.eq.${sampleId},sample_id.eq.${sampleId}`)
+        .select(ORDER_SELECT)
+        .eq('id', sampleId)
         .maybeSingle()
       order = result.data
       orderError = result.error
+
+      if (!order && !orderError) {
+        let query = supabaseClient
+          .from('orders')
+          .select(ORDER_SELECT)
+          .eq('sample_id', sampleId)
+          .limit(2)
+
+        if (labId) query = query.eq('lab_id', labId)
+
+        const fallback = await query
+        order = fallback.data?.[0] || null
+        orderError = fallback.error
+        isAmbiguous = !labId && (fallback.data?.length || 0) > 1
+      }
     } else {
-      // Not a UUID — search by sample_id.
-      // sample_id is unique per (lab_id, sample_id) so maybeSingle is safe.
-      const result = await supabaseClient
+      // Legacy/public URLs may still pass sample_id. Scope by lab when
+      // provided; otherwise detect duplicates instead of returning a random lab.
+      let query = supabaseClient
         .from('orders')
-        .select(`
-          id,
-          sample_id,
-          created_at,
-          lab_id,
-          patient:patients (
-            name,
-            gender,
-            age,
-            patient_number
-          ),
-          doctor
-        `)
+        .select(ORDER_SELECT)
         .eq('sample_id', sampleId)
-        .maybeSingle()
-      order = result.data
+        .limit(2)
+
+      if (labId) query = query.eq('lab_id', labId)
+
+      const result = await query
+      order = result.data?.[0] || null
       orderError = result.error
+      isAmbiguous = !labId && (result.data?.length || 0) > 1
+    }
+
+    if (isAmbiguous) {
+      return new Response(
+        JSON.stringify({
+          status: 'error',
+          message: 'Sample ID exists in more than one lab. Please verify using the QR code from the report or include lab_code.'
+        } as VerificationResponse),
+        {
+          status: 409,
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+        }
+      )
     }
 
     if (orderError || !order) {
@@ -155,21 +197,23 @@ serve(async (req) => {
       .eq('order_id', order.id)
       .single()
 
+    const patient = Array.isArray(order.patient) ? order.patient[0] : order.patient
+
     // Return verification data (only minimal necessary info)
     const response: VerificationResponse = {
       status: 'verified',
       data: {
         sample_id: order.sample_id,
         created_at: order.created_at,
-        patient_name: order.patient?.name || 'Unknown',
-        patient_gender: order.patient?.gender,
-        patient_age: order.patient?.age,
+        patient_name: patient?.name || 'Unknown',
+        patient_gender: patient?.gender,
+        patient_age: patient?.age,
         doctor: order.doctor || 'Self',
         pdf_url: report?.pdf_url || undefined,
         lab_name: lab?.name || undefined,
         lab_city: lab?.city || undefined,
         lab_code: lab?.code || undefined,
-        patient_number: order.patient?.patient_number || undefined,
+        patient_number: patient?.patient_number || undefined,
       }
     }
 

@@ -16,6 +16,7 @@ import PatientPortalSettings from '../components/Settings/PatientPortalSettings'
 import PatientFormSettings from '../components/Settings/PatientFormSettings';
 import LabBillingItemSettings from '../components/Settings/LabBillingItemSettings';
 import PriceMasterSettings from '../components/Settings/PriceMasterSettings';
+import PaymentGatewaySettings from '../components/Settings/PaymentGatewaySettings';
 import {
   Users,
   Shield,
@@ -47,7 +48,8 @@ import {
   Star,
   Smartphone,
   Tag,
-  Printer
+  Printer,
+  CreditCard
 } from 'lucide-react';
 import { LANGUAGE_DISPLAY_NAMES, type SupportedLanguage } from '../hooks/useAIResultIntelligence';
 import { COUNTRY_CODE_OPTIONS } from '../utils/phoneFormatter';
@@ -535,7 +537,7 @@ const Settings: React.FC = () => {
   const { user: authUser } = useAuth();
   const { loading: permissionsLoading, hasPermission } = usePermissions();
   const { status: qzStatus, connect: qzConnect, disconnect: qzDisconnect } = useQZTray();
-  const [activeTab, setActiveTab] = useState<'team' | 'permissions' | 'usage' | 'lab' | 'notifications' | 'invoices' | 'analyzer' | 'patient_portal' | 'billing_items' | 'price_masters' | 'patient_form'>('team');
+  const [activeTab, setActiveTab] = useState<'team' | 'permissions' | 'usage' | 'lab' | 'notifications' | 'invoices' | 'analyzer' | 'patient_portal' | 'billing_items' | 'price_masters' | 'patient_form' | 'payment_gateway'>('team');
   const [showUserForm, setShowUserForm] = useState(false);
   const [showEditUserModal, setShowEditUserModal] = useState(false);
   const [selectedUser, setSelectedUser] = useState<User | null>(null);
@@ -829,6 +831,7 @@ const Settings: React.FC = () => {
     { id: 'patient_form', name: 'Patient Form', icon: UserCheck },
     { id: 'billing_items', name: 'Billing Items', icon: FileText },
     { id: 'price_masters', name: 'Price Masters', icon: Tag },
+    { id: 'payment_gateway', name: 'Payment Gateway', icon: CreditCard },
   ];
 
   const roles = availableRoles.length > 0
@@ -3052,6 +3055,13 @@ const Settings: React.FC = () => {
         {activeTab === 'price_masters' && (
           <div className="p-6">
             <PriceMasterSettings />
+          </div>
+        )}
+
+        {/* Payment Gateway Tab */}
+        {activeTab === 'payment_gateway' && labId && (
+          <div className="p-6">
+            <PaymentGatewaySettings labId={labId} />
           </div>
         )}
 

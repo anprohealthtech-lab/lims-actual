@@ -3,6 +3,7 @@ import { supabase, uploadFile, generateFilePath } from './supabase';
 export interface TRFPatientInfo {
   name: string;
   age?: number;
+  ageUnit?: 'years' | 'months' | 'days';
   gender?: 'Male' | 'Female' | 'Other';
   phone?: string;
   email?: string;
@@ -340,6 +341,7 @@ export async function autoCreatePatientFromTRF(
       .insert({
         name: patientInfo.name,
         age: patientInfo.age || 0,  // Default age to 0 if not provided (NOT NULL constraint)
+        age_unit: patientInfo.ageUnit || 'years',  // Default to years
         gender: patientInfo.gender || 'Male',
         phone: patientInfo.phone,
         email: patientInfo.email || '',  // Default to empty string
@@ -436,4 +438,95 @@ export async function findDoctorByName(
     console.error('Error in findDoctorByName:', error);
     return null;
   }
+}
+
+/**
+ * Auto-create doctor from TRF extraction if not matched
+ */
+export async function autoCreateDoctorFromTRF(
+  doctorInfo: TRFDoctorInfo,
+  labId: string
+): Promise<{ id: string; name: string; specialization?: string } | null> {
+  try {
+    // Validate required fields
+    if (!doctorInfo.name || doctorInfo.name.trim().length < 2) {
+      console.warn('Cannot auto-create doctor: name is too short or empty');
+      return null;
+    }
+
+    // Create doctor with data from TRF
+    const { data: newDoctor, error } = await supabase
+      .from('doctors')
+      .insert({
+        name: doctorInfo.name.trim(),
+        specialization: doctorInfo.specialization || null,
+        license_number: doctorInfo.registrationNumber || null,
+        lab_id: labId,
+        is_active: true,
+        is_referring_doctor: true,
+        created_at: new Date().toISOString(),
+      })
+      .select('id, name, specialization')
+      .single();
+
+    if (error) {
+      console.error('Failed to auto-create doctor:', error);
+      return null;
+    }
+
+    console.log('✓ Auto-created doctor:', newDoctor);
+    return newDoctor;
+  } catch (error) {
+    console.error('Error in autoCreateDoctorFromTRF:', error);
+    return null;
+  }
+}
+
+/**
+ * Validate TRF extraction data and return missing required fields
+ */
+export function validateTRFExtractionData(extraction: TRFExtractionResult): {
+  patientValid: boolean;
+  patientMissingFields: string[];
+  doctorValid: boolean;
+  doctorMissingFields: string[];
+  hasMatchedPatient: boolean;
+  hasMatchedDoctor: boolean;
+} {
+  const patientMissingFields: string[] = [];
+  const doctorMissingFields: string[] = [];
+
+  // Check patient info
+  if (!extraction.patientInfo) {
+    patientMissingFields.push('All patient information');
+  } else {
+    if (!extraction.patientInfo.name || extraction.patientInfo.name.trim().length < 2) {
+      patientMissingFields.push('Patient Name');
+    }
+    if (!extraction.patientInfo.phone || !/^\d{10}$/.test(extraction.patientInfo.phone.replace(/\D/g, ''))) {
+      patientMissingFields.push('Valid Phone (10 digits)');
+    }
+    if (!extraction.patientInfo.age || extraction.patientInfo.age <= 0) {
+      patientMissingFields.push('Age');
+    }
+    if (!extraction.patientInfo.gender) {
+      patientMissingFields.push('Gender');
+    }
+  }
+
+  // Check doctor info (doctor is optional but if provided, name is required)
+  if (extraction.doctorInfo && extraction.doctorInfo.name) {
+    if (extraction.doctorInfo.name.trim().length < 2) {
+      doctorMissingFields.push('Doctor Name (min 2 characters)');
+    }
+  }
+
+  return {
+    patientValid: patientMissingFields.length === 0,
+    patientMissingFields,
+    doctorValid: doctorMissingFields.length === 0,
+    doctorMissingFields,
+    hasMatchedPatient: !!(extraction.matchedPatient && extraction.matchedPatient.matchConfidence >= 0.7),
+    hasMatchedDoctor: !!(extraction.matchedDoctor && extraction.matchedDoctor.matchConfidence >= 0.7),
+  };
 }

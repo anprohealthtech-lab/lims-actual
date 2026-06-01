@@ -20,6 +20,20 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 const isUuid = (value: unknown): value is string =>
   typeof value === "string" && UUID_RE.test(value);
 
+const isSampleIdConflictError = (error: any) =>
+  error?.code === "23505" &&
+  String(error?.message || error?.details || "").includes("unique_sample_id_per_lab");
+
+const getDailySequenceFromOrder = (order: any): number => {
+  if (typeof order?.order_number === "number" && Number.isFinite(order.order_number)) {
+    return order.order_number;
+  }
+
+  const tail = String(order?.sample_id || "").match(/(?:^|[/-])(\d+)\s*$/)?.[1] || "";
+  const parsed = parseInt(tail, 10);
+  return Number.isFinite(parsed) ? parsed : 0;
+};
+
 export interface ReportTemplateContextMeta {
   orderNumber: string;
   orderDate: string | null;
@@ -2086,6 +2100,16 @@ export const database = {
         .select()
         .single();
 
+      notificationTriggerService.triggerLoyaltyPoints(
+        patientId,
+        orderId,
+        lab_id,
+        "earned",
+        { points: pointsEarned, balance: newBalance },
+      ).catch((err) =>
+        console.warn("Loyalty points WhatsApp notification failed:", err)
+      );
+
       return { data: { pointsEarned, newBalance }, error: txnError };
     },
 
@@ -2178,6 +2202,20 @@ export const database = {
           loyalty_discount_amount: discountAmount,
         })
         .eq("id", orderId);
+
+      notificationTriggerService.triggerLoyaltyPoints(
+        patientId,
+        orderId,
+        lab_id,
+        "redeemed",
+        {
+          points: pointsToRedeem,
+          balance: newBalance,
+          discountAmount,
+        },
+      ).catch((err) =>
+        console.warn("Loyalty redemption WhatsApp notification failed:", err)
+      );
 
       return {
         data: { discountAmount, pointsRedeemed: pointsToRedeem, newBalance },
@@ -3232,10 +3270,11 @@ export const database = {
         .maybeSingle();
       const labCode: string | undefined = labRow?.code ?? undefined;
 
-      // Count existing orders for this date to get sequence number (filtered by lab_id)
-      const { count: dailyOrderCount, error: countError } = await supabase
+      // Read existing orders for this date and start after the highest used
+      // sequence. Counting alone can reuse IDs after deletes or concurrent saves.
+      const { data: dailyOrders, error: sequenceError } = await supabase
         .from("orders")
-        .select("id", { count: "exact", head: true })
+        .select("sample_id, order_number")
         .eq("lab_id", lab_id)
         .gte("order_date", orderDate)
         .lt(
@@ -3244,43 +3283,67 @@ export const database = {
             .toISOString().split("T")[0],
         );
 
-      if (countError) {
-        console.error("Error counting daily orders:", countError);
-        return { data: null, error: countError };
+      if (sequenceError) {
+        console.error("Error reading daily order sequence:", sequenceError);
+        return { data: null, error: sequenceError };
       }
-
-      const dailySequence = (dailyOrderCount || 0) + 1;
-
-      // Generate sample tracking data for this order
-      // Include lab code prefix so each lab has its own independent sequence
-      const sampleId = generateOrderSampleId(
-        new Date(orderDate),
-        dailySequence,
-        labCode,
-      );
-      const { color_code, color_name } = getOrderAssignedColor(dailySequence);
 
       // Create the order with sample tracking data and lab_id
       // Strip frontend-only fields that don't exist as DB columns
       const { tests, trfAttachmentId, ...orderDetails } = orderData;
-      const orderWithSample = {
-        ...orderDetails,
-        sample_id: sampleId,
-        color_code,
-        color_name,
-        lab_id,
-        created_by: orderDetails?.created_by ?? authUserId,
-        status: orderData.status || "Order Created", // Default status
-      };
+      let dailySequence = Math.max(
+        dailyOrders?.length || 0,
+        ...(dailyOrders || []).map(getDailySequenceFromOrder),
+      ) + 1;
 
-      const { data: order, error } = await supabase
-        .from("orders")
-        .insert([orderWithSample])
-        .select()
-        .single();
+      let order: any = null;
+      let lastInsertError: any = null;
 
-      if (error) {
-        return { data: null, error };
+      for (let attempt = 0; attempt < 10; attempt += 1) {
+        const sampleId = generateOrderSampleId(
+          new Date(orderDate),
+          dailySequence,
+          labCode,
+        );
+        const { color_code, color_name } = getOrderAssignedColor(dailySequence);
+        const orderWithSample = {
+          ...orderDetails,
+          sample_id: sampleId,
+          color_code,
+          color_name,
+          lab_id,
+          created_by: orderDetails?.created_by ?? authUserId,
+          status: orderData.status || "Order Created", // Default status
+        };
+
+        const { data: insertedOrder, error } = await supabase
+          .from("orders")
+          .insert([orderWithSample])
+          .select()
+          .single();
+
+        if (!error) {
+          order = insertedOrder;
+          break;
+        }
+
+        lastInsertError = error;
+        if (!isSampleIdConflictError(error)) {
+          return { data: null, error };
+        }
+
+        dailySequence += 1;
+      }
+
+      if (!order) {
+        return {
+          data: null,
+          error: new Error(
+            lastInsertError
+              ? "Could not assign a unique sample ID. Please try again."
+              : "Order creation failed",
+          ),
+        };
       }
 
       // Generate QR code data with the created order ID
@@ -12762,16 +12825,15 @@ const whatsappTemplates = {
     const { data: { user } } = await supabase.auth.getUser();
     const userId = user?.id;
 
-    // Check if templates already exist
+    // Check existing categories so new default categories can be added later
     const { data: existing } = await supabase
       .from("whatsapp_message_templates")
-      .select("id")
-      .eq("lab_id", labId)
-      .limit(1);
+      .select("category")
+      .eq("lab_id", labId);
 
-    if (existing && existing.length > 0) {
-      return { error: null }; // Already seeded
-    }
+    const existingCategories = new Set(
+      (existing || []).map((template: any) => template.category),
+    );
 
     // Import default templates
     const { DEFAULT_TEMPLATES, extractPlaceholders } = await import(
@@ -12873,11 +12935,43 @@ const whatsappTemplates = {
         is_default: true,
         is_active: true,
       },
+      {
+        name: DEFAULT_TEMPLATES.loyalty_points_earned.name,
+        category: "loyalty_points_earned",
+        message_content: DEFAULT_TEMPLATES.loyalty_points_earned.message,
+        requires_attachment:
+          DEFAULT_TEMPLATES.loyalty_points_earned.requires_attachment,
+        placeholders: extractPlaceholders(
+          DEFAULT_TEMPLATES.loyalty_points_earned.message,
+        ),
+        is_default: true,
+        is_active: true,
+      },
+      {
+        name: DEFAULT_TEMPLATES.loyalty_points_redeemed.name,
+        category: "loyalty_points_redeemed",
+        message_content: DEFAULT_TEMPLATES.loyalty_points_redeemed.message,
+        requires_attachment:
+          DEFAULT_TEMPLATES.loyalty_points_redeemed.requires_attachment,
+        placeholders: extractPlaceholders(
+          DEFAULT_TEMPLATES.loyalty_points_redeemed.message,
+        ),
+        is_default: true,
+        is_active: true,
+      },
     ];
+
+    const templatesToInsert = templates.filter((template) =>
+      !existingCategories.has(template.category)
+    );
+
+    if (templatesToInsert.length === 0) {
+      return { error: null };
+    }
 
     const { error } = await supabase
       .from("whatsapp_message_templates")
-      .insert(templates.map((t) => ({
+      .insert(templatesToInsert.map((t) => ({
         ...t,
         lab_id: labId,
         created_by: userId,
@@ -13594,6 +13688,8 @@ const notificationSettings = {
     send_report_on_status?: string;
     auto_send_invoice_to_patient?: boolean;
     auto_send_registration_confirmation?: boolean;
+    auto_send_loyalty_points?: boolean;
+    auto_send_loyalty_redemption?: boolean;
     include_test_details_in_registration?: boolean;
     include_invoice_in_registration?: boolean;
     default_patient_channel?: string;
@@ -13690,7 +13786,9 @@ const notificationQueue = {
       | "report_ready"
       | "invoice_generated"
       | "order_registered"
-      | "payment_reminder";
+      | "payment_reminder"
+      | "loyalty_points_earned"
+      | "loyalty_points_redeemed";
     order_id?: string;
     report_id?: string;
     invoice_id?: string;

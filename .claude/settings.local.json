@@ -25,7 +25,13 @@
       "Bash(ls scripts/*.ts)",
       "Bash(node -e \"const p=require\\(''./package.json''\\); console.log\\(JSON.stringify\\(p.scripts, null, 2\\)\\)\")",
       "Bash(npx ts-node:*)",
-      "Bash(node --loader ts-node/esm scripts/audit_and_fix_analytes.ts)"
+      "Bash(node --loader ts-node/esm scripts/audit_and_fix_analytes.ts)",
+      "Bash(curl -I \"https://reports.limsapp.in/a3265cc7-20e1-4cd9-8603-c6a2b2fdce09_1779549519273.pdf\" --connect-timeout 5 -L)",
+      "Bash(curl -s -o /dev/null -w \"%{http_code}\" -X OPTIONS \"https://api.limsapp.in/functions/v1/create-auth-user\" -H \"Origin: http://localhost:5173\" -H \"Access-Control-Request-Method: POST\" -H \"Access-Control-Request-Headers: Content-Type,Authorization\")",
+      "Bash(curl -s -X POST \"https://api.limsapp.in/functions/v1/create-auth-user\" -H \"Content-Type: application/json\" -H \"Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.test\" -d '{\"email\":\"test@test.com\",\"password\":\"Test@1234\",\"lab_id\":\"test\",\"name\":\"Test\"}')",
+      "Bash(curl -s -X POST \"https://api.limsapp.in/functions/v1/create-auth-user\" -H \"Content-Type: application/json\" -d '{\"email\":\"test@test.com\",\"password\":\"Test@1234\",\"lab_id\":\"test\",\"name\":\"Test\"}')",
+      "Bash(curl -s -w \"\\\\nHTTP_CODE:%{http_code}\" -X POST \"https://api.limsapp.in/functions/v1/create-auth-user\" -H \"Content-Type: application/json\" -H \"Origin: https://limsapp.in\" -H \"Authorization: Bearer test-token\" -d '{\"email\":\"test@test.com\",\"password\":\"Test@1234\",\"lab_id\":\"3be1e989-d81c-498d-b096-fbb14d29d74d\",\"name\":\"Test\"}')",
+      "Bash(curl -s -I -X OPTIONS \"https://api.limsapp.in/functions/v1/create-auth-user\" -H \"Origin: https://limsapp.in\" -H \"Access-Control-Request-Method: POST\" -H \"Access-Control-Request-Headers: Content-Type, Authorization\")"
     ]
   }
 }
