@@ -651,9 +651,11 @@ const CKEDITOR_CSS = `
 .limsv2-report .signature-section img,
 .limsv2-report [class*="signature"] img,
 .limsv2-report [id*="signature"] img {
-  max-width: 150px;
-  max-height: 50px;
+  max-width: 180px;
+  max-height: 70px;
+  width: auto;
   height: auto;
+  object-fit: contain;
   margin-left: auto;
   display: block;
 }
@@ -1267,6 +1269,33 @@ function renderTemplate(html: string, context: Record<string, any>): string {
   return stripBrokenPdfImages(result);
 }
 
+function formatSignatureNameForPdf(value: unknown): string {
+  if (value === undefined || value === null) return "";
+
+  const normalized = String(value)
+    .replace(/\r\n?/g, "\n")
+    .replace(/\s*\/\s*/g, "\n")
+    .trim();
+
+  return normalized
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .join("<br/>");
+}
+
+function resolveSignatureImageSize(printOptions?: Record<string, unknown> | null) {
+  const clamp = (value: unknown, fallback: number, min: number, max: number) => {
+    const numeric = Number(value);
+    return Number.isFinite(numeric) ? Math.max(min, Math.min(max, numeric)) : fallback;
+  };
+
+  return {
+    maxHeight: clamp(printOptions?.signatureMaxHeight, 70, 30, 120),
+    maxWidth: clamp(printOptions?.signatureMaxWidth, 180, 80, 260),
+  };
+}
+
 /**
  * Inject signature image into rendered HTML - ROBUST VERSION
  * Always injects into .signatures or .report-footer if present, never truncates content
@@ -1291,7 +1320,7 @@ function injectSignatureImage(
   // Build complete signature block with image and text
   const signatureBlockHtml = `
     <div style="margin-top: 10px;">
-      <img src="${signatoryImageUrl}" alt="" style="display:block;max-height:40px;max-width:120px;width:auto;height:auto;object-fit:contain;margin-top:5px;margin-bottom:0px;" onerror="this.style.display='none'" />
+      <img src="${signatoryImageUrl}" alt="" style="display:block;max-height:70px;max-width:180px;width:auto;height:auto;object-fit:contain;margin-top:5px;margin-bottom:0px;" onerror="this.style.display='none'" />
       ${
     signatoryName
       ? `<p style="margin-top:8px;margin-bottom:4px;font-weight:600;font-size:14px;">${signatoryName}</p>`
@@ -1555,6 +1584,20 @@ function generateDynamicCss(settings: any, printOptions?: any): string {
   // â”€â”€ Print Options overrides (lab-level + test-group-level) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   if (hasPrintOptions) {
     css += "\n/* Print Options Overrides */\n";
+    const signatureSize = resolveSignatureImageSize(printOptions);
+    css += `
+.limsv2-report .signature-section img,
+.limsv2-report [class*="signature"] img,
+.limsv2-report [id*="signature"] img,
+.limsv2-report .signatures img,
+.limsv2-report .signature-box img {
+  max-height: ${signatureSize.maxHeight}px !important;
+  max-width: ${signatureSize.maxWidth}px !important;
+  width: auto !important;
+  height: auto !important;
+  object-fit: contain !important;
+}
+`;
 
     // Remove table borders
     if (printOptions.tableBorders === false) {
@@ -2530,13 +2573,14 @@ function generateClassicDefaultTemplateHtml(
   testResultsHtml += "</div>";
 
   // Signatory Section
-  const sigName = signatoryInfo?.signatoryName || "";
+  const sigName = formatSignatureNameForPdf(signatoryInfo?.signatoryName || "");
   const sigDesignation = signatoryInfo?.signatoryDesignation || "";
   const sigImageUrl = signatoryInfo?.signatoryImageUrl || "";
+  const signatureSize = resolveSignatureImageSize(printOptions);
 
   const signatoryHtml = `
     <div class="signatures" style="margin-top: 20px; text-align: right; page-break-inside: avoid;">
-      ${sigImageUrl ? `<img src="${sigImageUrl}" alt="" style="max-height: 50px; max-width: 150px; margin-bottom: 5px;" onerror="this.style.display='none'" />` : ""}
+      ${sigImageUrl ? `<img src="${sigImageUrl}" alt="" style="max-height: ${signatureSize.maxHeight}px; max-width: ${signatureSize.maxWidth}px; width: auto; height: auto; object-fit: contain; margin-bottom: 5px;" onerror="this.style.display='none'" />` : ""}
       ${sigName ? `<p style="margin: 0; font-weight: 600; font-size: 14px;">${sigName}</p>` : ""}
       ${sigDesignation ? `<p style="margin: 4px 0 0 0; color: #64748b; font-size: 12px;">${sigDesignation}</p>` : ""}
     </div>
@@ -3729,16 +3773,17 @@ function generateBasicDefaultTemplateHtml(
 
   testResultsHtml += "</div>";
 
-  const sigName = signatoryInfo?.signatoryName || "";
+  const sigName = formatSignatureNameForPdf(signatoryInfo?.signatoryName || "");
   const sigDesignation = signatoryInfo?.signatoryDesignation || "";
   const sigImageUrl = signatoryInfo?.signatoryImageUrl || "";
+  const signatureSize = resolveSignatureImageSize(printOptions);
 
   const signatoryHtml = `
     <div class="report-footer">
       <div class="auth-text">Authenticated Electronic Report</div>
       <div class="signature-box">
         ${sigImageUrl
-          ? `<img src="${sigImageUrl}" alt="" style="max-height: 45px; max-width: 130px; margin-bottom: 4px; display: block; margin-left: auto;" onerror="this.style.display='none'" />`
+          ? `<img src="${sigImageUrl}" alt="" style="max-height: ${signatureSize.maxHeight}px; max-width: ${signatureSize.maxWidth}px; width: auto; height: auto; object-fit: contain; margin-bottom: 4px; display: block; margin-left: auto;" onerror="this.style.display='none'" />`
           : ""}
         ${sigName ? `<div style="font-weight:700; font-size:${sigPx}px;">${sigName}</div>` : ""}
         ${sigDesignation ? `<div style="font-size:${basePx - 1}px; margin-top:2px;">${sigDesignation}</div>` : ""}
@@ -4327,16 +4372,17 @@ function generateDefaultTemplateHtml(
   testResultsHtml += "</div>";
 
   // â”€â”€ Signatory Section â”€â”€
-  const sigName = signatoryInfo?.signatoryName || "";
+  const sigName = formatSignatureNameForPdf(signatoryInfo?.signatoryName || "");
   const sigDesignation = signatoryInfo?.signatoryDesignation || "";
   const sigImageUrl = signatoryInfo?.signatoryImageUrl || "";
+  const signatureSize = resolveSignatureImageSize(printOptions);
 
   const signatoryHtml = `
     <div class="signatures" style="margin-top: 30px; text-align: right; page-break-inside: avoid;">
       <div style="display: inline-block; text-align: center; min-width: 200px;">
         ${
     sigImageUrl
-      ? `<img src="${sigImageUrl}" alt="" style="max-height: 50px; max-width: 150px; margin-bottom: 5px;" onerror="this.style.display='none'" />`
+      ? `<img src="${sigImageUrl}" alt="" style="max-height: ${signatureSize.maxHeight}px; max-width: ${signatureSize.maxWidth}px; width: auto; height: auto; object-fit: contain; margin-bottom: 5px;" onerror="this.style.display='none'" />`
       : ""
   }
         ${
@@ -6724,17 +6770,28 @@ serve(async (req) => {
       const requestedPrintLayoutMode = requestBody.printLayoutMode ?? orderReportSettings?.printLayoutMode;
       const printLayoutMode = normalizePrintLayoutMode(requestedPrintLayoutMode);
 
-      // Compact planner overrides from the Order Settings UI compact page planner
+      const savedPlannerEnabled =
+        orderReportSettings?.compactPageAssignmentsManualOverride === true ||
+        orderReportSettings?.compactPageAssignmentsAutoGenerated === true ||
+        orderReportSettings?.groupOrderManualOverride === true;
+
+      // Compact planner overrides from request body first, then saved order planner.
       const compactGroupOrderOverride: string[] | null = Array.isArray(requestBody.compactGroupOrder)
         ? (requestBody.compactGroupOrder as unknown[]).map(String).filter(Boolean)
+        : savedPlannerEnabled && Array.isArray(orderReportSettings?.groupOrder)
+          ? (orderReportSettings.groupOrder as unknown[]).map(String).filter(Boolean)
         : null;
       const compactPageAssignmentsOverride: Record<string, number> | null =
         requestBody.compactPageAssignments && typeof requestBody.compactPageAssignments === "object" && !Array.isArray(requestBody.compactPageAssignments)
           ? (requestBody.compactPageAssignments as Record<string, number>)
+          : savedPlannerEnabled && orderReportSettings?.compactPageAssignments && typeof orderReportSettings.compactPageAssignments === "object" && !Array.isArray(orderReportSettings.compactPageAssignments)
+            ? (orderReportSettings.compactPageAssignments as Record<string, number>)
           : null;
       const compactMaxClubbedAnalytesOverride: number | null =
         typeof requestBody.compactMaxClubbedAnalytes === "number" && requestBody.compactMaxClubbedAnalytes > 0
           ? requestBody.compactMaxClubbedAnalytes
+          : typeof orderReportSettings?.compactMaxClubbedAnalytes === "number" && orderReportSettings.compactMaxClubbedAnalytes > 0
+            ? orderReportSettings.compactMaxClubbedAnalytes
           : null;
 
       console.log(
@@ -7931,21 +7988,16 @@ serve(async (req) => {
               signatoryInfo.signatoryImageUrl = labSignature.file_url;
             }
 
-            // If we didn't have a verifier name, try to get from lab signature metadata
-            if (signatoryInfo.signatoryName === "Authorized Signatory") {
-              const metadata = labSignature.asset_metadata as
-                | Record<string, any>
-                | null;
-              if (metadata?.signatory_name) {
-                signatoryInfo.signatoryName = metadata.signatory_name;
-              }
-              if (
-                metadata?.signatory_designation &&
-                !signatoryInfo.signatoryDesignation
-              ) {
-                signatoryInfo.signatoryDesignation =
-                  metadata.signatory_designation;
-              }
+            const metadata = labSignature.asset_metadata as
+              | Record<string, any>
+              | null;
+            if (metadata?.signatory_name) {
+              signatoryInfo.signatoryName = metadata.signatory_name;
+              signatoryInfo.signatoryDesignation =
+                metadata.signatory_designation || "";
+            } else if (signatoryInfo.signatoryName !== "Authorized Signatory") {
+              signatoryInfo.signatoryName = "Authorized Signatory";
+              signatoryInfo.signatoryDesignation = "";
             }
             console.log("  âœ… Using lab default signature");
           } else {
@@ -7986,11 +8038,9 @@ serve(async (req) => {
               if (sigUrl) {
                 signatoryInfo.signatoryImageUrl = sigUrl;
               }
-              if (
-                signatoryInfo.signatoryName === "Authorized Signatory" &&
-                anyUserSig.signature_name
-              ) {
+              if (anyUserSig.signature_name) {
                 signatoryInfo.signatoryName = anyUserSig.signature_name;
+                signatoryInfo.signatoryDesignation = "";
               }
               console.log("  âœ… Using fallback user default signature");
             } else {
@@ -8037,11 +8087,9 @@ serve(async (req) => {
                 if (sigUrl) {
                   signatoryInfo.signatoryImageUrl = sigUrl;
                 }
-                if (
-                  signatoryInfo.signatoryName === "Authorized Signatory" &&
-                  desperateSig.signature_name
-                ) {
+                if (desperateSig.signature_name) {
                   signatoryInfo.signatoryName = desperateSig.signature_name;
+                  signatoryInfo.signatoryDesignation = "";
                 }
                 console.log(
                   "  âœ… Using ANY active signature found (FINAL RESORT)",
@@ -8398,8 +8446,10 @@ serve(async (req) => {
         const manualGroupOrder = Array.isArray(orderReportSettings?.groupOrder)
           ? orderReportSettings.groupOrder.map((value: unknown) => String(value || "")).filter(Boolean)
           : [];
-        const manualOrderEnabled = orderReportSettings?.groupOrderOverrideEnabled === true && manualGroupOrder.length > 0;
-        const manualOrderIndexMap = new Map(manualGroupOrder.map((id: string, index: number) => [id, index]));
+        const manualOrderEnabled = orderReportSettings?.groupOrderManualOverride === true && manualGroupOrder.length > 0;
+        const manualOrderIndexMap = new Map<string, number>(
+          manualGroupOrder.map((id: string, index: number) => [id, index]),
+        );
 
         const { data: orderTestGroupRows } = await supabaseClient
           .from("order_test_groups")
@@ -8706,7 +8756,9 @@ serve(async (req) => {
         // Create flat aliases for nested properties (for template compatibility)
 
         const sig = baseContext.signatory || {};
-        const rawSigName = sig.name || sig.signatoryName || signatoryInfo.signatoryName || "";
+        const rawSigName = formatSignatureNameForPdf(
+          sig.name || sig.signatoryName || signatoryInfo.signatoryName || "",
+        );
         const sigDesignation = sig.designation || sig.signatoryDesignation || signatoryInfo.signatoryDesignation || "";
         let sigName = rawSigName;
         const sigUrl = sig.signature_url || sig.url || sig.signatoryImageUrl || signatoryInfo.signatoryImageUrl || "";
@@ -8715,7 +8767,7 @@ serve(async (req) => {
         // This follows "User Request" to look for {{signatoryName}} and inject there.
         if (sigUrl && sigName) {
           const imgHtml =
-            `<img src="${sigUrl}" alt="" style="display:block; max-height:40px; margin-bottom:2px; margin-top:2px;" onerror="this.style.display='none'" />`;
+            `<img src="${sigUrl}" alt="" style="display:block; max-height:70px; max-width:180px; width:auto; height:auto; object-fit:contain; margin-bottom:2px; margin-top:2px;" onerror="this.style.display='none'" />`;
           // Wrap name in span to separate it from block image, though block image forces break.
           sigName = `${imgHtml}<span>${sigName}</span>`;
         }

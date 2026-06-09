@@ -136,7 +136,7 @@ const hasMeaningfulProgressRows = (rows: ProgressRow[] | undefined) =>
   );
 
 const getOrderBucket = (o: CardOrder): OrderBucketStatus => {
-  if (o.status === "Completed" || o.status === "Delivered" ||
+  if (o.status === "Report Ready" || o.status === "Completed" || o.status === "Delivered" ||
       (o.expectedTotal > 0 && o.approvedAnalytes >= o.expectedTotal)) return "All Done";
   if (o.status === "Pending Approval") return "Approval";
   if (o.enteredTotal > 0 && o.enteredTotal >= o.expectedTotal * 0.75) return "Mostly Done";

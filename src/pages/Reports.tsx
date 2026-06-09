@@ -143,9 +143,11 @@ interface OrderGroup {
 
 interface OrderReportSettings {
   groupOrderOverrideEnabled?: boolean;
+  groupOrderManualOverride?: boolean;
   groupOrder?: string[];
   printLayoutMode?: 'standard' | 'compact';
   compactPageAssignments?: Record<string, number>;
+  compactPageAssignmentsManualOverride?: boolean;
   compactMaxClubbedAnalytes?: number;
 }
 
@@ -160,6 +162,21 @@ interface OrderSettingsGroupItem {
 }
 
 type PreparedReport = ReportData;
+
+const getActiveReportPriority = (priority: number | null | undefined): number => {
+  return priority != null && priority > 0 ? priority : Number.MAX_SAFE_INTEGER;
+};
+
+const APPROVED_RESULTS_PAGE_SIZE = 1000;
+const RELATED_LOOKUP_BATCH_SIZE = 500;
+
+const chunkArray = <T,>(items: T[], size: number): T[][] => {
+  const chunks: T[][] = [];
+  for (let i = 0; i < items.length; i += size) {
+    chunks.push(items.slice(i, i + size));
+  }
+  return chunks;
+};
 
 const Reports: React.FC = () => {
   const [approvedResults, setApprovedResults] = useState<ApprovedResult[]>([]);
@@ -192,6 +209,8 @@ const Reports: React.FC = () => {
   const [orderSettingsMaxClubbedAnalytes, setOrderSettingsMaxClubbedAnalytes] = useState(5);
   const [orderSettingsLoading, setOrderSettingsLoading] = useState(false);
   const [orderSettingsSaving, setOrderSettingsSaving] = useState(false);
+  const [orderSettingsManualOrderTouched, setOrderSettingsManualOrderTouched] = useState(false);
+  const [orderSettingsCompactPagesTouched, setOrderSettingsCompactPagesTouched] = useState(false);
   const [orderSettingsExistingPrintUrl, setOrderSettingsExistingPrintUrl] = useState<string | null>(null);
   const [orderSettingsExistingEcopyUrl, setOrderSettingsExistingEcopyUrl] = useState<string | null>(null);
   const [smartReportLoadingId, setSmartReportLoadingId] = useState<string | null>(null);
@@ -287,15 +306,19 @@ const Reports: React.FC = () => {
     if (orderIds.length === 0) return;
 
     try {
-      // Optimized: Fetch all jobs in one query
-      const { data: jobs, error } = await supabase
-        .from('pdf_generation_queue')
-        .select('*')
-        .in('order_id', orderIds);
+      const jobs: any[] = [];
+      for (const orderIdBatch of chunkArray(orderIds, RELATED_LOOKUP_BATCH_SIZE)) {
+        const { data: batchJobs, error } = await supabase
+          .from('pdf_generation_queue')
+          .select('*')
+          .in('order_id', orderIdBatch);
 
-      if (error) {
-        console.error('Error polling PDF queue:', error);
-        return;
+        if (error) {
+          console.error('Error polling PDF queue:', error);
+          return;
+        }
+
+        jobs.push(...((batchJobs as any[]) || []));
       }
 
       const statusMap = new Map<string, any>();
@@ -352,33 +375,57 @@ const Reports: React.FC = () => {
       // ✅ Apply location filtering for access control
       const { shouldFilter, locationIds } = await database.shouldFilterByLocation();
 
-      // Build query with optional location filter
-      let query = supabase
-        .from('view_approved_results')
-        .select('*')
-        .eq('lab_id', lab_id)
-        .gte('verified_at', dateRange.start.toISOString())
-        .lte('verified_at', dateRange.end.toISOString())
-        .order('verified_at', { ascending: false });
+      const data: ApprovedResult[] = [];
+      let fetchFrom = 0;
+      let fetchError: any = null;
 
-      // Apply location filter if user is restricted
-      if (shouldFilter && locationIds.length > 0) {
-        query = query.in('location_id', locationIds);
+      while (true) {
+        let query = supabase
+          .from('view_approved_results')
+          .select('*')
+          .eq('lab_id', lab_id)
+          .gte('verified_at', dateRange.start.toISOString())
+          .lte('verified_at', dateRange.end.toISOString())
+          .order('verified_at', { ascending: false })
+          .range(fetchFrom, fetchFrom + APPROVED_RESULTS_PAGE_SIZE - 1);
+
+        // Apply location filter if user is restricted
+        if (shouldFilter && locationIds.length > 0) {
+          query = query.in('location_id', locationIds);
+        }
+
+        const { data: pageData, error } = await query;
+        if (error) {
+          fetchError = error;
+          break;
+        }
+
+        const rows = (pageData as ApprovedResult[]) || [];
+        data.push(...rows);
+
+        if (rows.length < APPROVED_RESULTS_PAGE_SIZE) {
+          break;
+        }
+        fetchFrom += APPROVED_RESULTS_PAGE_SIZE;
       }
 
-      const { data, error } = await query;
+      if (fetchError) {
+        throw fetchError;
+      }
 
-      if (!error && data) {
+      if (data) {
         // 1. Bulk Fetch Existing Reports
         let existingReports: any[] = [];
         const orderIds = Array.from(new Set(data.map((r: ApprovedResult) => r.order_id).filter(Boolean)));
 
         if (orderIds.length > 0) {
-          const { data: reportsData } = await supabase
-            .from('reports')
-            .select('id, order_id, status, generated_date, report_type, pdf_url, pdf_generated_at, print_pdf_url, print_pdf_generated_at, print_layout_mode, compact_ecopy_url, compact_ecopy_generated_at')
-            .in('order_id', orderIds);
-          existingReports = (reportsData as any[]) || [];
+          for (const orderIdBatch of chunkArray(orderIds, RELATED_LOOKUP_BATCH_SIZE)) {
+            const { data: reportsData } = await supabase
+              .from('reports')
+              .select('id, order_id, status, generated_date, report_type, pdf_url, pdf_generated_at, print_pdf_url, print_pdf_generated_at, print_layout_mode, compact_ecopy_url, compact_ecopy_generated_at')
+              .in('order_id', orderIdBatch);
+            existingReports.push(...((reportsData as any[]) || []));
+          }
         }
 
         // 2. Bulk Fetch Patient Phones
@@ -388,91 +435,88 @@ const Reports: React.FC = () => {
         );
 
         if (patientIds.length > 0) {
-          const { data: patientsData, error: patientsError } = await supabase
-            .from('patients')
-            .select('id, phone')
-            .in('id', patientIds);
+          for (const patientIdBatch of chunkArray(patientIds, RELATED_LOOKUP_BATCH_SIZE)) {
+            const { data: patientsData, error: patientsError } = await supabase
+              .from('patients')
+              .select('id, phone')
+              .in('id', patientIdBatch);
 
-          if (!patientsError && patientsData) {
-            for (const patient of patientsData as Array<{ id: string; phone?: string | null }>) {
-              if (patient?.id) {
-                patientPhoneMap.set(patient.id, patient.phone || '');
+            if (!patientsError && patientsData) {
+              for (const patient of patientsData as Array<{ id: string; phone?: string | null }>) {
+                if (patient?.id) {
+                  patientPhoneMap.set(patient.id, patient.phone || '');
+                }
               }
             }
           }
         }
 
-        // 3. Bulk Fetch Panel Readiness
-        const readinessMap = new Map<string, boolean>();
-        if (orderIds.length > 0) {
-          const { data: panelStatusData } = await supabase
-            .from('v_result_panel_status')
-            .select('order_id, panel_ready')
-            .in('order_id', orderIds);
-
-          if (panelStatusData) {
-            // Group by order_id
-            const orderPanelStatus: Record<string, boolean[]> = {};
-            panelStatusData.forEach((row: any) => {
-              if (!orderPanelStatus[row.order_id]) orderPanelStatus[row.order_id] = [];
-              orderPanelStatus[row.order_id].push(row.panel_ready);
-            });
-
-            // Determine readiness
-            Object.keys(orderPanelStatus).forEach(oid => {
-              const statuses = orderPanelStatus[oid];
-              readinessMap.set(oid, statuses.length > 0 && statuses.every(s => s === true));
-            });
-          }
-        }
-
-        // 4. Bulk Fetch Smart Report URLs and order metadata
+        // 3. Bulk Fetch Smart Report URLs and order metadata
         const smartReportMap = new Map<string, { url: string; generated_at: string }>();
         const orderMetaMap = new Map<string, { account_id?: string | null; account_name?: string | null; order_number?: number | null; sample_id?: string | null; doctor?: string | null }>();
         if (orderIds.length > 0) {
-          const { data: ordersData } = await supabase
-            .from('orders')
-            .select('id, smart_report_url, smart_report_generated_at, account_id, order_number, sample_id, doctor, accounts(name)')
-            .in('id', orderIds);
+          for (const orderIdBatch of chunkArray(orderIds, RELATED_LOOKUP_BATCH_SIZE)) {
+            const { data: ordersData } = await supabase
+              .from('orders')
+              .select('id, smart_report_url, smart_report_generated_at, account_id, order_number, sample_id, doctor, accounts(name)')
+              .in('id', orderIdBatch);
 
-          if (ordersData) {
-            ordersData.forEach((order: any) => {
-              const accountInfo = Array.isArray(order.accounts) ? order.accounts[0] : order.accounts;
-              orderMetaMap.set(order.id, {
-                account_id: order.account_id || null,
-                account_name: accountInfo?.name || null,
-                order_number: order.order_number ?? null,
-                sample_id: order.sample_id || null,
-                doctor: order.doctor || null,
-              });
-              if (order.smart_report_url) {
-                smartReportMap.set(order.id, {
-                  url: order.smart_report_url,
-                  generated_at: order.smart_report_generated_at
+            if (ordersData) {
+              ordersData.forEach((order: any) => {
+                const accountInfo = Array.isArray(order.accounts) ? order.accounts[0] : order.accounts;
+                orderMetaMap.set(order.id, {
+                  account_id: order.account_id || null,
+                  account_name: accountInfo?.name || null,
+                  order_number: order.order_number ?? null,
+                  sample_id: order.sample_id || null,
+                  doctor: order.doctor || null,
                 });
-              }
-            });
+                if (order.smart_report_url) {
+                  smartReportMap.set(order.id, {
+                    url: order.smart_report_url,
+                    generated_at: order.smart_report_generated_at
+                  });
+                }
+              });
+            }
           }
         }
 
-        const reportMap = new Map(
-          existingReports.map((r) => [r.order_id, r])
-        );
+        const reportsByOrder = new Map<string, any[]>();
+        for (const report of existingReports) {
+          if (!report?.order_id) continue;
+          const orderReports = reportsByOrder.get(report.order_id) || [];
+          orderReports.push(report);
+          reportsByOrder.set(report.order_id, orderReports);
+        }
+
+        const getLatestReport = (reports: any[], reportType: 'draft' | 'final') => {
+          return reports
+            .filter((report) => report.report_type === reportType)
+            .sort((a, b) => {
+              const aTime = new Date(a.pdf_generated_at || a.print_pdf_generated_at || a.compact_ecopy_generated_at || a.generated_date || 0).getTime();
+              const bTime = new Date(b.pdf_generated_at || b.print_pdf_generated_at || b.compact_ecopy_generated_at || b.generated_date || 0).getTime();
+              return bTime - aTime;
+            })[0] || null;
+        };
 
         // Process data in memory without inner async calls
         const enhancedData: ApprovedResult[] = (data as ApprovedResult[]).map((result) => {
-          const report = reportMap.get(result.order_id);
-          const hasAnyFinalPdf = report?.report_type === 'final' && !!(
-            report.pdf_url ||
-            report.print_pdf_url ||
-            report.compact_ecopy_url
+          const orderReports = reportsByOrder.get(result.order_id) || [];
+          const finalReport = getLatestReport(orderReports, 'final');
+          const draftReport = getLatestReport(orderReports, 'draft');
+          const primaryReport = finalReport || draftReport;
+          const hasAnyFinalPdf = !!(
+            finalReport?.pdf_url ||
+            finalReport?.print_pdf_url ||
+            finalReport?.compact_ecopy_url
           );
-          const hasAnyDraftPdf = report?.report_type === 'draft' && !!(
-            report.pdf_url ||
-            report.print_pdf_url ||
-            report.compact_ecopy_url
+          const hasAnyDraftPdf = !!(
+            draftReport?.pdf_url ||
+            draftReport?.print_pdf_url ||
+            draftReport?.compact_ecopy_url
           );
-          const isReady = readinessMap.get(result.order_id) || false;
+          const isReady = result.verification_status === 'verified';
           const resolvedPhone = result.phone || patientPhoneMap.get(result.patient_id) || '';
           const smartReport = smartReportMap.get(result.order_id);
           const orderMeta = orderMetaMap.get(result.order_id);
@@ -484,20 +528,20 @@ const Reports: React.FC = () => {
             account_id: orderMeta?.account_id || null,
             account_name: orderMeta?.account_name || null,
             order_number: orderMeta?.order_number ?? null,
-            has_report: !!report,
-            report_status: report?.status,
-            report_generated_at: report?.generated_date,
+            has_report: orderReports.length > 0,
+            report_status: primaryReport?.status,
+            report_generated_at: primaryReport?.generated_date,
             is_report_ready: isReady,
             has_draft_report: hasAnyDraftPdf,
             has_final_report: hasAnyFinalPdf,
-            has_print_pdf: !!report?.print_pdf_url,
-            has_compact_ecopy: !!report?.compact_ecopy_url,
-            draft_report: report?.report_type === 'draft' ? report : null,
-            final_report: report?.report_type === 'final' ? report : null,
-            print_pdf_url: report?.print_pdf_url || undefined,
-            print_pdf_generated_at: report?.print_pdf_generated_at || undefined,
-            compact_ecopy_url: report?.compact_ecopy_url || undefined,
-            compact_ecopy_generated_at: report?.compact_ecopy_generated_at || undefined,
+            has_print_pdf: !!(finalReport?.print_pdf_url || draftReport?.print_pdf_url),
+            has_compact_ecopy: !!(finalReport?.compact_ecopy_url || draftReport?.compact_ecopy_url),
+            draft_report: draftReport,
+            final_report: finalReport,
+            print_pdf_url: (finalReport?.print_pdf_url || draftReport?.print_pdf_url) || undefined,
+            print_pdf_generated_at: (finalReport?.print_pdf_generated_at || draftReport?.print_pdf_generated_at) || undefined,
+            compact_ecopy_url: (finalReport?.compact_ecopy_url || draftReport?.compact_ecopy_url) || undefined,
+            compact_ecopy_generated_at: (finalReport?.compact_ecopy_generated_at || draftReport?.compact_ecopy_generated_at) || undefined,
             phone: resolvedPhone,
             // Smart Report fields
             smart_report_url: smartReport?.url,
@@ -768,16 +812,16 @@ const Reports: React.FC = () => {
   const uniqueAccounts = useMemo(() => {
     const accounts = new Set(approvedResults.map(r => r.account_name).filter(Boolean));
     return Array.from(accounts).sort();
-  }, [approvedResults]);
+  }, [approvedResults, orderSettingsCompactPagesTouched, orderSettingsManualOrderTouched]);
 
   // Statistics for dashboard
   const statistics = useMemo(() => {
     const totalOrders = orderGroups.length;
     const readyForGeneration = orderGroups.filter(g => g.is_report_ready && !g.results[0]?.has_final_report).length;
     const pendingVerification = orderGroups.filter(g => !g.is_report_ready).length;
-    const completed = orderGroups.filter(g => g.results[0]?.has_final_report).length;
+    const finalReports = orderGroups.filter(g => g.results[0]?.has_final_report).length;
 
-    return { totalOrders, readyForGeneration, pendingVerification, completed };
+    return { totalOrders, readyForGeneration, pendingVerification, finalReports };
   }, [orderGroups]);
 
   // Handlers
@@ -1132,6 +1176,7 @@ const Reports: React.FC = () => {
       next.splice(nextIndex, 0, item);
       return next;
     });
+    setOrderSettingsManualOrderTouched(true);
   }, []);
 
   const setOrderSettingsGroupPage = useCallback((testGroupId: string, pageNumber: number) => {
@@ -1142,6 +1187,7 @@ const Reports: React.FC = () => {
           : group,
       ),
     );
+    setOrderSettingsCompactPagesTouched(true);
   }, []);
 
   const setOrderSettingsGroupOwnPage = useCallback((testGroupId: string) => {
@@ -1150,9 +1196,10 @@ const Reports: React.FC = () => {
       return prev.map((group) =>
         group.testGroupId === testGroupId
           ? { ...group, pageNumber: currentMax + 1 }
-          : group,
+        : group,
       );
     });
+    setOrderSettingsCompactPagesTouched(true);
   }, []);
 
   const setOrderSettingsGroupClubPrevious = useCallback((testGroupId: string) => {
@@ -1163,9 +1210,10 @@ const Reports: React.FC = () => {
       return prev.map((group) =>
         group.testGroupId === testGroupId
           ? { ...group, pageNumber: previousPage }
-          : group,
+        : group,
       );
     });
+    setOrderSettingsCompactPagesTouched(true);
   }, []);
 
   const autoArrangeCompactPages = useCallback(() => {
@@ -1176,6 +1224,7 @@ const Reports: React.FC = () => {
         pageNumber: assignments[group.testGroupId] || 1,
       }));
     });
+    setOrderSettingsCompactPagesTouched(true);
   }, [orderSettingsMaxClubbedAnalytes]);
 
   const handleLocalCompactPrint = useCallback(async (
@@ -1223,12 +1272,16 @@ const Reports: React.FC = () => {
     groups: OrderSettingsGroupItem[],
     printLayoutMode: 'standard' | 'compact',
     compactMaxClubbedAnalytes?: number,
+    manualOrderOverride = orderSettingsManualOrderTouched,
+    compactPagesOverride = orderSettingsCompactPagesTouched,
   ) => {
     const reportSettings: OrderReportSettings = {
-      groupOrderOverrideEnabled: groups.length > 0,
+      groupOrderOverrideEnabled: manualOrderOverride && groups.length > 0,
+      groupOrderManualOverride: manualOrderOverride && groups.length > 0,
       groupOrder: groups.map(group => group.testGroupId),
       printLayoutMode,
       compactPageAssignments: Object.fromEntries(groups.map((group) => [group.testGroupId, group.pageNumber])),
+      compactPageAssignmentsManualOverride: compactPagesOverride && groups.length > 0,
       compactMaxClubbedAnalytes: compactMaxClubbedAnalytes ?? 5,
     };
 
@@ -1309,6 +1362,7 @@ const Reports: React.FC = () => {
       setOrderSettingsExistingEcopyUrl((existingReport as any)?.compact_ecopy_url || null);
 
       const reportSettings = (orderData as { report_settings?: OrderReportSettings | null } | null)?.report_settings || {};
+      const useSavedCompactPages = reportSettings.compactPageAssignmentsManualOverride === true;
       const descriptorMap = new Map<string, OrderSettingsGroupItem>();
       const pushRow = (row: any) => {
         if (!row?.test_group_id || descriptorMap.has(row.test_group_id)) return;
@@ -1346,19 +1400,20 @@ const Reports: React.FC = () => {
 
       const manualOrder = Array.isArray(reportSettings.groupOrder) ? reportSettings.groupOrder : [];
       const manualIndex = new Map(manualOrder.map((id, index) => [id, index]));
+      const useManualOrder = reportSettings.groupOrderManualOverride === true;
       const resolvedGroups = [...descriptorMap.values()].sort((a, b) => {
         const aManual = manualIndex.has(a.testGroupId) ? manualIndex.get(a.testGroupId)! : Number.MAX_SAFE_INTEGER;
         const bManual = manualIndex.has(b.testGroupId) ? manualIndex.get(b.testGroupId)! : Number.MAX_SAFE_INTEGER;
-        if ((reportSettings.groupOrderOverrideEnabled ?? false) && aManual !== bManual) return aManual - bManual;
-        const aPriority = a.reportPriority ?? Number.MAX_SAFE_INTEGER;
-        const bPriority = b.reportPriority ?? Number.MAX_SAFE_INTEGER;
+        if (useManualOrder && aManual !== bManual) return aManual - bManual;
+        const aPriority = getActiveReportPriority(a.reportPriority);
+        const bPriority = getActiveReportPriority(b.reportPriority);
         if (aPriority !== bPriority) return aPriority - bPriority;
         if (a.printOrder !== b.printOrder) return a.printOrder - b.printOrder;
         return a.testName.localeCompare(b.testName);
       });
 
       const compactDefinitions = context
-        ? buildCompactGroupDefinitions(context, reportSettings.groupOrder)
+        ? buildCompactGroupDefinitions(context, resolvedGroups.map((group) => group.testGroupId))
         : [];
       const definitionMap = new Map(compactDefinitions.map((group) => [group.testGroupId, group]));
       const autoAssignments = autoAssignCompactPages(compactDefinitions, reportSettings.compactMaxClubbedAnalytes || 5);
@@ -1367,8 +1422,10 @@ const Reports: React.FC = () => {
       setOrderSettingsGroups(resolvedGroups.map((group) => ({
         ...group,
         analyteCount: definitionMap.get(group.testGroupId)?.analyteCount || 0,
-        pageNumber: reportSettings.compactPageAssignments?.[group.testGroupId] || autoAssignments[group.testGroupId] || 1,
+        pageNumber: (useSavedCompactPages ? reportSettings.compactPageAssignments?.[group.testGroupId] : undefined) || autoAssignments[group.testGroupId] || 1,
       })));
+      setOrderSettingsManualOrderTouched(useManualOrder);
+      setOrderSettingsCompactPagesTouched(useSavedCompactPages);
       setOrderSettingsLayoutMode(reportSettings.printLayoutMode === 'standard' ? 'standard' : currentLayoutMode);
     } catch (error) {
       console.error('Failed to load order report settings:', error);
@@ -1944,20 +2001,20 @@ const Reports: React.FC = () => {
       );
     }
 
+    if (group.is_report_ready) {
+      return (
+        <span className="inline-flex items-center px-3 py-1 rounded-full text-xs font-medium bg-green-100 text-green-800 border border-green-200">
+          <CheckCircle className="w-3 h-3 mr-1" />
+          Fully Verified
+        </span>
+      );
+    }
+
     if (result?.has_draft_report) {
       return (
         <span className="inline-flex items-center px-3 py-1 rounded-full text-xs font-medium bg-blue-100 text-blue-800 border border-blue-200">
           <FileCheck className="w-3 h-3 mr-1" />
           Draft Available
-        </span>
-      );
-    }
-
-    if (group.is_report_ready) {
-      return (
-        <span className="inline-flex items-center px-3 py-1 rounded-full text-xs font-medium bg-amber-100 text-amber-800 border border-amber-200">
-          <Clock className="w-3 h-3 mr-1" />
-          Ready to Generate
         </span>
       );
     }
@@ -2176,15 +2233,15 @@ const Reports: React.FC = () => {
             </div>
             <div className="text-center">
               <div className="text-2xl font-bold text-green-600">{statistics.readyForGeneration}</div>
-              <div className="text-xs text-gray-500">Ready</div>
+              <div className="text-xs text-gray-500">Fully Verified</div>
             </div>
             <div className="text-center">
               <div className="text-2xl font-bold text-amber-600">{statistics.pendingVerification}</div>
-              <div className="text-xs text-gray-500">Pending</div>
+              <div className="text-xs text-gray-500">Pending Verification</div>
             </div>
             <div className="text-center">
-              <div className="text-2xl font-bold text-gray-600">{statistics.completed}</div>
-              <div className="text-xs text-gray-500">Completed</div>
+              <div className="text-2xl font-bold text-gray-600">{statistics.finalReports}</div>
+              <div className="text-xs text-gray-500">Final Reports</div>
             </div>
           </div>
 
@@ -2287,9 +2344,9 @@ const Reports: React.FC = () => {
                     className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
                   >
                     <option value="all">All Statuses</option>
-                    <option value="ready">Ready to Generate</option>
+                    <option value="ready">Fully Verified</option>
                     <option value="pending">Pending Verification</option>
-                    <option value="processing">Processing</option>
+                    <option value="processing">Draft Available</option>
                   </select>
                 </div>
 
@@ -2471,7 +2528,7 @@ const Reports: React.FC = () => {
               </div>
               <div className="ml-4">
                 <div className="text-2xl font-bold text-gray-900">{statistics.readyForGeneration}</div>
-                <div className="text-sm text-gray-600">Ready for Reports</div>
+                <div className="text-sm text-gray-600">Fully Verified</div>
               </div>
             </div>
           </div>
@@ -2494,8 +2551,8 @@ const Reports: React.FC = () => {
                 <TrendingUp className="h-6 w-6 text-purple-600" />
               </div>
               <div className="ml-4">
-                <div className="text-2xl font-bold text-gray-900">{statistics.completed}</div>
-                <div className="text-sm text-gray-600">Completed</div>
+                <div className="text-2xl font-bold text-gray-900">{statistics.finalReports}</div>
+                <div className="text-sm text-gray-600">Final Reports</div>
               </div>
             </div>
           </div>
@@ -2508,7 +2565,7 @@ const Reports: React.FC = () => {
               <div>
                 <h2 className="text-xl font-semibold text-gray-900">Approved Results</h2>
                 <p className="text-sm text-gray-600 mt-1">
-                  {orderGroups.length} orders ready for report generation
+                  {orderGroups.length} approved result orders
                 </p>
               </div>
 
@@ -3425,7 +3482,7 @@ const Reports: React.FC = () => {
                         <div>
                           <div className="text-sm font-medium text-gray-900">{index + 1}. {group.testName}</div>
                           <div className="text-xs text-gray-500">
-                            {group.reportPriority !== null ? `Global priority ${group.reportPriority}` : 'No global priority'}
+                            {getActiveReportPriority(group.reportPriority) !== Number.MAX_SAFE_INTEGER ? `Global priority ${group.reportPriority}` : 'No global priority'}
                           </div>
                         </div>
                         <div className="flex items-center gap-2">

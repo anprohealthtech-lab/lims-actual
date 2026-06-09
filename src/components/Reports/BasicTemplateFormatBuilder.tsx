@@ -15,6 +15,8 @@ export interface BasicPrintOptions {
   resultColors?: { high?: string; low?: string; enabled?: boolean }; // custom flag colors (matches edge fn)
   testGroupTitlePosition?: 'below_headers' | 'above_headers_center' | 'above_headers_left';
   qrHorizontalOffset?: number;
+  signatureMaxHeight?: number;    // Signature image max height px (30-120, default 70)
+  signatureMaxWidth?: number;     // Signature image max width px (80-260, default 180)
   sectionFieldNamePct?: number;    // Section field name width % for narrative/section-only reports (20-70, default 40)
   basicColumnWidths?: {
     standard?: number[];
@@ -143,6 +145,8 @@ function buildBasicHtml(
   const showFlagLegend = printOptions.showFlagLegend ?? false;
   const testGroupTitlePosition = printOptions.testGroupTitlePosition ?? 'above_headers_center';
   const qrHorizontalOffset = Math.max(0, Math.min(80, printOptions.qrHorizontalOffset ?? 0));
+  const signatureMaxHeight = Math.max(30, Math.min(120, Number(printOptions.signatureMaxHeight ?? 70)));
+  const signatureMaxWidth = Math.max(80, Math.min(260, Number(printOptions.signatureMaxWidth ?? 180)));
   const colCount = 4;
   const standardColumnWidths = normalizeBasicColumnWidths(printOptions.basicColumnWidths?.standard, DEFAULT_BASIC_STANDARD_WIDTHS, 4);
   const highColor = printOptions.resultColors?.enabled ? (printOptions.resultColors?.high ?? '#dc2626') : '#dc2626';
@@ -492,6 +496,16 @@ function buildBasicHtml(
 }
 
 .basic-report-template .signature-box { text-align: right !important; }
+.basic-report-template .signature-sample {
+  max-height: ${signatureMaxHeight}px !important;
+  max-width: ${signatureMaxWidth}px !important;
+  width: auto !important;
+  height: auto !important;
+  object-fit: contain !important;
+  margin-bottom: 4px !important;
+  display: block !important;
+  margin-left: auto !important;
+}
 
 .basic-report-template .tbl-results th:last-child,
 .basic-report-template .tbl-results td:last-child {
@@ -698,6 +712,10 @@ function buildBasicHtml(
       </div>
       <div class="auth-text">Authenticated Electronic Report</div>
       <div class="signature-box">
+        <svg class="signature-sample" viewBox="0 0 220 80" xmlns="http://www.w3.org/2000/svg" aria-label="Sample signature">
+          <path d="M12 48 C35 12, 45 78, 62 38 S91 20, 104 47 S132 70, 144 34 S171 20, 188 44 S207 54, 216 31" fill="none" stroke="#1d4ed8" stroke-width="4" stroke-linecap="round"/>
+          <path d="M30 64 C78 58, 145 61, 214 50" fill="none" stroke="#1d4ed8" stroke-width="3" stroke-linecap="round"/>
+        </svg>
         <div style="font-weight:700; font-size:${sigPx}px;">Dr. Signatory Name</div>
         <div style="font-size:${basePx - 1}px; margin-top:2px;">MD Pathology</div>
       </div>
@@ -865,6 +883,32 @@ export default function BasicTemplateFormatBuilder({ printOptions, showMethodolo
               />
               <span className="w-10 text-sm font-mono font-semibold text-gray-700">
                 {printOptions.qrHorizontalOffset ?? 0}
+              </span>
+            </div>
+          </Row>
+          <Row label="Signature Height" hint="Image max height in PDF (30-120 px)">
+            <div className="flex items-center gap-2">
+              <input
+                type="range" min={30} max={120} step={5}
+                value={printOptions.signatureMaxHeight ?? 70}
+                onChange={(e) => setPO({ signatureMaxHeight: Number(e.target.value) })}
+                className="w-24 accent-indigo-600"
+              />
+              <span className="w-10 text-sm font-mono font-semibold text-gray-700">
+                {printOptions.signatureMaxHeight ?? 70}
+              </span>
+            </div>
+          </Row>
+          <Row label="Signature Width" hint="Image max width in PDF (80-260 px)">
+            <div className="flex items-center gap-2">
+              <input
+                type="range" min={80} max={260} step={10}
+                value={printOptions.signatureMaxWidth ?? 180}
+                onChange={(e) => setPO({ signatureMaxWidth: Number(e.target.value) })}
+                className="w-24 accent-indigo-600"
+              />
+              <span className="w-10 text-sm font-mono font-semibold text-gray-700">
+                {printOptions.signatureMaxWidth ?? 180}
               </span>
             </div>
           </Row>

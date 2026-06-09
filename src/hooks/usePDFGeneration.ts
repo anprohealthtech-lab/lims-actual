@@ -102,7 +102,7 @@ export const usePDFGeneration = () => {
           pdfUrl
         }));
 
-        // Auto-print report via QZ Tray if enabled (only for final/approved reports, not drafts)
+        // Auto-print report via LIMS Utility queue if enabled (only for final/approved reports, not drafts)
         if (!isDraft) {
           autoPrintReport(pdfUrl).catch(() => {});
         }

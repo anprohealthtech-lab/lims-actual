@@ -166,10 +166,10 @@ export const SampleCollectionTracker: React.FC<SampleCollectionTrackerProps> = (
         await supabase.from('samples').update({ checklist_completed: completed }).eq('id', sampleId);
       }
 
-      // Auto-print barcode via QZ Tray
+      // Auto-print barcode via LIMS Utility queue
       const sample = samples.find(s => s.id === sampleId);
       if (sample) {
-        console.debug('[QZ][BarcodeLabel] auto-print after sample collection requested', {
+        console.debug('[PrintBridge][BarcodeLabel] auto-print after sample collection requested', {
           sampleId: sample.id,
           barcode: sample.barcode,
           sampleType: sample.sample_type,

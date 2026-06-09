@@ -2004,7 +2004,7 @@ const OrderVerificationView: React.FC<OrderVerificationViewProps> = ({ onBackToP
         .from('external_result_values')
         .select(`
           id, original_analyte_name, value, unit, reference_range, created_at,
-          external_reports!fk_erv_report(patient_id)
+          external_reports!fk_erv_report!inner(patient_id)
         `)
         .eq('external_reports.patient_id', patientId)
         .order('created_at', { ascending: false })
@@ -2105,7 +2105,7 @@ const OrderVerificationView: React.FC<OrderVerificationViewProps> = ({ onBackToP
           .from('external_result_values')
           .select(`
             id, original_analyte_name, value, unit, reference_range, created_at,
-            external_reports!fk_erv_report(patient_id)
+            external_reports!fk_erv_report!inner(patient_id)
           `)
           .eq('external_reports.patient_id', patientId)
           .order('created_at', { ascending: false })

@@ -131,6 +131,15 @@ type StateFilter = "all" | "pending" | "partial" | "ready";
 type ViewMode = "panel" | "order";
 type PanelSortMode = "sample_desc" | "sample_asc" | "date_desc" | "patient_az";
 
+type BulkApprovalProgress = {
+  total: number;
+  attempted: number;
+  approved: number;
+  failed: number;
+  skipped: number;
+  status: "running" | "completed" | "failed";
+};
+
 /* =========================================
    Helpers
 ========================================= */
@@ -675,6 +684,7 @@ const ResultVerificationConsole: React.FC = () => {
   // bulk operations
   const [selectedPanels, setSelectedPanels] = useState<Set<string>>(new Set());
   const [bulkProcessing, setBulkProcessing] = useState(false);
+  const [bulkApprovalProgress, setBulkApprovalProgress] = useState<BulkApprovalProgress | null>(null);
 
   // AI intelligence
   const aiIntelligence = useAIResultIntelligence();
@@ -688,6 +698,7 @@ const ResultVerificationConsole: React.FC = () => {
   // AI Delta Check results - quality control check comparing current vs historical values
   const [aiDeltaCheckResults, setAiDeltaCheckResults] = useState<Record<string, DeltaCheckResponse>>({});
   const [currentLabId, setCurrentLabId] = useState<string | null>(null);
+  const currentVerifierIdRef = useRef<string | null | undefined>(undefined);
   const [trendData, setTrendData] = useState<Record<string, TrendData[]>>({});
   const [showTrendModal, setShowTrendModal] = useState(false);
   const [selectedAnalyteTrend, setSelectedAnalyteTrend] = useState<{ parameter: string; patientId: string } | null>(null);
@@ -1055,6 +1066,7 @@ const ResultVerificationConsole: React.FC = () => {
 
   /* ----------------- Selection handlers ----------------- */
   const togglePanelSelection = (resultId: string) => {
+    setBulkApprovalProgress(null);
     setSelectedPanels(prev => {
       const newSet = new Set(prev);
       if (newSet.has(resultId)) {
@@ -1067,21 +1079,30 @@ const ResultVerificationConsole: React.FC = () => {
   };
 
   const selectAllPanels = () => {
+    setBulkApprovalProgress(null);
     setSelectedPanels(new Set(filteredPanels.map(p => p.result_id)));
   };
 
   const clearSelection = () => {
+    setBulkApprovalProgress(null);
     setSelectedPanels(new Set());
   };
 
   /* ----------------- Mutations ----------------- */
   const setBusyFor = (key: string, v: boolean) => setBusy((s) => ({ ...s, [key]: v }));
+  const getCurrentVerifierId = async () => {
+    if (currentVerifierIdRef.current !== undefined) return currentVerifierIdRef.current;
+    const { data: { user } } = await supabase.auth.getUser();
+    currentVerifierIdRef.current = user?.id || null;
+    return currentVerifierIdRef.current;
+  };
 
   const approveAnalyte = async (rv_id: string) => {
     setBusyFor(rv_id, true);
+    const verifiedBy = await getCurrentVerifierId();
     const { error } = await supabase
       .from("result_values")
-      .update({ verify_status: "approved", verified_at: new Date().toISOString() })
+      .update({ verify_status: "approved", verified_at: new Date().toISOString(), verified_by: verifiedBy })
       .eq("id", rv_id);
     setBusyFor(rv_id, false);
 
@@ -1281,6 +1302,7 @@ const ResultVerificationConsole: React.FC = () => {
     if (row.is_section_only) {
       setBusyFor(row.result_id, true);
       try {
+        const verifiedBy = await getCurrentVerifierId();
         const sectionEditor = sectionEditorRefs.current[row.result_id];
         if (sectionEditor) {
           await sectionEditor.save();
@@ -1291,6 +1313,7 @@ const ResultVerificationConsole: React.FC = () => {
           .update({
             verification_status: "verified",
             verified_at: new Date().toISOString(),
+            verified_by: verifiedBy,
             manually_verified: true,
           })
           .eq("id", row.result_id);
@@ -1323,6 +1346,7 @@ const ResultVerificationConsole: React.FC = () => {
     setSavingReportExtras(prev => ({ ...prev, [row.order_id]: true }));
 
     try {
+      const verifiedBy = await getCurrentVerifierId();
       console.info("[ResultVerification] Approving panel analytes", {
         result_id: row.result_id,
         order_id: row.order_id,
@@ -1332,7 +1356,7 @@ const ResultVerificationConsole: React.FC = () => {
 
       const { error } = await supabase
         .from("result_values")
-        .update({ verify_status: "approved", verified_at: new Date().toISOString() })
+        .update({ verify_status: "approved", verified_at: new Date().toISOString(), verified_by: verifiedBy })
         .in("id", ids);
 
       if (error) {
@@ -1843,12 +1867,30 @@ const ResultVerificationConsole: React.FC = () => {
       }
 
       const failedRows: Array<{ row: PanelRow; error: unknown }> = [];
+      setBulkApprovalProgress({
+        total: selectedResultIds.length,
+        attempted: 0,
+        approved: 0,
+        failed: 0,
+        skipped: missingRows,
+        status: "running",
+      });
 
       for (const row of selectedRows) {
         try {
           await approveAllInPanel(row);
+          setBulkApprovalProgress(prev => prev ? ({
+            ...prev,
+            attempted: prev.attempted + 1,
+            approved: prev.approved + 1,
+          }) : prev);
         } catch (error) {
           failedRows.push({ row, error });
+          setBulkApprovalProgress(prev => prev ? ({
+            ...prev,
+            attempted: prev.attempted + 1,
+            failed: prev.failed + 1,
+          }) : prev);
           console.error("[ResultVerification] Bulk approve panel failed", {
             result_id: row.result_id,
             order_id: row.order_id,
@@ -1860,11 +1902,15 @@ const ResultVerificationConsole: React.FC = () => {
       }
 
       if (failedRows.length === 0) {
-        clearSelection();
+        setSelectedPanels(new Set());
       } else {
         setSelectedPanels(new Set(failedRows.map(({ row }) => row.result_id)));
         alert(`${failedRows.length} of ${selectedRows.length} selected panels failed approval. The failed panels are still selected. Check the console for the database error message.`);
       }
+      setBulkApprovalProgress(prev => prev ? ({
+        ...prev,
+        status: failedRows.length > 0 ? "failed" : "completed",
+      }) : prev);
 
       console.info("[ResultVerification] Bulk approve selected completed", {
         attempted_count: selectedRows.length,
@@ -1875,6 +1921,7 @@ const ResultVerificationConsole: React.FC = () => {
         error: describeSupabaseError(error),
         raw_error: error,
       });
+      setBulkApprovalProgress(prev => prev ? ({ ...prev, status: "failed" }) : prev);
       alert("Bulk approval failed. Please check the console for details.");
     } finally {
       setBulkProcessing(false);
@@ -2653,7 +2700,7 @@ const ResultVerificationConsole: React.FC = () => {
                             // Also fetch external/outsourced results if available
                             const { data: externalData } = await supabase
                               .from('external_result_values')
-                              .select('value, original_analyte_name, created_at, external_reports!fk_erv_report(patient_id)')
+                              .select('value, original_analyte_name, created_at, external_reports!fk_erv_report!inner(patient_id)')
                               .eq('external_reports.patient_id', patientId)
                               .ilike('original_analyte_name', `%${a.parameter}%`)
                               .order('created_at', { ascending: false })
@@ -3571,6 +3618,13 @@ const ResultVerificationConsole: React.FC = () => {
   }
 
   /* ----------------- Render ----------------- */
+  const showBulkApprovalStatus = selectedPanels.size > 0 || !!bulkApprovalProgress;
+  const bulkApprovalStatusLabel = bulkApprovalProgress
+    ? bulkApprovalProgress.status === "running"
+      ? `Approving ${bulkApprovalProgress.attempted}/${bulkApprovalProgress.total}`
+      : `Approved ${bulkApprovalProgress.approved}/${bulkApprovalProgress.total}`
+    : "Ready for bulk verification operations";
+  const bulkApprovalHasIssues = !!bulkApprovalProgress && (bulkApprovalProgress.failed > 0 || bulkApprovalProgress.skipped > 0);
 
   return (
     <div className="bg-gradient-to-br from-gray-50 to-blue-50">
@@ -3632,7 +3686,9 @@ const ResultVerificationConsole: React.FC = () => {
                   ) : (
                     <Zap className="h-5 w-5 mr-2" />
                   )}
-                  Bulk Approve ({selectedPanels.size})
+                  {bulkProcessing && bulkApprovalProgress
+                    ? `Approving ${bulkApprovalProgress.attempted}/${bulkApprovalProgress.total}`
+                    : `Bulk Approve (${selectedPanels.size})`}
                 </button>
               )}
             </div>
@@ -3843,18 +3899,18 @@ const ResultVerificationConsole: React.FC = () => {
 	                  <div>
                     <label className="block text-sm font-semibold text-gray-700 mb-3">Bulk Actions</label>
                     <div className="space-y-2">
-                      <button
-                        onClick={selectAllPanels}
-                        disabled={filteredPanels.length === 0}
-                        className="w-full px-4 py-2 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors font-medium disabled:opacity-50"
-                      >
+	                      <button
+	                        onClick={selectAllPanels}
+	                        disabled={filteredPanels.length === 0 || bulkProcessing}
+	                        className="w-full px-4 py-2 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors font-medium disabled:opacity-50"
+	                      >
                         Select All ({filteredPanels.length})
                       </button>
-                      <button
-                        onClick={clearSelection}
-                        disabled={selectedPanels.size === 0}
-                        className="w-full px-4 py-2 text-sm border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 transition-colors font-medium disabled:opacity-50"
-                      >
+	                      <button
+	                        onClick={clearSelection}
+	                        disabled={(selectedPanels.size === 0 && !bulkApprovalProgress) || bulkProcessing}
+	                        className="w-full px-4 py-2 text-sm border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 transition-colors font-medium disabled:opacity-50"
+	                      >
                         Clear Selection
                       </button>
                       <button
@@ -3885,41 +3941,84 @@ const ResultVerificationConsole: React.FC = () => {
         </div>
 
         {/* Selection Summary */}
-        {selectedPanels.size > 0 && (
+        {showBulkApprovalStatus && (
           <div className="bg-gradient-to-r from-blue-600 to-indigo-600 rounded-2xl p-4 sm:p-6 text-white shadow-lg">
             <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
               <div className="flex items-start gap-3">
                 <div className="bg-white/20 p-3 rounded-xl">
-                  <CheckSquare className="h-6 w-6" />
+                  {bulkProcessing ? (
+                    <Loader2 className="h-6 w-6 animate-spin" />
+                  ) : bulkApprovalProgress && !bulkApprovalHasIssues ? (
+                    <CheckCircle2 className="h-6 w-6" />
+                  ) : bulkApprovalHasIssues ? (
+                    <AlertTriangle className="h-6 w-6" />
+                  ) : (
+                    <CheckSquare className="h-6 w-6" />
+                  )}
                 </div>
-                <div>
+                <div className="space-y-2">
                   <div className="text-lg sm:text-xl font-bold">
-                    {selectedPanels.size} panel{selectedPanels.size !== 1 ? 's' : ''} selected
+                    {selectedPanels.size > 0
+                      ? `${selectedPanels.size} panel${selectedPanels.size !== 1 ? 's' : ''} selected`
+                      : `Bulk approval ${bulkApprovalHasIssues ? 'completed with issues' : 'complete'}`}
                   </div>
                   <div className="text-blue-100 text-sm sm:text-base">
-                    Ready for bulk verification operations
+                    {bulkApprovalStatusLabel}
                   </div>
+                  {bulkApprovalProgress && (
+                    <div className="flex flex-wrap gap-2 text-xs sm:text-sm">
+                      <span className="rounded-full bg-white/20 px-3 py-1">
+                        Attempted {bulkApprovalProgress.attempted}/{bulkApprovalProgress.total}
+                      </span>
+                      <span className="rounded-full bg-emerald-400/25 px-3 py-1">
+                        Approved {bulkApprovalProgress.approved}
+                      </span>
+                      {bulkApprovalProgress.failed > 0 && (
+                        <span className="rounded-full bg-red-400/25 px-3 py-1">
+                          Failed {bulkApprovalProgress.failed}
+                        </span>
+                      )}
+                      {bulkApprovalProgress.skipped > 0 && (
+                        <span className="rounded-full bg-amber-400/25 px-3 py-1">
+                          Skipped {bulkApprovalProgress.skipped}
+                        </span>
+                      )}
+                    </div>
+                  )}
+                  {bulkApprovalProgress && bulkApprovalProgress.total > 0 && (
+                    <div className="h-2 max-w-xl overflow-hidden rounded-full bg-white/20">
+                      <div
+                        className="h-full rounded-full bg-white transition-all duration-300"
+                        style={{ width: `${Math.round(((bulkApprovalProgress.attempted + bulkApprovalProgress.skipped) / bulkApprovalProgress.total) * 100)}%` }}
+                      />
+                    </div>
+                  )}
                 </div>
               </div>
               <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3">
                 <button
                   onClick={clearSelection}
-                  className="px-4 py-2 bg-white/20 text-white rounded-lg hover:bg-white/30 transition-colors font-medium"
+                  disabled={bulkProcessing}
+                  className="px-4 py-2 bg-white/20 text-white rounded-lg hover:bg-white/30 transition-colors font-medium disabled:opacity-50"
                 >
                   Clear
                 </button>
-                <button
-                  onClick={bulkApproveSelected}
-                  disabled={bulkProcessing}
-                  className="inline-flex items-center justify-center px-6 py-3 bg-white text-blue-600 rounded-xl hover:bg-gray-50 transition-colors font-bold shadow-sm disabled:opacity-50"
-                >
-                  {bulkProcessing ? (
-                    <Loader2 className="h-5 w-5 mr-2 animate-spin inline" />
-                  ) : (
-                    <Zap className="h-5 w-5 mr-2 inline" />
-                  )}
-                  Approve Selected
-                </button>
+                {selectedPanels.size > 0 && (
+                  <button
+                    onClick={bulkApproveSelected}
+                    disabled={bulkProcessing}
+                    className="inline-flex items-center justify-center px-6 py-3 bg-white text-blue-600 rounded-xl hover:bg-gray-50 transition-colors font-bold shadow-sm disabled:opacity-50"
+                  >
+                    {bulkProcessing ? (
+                      <Loader2 className="h-5 w-5 mr-2 animate-spin inline" />
+                    ) : (
+                      <Zap className="h-5 w-5 mr-2 inline" />
+                    )}
+                    {bulkProcessing && bulkApprovalProgress
+                      ? `Approving ${bulkApprovalProgress.attempted}/${bulkApprovalProgress.total}`
+                      : "Approve Selected"}
+                  </button>
+                )}
               </div>
             </div>
           </div>

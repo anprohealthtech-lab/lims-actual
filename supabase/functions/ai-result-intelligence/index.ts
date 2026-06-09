@@ -1,7 +1,7 @@
 // Supabase Edge Function: AI Result Intelligence
 // Deno port of netlify/functions/ai-result-intelligence.ts
-// Handles: patient_summary, clinical_summary, delta_check, verifier_summary,
-//          generate_interpretations, analyze_result_values
+// Handles: patient_summary, clinical_summary, delta_check, order_delta_check,
+//          verifier_summary, generate_interpretations, analyze_result_values
 
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 
@@ -629,13 +629,13 @@ function buildOrderDeltaCheckPrompt(req: OrderDeltaCheckRequest): string {
       const historyForAnalyte = (historical_data || []).flatMap(h =>
         h.analytes.filter(a => a.name.toLowerCase() === r.analyte_name.toLowerCase())
           .map(a => ({ ...a, date: h.test_date, source: h.source }))
-      ).slice(0, 5);
+      ).slice(0, 2);
 
       const historyStr = historyForAnalyte.length > 0
-        ? `Previous: ${historyForAnalyte.map(h => `${h.date}: ${h.value}${h.flag ? ` [${h.flag}]` : ""} (${h.source})`).join(" → ")}`
+        ? `Prior: ${historyForAnalyte.map(h => `${h.date}: ${h.value} ${h.unit || ""} (${h.source})`).join(" -> ")}`
         : "No historical data";
 
-      return `   ${i + 1}. ${r.analyte_name}: ${r.value} ${r.unit} ${r.flag ? `[${r.flag}]` : ""} (Ref: ${r.reference_range})
+      return `   ${i + 1}. ${r.analyte_name}: ${r.value} ${r.unit} (Ref: ${r.reference_range})
       ${historyStr}`;
     }).join("\n");
 
@@ -742,29 +742,27 @@ ${resultsText}`;
     ? `\n═══ INTER-TEST GROUP VALIDATION PATTERNS ═══\n${panelPatterns.join("\n\n")}`
     : "";
 
-  // Historical data section
-  const historySection = (historical_data && historical_data.length > 0)
-    ? `\n═══ HISTORICAL DATA FOR DELTA COMPARISON ═══\n${historical_data.map(h =>
-        `${h.test_date} (${h.source}):\n${h.analytes.map(a => `  - ${a.name}: ${a.value}${a.flag ? ` [${a.flag}]` : ""}`).join("\n")}`
-      ).join("\n\n")}`
-    : "";
-
-  return `You are a senior clinical laboratory quality control specialist performing a COMPREHENSIVE ORDER-LEVEL DELTA CHECK.
+  return `You are a senior clinical laboratory quality control specialist performing a focused ORDER-LEVEL DELTA CHECK.
 
 ORDER-LEVEL DELTA CHECK PURPOSE:
-This is a comprehensive quality validation of ALL test groups in an order together. You must:
-1. Validate each test group individually (input errors, unusual changes, sample issues)
-2. CROSS-VALIDATE BETWEEN TEST GROUPS (critical - the main purpose of order-level check)
-3. Identify physiological inconsistencies across the entire order
-4. Flag any results that contradict each other between different test groups
-5. Validate mathematical relationships (differential totals, calculated values)
+This is a focused clinical/laboratory QC review of all test groups in one order. You must:
+1. Score the whole order and each test group.
+2. Identify clinically meaningful delta changes from prior matched values.
+3. Cross-validate physiological consistency between test groups.
+4. Validate mathematical panel relationships and impossible/unlikely combinations.
+5. Flag sample integrity patterns, critical combinations, or missing companion tests.
+
+OUT OF SCOPE:
+- Do not analyze LIS/app-generated flag correctness.
+- Do not report H/L/N flag mismatch, reference-range flagging errors, or unit display formatting issues.
+- Ignore result flags except where the value itself suggests a critical clinical/sample concern.
+- Do not list every normal or validated analyte.
 
 ${patientInfo ? `PATIENT CONTEXT:\n${patientInfo}` : ""}
 
 ═══ CURRENT ORDER RESULTS ═══
 ${currentResultsSection}
 ${panelPatternsSection}
-${historySection}
 
 ═══ INTER-TEST GROUP VALIDATION RULES ═══
 1. CBC + CRP/ESR: High WBC should correlate with elevated inflammatory markers
@@ -788,18 +786,18 @@ Respond with a JSON object:
 {
   "confidence_score": 85,
   "confidence_level": "high|medium|low",
-  "summary": "Comprehensive 2-3 sentence summary of order-level findings...",
+  "summary": "Maximum 2 short sentences focused on clinically meaningful QC findings.",
   "test_group_issues": [
     {
       "test_group_name": "Name",
       "issues": [
         {
-          "issue_type": "input_error|sample_issue|conflicting_result|unusual_change|quality_concern",
+          "issue_type": "sample_issue|conflicting_result|unusual_change|quality_concern|critical_combination|missing_companion_test",
           "severity": "critical|warning|info",
           "affected_analytes": ["Analyte1"],
-          "description": "Issue description...",
-          "suggested_action": "Action to take...",
-          "evidence": "Supporting data..."
+          "description": "One concise clinically meaningful issue.",
+          "suggested_action": "One concise action, only if action is needed.",
+          "evidence": "Short supporting values only."
         }
       ]
     }
@@ -810,21 +808,21 @@ Respond with a JSON object:
       "severity": "critical|warning|info",
       "test_groups_involved": ["Group1", "Group2"],
       "affected_analytes": ["Analyte1", "Analyte2"],
-      "description": "Cross-test group issue description...",
-      "suggested_action": "Resolution suggestion...",
-      "clinical_rationale": "Why this is a concern..."
+      "description": "One concise cross-test issue.",
+      "suggested_action": "One concise action, only if action is needed.",
+      "clinical_rationale": "One short rationale."
     }
   ],
-  "validated_results": ["List of analytes that passed all checks"],
+  "validated_results": [],
   "attention_required": [
     {
       "test_group": "Group name",
       "analyte": "Analyte name",
-      "reason": "Why attention is needed"
+      "reason": "Short reason"
     }
   ],
   "recommendation": "approve|review_required|reject",
-  "verifier_notes": "Detailed notes summarizing validation findings...",
+  "verifier_notes": "One short verifier note, no repeated issue details.",
   "quality_breakdown": [
     {
       "test_group": "Group name",
@@ -834,7 +832,8 @@ Respond with a JSON object:
   ]
 }
 
-IMPORTANT: Focus heavily on INTER-TEST GROUP validation - this is what distinguishes order-level from panel-level checks.
+Keep output compact: maximum 3 test-group issues, maximum 3 inter-test-group issues, maximum 5 attention_required items.
+IMPORTANT: Focus on clinical/lab QC only. Do not mention flag mismatch or app/LIS flagging.
 Return ONLY the JSON object, no additional text.`;
 }
 
@@ -867,7 +866,7 @@ function extractJsonFromResponse(response: unknown): unknown {
   throw new Error("Could not extract JSON from Gemini response");
 }
 
-async function callGemini(prompt: string, apiKey: string, maxRetries = 4): Promise<unknown> {
+async function callGemini(prompt: string, apiKey: string, maxRetries = 4, maxOutputTokens = 65536): Promise<unknown> {
   let lastError: Error | null = null;
 
   for (let attempt = 0; attempt < maxRetries; attempt++) {
@@ -887,7 +886,7 @@ async function callGemini(prompt: string, apiKey: string, maxRetries = 4): Promi
           generationConfig: {
             temperature: 0.2,
             topP: 0.9,
-            maxOutputTokens: 65536,
+            maxOutputTokens,
             responseMimeType: "application/json",
           },
         }),
@@ -1023,7 +1022,7 @@ serve(async (req) => {
           );
         }
         prompt = buildOrderDeltaCheckPrompt(body as OrderDeltaCheckRequest);
-        result = await callGemini(prompt, apiKey);
+        result = await callGemini(prompt, apiKey, 4, 8192);
         break;
 
       default:

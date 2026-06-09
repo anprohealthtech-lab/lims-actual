@@ -161,6 +161,9 @@ interface LabSettings {
 	    showFlagLegend?: boolean;
 	    testGroupTitlePosition?: 'below_headers' | 'above_headers_center' | 'above_headers_left';
 	    qrHorizontalOffset?: number;
+	    signatureMaxHeight?: number;
+	    signatureMaxWidth?: number;
+	    sectionFieldNamePct?: number;
 	  } | null;
   _pdf_layout_settings_raw?: Record<string, unknown> | null;
   barcode_printer_name?: string | null;
@@ -2870,17 +2873,16 @@ const Settings: React.FC = () => {
                       </div>
                     </div>
 
-                    {/* QZ Tray Auto-Print */}
+                    {/* LIMS Utility Auto-Print */}
                     <div className="border-t border-gray-100 pt-5">
-                      <h4 className="text-sm font-semibold text-gray-700 mb-1">Auto-Print via QZ Tray</h4>
+                      <h4 className="text-sm font-semibold text-gray-700 mb-1">Auto-Print via LIMS Utility</h4>
                       <p className="text-xs text-gray-500 mb-3">
-                        Requires <strong>QZ Tray</strong> to be installed on this workstation.{' '}
-                        <a href="https://qz.io/download/" target="_blank" rel="noopener noreferrer" className="text-blue-600 underline">Download QZ Tray</a>.
-                        On first connect, QZ Tray will ask you to allow unsigned printing — check "Remember" and click Allow.
-                        Printer names above must match exactly.
+                        Sends print jobs to the local LIMS Bridge Utility queue. The installed utility polls the cloud queue,
+                        prints on the configured desktop printer, and reports success or failure back to LIMS.
+                        Printer names above must match the utility/Windows printer names exactly.
                       </p>
 
-                      {/* Connection status + connect button */}
+                      {/* Queue status */}
                       <div className="flex items-center gap-3 mb-4 p-3 rounded-lg bg-gray-50 border border-gray-200">
                         <span className={`inline-block w-2.5 h-2.5 rounded-full flex-shrink-0 ${
                           qzStatus === 'connected' ? 'bg-green-500' :
@@ -2888,15 +2890,15 @@ const Settings: React.FC = () => {
                           qzStatus === 'error' ? 'bg-red-500' : 'bg-gray-400'
                         }`} />
                         <span className="text-sm text-gray-700 flex-1">
-                          QZ Tray:{' '}
+                          Print queue:{' '}
                           <span className={`font-medium ${
                             qzStatus === 'connected' ? 'text-green-600' :
                             qzStatus === 'connecting' ? 'text-yellow-600' :
                             qzStatus === 'error' ? 'text-red-600' : 'text-gray-500'
                           }`}>
-                            {qzStatus === 'connected' ? 'Connected' :
+                            {qzStatus === 'connected' ? 'Ready' :
                              qzStatus === 'connecting' ? 'Connecting…' :
-                             qzStatus === 'error' ? 'Error (QZ Tray not running?)' : 'Not connected'}
+                             qzStatus === 'error' ? 'Queue unavailable' : 'Paused'}
                           </span>
                         </span>
                         {qzStatus === 'connected' ? (
@@ -2914,7 +2916,7 @@ const Settings: React.FC = () => {
                             disabled={qzStatus === 'connecting'}
                             className="text-xs px-3 py-1 rounded bg-blue-600 text-white hover:bg-blue-700 disabled:bg-gray-300"
                           >
-                            {qzStatus === 'connecting' ? 'Connecting…' : 'Connect'}
+                            {qzStatus === 'connecting' ? 'Connecting…' : 'Resume'}
                           </button>
                         )}
                       </div>
@@ -2929,7 +2931,7 @@ const Settings: React.FC = () => {
                           />
                           <div>
                             <span className="text-sm font-medium text-gray-800">Auto-print barcode label on order creation</span>
-                            <p className="text-xs text-gray-400 mt-0.5">Sends a ZPL label to the Barcode / Label Printer immediately after an order is saved. No dialog shown.</p>
+                            <p className="text-xs text-gray-400 mt-0.5">Queues a ZPL label for the Barcode / Label Printer immediately after an order is saved.</p>
                           </div>
                         </label>
 
@@ -2942,7 +2944,7 @@ const Settings: React.FC = () => {
                           />
                           <div>
                             <span className="text-sm font-medium text-gray-800">Auto-print report when results are approved</span>
-                            <p className="text-xs text-gray-400 mt-0.5">Sends the final PDF report to the Report Printer when results are approved. No dialog shown.</p>
+                            <p className="text-xs text-gray-400 mt-0.5">Queues the final PDF report for the Report Printer when results are approved.</p>
                           </div>
                         </label>
                       </div>

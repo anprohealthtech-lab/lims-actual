@@ -74,6 +74,10 @@ function isAnalyzerInitiated(profile: any, connection: any): boolean {
   return flow === 'analyzer_initiated' || responseType === 'ORR^O02'
 }
 
+function analyzerProtocol(profile: any): string {
+  return String(profile?.protocol || 'HL7').trim().toUpperCase()
+}
+
 function universalServiceId(test: TestMapping, profile: any): string {
   const fromMetadata = test.metadata?.universal_service_id
   if (typeof fromMetadata === 'string' && fromMetadata) return fromMetadata
@@ -318,6 +322,130 @@ function generateHL7WorklistResponse(
   return { hl7Message: segments.join('\r') + '\r', hl7Payload }
 }
 
+function astmRepeatDelimiter(profile: any): string {
+  const configured = String(profile?.repetition_delimiter || profile?.connection_settings?.repetition_delimiter || '')
+  return configured && configured !== '~' ? configured : '\\'
+}
+
+function astmTestCode(test: TestMapping): string {
+  const fromMetadata = test.metadata?.astm_test_code
+  if (typeof fromMetadata === 'string' && fromMetadata) return fromMetadata
+  return test.analyzer_code || test.lims_code
+}
+
+function buildAstmPayload(
+  payload: OrderPayload,
+  mappedTests: TestMapping[],
+  profile: any,
+  messageControlId: string,
+  messageType: 'ASTM_ORDER' | 'ASTM_WORKLIST',
+) {
+  const timestamp = compactHl7Timestamp()
+  const repeatDelimiter = astmRepeatDelimiter(profile)
+  const componentDelimiter = String(profile?.component_delimiter || '^')
+  const escapeDelimiter = String(profile?.escape_delimiter || '\\')
+  const subcomponentDelimiter = String(profile?.subcomponent_delimiter || '&')
+  const protocolVersion = profile?.protocol_version || 'E1394-97'
+  const testField = mappedTests
+    .map((test) => ['', '', '', astmTestCode(test)].join(componentDelimiter))
+    .join(repeatDelimiter)
+
+  return {
+    protocol: 'ASTM',
+    message: {
+      type: messageType,
+      control_id: messageControlId,
+      timestamp,
+      protocol_version: protocolVersion,
+    },
+    delimiters: {
+      field: '|',
+      repeat: repeatDelimiter,
+      component: componentDelimiter,
+      escape: escapeDelimiter,
+      subcomponent: subcomponentDelimiter,
+    },
+    patient: {
+      id: payload.sample_barcode,
+      name: payload.patient?.name || '',
+      dob: formatHl7Dob(payload.patient?.dob).slice(0, 8),
+      gender: normalizeHl7Sex(payload.patient?.gender),
+    },
+    order: {
+      sample_id: payload.sample_barcode,
+      priority: payload.priority === 1 ? 'S' : 'R',
+      requested_datetime: timestamp,
+      test_field: testField,
+    },
+    tests: mappedTests.map((test) => ({
+      lims_code: test.lims_code,
+      analyzer_code: astmTestCode(test),
+      analyzer_display: test.analyzer_display || test.lims_code,
+    })),
+  }
+}
+
+function generateASTMOrder(
+  payload: OrderPayload,
+  mappedTests: TestMapping[],
+  messageControlId: string,
+  profile: any,
+  messageType: 'ASTM_ORDER' | 'ASTM_WORKLIST',
+): { hl7Message: string; hl7Payload: Record<string, unknown> } {
+  const astmPayload = buildAstmPayload(payload, mappedTests, profile, messageControlId, messageType)
+  const p = astmPayload as any
+  const delimiterDeclaration = `${p.delimiters.escape}${p.delimiters.component}${p.delimiters.subcomponent}`
+  const segments: string[] = []
+
+  segments.push([
+    'H',
+    delimiterDeclaration,
+    '',
+    '',
+    'LIMSV2',
+    '',
+    '',
+    '',
+    '',
+    'ANALYZER',
+    '',
+    'P',
+    p.message.protocol_version,
+    p.message.timestamp,
+  ].join('|'))
+
+  segments.push([
+    'P',
+    '1',
+    '',
+    p.patient.id,
+    '',
+    p.patient.name,
+    '',
+    p.patient.dob,
+    p.patient.gender,
+  ].join('|'))
+
+  segments.push([
+    'O',
+    '1',
+    p.order.sample_id,
+    '',
+    p.order.test_field,
+    p.order.priority,
+    p.order.requested_datetime,
+    '',
+    '',
+    '',
+    '',
+    'A',
+  ].join('|'))
+
+  segments.push(['L', '1', 'N'].join('|'))
+
+  return { hl7Message: segments.join('\r') + '\r', hl7Payload: astmPayload }
+}
+
 async function mapTestCodesWithAI(
   supabase: any,
   genAI: GoogleGenerativeAI,
@@ -537,6 +665,10 @@ Deno.serve(async (req) => {
       },
     }
     const analyzerInitiated = isAnalyzerInitiated(profile, connection)
+    const protocol = analyzerProtocol(profile)
+    const initialMessageType = protocol === 'ASTM'
+      ? (analyzerInitiated ? 'ASTM_WORKLIST' : 'ASTM_ORDER')
+      : (analyzerInitiated ? 'ORR^O02' : 'ORM^O01')
     const messageControlId = `LIMS${Date.now()}`
 
     const { data: queueEntry, error: queueError } = await supabase
@@ -555,7 +687,8 @@ Deno.serve(async (req) => {
         priority: payload.priority || 5,
         message_control_id: messageControlId,
         flow_type: analyzerInitiated ? 'analyzer_initiated' : 'lims_push',
-        response_message_type: analyzerInitiated ? 'ORR^O02' : null,
+        request_message_type: analyzerInitiated ? null : initialMessageType,
+        response_message_type: analyzerInitiated ? initialMessageType : null,
       })
       .select()
       .single()
@@ -573,10 +706,18 @@ Deno.serve(async (req) => {
       payload.tests,
     )
 
-    const generated = analyzerInitiated
-      ? generateHL7WorklistResponse(payload, mappedTests, messageControlId, profile)
-      : generateHL7Order(payload, mappedTests, messageControlId, profile)
-    const messageType = analyzerInitiated ? 'ORR^O02' : 'ORM^O01'
+    const generated = protocol === 'ASTM'
+      ? generateASTMOrder(
+          payload,
+          mappedTests,
+          messageControlId,
+          profile,
+          analyzerInitiated ? 'ASTM_WORKLIST' : 'ASTM_ORDER',
+        )
+      : analyzerInitiated
+        ? generateHL7WorklistResponse(payload, mappedTests, messageControlId, profile)
+        : generateHL7Order(payload, mappedTests, messageControlId, profile)
+    const messageType = initialMessageType
 
     await supabase
       .from('analyzer_order_queue')
@@ -587,9 +728,11 @@ Deno.serve(async (req) => {
         resolved_tests: mappedTests,
         hl7_message: generated.hl7Message,
         hl7_payload: generated.hl7Payload,
-        response_message_type: messageType,
+        request_message_type: analyzerInitiated ? null : messageType,
+        response_message_type: analyzerInitiated ? messageType : null,
         ai_mapping_log: {
           timestamp: new Date().toISOString(),
+          protocol,
           total_tests: payload.tests.length,
           cached_mappings: mappedTests.filter((t) => t.from_cache).length,
           ai_mappings: mappedTests.filter((t) => !t.from_cache).length,

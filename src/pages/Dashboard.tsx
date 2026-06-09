@@ -1509,24 +1509,24 @@ id,
 
   const handlePrintReport = async (order: CardOrder) => {
     const pdfUrl = order.report_print_url || order.report_url;
-    console.debug('[QZ][ReportPrint] dashboard print clicked', {
+    console.debug('[PrintBridge][ReportPrint] dashboard print clicked', {
       orderId: order.id,
       patientName: order.patient_name,
       reportUrl: order.report_url,
       reportPrintUrl: order.report_print_url,
       selectedPdfUrl: pdfUrl,
       configuredPrinter: qzSettings.reportPrinterName,
-      qzConnected: qzTrayService.isConnected(),
+      queueReady: qzTrayService.isConnected(),
     });
 
     if (!pdfUrl) {
-      console.warn('[QZ][ReportPrint] print blocked: no report PDF URL', { orderId: order.id });
+      console.warn('[PrintBridge][ReportPrint] print blocked: no report PDF URL', { orderId: order.id });
       alert("Report PDF not generated yet.");
       return;
     }
 
     if (!qzSettings.reportPrinterName) {
-      console.warn('[QZ][ReportPrint] print blocked: report printer is not configured', { orderId: order.id });
+      console.warn('[PrintBridge][ReportPrint] print blocked: report printer is not configured', { orderId: order.id });
       alert("Report Printer is not configured in Workflow Settings.");
       return;
     }
@@ -1535,24 +1535,24 @@ id,
       setPrintingReportId(order.id);
 
       if (!qzTrayService.isConnected()) {
-        console.debug('[QZ][ReportPrint] QZ not connected, attempting connect', { orderId: order.id });
+        console.debug('[PrintBridge][ReportPrint] queue paused, resuming', { orderId: order.id });
         await qzConnect();
       }
 
-      console.debug('[QZ][ReportPrint] sending PDF to QZ', {
+      console.debug('[PrintBridge][ReportPrint] queueing report PDF', {
         orderId: order.id,
         printerName: qzSettings.reportPrinterName,
         pdfUrl,
       });
       await qzTrayService.printPDFFromUrl(qzSettings.reportPrinterName, pdfUrl);
-      console.debug('[QZ][ReportPrint] print command completed', {
+      console.debug('[PrintBridge][ReportPrint] print job queued', {
         orderId: order.id,
         printerName: qzSettings.reportPrinterName,
         pdfUrl,
       });
     } catch (error: any) {
-      console.error("QZ report print failed:", error);
-      alert(error?.message || "Failed to print report via QZ Tray.");
+      console.error("Print bridge report queue failed:", error);
+      alert(error?.message || "Failed to queue report for LIMS Utility.");
     } finally {
       setPrintingReportId(null);
     }
@@ -2593,7 +2593,7 @@ id,
                                     }}
                                     disabled={printingReportId === o.id}
                                     className="inline-flex items-center justify-center px-2 py-1.5 text-sm font-medium rounded-lg text-white bg-emerald-700 hover:bg-emerald-800 disabled:bg-emerald-300 disabled:cursor-not-allowed transition-colors"
-                                    title={o.report_print_url ? "Print report via QZ Tray" : "Print report PDF via QZ Tray"}
+                                    title={o.report_print_url ? "Queue report for LIMS Utility" : "Queue report PDF for LIMS Utility"}
                                   >
                                     {printingReportId === o.id ? "..." : <Printer className="h-4 w-4" />}
                                   </button>

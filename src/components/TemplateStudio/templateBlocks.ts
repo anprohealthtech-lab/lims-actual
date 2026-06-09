@@ -221,8 +221,8 @@ export const SIGNATURE_BLOCK: TemplateBlock = {
   html: `
 <div class="signature-section" style="margin-top: 30px; text-align: right;">
   <div class="signature-block" style="display: inline-block; text-align: center; min-width: 200px;">
-    <img src="{{approverSignature}}" alt="" style="max-height: 60px; max-width: 150px; margin-bottom: 5px;" onerror="this.style.display='none'" />
-    <div class="signatory-name" style="font-size: 13px; font-weight: 600; color: #1f2937;">{{approverName}}</div>
+    <img src="{{approverSignature}}" alt="" style="max-height: 70px; max-width: 180px; width: auto; height: auto; object-fit: contain; margin-bottom: 5px;" onerror="this.style.display='none'" />
+    <div class="signatory-name" style="font-size: 13px; font-weight: 600; line-height: 1.35; white-space: pre-line; color: #1f2937;">{{approverName}}</div>
     <div class="signatory-role" style="font-size: 11px; color: #6b7280;">{{approverRole}}</div>
     <div class="approved-date" style="font-size: 10px; color: #9ca3af; margin-top: 5px;">{{approvedAtFormatted}}</div>
   </div>
@@ -239,7 +239,7 @@ export const SIGNATURE_SIMPLE: TemplateBlock = {
   html: `
 <div class="signature-section" style="margin-top: 30px; text-align: right;">
   <div class="signature-line" style="border-top: 1px solid #1f2937; width: 200px; display: inline-block; padding-top: 10px;">
-    <div class="signatory-name" style="font-size: 13px; font-weight: 600; color: #1f2937;">{{approverName}}</div>
+    <div class="signatory-name" style="font-size: 13px; font-weight: 600; line-height: 1.35; white-space: pre-line; color: #1f2937;">{{approverName}}</div>
     <div class="signatory-role" style="font-size: 11px; color: #6b7280;">{{approverRole}}</div>
   </div>
 </div>
@@ -377,8 +377,8 @@ export const COMPLETE_TEMPLATE_STARTER: TemplateBlock = {
   <!-- Signature -->
   <div class="signature-section" style="margin-top: 30px; text-align: right;">
     <div class="signature-block" style="display: inline-block; text-align: center; min-width: 200px;">
-      <img src="{{approverSignature}}" alt="" style="max-height: 60px; max-width: 150px; margin-bottom: 5px;" onerror="this.style.display='none'" />
-      <div class="signatory-name" style="font-size: 13px; font-weight: 600; color: #1f2937;">{{approverName}}</div>
+      <img src="{{approverSignature}}" alt="" style="max-height: 70px; max-width: 180px; width: auto; height: auto; object-fit: contain; margin-bottom: 5px;" onerror="this.style.display='none'" />
+      <div class="signatory-name" style="font-size: 13px; font-weight: 600; line-height: 1.35; white-space: pre-line; color: #1f2937;">{{approverName}}</div>
       <div class="signatory-role" style="font-size: 11px; color: #6b7280;">{{approverRole}}</div>
       <div class="approved-date" style="font-size: 10px; color: #9ca3af; margin-top: 5px;">{{approvedAtFormatted}}</div>
     </div>

@@ -66,16 +66,16 @@ export const SampleLabelPrinter: React.FC<SampleLabelPrinterProps> = ({
   };
 
   const handlePrint = async () => {
-    console.debug('[QZ][BarcodeLabel] print button clicked', {
+    console.debug('[PrintBridge][BarcodeLabel] print button clicked', {
       sampleId: sample.id,
       barcode: sample.barcode,
       sampleType: sample.sample_type,
       configuredPrinter: settings.barcodePrinterName,
-      qzConnected: qzTrayService.isConnected(),
+      queueReady: qzTrayService.isConnected(),
     });
 
     if (!settings.barcodePrinterName) {
-      console.warn('[QZ][BarcodeLabel] print blocked: barcode printer is not configured');
+      console.warn('[PrintBridge][BarcodeLabel] print blocked: barcode printer is not configured');
       alert('Barcode / Label Printer is not configured in Workflow Settings.');
       return;
     }
@@ -85,11 +85,11 @@ export const SampleLabelPrinter: React.FC<SampleLabelPrinterProps> = ({
       setError(null);
 
       if (!qzTrayService.isConnected()) {
-        console.debug('[QZ][BarcodeLabel] QZ not connected, attempting connect');
+        console.debug('[PrintBridge][BarcodeLabel] queue paused, resuming');
         await connect();
       }
 
-      console.debug('[QZ][BarcodeLabel] sending label to QZ', {
+      console.debug('[PrintBridge][BarcodeLabel] queueing label print job', {
         printerName: settings.barcodePrinterName,
         sampleIdForBarcode: sample.barcode || sample.id,
         labelId: sample.id,
@@ -101,14 +101,14 @@ export const SampleLabelPrinter: React.FC<SampleLabelPrinterProps> = ({
         sampleType: sample.sample_type,
         date: new Date(sample.created_at).toLocaleDateString('en-GB'),
       });
-      console.debug('[QZ][BarcodeLabel] print command completed', {
+      console.debug('[PrintBridge][BarcodeLabel] print job queued', {
         printerName: settings.barcodePrinterName,
         sampleId: sample.id,
       });
       return;
     } catch (err: any) {
-      console.error('QZ label print failed:', err);
-      setError(err?.message || 'Failed to print label via QZ Tray');
+      console.error('Print bridge label queue failed:', err);
+      setError(err?.message || 'Failed to queue label for LIMS Utility');
     } finally {
       setPrinting(false);
     }

@@ -330,6 +330,8 @@ export function buildBasicPreviewHtml(params: BuildBasicPreviewParams): string {
   const flagAsteriskCritical = (printOptions.flagAsteriskCritical as boolean) ?? false;
   const testGroupTitlePosition = (printOptions.testGroupTitlePosition as string) ?? "above_headers_center";
   const qrHorizontalOffset = Math.max(0, Math.min(80, Number(printOptions.qrHorizontalOffset ?? 0)));
+  const signatureMaxHeight = Math.max(30, Math.min(120, Number(printOptions.signatureMaxHeight ?? 70)));
+  const signatureMaxWidth = Math.max(80, Math.min(260, Number(printOptions.signatureMaxWidth ?? 180)));
   // Section field name width percentage for narrative/section-only reports (default 40%)
   const sectionFieldNamePct = Math.max(20, Math.min(70, Number(printOptions.sectionFieldNamePct ?? 40)));
   const colCount = 4;
@@ -594,7 +596,7 @@ th { padding: 3px 4px !important; }
 	.qr-verify p { margin: 2px 0 0; font-size: ${smallPx}px; color: #6b7280; }
 	.auth-text { font-size: ${smallPx}px; color: #444; font-style: italic; }
 	.signatory-box { text-align: right; }
-	.signature-image { max-height: 45px; max-width: 130px; margin-bottom: 4px; display: block; margin-left: auto; object-fit: contain; }
+	.signature-image { max-height: ${signatureMaxHeight}px; max-width: ${signatureMaxWidth}px; width: auto; height: auto; margin-bottom: 4px; display: block; margin-left: auto; object-fit: contain; }
 	.signatory-name { font-weight: 700; font-size: ${basePx + 1}px; }
 	.signatory-role { font-size: ${basePx - 1}px; margin-top: 2px; color: #333; }
 		.compact-page .report-main-title { font-size: ${basePx + 3}px; padding: 5px 0; margin-bottom: 10px; }

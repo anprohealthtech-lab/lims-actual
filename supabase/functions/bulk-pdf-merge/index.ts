@@ -1,6 +1,17 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { PDFDocument } from 'https://esm.sh/pdf-lib@1.17.1';
 
+const PDFCO_MERGE_URL = 'https://api.pdf.co/v1/pdf/merge';
+const PDFCO_JOB_STATUS_URL = 'https://api.pdf.co/v1/job/check';
+const PDFCO_JOB_POLL_ATTEMPTS = 90;
+const PDFCO_JOB_POLL_DELAY_MS = 2000;
+const PDFCO_MERGE_CHUNK_SIZE = 20;
+const FALLBACK_MERGE_MAX_INPUT_BYTES = 90 * 1024 * 1024;
+
+declare const EdgeRuntime: {
+  waitUntil: (promise: Promise<unknown>) => void;
+};
+
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
@@ -56,54 +67,103 @@ const compareOrders = (
   return (orderIndex.get(a.id) ?? 0) - (orderIndex.get(b.id) ?? 0);
 };
 
-Deno.serve(async (req) => {
-  if (req.method === 'OPTIONS') {
-    return new Response('ok', { headers: corsHeaders });
-  }
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
+const isFetchablePdfUrl = async (url: string): Promise<boolean> => {
   try {
-    const supabase = createClient(
-      Deno.env.get('SUPABASE_URL') ?? '',
-      Deno.env.get('SUPABASE_ANON_KEY') ?? '',
-      { global: { headers: { Authorization: req.headers.get('Authorization')! } } }
-    );
+    const response = await fetch(url, { headers: { Range: 'bytes=0-0' } });
+    await response.body?.cancel();
+    return response.ok;
+  } catch {
+    return false;
+  }
+};
 
-    const { data: { user }, error: userError } = await supabase.auth.getUser();
-    if (userError || !user) {
-      return new Response(JSON.stringify({ error: 'Unauthorized' }), {
-        status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-      });
+const pollPdfCoJob = async (jobId: string, apiKey: string, fallbackUrl?: string): Promise<string> => {
+  for (let attempt = 0; attempt < PDFCO_JOB_POLL_ATTEMPTS; attempt++) {
+    await sleep(PDFCO_JOB_POLL_DELAY_MS);
+    const response = await fetch(`${PDFCO_JOB_STATUS_URL}?jobid=${encodeURIComponent(jobId)}`, {
+      headers: { 'x-api-key': apiKey },
+    });
+
+    if (!response.ok) {
+      throw new Error(`PDF.co merge status check failed: ${response.status}`);
     }
 
-	    const { request_id, sort_mode } = await req.json();
-	    if (!request_id) throw new Error('request_id is required');
-    const sortMode: BulkPdfSortMode = ['sample_desc', 'sample_asc', 'order_id_asc', 'order_id_desc', 'date_desc', 'patient_az'].includes(sort_mode)
-      ? sort_mode
-      : 'sample_desc';
+    const result = await response.json();
+    const status = String(result.status || '').toLowerCase();
+    if (status === 'success' && (result.url || fallbackUrl)) {
+      return result.url || fallbackUrl!;
+    }
 
-    const { data: userData } = await supabase
-      .from('users')
-      .select('lab_id')
-      .eq('id', user.id)
-      .single();
-    if (!userData) throw new Error('Could not fetch user lab');
-    const labId = userData.lab_id;
+    if (status === 'failed' || status === 'aborted' || result.error) {
+      throw new Error(`PDF.co merge failed: ${result.message || 'Unknown PDF.co error'}`);
+    }
+  }
 
-    const { data: downloadReq, error: reqError } = await supabase
-      .from('bulk_pdf_download_requests')
-      .select('*')
-      .eq('id', request_id)
-      .eq('lab_id', labId)
-      .single();
-    if (reqError || !downloadReq) throw new Error('Download request not found');
+  throw new Error('PDF.co merge timed out');
+};
 
-    await supabase
-      .from('bulk_pdf_download_requests')
-      .update({ status: 'processing' })
-      .eq('id', request_id);
+const mergeWithPdfCo = async (pdfUrls: string[], requestId: string): Promise<string> => {
+  const apiKey = Deno.env.get('PDFCO_API_KEY');
+  if (!apiKey) throw new Error('PDFCO_API_KEY is not configured');
 
-    const orderIds: string[] = downloadReq.order_ids;
+  const response = await fetch(PDFCO_MERGE_URL, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-api-key': apiKey,
+    },
+    body: JSON.stringify({
+      url: pdfUrls.join(','),
+      name: `${requestId}_merged.pdf`,
+      async: true,
+    }),
+  });
 
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(`PDF.co merge request failed: ${response.status} ${errorText}`);
+  }
+
+  const result = await response.json();
+  if (result.error) throw new Error(`PDF.co merge failed: ${result.message || 'Unknown PDF.co error'}`);
+  const jobId = result.jobId || result.jobid;
+  if (jobId) return pollPdfCoJob(jobId, apiKey, result.url);
+  if (result.url) return result.url;
+
+  throw new Error('PDF.co merge did not return a URL or job ID');
+};
+
+const mergeWithPdfCoInChunks = async (pdfUrls: string[], requestId: string): Promise<string> => {
+  let round = 1;
+  let currentUrls = pdfUrls;
+
+  while (currentUrls.length > 1) {
+    const mergedRoundUrls: string[] = [];
+
+    for (let index = 0; index < currentUrls.length; index += PDFCO_MERGE_CHUNK_SIZE) {
+      const chunk = currentUrls.slice(index, index + PDFCO_MERGE_CHUNK_SIZE);
+      const chunkName = `${requestId}_r${round}_${Math.floor(index / PDFCO_MERGE_CHUNK_SIZE) + 1}`;
+      console.log(`PDF.co chunk merge ${chunkName}: ${chunk.length} PDFs`);
+      mergedRoundUrls.push(await mergeWithPdfCo(chunk, chunkName));
+    }
+
+    currentUrls = mergedRoundUrls;
+    round++;
+  }
+
+  return currentUrls[0];
+};
+
+const processMergeRequest = async (
+  supabase: any,
+  request_id: string,
+  labId: string,
+  orderIds: string[],
+  sortMode: BulkPdfSortMode,
+) => {
+  try {
     const { data: orders, error: ordersError } = await supabase
       .from('orders')
       .select(`
@@ -123,9 +183,9 @@ Deno.serve(async (req) => {
     const orderIndex = new Map(orderIds.map((id, index) => [id, index]));
     const sortedOrders = [...(orders || [])].sort((a, b) => compareOrders(a, b, sortMode, orderIndex));
 
-    const mergedPdf = await PDFDocument.create();
     let processed = 0;
     let failed = 0;
+    const pdfUrls: string[] = [];
 
 	    for (const order of sortedOrders) {
       try {
@@ -138,16 +198,14 @@ Deno.serve(async (req) => {
           continue;
         }
 
-        const pdfRes = await fetch(pdfUrl);
-        if (!pdfRes.ok) {
+        const isFetchable = await isFetchablePdfUrl(pdfUrl);
+        if (!isFetchable) {
           failed++;
+          console.warn(`Skipping inaccessible print PDF for order ${order.id}: ${pdfUrl}`);
           continue;
         }
 
-        const pdfBytes = await pdfRes.arrayBuffer();
-        const sourcePdf = await PDFDocument.load(pdfBytes, { ignoreEncryption: true });
-        const pages = await mergedPdf.copyPages(sourcePdf, sourcePdf.getPageIndices());
-        pages.forEach((page) => mergedPdf.addPage(page));
+        pdfUrls.push(pdfUrl);
         processed++;
 
         await supabase
@@ -178,50 +236,134 @@ Deno.serve(async (req) => {
       );
     }
 
-    const mergedPdfBytes = await mergedPdf.save();
-    const fileName = `bulk-downloads/${labId}/${request_id}_merged.pdf`;
+    let mergedPdfUrl: string;
+    const pdfCoApiKey = Deno.env.get('PDFCO_API_KEY');
+    let expiresAt = new Date(Date.now() + 86400 * 1000).toISOString();
 
-    const { error: uploadError } = await supabase.storage
-      .from('reports')
-      .upload(fileName, mergedPdfBytes, {
-        contentType: 'application/pdf',
-        upsert: true,
-      });
+    if (pdfCoApiKey) {
+      mergedPdfUrl = await mergeWithPdfCoInChunks(pdfUrls, request_id);
+      // PDF.co output links are temporary. Avoid downloading the final large
+      // merged file into Edge Function memory; expose the ready PDF.co URL.
+      expiresAt = new Date(Date.now() + 55 * 60 * 1000).toISOString();
+    } else {
+      const mergedPdf = await PDFDocument.create();
+      let inputBytes = 0;
 
-    if (uploadError) throw new Error(`PDF upload failed: ${uploadError.message}`);
+      for (const pdfUrl of pdfUrls) {
+        const pdfRes = await fetch(pdfUrl);
+        if (!pdfRes.ok) continue;
 
-    const { data: signedUrlData, error: signedError } = await supabase.storage
-      .from('reports')
-      .createSignedUrl(fileName, 86400);
+        const pdfBytes = await pdfRes.arrayBuffer();
+        inputBytes += pdfBytes.byteLength;
+        if (inputBytes > FALLBACK_MERGE_MAX_INPUT_BYTES) {
+          throw new Error('Merged PDF is too large for in-memory Edge Function merging. Configure PDFCO_API_KEY or merge a smaller selection.');
+        }
 
-    if (signedError || !signedUrlData) throw new Error('Failed to create signed URL');
+        const sourcePdf = await PDFDocument.load(pdfBytes, { ignoreEncryption: true });
+        const pages = await mergedPdf.copyPages(sourcePdf, sourcePdf.getPageIndices());
+        pages.forEach((page) => mergedPdf.addPage(page));
+      }
 
-    const expiresAt = new Date(Date.now() + 86400 * 1000).toISOString();
+      const mergedPdfBytes = await mergedPdf.save();
+      const fileName = `bulk-downloads/${labId}/${request_id}_merged.pdf`;
+
+      const { error: uploadError } = await supabase.storage
+        .from('reports')
+        .upload(fileName, mergedPdfBytes, {
+          contentType: 'application/pdf',
+          upsert: true,
+        });
+
+      if (uploadError) throw new Error(`PDF upload failed: ${uploadError.message}`);
+
+      const { data: signedUrlData, error: signedError } = await supabase.storage
+        .from('reports')
+        .createSignedUrl(fileName, 86400);
+
+      if (signedError || !signedUrlData) throw new Error('Failed to create signed URL');
+      mergedPdfUrl = signedUrlData.signedUrl;
+    }
 
     await supabase
       .from('bulk_pdf_download_requests')
       .update({
         status: 'completed',
-        zip_url: signedUrlData.signedUrl,
+        zip_url: mergedPdfUrl,
         processed_orders: processed,
         failed_orders: failed,
         completed_at: new Date().toISOString(),
         expires_at: expiresAt,
       })
       .eq('id', request_id);
-
-    return new Response(
-      JSON.stringify({
-        success: true,
-        merged_pdf_url: signedUrlData.signedUrl,
-        processed,
-        failed,
-        expires_at: expiresAt,
-      }),
-      { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-    );
   } catch (err) {
     console.error('bulk-pdf-merge error:', err);
+    await supabase
+      .from('bulk_pdf_download_requests')
+      .update({
+        status: 'failed',
+        error_message: (err as Error).message,
+        completed_at: new Date().toISOString(),
+      })
+      .eq('id', request_id);
+  }
+};
+
+Deno.serve(async (req) => {
+  if (req.method === 'OPTIONS') {
+    return new Response('ok', { headers: corsHeaders });
+  }
+
+  try {
+    const supabase = createClient(
+      Deno.env.get('SUPABASE_URL') ?? '',
+      Deno.env.get('SUPABASE_ANON_KEY') ?? '',
+      { global: { headers: { Authorization: req.headers.get('Authorization')! } } }
+    );
+
+    const { data: { user }, error: userError } = await supabase.auth.getUser();
+    if (userError || !user) {
+      return new Response(JSON.stringify({ error: 'Unauthorized' }), {
+        status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      });
+    }
+
+    const { request_id, sort_mode } = await req.json();
+    if (!request_id) throw new Error('request_id is required');
+    const sortMode: BulkPdfSortMode = ['sample_desc', 'sample_asc', 'order_id_asc', 'order_id_desc', 'date_desc', 'patient_az'].includes(sort_mode)
+      ? sort_mode
+      : 'sample_desc';
+
+    const { data: userData } = await supabase
+      .from('users')
+      .select('lab_id')
+      .eq('id', user.id)
+      .single();
+    if (!userData) throw new Error('Could not fetch user lab');
+    const labId = userData.lab_id;
+
+    const { data: downloadReq, error: reqError } = await supabase
+      .from('bulk_pdf_download_requests')
+      .select('*')
+      .eq('id', request_id)
+      .eq('lab_id', labId)
+      .single();
+    if (reqError || !downloadReq) throw new Error('Download request not found');
+
+    const orderIds: string[] = downloadReq.order_ids || [];
+
+    await supabase
+      .from('bulk_pdf_download_requests')
+      .update({ status: 'processing', processed_orders: 0, failed_orders: 0, error_message: null })
+      .eq('id', request_id);
+
+    EdgeRuntime.waitUntil(processMergeRequest(supabase, request_id, labId, orderIds, sortMode));
+
+    return new Response(
+      JSON.stringify({ success: true, status: 'processing', request_id }),
+      { status: 202, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+    );
+  } catch (err) {
+    console.error('bulk-pdf-merge start error:', err);
     return new Response(
       JSON.stringify({ error: (err as Error).message }),
       { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }

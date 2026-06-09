@@ -73,6 +73,8 @@ interface ColumnInfo {
   type: 'analyte' | 'section' | 'cascade_field' | 'matrix_cell' | 'matrix_note';
   unit?: string;
   reference_range?: string;
+  value_type?: string;
+  expected_normal_values?: string[];
   is_calculated?: boolean;
   section_type?: string;
   section_config?: SectionConfig | null;
@@ -102,12 +104,19 @@ interface SaveResult {
   patient_name: string;
   success: boolean;
   saved_count: number;
+  approved_count: number;
+  skipped_count: number;
   error?: string;
 }
 
 const MATRIX_CELL_PREFIX = 'matrix:';
 const MATRIX_COL_LABEL_PREFIX = 'col_label:';
 const MATRIX_COL_ORDER_KEY = 'matrix_col_order';
+const ORDER_UUID_HEADER = 'Order UUID';
+const TEST_GROUP_UUID_HEADER = 'Test Group UUID';
+const ORDER_ID_HEADER = 'Order ID';
+const PATIENT_NAME_HEADER = 'Patient Name';
+const SAMPLE_ID_HEADER = 'Sample ID';
 
 function escapeHtml(value: string): string {
   return value
@@ -181,6 +190,7 @@ const BulkResultExcelModal: React.FC<BulkResultExcelModalProps> = ({
   onSaved
 }) => {
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const savingRef = useRef(false);
 
   const [step, setStep] = useState<'loading' | 'ready' | 'uploading' | 'saving' | 'done'>('loading');
   const [testGroups, setTestGroups] = useState<TestGroupInfo[]>([]);
@@ -192,6 +202,7 @@ const BulkResultExcelModal: React.FC<BulkResultExcelModalProps> = ({
   const [parsedSheets, setParsedSheets] = useState<ParsedSheet[]>([]);
   const [saveResults, setSaveResults] = useState<SaveResult[]>([]);
   const [savingProgress, setSavingProgress] = useState({ current: 0, total: 0 });
+  const [autoVerifyOnUpload, setAutoVerifyOnUpload] = useState(false);
 
   // ─── Load order and test group data ────────────────────────────────────────
 
@@ -213,8 +224,8 @@ const BulkResultExcelModal: React.FC<BulkResultExcelModalProps> = ({
 	              id, name, is_section_only,
 	              test_group_analytes(
 	                analyte_id, lab_analyte_id, sort_order,
-	                analytes(id, name, unit, reference_range, is_calculated),
-	                lab_analytes(id, name, unit, reference_range, is_calculated)
+	                analytes(id, name, unit, reference_range, value_type, expected_normal_values, is_calculated),
+	                lab_analytes(id, name, unit, reference_range, value_type, expected_normal_values, is_calculated)
 	              )
 	            )
 	          ),
@@ -224,8 +235,8 @@ const BulkResultExcelModal: React.FC<BulkResultExcelModalProps> = ({
 	              id, name, is_section_only,
 	              test_group_analytes(
 	                analyte_id, lab_analyte_id, sort_order,
-	                analytes(id, name, unit, reference_range, is_calculated),
-	                lab_analytes(id, name, unit, reference_range, is_calculated)
+	                analytes(id, name, unit, reference_range, value_type, expected_normal_values, is_calculated),
+	                lab_analytes(id, name, unit, reference_range, value_type, expected_normal_values, is_calculated)
 	              )
             )
           )
@@ -346,6 +357,10 @@ const BulkResultExcelModal: React.FC<BulkResultExcelModalProps> = ({
           type: 'analyte',
           unit: la?.unit || a.unit || '',
           reference_range: la?.reference_range || a.reference_range || '',
+          value_type: la?.value_type || a.value_type || 'numeric',
+          expected_normal_values: normalizeExpectedValues(
+            la?.expected_normal_values ?? a.expected_normal_values
+          ),
           is_calculated: la?.is_calculated ?? a.is_calculated ?? false
         });
       }
@@ -460,7 +475,7 @@ const BulkResultExcelModal: React.FC<BulkResultExcelModalProps> = ({
 
     for (const group of testGroups) {
       // Build header row
-      const headers = ['Order ID', 'Patient Name', 'Sample ID'];
+      const headers = [ORDER_UUID_HEADER, TEST_GROUP_UUID_HEADER, ORDER_ID_HEADER, PATIENT_NAME_HEADER, SAMPLE_ID_HEADER];
       for (const col of group.columns) {
         if (col.type === 'analyte' && col.unit) {
           headers.push(`${col.name} (${col.unit})`);
@@ -473,7 +488,7 @@ const BulkResultExcelModal: React.FC<BulkResultExcelModalProps> = ({
 
       // Build hint row for allowed values (cascade options or reference ranges)
       const hasHints = group.columns.some(c => c.reference_range || c.cascade_options?.length);
-      const hintRow = ['', '', 'Options/Ref:'];
+      const hintRow = ['', '', '', '', 'Options/Ref:'];
       for (const col of group.columns) {
         if (col.cascade_options?.length) {
           // Show allowed values for cascade fields
@@ -489,6 +504,8 @@ const BulkResultExcelModal: React.FC<BulkResultExcelModalProps> = ({
       const dataRows: string[][] = [];
       for (const order of [...group.orders].sort(compareSampleIds)) {
         const row: string[] = [
+          order.id,
+          group.id,
           order.order_display || order.id.slice(-6),
           order.patient_name,
           order.sample_id || ''
@@ -508,6 +525,8 @@ const BulkResultExcelModal: React.FC<BulkResultExcelModalProps> = ({
 
       // Set column widths - wider for cascade fields with options
       const colWidths = [
+        { wch: 36, hidden: true },  // Full order UUID used for safe upload matching
+        { wch: 36, hidden: true },  // Test group UUID used for safe upload matching
         { wch: 12 },  // Order ID
         { wch: 20 },  // Patient Name
         { wch: 12 },  // Sample ID
@@ -550,6 +569,7 @@ const BulkResultExcelModal: React.FC<BulkResultExcelModalProps> = ({
         const workbook = XLSX.read(data, { type: 'array' });
 
         const parsed: ParsedSheet[] = [];
+        const invalidQualitativeValues: string[] = [];
 
         for (const sheetName of workbook.SheetNames) {
           const sheet = workbook.Sheets[sheetName];
@@ -557,12 +577,7 @@ const BulkResultExcelModal: React.FC<BulkResultExcelModalProps> = ({
 
           if (json.length === 0) continue;
 
-          // Find matching test group by sheet name
-          const matchingGroup = testGroups.find(g =>
-            sanitizeSheetName(g.name).toLowerCase() === sheetName.toLowerCase() ||
-            g.name.toLowerCase().includes(sheetName.toLowerCase()) ||
-            sheetName.toLowerCase().includes(g.name.toLowerCase())
-          );
+          const matchingGroup = findMatchingTestGroup(sheetName, json);
 
           if (!matchingGroup) {
             console.warn(`No matching test group for sheet: ${sheetName}`);
@@ -589,17 +604,28 @@ const BulkResultExcelModal: React.FC<BulkResultExcelModalProps> = ({
               // Try to find the column value by matching header name
               const value = findColumnValue(row, col.name, col.unit, col.multi_select);
               if (value !== null && value !== undefined && String(value).trim() !== '') {
-                values[col.name] = String(value).trim();
+                const normalizedValue = String(value).trim();
+                if (!isValidAnalyteValue(col, normalizedValue)) {
+                  const orderLabel = String(row[ORDER_ID_HEADER] || row[ORDER_UUID_HEADER] || 'unknown order');
+                  const allowedLabel = col.expected_normal_values?.length
+                    ? col.expected_normal_values.join(', ')
+                    : 'a categorical (non-numeric) value';
+                  invalidQualitativeValues.push(
+                    `${orderLabel}: ${col.name} = "${normalizedValue}" (allowed: ${allowedLabel})`
+                  );
+                  continue;
+                }
+                values[col.name] = normalizedValue;
               }
             }
 
-            if (Object.keys(values).length > 0) {
-              rows.push({
-                order_id: orderId,
-                patient_name: String(row['Patient Name'] || ''),
-                values
-              });
-            }
+	            if (Object.keys(values).length > 0) {
+	              rows.push({
+	                order_id: orderId,
+	                patient_name: String(row[PATIENT_NAME_HEADER] || ''),
+	                values
+	              });
+	            }
           }
 
           if (rows.length > 0) {
@@ -609,6 +635,18 @@ const BulkResultExcelModal: React.FC<BulkResultExcelModalProps> = ({
               rows
             });
           }
+        }
+
+        if (invalidQualitativeValues.length > 0) {
+          const examples = invalidQualitativeValues.slice(0, 5).join('; ');
+          const remaining = invalidQualitativeValues.length - 5;
+          setParsedSheets([]);
+          setError(
+            `Upload blocked: ${invalidQualitativeValues.length} invalid qualitative result${invalidQualitativeValues.length === 1 ? '' : 's'}. ` +
+            `${examples}${remaining > 0 ? `; and ${remaining} more` : ''}`
+          );
+          setStep('ready');
+          return;
         }
 
         if (parsed.length === 0) {
@@ -629,30 +667,87 @@ const BulkResultExcelModal: React.FC<BulkResultExcelModalProps> = ({
     reader.readAsArrayBuffer(file);
   }, [testGroups]);
 
-  // Find order ID from row data
-  function findOrderId(row: Record<string, any>, orders: OrderInfo[]): string | null {
-    const orderIdValue = row['Order ID'] || row['order_id'] || row['OrderID'] || '';
-    const orderIdStr = String(orderIdValue).trim().toLowerCase();
-
-    if (!orderIdStr) return null;
-
-    // Try exact match first
-    const exactMatch = orders.find(o =>
-      o.id === orderIdStr ||
-      o.order_display?.toLowerCase() === orderIdStr ||
-      o.id.slice(-6).toLowerCase() === orderIdStr
+  function findMatchingTestGroup(sheetName: string, rows: Record<string, any>[]): TestGroupInfo | null {
+    const groupIds = new Set(
+      rows
+        .map(row => String(row[TEST_GROUP_UUID_HEADER] || '').trim())
+        .filter(Boolean)
     );
 
-    if (exactMatch) return exactMatch.id;
+    if (groupIds.size === 1) {
+      const groupId = Array.from(groupIds)[0];
+      const exactGroup = testGroups.find(group => group.id === groupId);
+      if (exactGroup) return exactGroup;
+      console.warn(`Unknown test group UUID in uploaded sheet ${sheetName}: ${groupId}`);
+      return null;
+    }
 
-    // Try partial match (last 6 chars)
-    const partialMatch = orders.find(o =>
-      o.id.toLowerCase().endsWith(orderIdStr) ||
-      o.order_display?.toLowerCase().includes(orderIdStr)
+    if (groupIds.size > 1) {
+      console.warn(`Multiple test group UUIDs found in uploaded sheet ${sheetName}; skipping to avoid mismatch.`);
+      return null;
+    }
+
+    const normalizedSheetName = sheetName.toLowerCase();
+    const exactNameMatches = testGroups.filter(group =>
+      sanitizeSheetName(group.name).toLowerCase() === normalizedSheetName
     );
+    if (exactNameMatches.length === 1) return exactNameMatches[0];
 
-    return partialMatch?.id || null;
+    const fuzzyMatches = testGroups.filter(group => {
+      const groupName = group.name.toLowerCase();
+      return groupName.includes(normalizedSheetName) || normalizedSheetName.includes(groupName);
+    });
+
+    if (fuzzyMatches.length === 1) return fuzzyMatches[0];
+
+    if (exactNameMatches.length > 1 || fuzzyMatches.length > 1) {
+      console.warn(`Ambiguous test group match for sheet ${sheetName}; skipping to avoid mismatch.`);
+    }
+
+    return null;
   }
+
+	  // Find order ID from row data
+	  function findOrderId(row: Record<string, any>, orders: OrderInfo[]): string | null {
+      const orderUuidValue = String(row[ORDER_UUID_HEADER] || '').trim().toLowerCase();
+      if (orderUuidValue) {
+        const exactUuidMatch = orders.find(order => order.id.toLowerCase() === orderUuidValue);
+        if (exactUuidMatch) return exactUuidMatch.id;
+        console.warn(`Unknown order UUID in uploaded row: ${orderUuidValue}`);
+        return null;
+      }
+
+	    const orderIdValue = row[ORDER_ID_HEADER] || row['order_id'] || row['OrderID'] || '';
+	    const orderIdStr = String(orderIdValue).trim().toLowerCase();
+
+	    if (!orderIdStr) return null;
+
+	    // Try exact match first
+	    const exactMatches = orders.filter(o =>
+	      o.id.toLowerCase() === orderIdStr ||
+	      o.order_display?.toLowerCase() === orderIdStr ||
+	      o.id.slice(-6).toLowerCase() === orderIdStr
+	    );
+
+	    if (exactMatches.length === 1) return exactMatches[0].id;
+      if (exactMatches.length > 1) {
+        console.warn(`Ambiguous short order ID match for ${orderIdStr}; skipping to avoid mismatch.`);
+        return null;
+      }
+
+	    // Try partial match (last 6 chars)
+	    const partialMatches = orders.filter(o =>
+	      o.id.toLowerCase().endsWith(orderIdStr) ||
+	      o.order_display?.toLowerCase().includes(orderIdStr)
+	    );
+
+      if (partialMatches.length === 1) return partialMatches[0].id;
+      if (partialMatches.length > 1) {
+        console.warn(`Ambiguous partial order ID match for ${orderIdStr}; skipping to avoid mismatch.`);
+      }
+
+	    return null;
+	  }
 
   // Normalize Excel headers so unit variants like m2/m² and copied spaces still match.
   function normalizeHeader(value: string): string {
@@ -665,6 +760,36 @@ const BulkResultExcelModal: React.FC<BulkResultExcelModalProps> = ({
 
   function stripTrailingUnit(value: string): string {
     return normalizeHeader(value).replace(/\s*\([^)]*\)\s*$/, '').trim();
+  }
+
+  function normalizeExpectedValues(value: unknown): string[] {
+    if (Array.isArray(value)) {
+      return value.map(item => String(item).trim()).filter(Boolean);
+    }
+    if (typeof value !== 'string' || !value.trim()) return [];
+
+    try {
+      const parsed = JSON.parse(value);
+      if (Array.isArray(parsed)) {
+        return parsed.map(item => String(item).trim()).filter(Boolean);
+      }
+    } catch {
+      // Some legacy rows store comma-separated options instead of JSON.
+    }
+
+    return value.split(',').map(item => item.trim()).filter(Boolean);
+  }
+
+  function isValidAnalyteValue(column: ColumnInfo, value: string): boolean {
+    if (column.type !== 'analyte' || column.value_type !== 'qualitative') return true;
+
+    const allowedValues = column.expected_normal_values || [];
+    if (allowedValues.length === 0) {
+      return !/^[+-]?(?:\d+\.?\d*|\.\d+)$/.test(value.trim());
+    }
+
+    const normalized = value.trim().toLocaleLowerCase();
+    return allowedValues.some(option => option.trim().toLocaleLowerCase() === normalized);
   }
 
   // Find column value from row with flexible header matching
@@ -732,7 +857,9 @@ const BulkResultExcelModal: React.FC<BulkResultExcelModalProps> = ({
 
   const handleSaveResults = useCallback(async () => {
     if (parsedSheets.length === 0) return;
+    if (savingRef.current) return;
 
+    savingRef.current = true;
     setStep('saving');
     setSaveResults([]);
 
@@ -753,43 +880,57 @@ const BulkResultExcelModal: React.FC<BulkResultExcelModalProps> = ({
         if (!group) continue;
 
         for (const row of sheet.rows) {
-          const saveResult: SaveResult = {
-            order_id: row.order_id,
-            patient_name: row.patient_name,
-            success: false,
-            saved_count: 0
-          };
+	          const saveResult: SaveResult = {
+	            order_id: row.order_id,
+	            patient_name: row.patient_name,
+	            success: false,
+	            saved_count: 0,
+	            approved_count: 0,
+	            skipped_count: 0
+	          };
 
-          try {
-            let savedCount = 0;
+	          try {
+	            let savedCount = 0;
+	            let approvedCount = 0;
+	            let skippedCount = 0;
+	            const verifiedAt = new Date().toISOString();
 
-            if (group.columns.some(col => col.type === 'analyte')) {
-              // Save analyte results
-              savedCount += await saveAnalyteResults(
-                row.order_id,
-                group,
-                row.values,
-                currentUser,
-                userLabId
-              );
-            }
+	            if (group.columns.some(col => col.type === 'analyte')) {
+	              // Save analyte results
+	              const analyteSave = await saveAnalyteResults(
+	                row.order_id,
+	                group,
+	                row.values,
+	                currentUser,
+	                userLabId,
+	                autoVerifyOnUpload,
+	                verifiedAt
+	              );
+	              savedCount += analyteSave.savedCount;
+	              approvedCount += analyteSave.approvedCount;
+	              skippedCount += analyteSave.skippedCount;
+	            }
 
-            if (group.columns.some(col => col.type === 'section' || col.type === 'cascade_field')) {
-              // Save report section content
-              savedCount += await saveSectionResults(
-                row.order_id,
-                group,
-                row.values,
-                currentUser?.id || null,
-                userLabId
-              );
-            }
+		            if (group.columns.some(col => col.type === 'section' || col.type === 'cascade_field' || col.type === 'matrix_cell' || col.type === 'matrix_note')) {
+		              // Save report section content
+		              const sectionSave = await saveSectionResults(
+	                row.order_id,
+	                group,
+	                row.values,
+	                currentUser?.id || null,
+	                userLabId,
+	                currentUser?.email || 'Bulk Excel Import',
+	                autoVerifyOnUpload,
+	                verifiedAt
+	              );
+	              savedCount += sectionSave.savedCount;
+	              approvedCount += sectionSave.approvedCount;
+	            }
 
-            saveResult.saved_count = savedCount;
-            saveResult.success = true;
-
-            // Update order status
-            await database.orders.checkAndUpdateStatus(row.order_id);
+	            saveResult.saved_count = savedCount;
+	            saveResult.approved_count = approvedCount;
+	            saveResult.skipped_count = skippedCount;
+	            saveResult.success = true;
 
           } catch (err: any) {
             saveResult.error = err.message || 'Failed to save';
@@ -808,12 +949,14 @@ const BulkResultExcelModal: React.FC<BulkResultExcelModalProps> = ({
         onSaved();
       }
 
-    } catch (err: any) {
-      console.error('Submit failed:', err);
-      setError(err.message || 'Failed to submit results');
-      setStep('ready');
-    }
-  }, [parsedSheets, testGroups, onSaved]);
+	    } catch (err: any) {
+	      console.error('Submit failed:', err);
+	      setError(err.message || 'Failed to submit results');
+	      setStep('ready');
+	    } finally {
+	      savingRef.current = false;
+	    }
+		  }, [parsedSheets, testGroups, onSaved, autoVerifyOnUpload]);
 
   // Save analyte-based results
   async function saveAnalyteResults(
@@ -821,12 +964,14 @@ const BulkResultExcelModal: React.FC<BulkResultExcelModalProps> = ({
     group: TestGroupInfo,
     values: Record<string, string>,
     currentUser: any,
-    userLabId: string | null
-  ): Promise<number> {
+    userLabId: string | null,
+    autoVerify: boolean,
+    verifiedAt: string
+  ): Promise<{ savedCount: number; approvedCount: number; skippedCount: number }> {
     // Get or create result row
     const { data: existingResult } = await supabase
       .from('results')
-      .select('id')
+      .select('id, verification_status, is_locked')
       .eq('order_id', orderId)
       .eq('test_group_id', group.id)
       .maybeSingle();
@@ -838,11 +983,59 @@ const BulkResultExcelModal: React.FC<BulkResultExcelModalProps> = ({
       .eq('id', orderId)
       .single();
 
-    const patientGender = Array.isArray(order?.patients)
-      ? order?.patients[0]?.gender
-      : order?.patients?.gender;
+	  const patientGender = Array.isArray(order?.patients)
+	    ? order?.patients[0]?.gender
+	    : order?.patients?.gender;
 
     let resultId = existingResult?.id;
+
+	    // Prepare result values
+	    const resultValues: any[] = [];
+
+    for (const col of group.columns) {
+      if (col.type !== 'analyte') continue;
+
+      const value = values[col.name];
+      if (!value) continue;
+
+      const autoFlag = calculateFlag(
+        value,
+        col.reference_range || '',
+        patientGender || undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        col.expected_normal_values,
+        col.value_type
+      );
+
+      resultValues.push({
+        result_id: resultId,
+        analyte_id: col.id,
+        lab_analyte_id: col.lab_analyte_id || null,
+        analyte_name: col.name,
+        parameter: col.name,
+        value: value,
+        unit: col.unit || '',
+        reference_range: col.reference_range || '',
+        value_type: col.value_type || null,
+        flag: autoFlag || null,
+        flag_source: autoFlag ? 'auto_numeric' : null,
+        verify_status: autoVerify ? 'approved' : 'pending',
+        verified: autoVerify,
+        verified_by: autoVerify ? currentUser?.id || null : null,
+        verified_at: autoVerify ? verifiedAt : null,
+        verify_note: autoVerify ? 'Auto-verified during bulk Excel upload.' : null,
+        order_id: orderId,
+        test_group_id: group.id,
+        lab_id: userLabId,
+        is_auto_calculated: !!col.is_calculated,
+        calculated_at: col.is_calculated ? new Date().toISOString() : null,
+      });
+    }
+
+	    if (resultValues.length === 0) return { savedCount: 0, approvedCount: 0, skippedCount: 0 };
 
     if (!resultId) {
       const { data: newResult, error: createError } = await supabase
@@ -864,73 +1057,101 @@ const BulkResultExcelModal: React.FC<BulkResultExcelModalProps> = ({
 
       if (createError) throw createError;
       resultId = newResult.id;
-    } else {
-      const { error: updateError } = await supabase
-        .from('results')
-        .update({
-          status: 'pending_verification',
-          verification_status: 'pending_verification',
-          entered_by: currentUser?.email || 'Bulk Excel Import',
-          entered_date: new Date().toISOString().split('T')[0],
-          lab_id: userLabId,
-        })
-        .eq('id', resultId);
-
-      if (updateError) throw updateError;
-    }
-
-    // Prepare result values
-    const resultValues: any[] = [];
-
-    for (const col of group.columns) {
-      if (col.type !== 'analyte') continue;
-
-      const value = values[col.name];
-      if (!value) continue;
-
-      const autoFlag = calculateFlag(
-        value,
-        col.reference_range || '',
-        patientGender || undefined
-      );
-
-      resultValues.push({
-        result_id: resultId,
-        analyte_id: col.id,
-        lab_analyte_id: col.lab_analyte_id || null,
-        analyte_name: col.name,
-        parameter: col.name,
-        value: value,
-        unit: col.unit || '',
-        reference_range: col.reference_range || '',
-        flag: autoFlag || null,
-        flag_source: autoFlag ? 'auto_numeric' : null,
-        verify_status: 'pending',
-        order_id: orderId,
-        test_group_id: group.id,
-        lab_id: userLabId,
-        is_auto_calculated: !!col.is_calculated,
-        calculated_at: col.is_calculated ? new Date().toISOString() : null,
+      resultValues.forEach(rv => {
+        rv.result_id = resultId;
       });
     }
 
-    if (resultValues.length === 0) return 0;
+    const resultAlreadyVerified = existingResult?.verification_status === 'verified';
 
-    // Delete existing values for these analytes and insert new ones
-    const analyteIds = resultValues.map(rv => rv.analyte_id);
-    await supabase
-      .from('result_values')
-      .delete()
-      .eq('result_id', resultId)
-      .in('analyte_id', analyteIds);
+    if (resultAlreadyVerified) {
+      resultValues.forEach(rv => {
+        rv.verify_status = 'approved';
+        rv.verified = true;
+        rv.verified_by = currentUser?.id || null;
+        rv.verified_at = verifiedAt;
+        rv.verify_note = rv.verify_note || 'Added to an already verified result during bulk Excel upload.';
+      });
+    }
 
-    const { error: insertError } = await supabase
-      .from('result_values')
-      .insert(resultValues);
+    const analyteIds = resultValues.map(rv => rv.analyte_id).filter(Boolean);
+    let savedCount = 0;
+    let skippedCount = 0;
 
-    if (insertError) throw insertError;
+    if (analyteIds.length > 0) {
+      const { data: existingValues, error: existingValuesError } = await supabase
+        .from('result_values')
+        .select('id, analyte_id')
+        .eq('result_id', resultId)
+        .in('analyte_id', analyteIds);
 
-    return resultValues.length;
+      if (existingValuesError) throw existingValuesError;
+
+      const existingByAnalyteId = new Map(
+        (existingValues || [])
+          .filter((rv: any) => rv.analyte_id)
+          .map((rv: any) => [rv.analyte_id, rv.id])
+      );
+
+      const rowsToInsert = resultValues.filter(rv => !existingByAnalyteId.has(rv.analyte_id));
+      const rowsToUpdate = resultValues.filter(rv => existingByAnalyteId.has(rv.analyte_id));
+
+      if (rowsToInsert.length > 0) {
+        const { error: insertError } = await supabase
+          .from('result_values')
+          .insert(rowsToInsert);
+
+        if (insertError) throw insertError;
+        savedCount += rowsToInsert.length;
+      }
+
+      const canUpdateExistingValues =
+        !resultAlreadyVerified &&
+        existingResult?.is_locked !== true;
+
+      if (canUpdateExistingValues) {
+        for (const row of rowsToUpdate) {
+          const { error: updateValueError } = await supabase
+            .from('result_values')
+            .update(row)
+            .eq('id', existingByAnalyteId.get(row.analyte_id));
+
+          if (updateValueError) throw updateValueError;
+          savedCount++;
+        }
+      } else {
+        skippedCount += rowsToUpdate.length;
+      }
+    }
+
+    const resultUpdate: Record<string, any> = {
+      entered_by: currentUser?.email || 'Bulk Excel Import',
+      entered_date: new Date().toISOString().split('T')[0],
+      lab_id: userLabId,
+    };
+
+    if (resultAlreadyVerified) {
+      resultUpdate.status = 'Reviewed';
+      resultUpdate.verification_status = 'verified';
+    } else {
+      resultUpdate.status = autoVerify ? 'Reviewed' : 'pending_verification';
+      resultUpdate.verification_status = autoVerify ? 'verified' : 'pending_verification';
+      resultUpdate.verified_at = autoVerify ? verifiedAt : null;
+      resultUpdate.verified_by = autoVerify ? currentUser?.id || null : null;
+    }
+
+    const { error: updateError } = await supabase
+      .from('results')
+      .update(resultUpdate)
+      .eq('id', resultId);
+
+    if (updateError) throw updateError;
+
+    return {
+      savedCount,
+      approvedCount: (autoVerify || resultAlreadyVerified) ? savedCount : 0,
+      skippedCount,
+    };
   }
 
   // Save section-based results
@@ -939,8 +1160,11 @@ const BulkResultExcelModal: React.FC<BulkResultExcelModalProps> = ({
     group: TestGroupInfo,
     values: Record<string, string>,
     userId: string | null,
-    userLabId: string | null
-  ): Promise<number> {
+    userLabId: string | null,
+    enteredBy: string,
+    autoVerify: boolean,
+    verifiedAt: string
+  ): Promise<{ savedCount: number; approvedCount: number }> {
     // Get or create result row
     const { data: existingResult } = await supabase
       .from('results')
@@ -968,9 +1192,12 @@ const BulkResultExcelModal: React.FC<BulkResultExcelModalProps> = ({
           test_name: group.name,
           test_group_id: group.id,
           lab_id: userLabId,
-          status: 'pending_verification',
-          verification_status: 'pending_verification',
-          entered_by: 'Bulk Excel Import',
+          status: autoVerify ? 'Reviewed' : 'pending_verification',
+          verification_status: autoVerify ? 'verified' : 'pending_verification',
+          verified_at: autoVerify ? verifiedAt : null,
+          verified_by: autoVerify ? userId : null,
+          manually_verified: autoVerify,
+          entered_by: enteredBy,
           entered_date: new Date().toISOString().split('T')[0],
         })
         .select('id')
@@ -982,9 +1209,12 @@ const BulkResultExcelModal: React.FC<BulkResultExcelModalProps> = ({
       const { error: updateError } = await supabase
         .from('results')
         .update({
-          status: 'pending_verification',
-          verification_status: 'pending_verification',
-          entered_by: 'Bulk Excel Import',
+          status: autoVerify ? 'Reviewed' : 'pending_verification',
+          verification_status: autoVerify ? 'verified' : 'pending_verification',
+          verified_at: autoVerify ? verifiedAt : null,
+          verified_by: autoVerify ? userId : null,
+          manually_verified: autoVerify,
+          entered_by: enteredBy,
           entered_date: new Date().toISOString().split('T')[0],
           lab_id: userLabId,
         })
@@ -1120,7 +1350,10 @@ const BulkResultExcelModal: React.FC<BulkResultExcelModalProps> = ({
       if (!error) savedCount++;
     }
 
-    return savedCount;
+    return {
+      savedCount,
+      approvedCount: autoVerify ? savedCount : 0,
+    };
   }
 
   // ─── Render ────────────────────────────────────────────────────────────────
@@ -1132,6 +1365,8 @@ const BulkResultExcelModal: React.FC<BulkResultExcelModalProps> = ({
 
   const successCount = saveResults.filter(r => r.success).length;
   const failedCount = saveResults.filter(r => !r.success).length;
+  const totalApprovedValues = saveResults.reduce((sum, result) => sum + result.approved_count, 0);
+  const totalSkippedValues = saveResults.reduce((sum, result) => sum + result.skipped_count, 0);
 
   function getColumnSummary(group: TestGroupInfo): string {
     const analyteCount = group.columns.filter(col => col.type === 'analyte').length;
@@ -1290,11 +1525,26 @@ const BulkResultExcelModal: React.FC<BulkResultExcelModalProps> = ({
                             </div>
                           ))}
                         </div>
-                        <p className="text-xs text-green-600 mt-2">
-                          Total: {totalValues} values to save
-                        </p>
-                      </div>
-                    )}
+	                        <p className="text-xs text-green-600 mt-2">
+	                          Total: {totalValues} values to save
+	                        </p>
+	                        <label className="mt-3 flex items-start gap-2 rounded-lg border border-emerald-200 bg-white px-3 py-2 text-xs text-emerald-800">
+	                          <input
+	                            type="checkbox"
+	                            className="mt-0.5 h-4 w-4 rounded border-emerald-300"
+	                            checked={autoVerifyOnUpload}
+	                            onChange={(e) => setAutoVerifyOnUpload(e.target.checked)}
+	                            disabled={step === 'saving'}
+	                          />
+	                          <span>
+	                            Verify results immediately after upload
+	                            <span className="ml-1 text-emerald-700">
+	                              Saved values will be approved with your user ID and order status will refresh.
+	                            </span>
+	                          </span>
+	                        </label>
+	                      </div>
+	                    )}
                   </div>
                 </div>
               </div>
@@ -1314,7 +1564,9 @@ const BulkResultExcelModal: React.FC<BulkResultExcelModalProps> = ({
           {step === 'saving' && (
             <div className="py-8 text-center">
               <Loader2 className="w-10 h-10 animate-spin text-indigo-600 mx-auto mb-4" />
-                <p className="text-gray-700 font-medium">Submitting results...</p>
+	                <p className="text-gray-700 font-medium">
+	                  {autoVerifyOnUpload ? 'Submitting and verifying results...' : 'Submitting results...'}
+	                </p>
               <p className="text-sm text-gray-500 mt-1">
                 {savingProgress.current} / {savingProgress.total} orders processed
               </p>
@@ -1332,21 +1584,35 @@ const BulkResultExcelModal: React.FC<BulkResultExcelModalProps> = ({
             <div className="py-4">
               <div className="text-center mb-6">
                 <CheckCircle2 className="w-12 h-12 text-green-500 mx-auto mb-3" />
-                <h3 className="text-lg font-semibold text-gray-800">Results Submitted Successfully</h3>
-                <p className="text-sm text-gray-500 mt-1">
-                  {successCount} orders saved, {failedCount > 0 ? `${failedCount} failed` : 'no errors'}
-                </p>
-              </div>
+	                <h3 className="text-lg font-semibold text-gray-800">
+	                  {totalApprovedValues > 0 ? 'Results Saved and Verified' : 'Results Saved Successfully'}
+	                </h3>
+	                <p className="text-sm text-gray-500 mt-1">
+	                  {successCount} orders saved, {failedCount > 0 ? `${failedCount} failed` : 'no errors'}
+	                </p>
+	                {totalApprovedValues > 0 && (
+	                  <p className="text-sm text-emerald-600 mt-1">
+	                    {totalApprovedValues} value{totalApprovedValues === 1 ? '' : 's'} auto-approved
+	                  </p>
+	                )}
+	                {totalSkippedValues > 0 && (
+	                  <p className="text-sm text-amber-600 mt-1">
+	                    {totalSkippedValues} verified value{totalSkippedValues === 1 ? '' : 's'} skipped
+	                  </p>
+	                )}
+	              </div>
 
               {/* Results summary */}
               <div className="bg-gray-50 rounded-lg p-4 max-h-60 overflow-y-auto">
                 <table className="w-full text-sm">
                   <thead>
                     <tr className="text-left text-gray-600">
-                      <th className="pb-2">Patient</th>
-                      <th className="pb-2">Status</th>
-                      <th className="pb-2 text-right">Values Saved</th>
-                    </tr>
+	                      <th className="pb-2">Patient</th>
+	                      <th className="pb-2">Status</th>
+	                      <th className="pb-2 text-right">Values Saved</th>
+	                      <th className="pb-2 text-right">Approved</th>
+	                      <th className="pb-2 text-right">Skipped</th>
+	                    </tr>
                   </thead>
                   <tbody>
                     {saveResults.map((result, idx) => (
@@ -1355,16 +1621,19 @@ const BulkResultExcelModal: React.FC<BulkResultExcelModalProps> = ({
                         <td className="py-2">
                           {result.success ? (
                             <span className="text-green-600 flex items-center gap-1">
-                              <CheckCircle2 className="w-4 h-4" /> Submitted
+	                              <CheckCircle2 className="w-4 h-4" />
+	                              {result.approved_count > 0 ? 'Saved & Verified' : 'Saved'}
                             </span>
                           ) : (
                             <span className="text-red-600 flex items-center gap-1">
                               <AlertCircle className="w-4 h-4" /> {result.error}
                             </span>
                           )}
-                        </td>
-                        <td className="py-2 text-right text-gray-600">{result.saved_count}</td>
-                      </tr>
+	                        </td>
+	                        <td className="py-2 text-right text-gray-600">{result.saved_count}</td>
+	                        <td className="py-2 text-right text-emerald-600">{result.approved_count || '-'}</td>
+	                        <td className="py-2 text-right text-amber-600">{result.skipped_count || '-'}</td>
+	                      </tr>
                     ))}
                   </tbody>
                 </table>
@@ -1380,7 +1649,7 @@ const BulkResultExcelModal: React.FC<BulkResultExcelModalProps> = ({
               onClick={onClose}
               className="px-5 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 text-sm font-medium"
             >
-              Done
+	              Close
             </button>
           ) : (
             <>
@@ -1396,7 +1665,7 @@ const BulkResultExcelModal: React.FC<BulkResultExcelModalProps> = ({
                   className="flex items-center gap-2 px-5 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 text-sm font-medium"
                 >
                   <CheckCircle2 className="w-4 h-4" />
-                  Submit {totalValues} Results
+	                  {autoVerifyOnUpload ? `Save & Verify ${totalValues} Results` : `Save ${totalValues} Results`}
                   <ArrowRight className="w-4 h-4" />
                 </button>
               )}

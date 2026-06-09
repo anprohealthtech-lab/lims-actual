@@ -4,6 +4,10 @@ import {
   generateOrderSampleId,
   getOrderAssignedColor,
 } from "./colorAssignment";
+import {
+  autoAssignCompactPages,
+  buildCompactGroupDefinitions,
+} from "./compactPrintPdf";
 import { notificationTriggerService } from "./notificationTriggerService";
 import { optimizeBatch, smartOptimizeImage } from "./imageOptimizer";
 
@@ -32,6 +36,155 @@ const getDailySequenceFromOrder = (order: any): number => {
   const tail = String(order?.sample_id || "").match(/(?:^|[/-])(\d+)\s*$/)?.[1] || "";
   const parsed = parseInt(tail, 10);
   return Number.isFinite(parsed) ? parsed : 0;
+};
+
+const normalizeActiveReportPriority = (priority: unknown): number => {
+  const numeric = Number(priority);
+  return Number.isFinite(numeric) && numeric > 0 ? numeric : Number.MAX_SAFE_INTEGER;
+};
+
+const autoSaveCompactPlannerForOrder = async (
+  orderId: string,
+  labId?: string | null,
+  pdfLayoutSettings?: Record<string, any> | null,
+) => {
+  try {
+    if (!isUuid(orderId)) return;
+
+    const { data: orderRow, error: orderError } = await supabase
+      .from("orders")
+      .select("report_settings")
+      .eq("id", orderId)
+      .maybeSingle();
+
+    if (orderError) {
+      console.warn("Auto compact planner: failed to fetch order settings", orderError);
+      return;
+    }
+
+    const currentSettings = ((orderRow as any)?.report_settings || {}) as Record<string, any>;
+    if (
+      currentSettings.groupOrderManualOverride === true ||
+      currentSettings.compactPageAssignmentsManualOverride === true
+    ) {
+      console.log(`Auto compact planner skipped for order ${orderId}: manual planner exists`);
+      return;
+    }
+
+    let effectivePdfSettings = pdfLayoutSettings || null;
+    if (!effectivePdfSettings && labId) {
+      const { data: lab } = await supabase
+        .from("labs")
+        .select("pdf_layout_settings")
+        .eq("id", labId)
+        .maybeSingle();
+      effectivePdfSettings = ((lab as any)?.pdf_layout_settings || null) as Record<string, any> | null;
+    }
+
+    const compactPrint = (effectivePdfSettings?.compactPrint || {}) as Record<string, any>;
+    const maxClubbedAnalytes = Math.max(
+      1,
+      Number(
+        currentSettings.compactMaxClubbedAnalytes ||
+          compactPrint.maxClubbedAnalytes ||
+          compactPrint.maxClusterAnalytes ||
+          5,
+      ) || 5,
+    );
+
+    const { data: context, error: contextError } = await database.reports.getTemplateContext(orderId);
+    if (contextError || !context) {
+      console.warn("Auto compact planner: failed to load report context", contextError);
+      return;
+    }
+
+    const [{ data: orderTestGroupRows }, { data: orderTestRows }] = await Promise.all([
+      supabase
+        .from("order_test_groups")
+        .select("test_group_id, test_name, print_order, created_at, test_groups(report_priority)")
+        .eq("order_id", orderId),
+      supabase
+        .from("order_tests")
+        .select("test_group_id, test_name, print_order, created_at, test_groups(report_priority)")
+        .eq("order_id", orderId)
+        .neq("is_canceled", true),
+    ]);
+
+    const descriptorMap = new Map<string, {
+      testGroupId: string;
+      testName: string;
+      reportPriority: number | null;
+      printOrder: number;
+      createdAt?: string | null;
+    }>();
+
+    const pushDescriptor = (row: any) => {
+      if (!row?.test_group_id || descriptorMap.has(row.test_group_id)) return;
+      const testGroup = Array.isArray(row.test_groups) ? row.test_groups[0] : row.test_groups;
+      const priority = Number(testGroup?.report_priority);
+      descriptorMap.set(row.test_group_id, {
+        testGroupId: row.test_group_id,
+        testName: row.test_name || "Test Results",
+        reportPriority: Number.isFinite(priority) ? priority : null,
+        printOrder: Number(row.print_order ?? 0),
+        createdAt: row.created_at || null,
+      });
+    };
+
+    (orderTestGroupRows || []).forEach(pushDescriptor);
+    (orderTestRows || []).forEach(pushDescriptor);
+
+    for (const groupId of context.testGroupIds || []) {
+      if (!groupId || descriptorMap.has(groupId)) continue;
+      descriptorMap.set(groupId, {
+        testGroupId: groupId,
+        testName: "Test Results",
+        reportPriority: null,
+        printOrder: 999,
+        createdAt: null,
+      });
+    }
+
+    const orderedGroups = [...descriptorMap.values()].sort((a, b) => {
+      const aPriority = normalizeActiveReportPriority(a.reportPriority);
+      const bPriority = normalizeActiveReportPriority(b.reportPriority);
+      if (aPriority !== bPriority) return aPriority - bPriority;
+      if (a.printOrder !== b.printOrder) return a.printOrder - b.printOrder;
+      return a.testName.localeCompare(b.testName);
+    });
+
+    const orderedGroupIds = orderedGroups.map((group) => group.testGroupId);
+    const compactGroups = buildCompactGroupDefinitions(context, orderedGroupIds);
+    const compactPageAssignments = autoAssignCompactPages(compactGroups, maxClubbedAnalytes);
+    const now = new Date().toISOString();
+
+    await supabase
+      .from("orders")
+      .update({
+        report_settings: {
+          ...currentSettings,
+          ...(currentSettings.printLayoutMode || compactPrint.defaultMode === "compact"
+            ? { printLayoutMode: currentSettings.printLayoutMode || "compact" }
+            : {}),
+          groupOrder: orderedGroupIds,
+          groupOrderManualOverride: false,
+          compactPageAssignments,
+          compactPageAssignmentsManualOverride: false,
+          compactPageAssignmentsAutoGenerated: true,
+          compactPlannerGeneratedAt: now,
+          compactMaxClubbedAnalytes: maxClubbedAnalytes,
+        },
+        updated_at: now,
+      })
+      .eq("id", orderId);
+
+    console.log(`✅ Auto compact planner saved for order ${orderId}`, {
+      groups: orderedGroupIds.length,
+      pages: new Set(Object.values(compactPageAssignments)).size,
+    });
+  } catch (error) {
+    console.warn("Auto compact planner failed:", error);
+  }
 };
 
 export interface ReportTemplateContextMeta {
@@ -3786,6 +3939,35 @@ export const database = {
           .rpc("check_and_update_order_status", { p_order_id: orderId });
 
         if (!rpcError) {
+          const rpcStatus = String((rpcData as any)?.new_status || (rpcData as any)?.status || "");
+          const rpcStatusChanged = (rpcData as any)?.status_changed === true;
+          if (rpcStatusChanged && (rpcStatus === "Report Ready" || rpcStatus === "Completed")) {
+            supabase
+              .from("orders")
+              .select("lab_id")
+              .eq("id", orderId)
+              .maybeSingle()
+              .then(async ({ data: readyOrder }) => {
+                if (!(readyOrder as any)?.lab_id) return;
+                const { data: lab } = await supabase
+                  .from("labs")
+                  .select("pdf_layout_settings")
+                  .eq("id", (readyOrder as any).lab_id)
+                  .maybeSingle();
+
+                await autoSaveCompactPlannerForOrder(orderId, (readyOrder as any).lab_id, (lab as any)?.pdf_layout_settings);
+
+                if ((lab as any)?.pdf_layout_settings?.compactPrint?.autoOnApproval === true) {
+                  supabase.functions
+                    .invoke("generate-pdf-letterhead", {
+                      body: { orderId, printLayoutMode: "compact" },
+                    })
+                    .then(() => console.log(`✅ Auto compact print triggered for order ${orderId}`))
+                    .catch((e) => console.error("Auto compact print failed:", e));
+                }
+              })
+              .catch((e) => console.error("Auto compact planner RPC follow-up failed:", e));
+          }
           return { data: rpcData, error: null };
         }
 
@@ -3859,14 +4041,16 @@ export const database = {
             `Order ${orderId} status automatically updated from "${order.status}" to "${newStatus}"`,
           );
 
-          // Auto compact print on approval: fire-and-forget when lab has the setting enabled
-          if (newStatus === "Report Ready" && order.lab_id) {
+          // Auto-save compact planner on approval, then optionally auto-generate compact print.
+          if ((newStatus === "Report Ready" || newStatus === "Completed") && order.lab_id) {
             supabase
               .from("labs")
               .select("pdf_layout_settings")
               .eq("id", order.lab_id)
               .single()
-              .then(({ data: lab }) => {
+              .then(async ({ data: lab }) => {
+                await autoSaveCompactPlannerForOrder(orderId, order.lab_id, lab?.pdf_layout_settings);
+
                 if (lab?.pdf_layout_settings?.compactPrint?.autoOnApproval === true) {
                   supabase.functions
                     .invoke("generate-pdf-letterhead", {
