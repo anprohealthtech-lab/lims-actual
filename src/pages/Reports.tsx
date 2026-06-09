@@ -5,6 +5,7 @@ import { MobileFAB } from '../components/ui/MobileFAB';
 import {
   FileText,
   Download,
+  Eye,
   Search,
   RefreshCw,
   Filter,
@@ -26,18 +27,14 @@ import {
   Settings,
   Trash2,
   FileCode,
-  Sparkles
+  Sparkles,
+  Send
 } from 'lucide-react';
 import {
   format,
   isValid,
-  startOfDay,
-  endOfDay,
-  startOfWeek,
-  endOfWeek,
-  startOfMonth,
-  endOfMonth,
 } from 'date-fns';
+import { getCalendarDateRange, type CalendarDateFilter } from '../utils/dateRangeFilters';
 import {
   viewPDFReport,
   generateTemplatePreviewPDF,
@@ -52,7 +49,6 @@ import {
 import { convertToCustomDomain } from '../utils/storageUrlBuilder';
 import { quickViewPDF } from '../utils/pdfViewerService';
 import type { LabTemplateRecord, ReportData, LabBrandingHtmlDefaults } from '../utils/pdfService';
-import type { ReportTemplateContext } from '../utils/supabase';
 import PDFProgressModal from '../components/PDFProgressModal';
 import { usePDFGeneration, isOrderReportReady } from '../hooks/usePDFGeneration';
 import QuickSendReport from '../components/WhatsApp/QuickSendReport';
@@ -62,7 +58,9 @@ import PDFSettingsModal, {
   loadSavedPDFSettings,
   PDF_PRESETS
 } from '../components/PDF/PDFSettingsModal';
+import ReportDesignStudio from '../components/ReportStudio/ReportDesignStudio';
 import { SendReportModal } from '../components/Dashboard/SendReportModal';
+import { ReportPreviewModal } from '../components/Reports/ReportPreviewModal';
 
 // Helper function to safely format dates
 const safeFormatDate = (dateValue: string | null | undefined, formatString: string = 'MMM d, yyyy'): string => {
@@ -74,8 +72,8 @@ const safeFormatDate = (dateValue: string | null | undefined, formatString: stri
   return format(date, formatString);
 };
 
-type DateFilter = 'today' | 'yesterday' | 'week' | 'month' | 'all';
-type SortField = 'patient_name' | 'order_date' | 'verified_at' | 'test_name';
+type DateFilter = CalendarDateFilter;
+type SortField = 'sample_id' | 'patient_name' | 'order_date' | 'verified_at' | 'test_name';
 type SortDirection = 'asc' | 'desc';
 
 interface ApprovedResult {
@@ -96,6 +94,9 @@ interface ApprovedResult {
   sample_id: string;
   order_date: string;
   doctor: string;
+  account_id?: string | null;
+  account_name?: string | null;
+  order_number?: number | null;
   patient_full_name: string;
   age: number;
   gender: string;
@@ -111,10 +112,13 @@ interface ApprovedResult {
   has_draft_report?: boolean;
   has_final_report?: boolean;
   has_print_pdf?: boolean;
+  has_compact_ecopy?: boolean;
   draft_report?: any;
   final_report?: any;
   print_pdf_url?: string;
   print_pdf_generated_at?: string;
+  compact_ecopy_url?: string;
+  compact_ecopy_generated_at?: string;
   // Smart Report fields
   smart_report_url?: string;
   smart_report_generated_at?: string;
@@ -128,6 +132,8 @@ interface OrderGroup {
   gender: string;
   order_date: string;
   sample_ids: string[];
+  account_names: string[];
+  order_numbers: number[];
   verified_at: string;
   verified_by: string;
   test_names: string[];
@@ -137,9 +143,11 @@ interface OrderGroup {
 
 interface OrderReportSettings {
   groupOrderOverrideEnabled?: boolean;
+  groupOrderManualOverride?: boolean;
   groupOrder?: string[];
   printLayoutMode?: 'standard' | 'compact';
   compactPageAssignments?: Record<string, number>;
+  compactPageAssignmentsManualOverride?: boolean;
   compactMaxClubbedAnalytes?: number;
 }
 
@@ -155,7 +163,20 @@ interface OrderSettingsGroupItem {
 
 type PreparedReport = ReportData;
 
-const REPORT_WEEK_OPTIONS = { weekStartsOn: 1 as const };
+const getActiveReportPriority = (priority: number | null | undefined): number => {
+  return priority != null && priority > 0 ? priority : Number.MAX_SAFE_INTEGER;
+};
+
+const APPROVED_RESULTS_PAGE_SIZE = 1000;
+const RELATED_LOOKUP_BATCH_SIZE = 500;
+
+const chunkArray = <T,>(items: T[], size: number): T[][] => {
+  const chunks: T[][] = [];
+  for (let i = 0; i < items.length; i += size) {
+    chunks.push(items.slice(i, i + size));
+  }
+  return chunks;
+};
 
 const Reports: React.FC = () => {
   const [approvedResults, setApprovedResults] = useState<ApprovedResult[]>([]);
@@ -164,11 +185,15 @@ const Reports: React.FC = () => {
   const [selectedStatus, setSelectedStatus] = useState<'all' | 'ready' | 'pending' | 'processing'>('all');
   const [selectedTestType, setSelectedTestType] = useState('all');
   const [selectedDoctor, setSelectedDoctor] = useState('all');
+  const [selectedAccount, setSelectedAccount] = useState('all');
   const [dateFilter, setDateFilter] = useState<DateFilter>('today');
-  const [sortField, setSortField] = useState<SortField>('verified_at');
+  const [sortField, setSortField] = useState<SortField>('sample_id');
   const [sortDirection, setSortDirection] = useState<SortDirection>('desc');
   const [showFilters, setShowFilters] = useState(false);
   const [selectedOrders, setSelectedOrders] = useState<Set<string>>(new Set());
+  const [isQueueingSelectedReports, setIsQueueingSelectedReports] = useState(false);
+  const [isDeletingSelectedReports, setIsDeletingSelectedReports] = useState(false);
+  const [isGeneratingSelectedReports, setIsGeneratingSelectedReports] = useState(false);
   const [isTestingTemplate, setIsTestingTemplate] = useState(false);
   const [previewingOrderId, setPreviewingOrderId] = useState<string | null>(null);
   const [isAdmin, setIsAdmin] = useState(false);
@@ -184,24 +209,44 @@ const Reports: React.FC = () => {
   const [orderSettingsMaxClubbedAnalytes, setOrderSettingsMaxClubbedAnalytes] = useState(5);
   const [orderSettingsLoading, setOrderSettingsLoading] = useState(false);
   const [orderSettingsSaving, setOrderSettingsSaving] = useState(false);
+  const [orderSettingsManualOrderTouched, setOrderSettingsManualOrderTouched] = useState(false);
+  const [orderSettingsCompactPagesTouched, setOrderSettingsCompactPagesTouched] = useState(false);
+  const [orderSettingsExistingPrintUrl, setOrderSettingsExistingPrintUrl] = useState<string | null>(null);
+  const [orderSettingsExistingEcopyUrl, setOrderSettingsExistingEcopyUrl] = useState<string | null>(null);
   const [smartReportLoadingId, setSmartReportLoadingId] = useState<string | null>(null);
   const [generatingOrderId, setGeneratingOrderId] = useState<string | null>(null);
+  // Per-button generating state: keys are `${orderId}:ecopy`, `${orderId}:compact-print`, `${orderId}:compact-ecopy`
+  const [generatingPdfSet, setGeneratingPdfSet] = useState<Set<string>>(new Set());
+  const startPdfGeneration = (orderId: string, type: 'ecopy' | 'compact-print' | 'compact-ecopy') =>
+    setGeneratingPdfSet(prev => new Set(prev).add(`${orderId}:${type}`));
+  const stopPdfGeneration = (orderId: string, type: 'ecopy' | 'compact-print' | 'compact-ecopy') =>
+    setGeneratingPdfSet(prev => { const s = new Set(prev); s.delete(`${orderId}:${type}`); return s; });
+  const isPdfGenerating = (orderId: string, type: 'ecopy' | 'compact-print' | 'compact-ecopy') =>
+    generatingPdfSet.has(`${orderId}:${type}`);
 
   // Report Studio & Send Report
+  const [reportStudioOrderId, setReportStudioOrderId] = useState<string | null>(null);
+  const [viewingOrder, setViewingOrder] = useState<OrderGroup | null>(null);
   const [sendReportModalData, setSendReportModalData] = useState<{ orderId: string, patientName: string, doctorName: string, doctorPhone: string, clinicalSummary?: string, includeClinicalSummary?: boolean, reportUrl: string } | null>(null);
 
-  const getSendableReportUrl = useCallback((result?: ApprovedResult | null) => {
-    const rawUrl = result?.final_report?.pdf_url || result?.draft_report?.pdf_url;
-    return rawUrl ? (convertToCustomDomain(rawUrl) || rawUrl) : '';
-  }, []);
+  const getSampleSeqFromGroup = (group: OrderGroup) => {
+    const explicit = group.order_numbers.find((n) => typeof n === 'number' && Number.isFinite(n));
+    if (typeof explicit === 'number') return explicit;
+    const sample = group.sample_ids[0] || '';
+    const tail = String(sample).match(/(?:^|[/-])(\d+)\s*$/)?.[1] || '';
+    const parsed = parseInt(tail, 10);
+    return Number.isFinite(parsed) ? parsed : 0;
+  };
 
   const handleOpenSendDoctor = async (group: OrderGroup) => {
     try {
-      const primaryResult = group.results[0] as ApprovedResult | undefined;
-      const reportUrl = getSendableReportUrl(primaryResult);
+      // Find report URL
+	      const result = group.results[0] as ApprovedResult;
+	      const finalReport = result?.final_report;
+	      const reportUrl = finalReport?.pdf_url || result?.compact_ecopy_url || finalReport?.compact_ecopy_url || finalReport?.print_pdf_url;
 
       if (!reportUrl) {
-        alert('Please generate a draft or final report before sending to doctor.');
+        alert('Please generate a final report before sending to doctor.');
         return;
       }
 
@@ -232,7 +277,7 @@ const Reports: React.FC = () => {
         doctorPhone,
         clinicalSummary: orderData.ai_clinical_summary,
         includeClinicalSummary: orderData.send_clinical_summary_to_doctor || false,  // Use send_to_doctor flag for WhatsApp
-        reportUrl
+        reportUrl: convertToCustomDomain(reportUrl) || reportUrl
       };
 
       console.log('[Reports handleOpenSendDoctor] Modal data being set:', {
@@ -261,15 +306,19 @@ const Reports: React.FC = () => {
     if (orderIds.length === 0) return;
 
     try {
-      // Optimized: Fetch all jobs in one query
-      const { data: jobs, error } = await supabase
-        .from('pdf_generation_queue')
-        .select('*')
-        .in('order_id', orderIds);
+      const jobs: any[] = [];
+      for (const orderIdBatch of chunkArray(orderIds, RELATED_LOOKUP_BATCH_SIZE)) {
+        const { data: batchJobs, error } = await supabase
+          .from('pdf_generation_queue')
+          .select('*')
+          .in('order_id', orderIdBatch);
 
-      if (error) {
-        console.error('Error polling PDF queue:', error);
-        return;
+        if (error) {
+          console.error('Error polling PDF queue:', error);
+          return;
+        }
+
+        jobs.push(...((batchJobs as any[]) || []));
       }
 
       const statusMap = new Map<string, any>();
@@ -321,66 +370,62 @@ const Reports: React.FC = () => {
       // Store lab ID for PDF settings
       setUserLabId(lab_id);
 
-      // Get date range based on filter
-      let dateRange = { start: new Date(), end: new Date() };
-      const now = new Date();
-
-      switch (dateFilter) {
-        case 'today':
-          dateRange.start = startOfDay(now);
-          dateRange.end = endOfDay(now);
-          break;
-        case 'yesterday': {
-          const yesterday = new Date(now);
-          yesterday.setDate(yesterday.getDate() - 1);
-          dateRange.start = startOfDay(yesterday);
-          dateRange.end = endOfDay(yesterday);
-          break;
-        }
-        case 'week':
-          dateRange.start = startOfWeek(now, REPORT_WEEK_OPTIONS);
-          dateRange.end = endOfWeek(now, REPORT_WEEK_OPTIONS);
-          break;
-        case 'month':
-          dateRange.start = startOfMonth(now);
-          dateRange.end = endOfMonth(now);
-          break;
-        case 'all':
-          dateRange.start = new Date(2000, 0, 1);
-          dateRange.end = new Date(2100, 0, 1);
-          break;
-      }
+      const dateRange = getCalendarDateRange(dateFilter);
 
       // ✅ Apply location filtering for access control
       const { shouldFilter, locationIds } = await database.shouldFilterByLocation();
 
-      // Build query with optional location filter
-      let query = supabase
-        .from('view_approved_results')
-        .select('*')
-        .eq('lab_id', lab_id)
-        .gte('verified_at', dateRange.start.toISOString())
-        .lte('verified_at', dateRange.end.toISOString())
-        .order('verified_at', { ascending: false });
+      const data: ApprovedResult[] = [];
+      let fetchFrom = 0;
+      let fetchError: any = null;
 
-      // Apply location filter if user is restricted
-      if (shouldFilter && locationIds.length > 0) {
-        query = query.in('location_id', locationIds);
+      while (true) {
+        let query = supabase
+          .from('view_approved_results')
+          .select('*')
+          .eq('lab_id', lab_id)
+          .gte('verified_at', dateRange.start.toISOString())
+          .lte('verified_at', dateRange.end.toISOString())
+          .order('verified_at', { ascending: false })
+          .range(fetchFrom, fetchFrom + APPROVED_RESULTS_PAGE_SIZE - 1);
+
+        // Apply location filter if user is restricted
+        if (shouldFilter && locationIds.length > 0) {
+          query = query.in('location_id', locationIds);
+        }
+
+        const { data: pageData, error } = await query;
+        if (error) {
+          fetchError = error;
+          break;
+        }
+
+        const rows = (pageData as ApprovedResult[]) || [];
+        data.push(...rows);
+
+        if (rows.length < APPROVED_RESULTS_PAGE_SIZE) {
+          break;
+        }
+        fetchFrom += APPROVED_RESULTS_PAGE_SIZE;
       }
 
-      const { data, error } = await query;
+      if (fetchError) {
+        throw fetchError;
+      }
 
-      if (!error && data) {
+      if (data) {
         // 1. Bulk Fetch Existing Reports
         let existingReports: any[] = [];
         const orderIds = Array.from(new Set(data.map((r: ApprovedResult) => r.order_id).filter(Boolean)));
 
         if (orderIds.length > 0) {
-          const { data: reportsData } = await supabase
-            .from('reports')
-            .select('order_id, status, generated_date, report_type, pdf_url, pdf_generated_at, print_pdf_url, print_pdf_generated_at, print_layout_mode')
-            .in('order_id', orderIds);
-          existingReports = (reportsData as any[]) || [];
+          for (const orderIdBatch of chunkArray(orderIds, RELATED_LOOKUP_BATCH_SIZE)) {
+            const { data: reportsData } = await supabase
+              .from('reports')
+              .select('id, order_id, status, generated_date, report_type, pdf_url, pdf_generated_at, print_pdf_url, print_pdf_generated_at, print_layout_mode, compact_ecopy_url, compact_ecopy_generated_at')
+              .in('order_id', orderIdBatch);
+            existingReports.push(...((reportsData as any[]) || []));
+          }
         }
 
         // 2. Bulk Fetch Patient Phones
@@ -390,89 +435,113 @@ const Reports: React.FC = () => {
         );
 
         if (patientIds.length > 0) {
-          const { data: patientsData, error: patientsError } = await supabase
-            .from('patients')
-            .select('id, phone')
-            .in('id', patientIds);
+          for (const patientIdBatch of chunkArray(patientIds, RELATED_LOOKUP_BATCH_SIZE)) {
+            const { data: patientsData, error: patientsError } = await supabase
+              .from('patients')
+              .select('id, phone')
+              .in('id', patientIdBatch);
 
-          if (!patientsError && patientsData) {
-            for (const patient of patientsData as Array<{ id: string; phone?: string | null }>) {
-              if (patient?.id) {
-                patientPhoneMap.set(patient.id, patient.phone || '');
+            if (!patientsError && patientsData) {
+              for (const patient of patientsData as Array<{ id: string; phone?: string | null }>) {
+                if (patient?.id) {
+                  patientPhoneMap.set(patient.id, patient.phone || '');
+                }
               }
             }
           }
         }
 
-        // 3. Bulk Fetch Panel Readiness
-        const readinessMap = new Map<string, boolean>();
-        if (orderIds.length > 0) {
-          const { data: panelStatusData } = await supabase
-            .from('v_result_panel_status')
-            .select('order_id, panel_ready')
-            .in('order_id', orderIds);
-
-          if (panelStatusData) {
-            // Group by order_id
-            const orderPanelStatus: Record<string, boolean[]> = {};
-            panelStatusData.forEach((row: any) => {
-              if (!orderPanelStatus[row.order_id]) orderPanelStatus[row.order_id] = [];
-              orderPanelStatus[row.order_id].push(row.panel_ready);
-            });
-
-            // Determine readiness
-            Object.keys(orderPanelStatus).forEach(oid => {
-              const statuses = orderPanelStatus[oid];
-              readinessMap.set(oid, statuses.length > 0 && statuses.every(s => s === true));
-            });
-          }
-        }
-
-        // 4. Bulk Fetch Smart Report URLs from orders table
+        // 3. Bulk Fetch Smart Report URLs and order metadata
         const smartReportMap = new Map<string, { url: string; generated_at: string }>();
+        const orderMetaMap = new Map<string, { account_id?: string | null; account_name?: string | null; order_number?: number | null; sample_id?: string | null; doctor?: string | null }>();
         if (orderIds.length > 0) {
-          const { data: ordersData } = await supabase
-            .from('orders')
-            .select('id, smart_report_url, smart_report_generated_at')
-            .in('id', orderIds)
-            .not('smart_report_url', 'is', null);
+          for (const orderIdBatch of chunkArray(orderIds, RELATED_LOOKUP_BATCH_SIZE)) {
+            const { data: ordersData } = await supabase
+              .from('orders')
+              .select('id, smart_report_url, smart_report_generated_at, account_id, order_number, sample_id, doctor, accounts(name)')
+              .in('id', orderIdBatch);
 
-          if (ordersData) {
-            ordersData.forEach((order: any) => {
-              if (order.smart_report_url) {
-                smartReportMap.set(order.id, {
-                  url: order.smart_report_url,
-                  generated_at: order.smart_report_generated_at
+            if (ordersData) {
+              ordersData.forEach((order: any) => {
+                const accountInfo = Array.isArray(order.accounts) ? order.accounts[0] : order.accounts;
+                orderMetaMap.set(order.id, {
+                  account_id: order.account_id || null,
+                  account_name: accountInfo?.name || null,
+                  order_number: order.order_number ?? null,
+                  sample_id: order.sample_id || null,
+                  doctor: order.doctor || null,
                 });
-              }
-            });
+                if (order.smart_report_url) {
+                  smartReportMap.set(order.id, {
+                    url: order.smart_report_url,
+                    generated_at: order.smart_report_generated_at
+                  });
+                }
+              });
+            }
           }
         }
 
-        const reportMap = new Map(
-          existingReports.map((r) => [r.order_id, r])
-        );
+        const reportsByOrder = new Map<string, any[]>();
+        for (const report of existingReports) {
+          if (!report?.order_id) continue;
+          const orderReports = reportsByOrder.get(report.order_id) || [];
+          orderReports.push(report);
+          reportsByOrder.set(report.order_id, orderReports);
+        }
+
+        const getLatestReport = (reports: any[], reportType: 'draft' | 'final') => {
+          return reports
+            .filter((report) => report.report_type === reportType)
+            .sort((a, b) => {
+              const aTime = new Date(a.pdf_generated_at || a.print_pdf_generated_at || a.compact_ecopy_generated_at || a.generated_date || 0).getTime();
+              const bTime = new Date(b.pdf_generated_at || b.print_pdf_generated_at || b.compact_ecopy_generated_at || b.generated_date || 0).getTime();
+              return bTime - aTime;
+            })[0] || null;
+        };
 
         // Process data in memory without inner async calls
         const enhancedData: ApprovedResult[] = (data as ApprovedResult[]).map((result) => {
-          const report = reportMap.get(result.order_id);
-          const isReady = readinessMap.get(result.order_id) || false;
+          const orderReports = reportsByOrder.get(result.order_id) || [];
+          const finalReport = getLatestReport(orderReports, 'final');
+          const draftReport = getLatestReport(orderReports, 'draft');
+          const primaryReport = finalReport || draftReport;
+          const hasAnyFinalPdf = !!(
+            finalReport?.pdf_url ||
+            finalReport?.print_pdf_url ||
+            finalReport?.compact_ecopy_url
+          );
+          const hasAnyDraftPdf = !!(
+            draftReport?.pdf_url ||
+            draftReport?.print_pdf_url ||
+            draftReport?.compact_ecopy_url
+          );
+          const isReady = result.verification_status === 'verified';
           const resolvedPhone = result.phone || patientPhoneMap.get(result.patient_id) || '';
           const smartReport = smartReportMap.get(result.order_id);
+          const orderMeta = orderMetaMap.get(result.order_id);
 
           return {
             ...result,
-            has_report: !!report,
-            report_status: report?.status,
-            report_generated_at: report?.generated_date,
+            sample_id: result.sample_id || orderMeta?.sample_id || '',
+            doctor: result.doctor || orderMeta?.doctor || '',
+            account_id: orderMeta?.account_id || null,
+            account_name: orderMeta?.account_name || null,
+            order_number: orderMeta?.order_number ?? null,
+            has_report: orderReports.length > 0,
+            report_status: primaryReport?.status,
+            report_generated_at: primaryReport?.generated_date,
             is_report_ready: isReady,
-            has_draft_report: report?.report_type === 'draft' && !!report.pdf_url,
-            has_final_report: report?.report_type === 'final' && !!report.pdf_url,
-            has_print_pdf: !!report?.print_pdf_url,
-            draft_report: report?.report_type === 'draft' ? report : null,
-            final_report: report?.report_type === 'final' ? report : null,
-            print_pdf_url: report?.print_pdf_url || undefined,
-            print_pdf_generated_at: report?.print_pdf_generated_at || undefined,
+            has_draft_report: hasAnyDraftPdf,
+            has_final_report: hasAnyFinalPdf,
+            has_print_pdf: !!(finalReport?.print_pdf_url || draftReport?.print_pdf_url),
+            has_compact_ecopy: !!(finalReport?.compact_ecopy_url || draftReport?.compact_ecopy_url),
+            draft_report: draftReport,
+            final_report: finalReport,
+            print_pdf_url: (finalReport?.print_pdf_url || draftReport?.print_pdf_url) || undefined,
+            print_pdf_generated_at: (finalReport?.print_pdf_generated_at || draftReport?.print_pdf_generated_at) || undefined,
+            compact_ecopy_url: (finalReport?.compact_ecopy_url || draftReport?.compact_ecopy_url) || undefined,
+            compact_ecopy_generated_at: (finalReport?.compact_ecopy_generated_at || draftReport?.compact_ecopy_generated_at) || undefined,
             phone: resolvedPhone,
             // Smart Report fields
             smart_report_url: smartReport?.url,
@@ -632,6 +701,12 @@ const Reports: React.FC = () => {
       );
     }
 
+    if (selectedAccount !== 'all') {
+      filtered = filtered.filter(result =>
+        (result.account_name || '').toLowerCase().includes(selectedAccount.toLowerCase())
+      );
+    }
+
     // Apply status filter
     if (selectedStatus !== 'all') {
       filtered = filtered.filter(result => {
@@ -660,6 +735,8 @@ const Reports: React.FC = () => {
           gender: r.gender,
           order_date: r.order_date,
           sample_ids: r.sample_id ? [r.sample_id] : [],
+          account_names: r.account_name ? [r.account_name] : [],
+          order_numbers: typeof r.order_number === 'number' ? [r.order_number] : [],
           verified_at: r.verified_at,
           verified_by: r.verified_by,
           test_names: r.test_name ? [r.test_name] : [],
@@ -674,6 +751,8 @@ const Reports: React.FC = () => {
           group.results.push(r);
         }
         if (r.sample_id && !group.sample_ids.includes(r.sample_id)) group.sample_ids.push(r.sample_id);
+        if (r.account_name && !group.account_names.includes(r.account_name)) group.account_names.push(r.account_name);
+        if (typeof r.order_number === 'number' && !group.order_numbers.includes(r.order_number)) group.order_numbers.push(r.order_number);
         if (r.test_name && !group.test_names.includes(r.test_name)) group.test_names.push(r.test_name);
         if (new Date(r.verified_at) > new Date(group.verified_at)) {
           group.verified_at = r.verified_at;
@@ -691,6 +770,10 @@ const Reports: React.FC = () => {
         case 'patient_name':
           aValue = a.patient_full_name;
           bValue = b.patient_full_name;
+          break;
+        case 'sample_id':
+          aValue = getSampleSeqFromGroup(a);
+          bValue = getSampleSeqFromGroup(b);
           break;
         case 'order_date':
           aValue = new Date(a.order_date).getTime();
@@ -713,7 +796,7 @@ const Reports: React.FC = () => {
     });
 
     return sorted;
-  }, [approvedResults, searchTerm, selectedTestType, selectedDoctor, selectedStatus, sortField, sortDirection]);
+  }, [approvedResults, searchTerm, selectedTestType, selectedDoctor, selectedAccount, selectedStatus, sortField, sortDirection]);
 
   // Get unique values for filters
   const uniqueTestTypes = useMemo(() => {
@@ -726,15 +809,30 @@ const Reports: React.FC = () => {
     return Array.from(doctors).sort();
   }, [approvedResults]);
 
+  const uniqueAccounts = useMemo(() => {
+    const accounts = new Set(approvedResults.map(r => r.account_name).filter(Boolean));
+    return Array.from(accounts).sort();
+  }, [approvedResults, orderSettingsCompactPagesTouched, orderSettingsManualOrderTouched]);
+
   // Statistics for dashboard
   const statistics = useMemo(() => {
     const totalOrders = orderGroups.length;
     const readyForGeneration = orderGroups.filter(g => g.is_report_ready && !g.results[0]?.has_final_report).length;
     const pendingVerification = orderGroups.filter(g => !g.is_report_ready).length;
-    const completed = orderGroups.filter(g => g.results[0]?.has_final_report).length;
+    const finalReports = orderGroups.filter(g => g.results[0]?.has_final_report).length;
 
-    return { totalOrders, readyForGeneration, pendingVerification, completed };
+    return { totalOrders, readyForGeneration, pendingVerification, finalReports };
   }, [orderGroups]);
+
+  // Handlers
+  const handleView = async (orderId: string) => {
+    const group = orderGroups.find(g => g.order_id === orderId);
+    if (!group) {
+      alert('Order not found');
+      return;
+    }
+    setViewingOrder(group);
+  };
 
   const isTempPdfUrl = (url?: string | null): boolean =>
     !!url && url.includes('pdf-temp-files.s3.amazonaws.com');
@@ -851,18 +949,21 @@ const Reports: React.FC = () => {
 
   const handleLetterheadGeneration = async (
     orderId: string,
-    printLayoutMode: 'standard' | 'compact' = 'standard'
+    printLayoutMode: 'standard' | 'compact' = 'standard',
+    pdfType?: 'ecopy' | 'compact-print' | 'compact-ecopy',
+    extraBody?: Record<string, unknown>
   ) => {
+    const trackingType = pdfType ?? (printLayoutMode === 'compact' ? 'compact-ecopy' : 'ecopy');
+    if (isPdfGenerating(orderId, trackingType)) return; // prevent double-click
+    startPdfGeneration(orderId, trackingType);
     try {
       console.log('🚀 Triggering Letterhead PDF Generation for:', orderId);
-      // alert('Starting Letterhead PDF Generation... Please wait.');
 
-      // Get current user ID for WhatsApp integration
       const { data: { user } } = await supabase.auth.getUser();
       const triggeredByUserId = user?.id;
 
       const { data, error } = await supabase.functions.invoke('generate-pdf-letterhead', {
-        body: { orderId, triggeredByUserId, printLayoutMode }
+        body: { orderId, triggeredByUserId, printLayoutMode, ...(extraBody ?? {}) }
       });
 
       if (error) {
@@ -873,7 +974,7 @@ const Reports: React.FC = () => {
       console.log('✅ Letterhead Generation Result:', data);
 
       const generatedUrl = printLayoutMode === 'compact'
-        ? data?.printPdfUrl || data?.pdfUrl
+        ? data?.compactEcopyUrl || data?.printPdfUrl || data?.pdfUrl
         : data?.pdfUrl;
 
       if (generatedUrl) {
@@ -887,8 +988,45 @@ const Reports: React.FC = () => {
     } catch (error) {
       console.error('Letterhead Report Gen failed:', error);
       alert('Failed to generate Letterhead Report: ' + (error instanceof Error ? error.message : 'Unknown error'));
+    } finally {
+      stopPdfGeneration(orderId, trackingType);
     }
   };
+
+  const verifyBulkReportDeletePermission = useCallback(async () => {
+    try {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) {
+        alert('You must be logged in to delete reports.');
+        return false;
+      }
+
+      const { data: userData, error } = await supabase
+        .from('users')
+        .select('role')
+        .eq('id', user.id)
+        .single();
+
+      if (error) throw error;
+
+      const userRoleLower = (userData?.role || '').toLowerCase();
+      const hasPermission = Boolean(userData && (
+        userRoleLower === 'admin' ||
+        userRoleLower === 'super_admin' ||
+        userRoleLower === 'lab_admin'
+      ));
+
+      if (!hasPermission) {
+        alert(`Permission denied. Your role is '${userData?.role || 'unknown'}', but 'admin' or 'super_admin' is required.`);
+      }
+
+      return hasPermission;
+    } catch (checkError) {
+      console.error('Error checking permissions:', checkError);
+      alert('Failed to verify permissions. See console for details.');
+      return false;
+    }
+  }, []);
 
   const handleDeleteReport = useCallback(async (orderId: string) => {
     // Perform on-demand admin check to be absolutely sure and debuggable
@@ -965,6 +1103,70 @@ const Reports: React.FC = () => {
     }
   }, [isAdmin, approvedResults, loadApprovedResults]);
 
+  const handleDeleteSelectedReports = useCallback(async () => {
+    const selectedOrderIds = Array.from(selectedOrders);
+    if (selectedOrderIds.length === 0) {
+      alert('Please select at least one order');
+      return;
+    }
+
+    const hasPermission = await verifyBulkReportDeletePermission();
+    if (!hasPermission) return;
+
+    const selectedGroupsWithReports = selectedOrderIds
+      .map((orderId) => orderGroups.find((group) => group.order_id === orderId))
+      .filter((group): group is OrderGroup => Boolean(group))
+      .filter((group) => Boolean((group.results[0] as ApprovedResult | undefined)?.has_report));
+
+    if (selectedGroupsWithReports.length === 0) {
+      alert('No generated reports found for the selected orders.');
+      return;
+    }
+
+    const confirmMessage = `Delete generated reports for ${selectedGroupsWithReports.length} selected order${selectedGroupsWithReports.length === 1 ? '' : 's'}? This removes report records but keeps the orders and results. This cannot be undone.`;
+    if (!window.confirm(confirmMessage)) return;
+
+    setIsDeletingSelectedReports(true);
+    try {
+      const orderIdsToDelete = selectedGroupsWithReports.map((group) => group.order_id);
+      const { error } = await supabase
+        .from('reports')
+        .delete()
+        .in('order_id', orderIdsToDelete);
+
+      if (error) throw error;
+
+      setApprovedResults((prev) =>
+        prev.map((result) => {
+          if (!orderIdsToDelete.includes(result.order_id)) return result;
+
+          return {
+            ...result,
+            has_report: false,
+            has_draft_report: false,
+            has_final_report: false,
+            is_report_ready: true,
+            report_status: undefined,
+            report_generated_at: undefined,
+            draft_report: null,
+            final_report: null,
+            print_pdf_url: undefined,
+            compact_ecopy_url: undefined,
+          };
+        })
+      );
+
+      setSelectedOrders(new Set());
+      alert(`Deleted ${orderIdsToDelete.length} generated report${orderIdsToDelete.length === 1 ? '' : 's'}.`);
+      await loadApprovedResults();
+    } catch (error) {
+      console.error('Error deleting selected reports:', error);
+      alert('Failed to delete selected reports: ' + (error instanceof Error ? error.message : 'Unknown error'));
+    } finally {
+      setIsDeletingSelectedReports(false);
+    }
+  }, [loadApprovedResults, orderGroups, selectedOrders, verifyBulkReportDeletePermission]);
+
   const moveOrderSettingsGroup = useCallback((index: number, direction: -1 | 1) => {
     setOrderSettingsGroups(prev => {
       const nextIndex = index + direction;
@@ -974,6 +1176,7 @@ const Reports: React.FC = () => {
       next.splice(nextIndex, 0, item);
       return next;
     });
+    setOrderSettingsManualOrderTouched(true);
   }, []);
 
   const setOrderSettingsGroupPage = useCallback((testGroupId: string, pageNumber: number) => {
@@ -984,6 +1187,7 @@ const Reports: React.FC = () => {
           : group,
       ),
     );
+    setOrderSettingsCompactPagesTouched(true);
   }, []);
 
   const setOrderSettingsGroupOwnPage = useCallback((testGroupId: string) => {
@@ -992,9 +1196,10 @@ const Reports: React.FC = () => {
       return prev.map((group) =>
         group.testGroupId === testGroupId
           ? { ...group, pageNumber: currentMax + 1 }
-          : group,
+        : group,
       );
     });
+    setOrderSettingsCompactPagesTouched(true);
   }, []);
 
   const setOrderSettingsGroupClubPrevious = useCallback((testGroupId: string) => {
@@ -1005,9 +1210,10 @@ const Reports: React.FC = () => {
       return prev.map((group) =>
         group.testGroupId === testGroupId
           ? { ...group, pageNumber: previousPage }
-          : group,
+        : group,
       );
     });
+    setOrderSettingsCompactPagesTouched(true);
   }, []);
 
   const autoArrangeCompactPages = useCallback(() => {
@@ -1018,6 +1224,7 @@ const Reports: React.FC = () => {
         pageNumber: assignments[group.testGroupId] || 1,
       }));
     });
+    setOrderSettingsCompactPagesTouched(true);
   }, [orderSettingsMaxClubbedAnalytes]);
 
   const handleLocalCompactPrint = useCallback(async (
@@ -1026,9 +1233,7 @@ const Reports: React.FC = () => {
     overrideMaxClubbedAnalytes?: number,
   ) => {
     const { data: authData } = await supabase.auth.getSession();
-    if (!authData?.session) {
-      throw new Error('Not authenticated');
-    }
+    if (!authData?.session) throw new Error('Not authenticated');
 
     const triggeredByUserId = authData.session.user?.id;
     const compactPageAssignments = overrideGroups && overrideGroups.length > 0
@@ -1043,20 +1248,19 @@ const Reports: React.FC = () => {
         orderId,
         triggeredByUserId,
         printLayoutMode: 'compact',
+        // Note: isDraft is intentionally omitted — the edge function bypasses the
+        // panel-readiness check for compact print, so we don't need to force draft mode
+        // (which would downgrade an existing final report's report_type).
         ...(orderedGroupIds ? { compactGroupOrder: orderedGroupIds } : {}),
         ...(compactPageAssignments ? { compactPageAssignments } : {}),
         ...(overrideMaxClubbedAnalytes ? { compactMaxClubbedAnalytes: overrideMaxClubbedAnalytes } : {}),
       }
     });
 
-    if (error) {
-      throw error;
-    }
+    if (error) throw error;
 
     const generatedUrl = data?.printPdfUrl || data?.pdfUrl;
-    if (!generatedUrl) {
-      throw new Error('Compact print generated but no URL returned.');
-    }
+    if (!generatedUrl) throw new Error('Compact print generated but no URL returned.');
 
     window.open(generatedUrl, '_blank');
     await loadApprovedResults();
@@ -1067,14 +1271,18 @@ const Reports: React.FC = () => {
     orderId: string,
     groups: OrderSettingsGroupItem[],
     printLayoutMode: 'standard' | 'compact',
-    compactMaxClubbedAnalytes: number,
+    compactMaxClubbedAnalytes?: number,
+    manualOrderOverride = orderSettingsManualOrderTouched,
+    compactPagesOverride = orderSettingsCompactPagesTouched,
   ) => {
     const reportSettings: OrderReportSettings = {
-      groupOrderOverrideEnabled: groups.length > 0,
+      groupOrderOverrideEnabled: manualOrderOverride && groups.length > 0,
+      groupOrderManualOverride: manualOrderOverride && groups.length > 0,
       groupOrder: groups.map(group => group.testGroupId),
       printLayoutMode,
       compactPageAssignments: Object.fromEntries(groups.map((group) => [group.testGroupId, group.pageNumber])),
-      compactMaxClubbedAnalytes,
+      compactPageAssignmentsManualOverride: compactPagesOverride && groups.length > 0,
+      compactMaxClubbedAnalytes: compactMaxClubbedAnalytes ?? 5,
     };
 
     const { error: orderError } = await supabase
@@ -1126,7 +1334,11 @@ const Reports: React.FC = () => {
         ? 'standard'
         : 'compact';
 
-      const [{ data: orderData, error: orderError }, { data: otgData, error: otgError }, { data: otData, error: otError }, { data: context, error: contextError }] = await Promise.all([
+      // Reset existing URL state for fresh load
+      setOrderSettingsExistingPrintUrl(null);
+      setOrderSettingsExistingEcopyUrl(null);
+
+      const [{ data: orderData, error: orderError }, { data: otgData, error: otgError }, { data: otData, error: otError }, { data: context, error: contextError }, { data: existingReport }] = await Promise.all([
         supabase.from('orders').select('report_settings').eq('id', orderId).maybeSingle(),
         supabase
           .from('order_test_groups')
@@ -1138,6 +1350,7 @@ const Reports: React.FC = () => {
           .eq('order_id', orderId)
           .neq('is_canceled', true),
         database.reports.getTemplateContext(orderId),
+        supabase.from('reports').select('print_pdf_url, compact_ecopy_url').eq('order_id', orderId).eq('report_type', 'final').maybeSingle(),
       ]);
 
       if (orderError) throw orderError;
@@ -1145,7 +1358,11 @@ const Reports: React.FC = () => {
       if (otError) throw otError;
       if (contextError) throw contextError;
 
+      setOrderSettingsExistingPrintUrl((existingReport as any)?.print_pdf_url || null);
+      setOrderSettingsExistingEcopyUrl((existingReport as any)?.compact_ecopy_url || null);
+
       const reportSettings = (orderData as { report_settings?: OrderReportSettings | null } | null)?.report_settings || {};
+      const useSavedCompactPages = reportSettings.compactPageAssignmentsManualOverride === true;
       const descriptorMap = new Map<string, OrderSettingsGroupItem>();
       const pushRow = (row: any) => {
         if (!row?.test_group_id || descriptorMap.has(row.test_group_id)) return;
@@ -1183,19 +1400,20 @@ const Reports: React.FC = () => {
 
       const manualOrder = Array.isArray(reportSettings.groupOrder) ? reportSettings.groupOrder : [];
       const manualIndex = new Map(manualOrder.map((id, index) => [id, index]));
+      const useManualOrder = reportSettings.groupOrderManualOverride === true;
       const resolvedGroups = [...descriptorMap.values()].sort((a, b) => {
         const aManual = manualIndex.has(a.testGroupId) ? manualIndex.get(a.testGroupId)! : Number.MAX_SAFE_INTEGER;
         const bManual = manualIndex.has(b.testGroupId) ? manualIndex.get(b.testGroupId)! : Number.MAX_SAFE_INTEGER;
-        if ((reportSettings.groupOrderOverrideEnabled ?? false) && aManual !== bManual) return aManual - bManual;
-        const aPriority = a.reportPriority ?? Number.MAX_SAFE_INTEGER;
-        const bPriority = b.reportPriority ?? Number.MAX_SAFE_INTEGER;
+        if (useManualOrder && aManual !== bManual) return aManual - bManual;
+        const aPriority = getActiveReportPriority(a.reportPriority);
+        const bPriority = getActiveReportPriority(b.reportPriority);
         if (aPriority !== bPriority) return aPriority - bPriority;
         if (a.printOrder !== b.printOrder) return a.printOrder - b.printOrder;
         return a.testName.localeCompare(b.testName);
       });
 
       const compactDefinitions = context
-        ? buildCompactGroupDefinitions(context, reportSettings.groupOrder)
+        ? buildCompactGroupDefinitions(context, resolvedGroups.map((group) => group.testGroupId))
         : [];
       const definitionMap = new Map(compactDefinitions.map((group) => [group.testGroupId, group]));
       const autoAssignments = autoAssignCompactPages(compactDefinitions, reportSettings.compactMaxClubbedAnalytes || 5);
@@ -1204,8 +1422,10 @@ const Reports: React.FC = () => {
       setOrderSettingsGroups(resolvedGroups.map((group) => ({
         ...group,
         analyteCount: definitionMap.get(group.testGroupId)?.analyteCount || 0,
-        pageNumber: reportSettings.compactPageAssignments?.[group.testGroupId] || autoAssignments[group.testGroupId] || 1,
+        pageNumber: (useSavedCompactPages ? reportSettings.compactPageAssignments?.[group.testGroupId] : undefined) || autoAssignments[group.testGroupId] || 1,
       })));
+      setOrderSettingsManualOrderTouched(useManualOrder);
+      setOrderSettingsCompactPagesTouched(useSavedCompactPages);
       setOrderSettingsLayoutMode(reportSettings.printLayoutMode === 'standard' ? 'standard' : currentLayoutMode);
     } catch (error) {
       console.error('Failed to load order report settings:', error);
@@ -1242,12 +1462,7 @@ const Reports: React.FC = () => {
     if (!orderSettingsOrderId) return;
     setOrderSettingsSaving(true);
     try {
-      await saveOrderReportSettings(
-        orderSettingsOrderId,
-        orderSettingsGroups,
-        orderSettingsLayoutMode,
-        orderSettingsMaxClubbedAnalytes,
-      );
+      await saveOrderReportSettings(orderSettingsOrderId, orderSettingsGroups, orderSettingsLayoutMode, orderSettingsMaxClubbedAnalytes);
       await loadApprovedResults();
       alert('Order report settings saved.');
     } catch (error) {
@@ -1262,18 +1477,9 @@ const Reports: React.FC = () => {
     if (!orderSettingsOrderId) return;
     setOrderSettingsSaving(true);
     try {
-      await saveOrderReportSettings(
-        orderSettingsOrderId,
-        orderSettingsGroups,
-        orderSettingsLayoutMode,
-        orderSettingsMaxClubbedAnalytes,
-      );
+      await saveOrderReportSettings(orderSettingsOrderId, orderSettingsGroups, orderSettingsLayoutMode, orderSettingsMaxClubbedAnalytes);
       if (orderSettingsLayoutMode === 'compact') {
-        await handleLocalCompactPrint(
-          orderSettingsOrderId,
-          orderSettingsGroups,
-          orderSettingsMaxClubbedAnalytes,
-        );
+        await handleLocalCompactPrint(orderSettingsOrderId, orderSettingsGroups, orderSettingsMaxClubbedAnalytes);
       } else {
         await handleLetterheadGeneration(orderSettingsOrderId, orderSettingsLayoutMode);
       }
@@ -1284,6 +1490,26 @@ const Reports: React.FC = () => {
       setOrderSettingsSaving(false);
     }
   }, [handleLetterheadGeneration, handleLocalCompactPrint, orderSettingsGroups, orderSettingsLayoutMode, orderSettingsMaxClubbedAnalytes, orderSettingsOrderId, saveOrderReportSettings]);
+
+  const handleRegenerateEcopyFromOrderSettings = useCallback(async () => {
+    if (!orderSettingsOrderId) return;
+    setOrderSettingsSaving(true);
+    try {
+      await saveOrderReportSettings(orderSettingsOrderId, orderSettingsGroups, orderSettingsLayoutMode, orderSettingsMaxClubbedAnalytes);
+      const orderedGroupIds = orderSettingsGroups.map(g => g.testGroupId);
+      const compactPageAssignments = Object.fromEntries(orderSettingsGroups.map(g => [g.testGroupId, g.pageNumber]));
+      await handleLetterheadGeneration(orderSettingsOrderId, 'compact', 'compact-ecopy', {
+        compactGroupOrder: orderedGroupIds,
+        compactPageAssignments,
+        compactMaxClubbedAnalytes: orderSettingsMaxClubbedAnalytes,
+      });
+    } catch (error) {
+      console.error('Failed to regenerate eCopy from order settings:', error);
+      alert('Failed to regenerate eCopy PDF.');
+    } finally {
+      setOrderSettingsSaving(false);
+    }
+  }, [handleLetterheadGeneration, orderSettingsGroups, orderSettingsLayoutMode, orderSettingsMaxClubbedAnalytes, orderSettingsOrderId, saveOrderReportSettings]);
 
   const prepareReportData = async (group: OrderGroup): Promise<PreparedReport> => {
     const { data: context, error } = await database.reports.getTemplateContext(group.order_id);
@@ -1330,7 +1556,144 @@ const Reports: React.FC = () => {
     setSelectedStatus('all');
     setSelectedTestType('all');
     setSelectedDoctor('all');
+    setSelectedAccount('all');
     setDateFilter('today');
+    setSortField('sample_id');
+    setSortDirection('desc');
+  };
+
+  const getReportUrlForQueue = (result?: ApprovedResult | null): string | null => {
+    const finalReport = result?.final_report;
+    const candidates = [
+      finalReport?.pdf_url,
+      result?.compact_ecopy_url,
+      finalReport?.compact_ecopy_url,
+      finalReport?.print_pdf_url,
+      result?.print_pdf_url,
+    ].filter(Boolean) as string[];
+
+    const usableUrl = candidates.find((url) => !isTempPdfUrl(url)) || candidates[0];
+    return usableUrl ? convertToCustomDomain(usableUrl) || usableUrl : null;
+  };
+
+  const queueSelectedReportsForWhatsApp = async () => {
+    if (selectedOrders.size === 0) {
+      alert('Please select at least one order');
+      return;
+    }
+
+    if (!userLabId) {
+      alert('Lab context not available. Please refresh and try again.');
+      return;
+    }
+
+    setIsQueueingSelectedReports(true);
+
+    try {
+      const selectedGroups = Array.from(selectedOrders)
+        .map((orderId) => orderGroups.find((group) => group.order_id === orderId))
+        .filter(Boolean) as OrderGroup[];
+
+      const queueRows: any[] = [];
+      const skipped: string[] = [];
+      const candidateOrderIds: string[] = [];
+
+      for (const group of selectedGroups) {
+        const result = group.results[0] as ApprovedResult | undefined;
+        const reportUrl = getReportUrlForQueue(result);
+        const patientPhone = result?.phone;
+
+        if (!reportUrl) {
+          skipped.push(`${group.patient_full_name}: report PDF missing`);
+          continue;
+        }
+
+        if (!patientPhone) {
+          skipped.push(`${group.patient_full_name}: phone missing`);
+          continue;
+        }
+
+        const testName = (group.test_names || []).join(', ') || 'lab';
+        candidateOrderIds.push(group.order_id);
+        queueRows.push({
+          lab_id: userLabId,
+          recipient_type: 'patient',
+          recipient_phone: patientPhone,
+          recipient_name: group.patient_full_name,
+          recipient_id: group.patient_id,
+          trigger_type: 'report_ready',
+          order_id: group.order_id,
+          report_id: result?.final_report?.id || null,
+          message_content: `Hello ${group.patient_full_name}, your ${testName} report is ready. Please find it attached.`,
+          attachment_url: reportUrl,
+          attachment_type: 'report',
+          status: 'pending',
+          scheduled_for: new Date().toISOString(),
+          last_error: 'Queued manually from Reports page',
+        });
+      }
+
+      if (queueRows.length === 0) {
+        alert(`No selected reports could be queued.\n\n${skipped.slice(0, 8).join('\n')}`);
+        return;
+      }
+
+      const { data: existingQueue, error: existingError } = await supabase
+        .from('notification_queue')
+        .select('order_id')
+        .eq('lab_id', userLabId)
+        .eq('recipient_type', 'patient')
+        .eq('trigger_type', 'report_ready')
+        .in('status', ['pending', 'scheduled', 'sending'])
+        .in('order_id', candidateOrderIds);
+
+      if (existingError) throw existingError;
+
+      const alreadyQueued = new Set((existingQueue || []).map((row: any) => row.order_id));
+      const rowsToInsert = queueRows.filter((row) => !alreadyQueued.has(row.order_id));
+
+      if (rowsToInsert.length === 0) {
+        alert('All valid selected reports are already in the WhatsApp queue.');
+        return;
+      }
+
+      const { error: insertError } = await supabase
+        .from('notification_queue')
+        .insert(rowsToInsert);
+
+      if (insertError) throw insertError;
+
+      clearSelection();
+
+      let processorMessage = 'Queue processor will send them in the background.';
+      try {
+        const { data: processorData, error: processorError } = await supabase.functions.invoke('process-notification-queue', {
+          body: { labId: userLabId, limit: Math.max(rowsToInsert.length, 10) },
+        });
+
+        if (processorError) {
+          processorMessage = 'Queued, but automatic processing did not start.';
+          console.warn('Notification queue processor error:', processorError);
+        } else if (processorData) {
+          processorMessage = `Queue processed: ${processorData.sent || 0} sent, ${processorData.failed || 0} failed.`;
+        }
+      } catch (processorError) {
+        processorMessage = 'Queued, but automatic processing did not start.';
+        console.warn('Notification queue processor exception:', processorError);
+      }
+
+      const duplicateCount = queueRows.length - rowsToInsert.length;
+      const parts = [`Queued ${rowsToInsert.length} report${rowsToInsert.length === 1 ? '' : 's'} for WhatsApp.`];
+      if (duplicateCount > 0) parts.push(`${duplicateCount} already queued.`);
+      if (skipped.length > 0) parts.push(`${skipped.length} skipped.`);
+      parts.push(processorMessage);
+      alert(parts.join(' '));
+    } catch (error) {
+      console.error('Failed to queue selected reports:', error);
+      alert('Failed to queue selected reports: ' + (error instanceof Error ? error.message : 'Unknown error'));
+    } finally {
+      setIsQueueingSelectedReports(false);
+    }
   };
 
   const generateReport = async () => {
@@ -1339,63 +1702,76 @@ const Reports: React.FC = () => {
       return;
     }
 
+    if (!userLabId) {
+      alert('Lab context not available. Please refresh and try again.');
+      return;
+    }
+
+    setIsGeneratingSelectedReports(true);
+
     try {
-      const userId = (await supabase.auth.getUser()).data.user?.id;
-      if (!userId) {
+      const { data: userData } = await supabase.auth.getUser();
+      const triggeredByUserId = userData.user?.id;
+      if (!triggeredByUserId) {
         alert('User not authenticated');
         return;
       }
 
-      let successCount = 0;
+      const selectedOrderIds = Array.from(selectedOrders);
+      let queuedCount = 0;
       let errorCount = 0;
+      const skipped: string[] = [];
 
-      for (const orderId of selectedOrders) {
+      for (const orderId of selectedOrderIds) {
         const group = orderGroups.find((g) => g.order_id === orderId);
         if (!group) continue;
 
+        if (!group.is_report_ready) {
+          skipped.push(`${group.patient_full_name}: panels not ready`);
+          errorCount++;
+          continue;
+        }
+
         try {
-          const { error } = await supabase.from('reports').upsert(
-            {
-              order_id: orderId,
-              patient_id: group.patient_id,
-              doctor: group.results[0]?.doctor || 'Unknown',
-              status: 'pending',
-              report_status: 'generating',
-              generated_date: new Date().toISOString(),
-              report_type: group.is_report_ready ? 'final' : 'draft',
-              notes: JSON.stringify({
-                test_names: group.test_names,
-                sample_ids: group.sample_ids,
-                verified_at: group.verified_at,
-                verified_by: group.verified_by,
-              }),
+          const { data, error } = await supabase.functions.invoke('generate-pdf-letterhead', {
+            body: {
+              orderId,
+              triggeredByUserId,
             },
-            {
-              onConflict: 'order_id',
-              ignoreDuplicates: false,
-            }
-          );
+          });
 
           if (error) {
             console.error(`Error generating report for order ${orderId}:`, error);
+            skipped.push(`${group.patient_full_name}: ${error.message || 'edge function failed'}`);
             errorCount++;
-          } else {
-            successCount++;
+            continue;
           }
+
+          if (data?.error || data?.success === false) {
+            const message = data?.message || data?.details || data?.error || 'generation rejected';
+            console.error(`Report generation rejected for order ${orderId}:`, data);
+            skipped.push(`${group.patient_full_name}: ${message}`);
+            errorCount++;
+            continue;
+          }
+
+          queuedCount++;
         } catch (e) {
           console.error(`Exception for order ${orderId}:`, e);
+          skipped.push(`${group.patient_full_name}: ${e instanceof Error ? e.message : 'unknown error'}`);
           errorCount++;
         }
       }
 
       clearSelection();
+      await pollPDFQueueStatus(selectedOrderIds, false);
 
-      if (successCount > 0 && errorCount === 0) {
-        alert(`Successfully generated ${successCount} report(s)`);
-      } else if (successCount > 0 && errorCount > 0) {
-        alert(`Generated ${successCount} report(s), ${errorCount} failed`);
+      if (queuedCount > 0 && errorCount === 0) {
+        alert(`Started PDF generation for ${queuedCount} report(s)`);
+      } else if (queuedCount > 0 && errorCount > 0) {
+        alert(`Started PDF generation for ${queuedCount} report(s), ${errorCount} skipped or failed.\n\n${skipped.slice(0, 8).join('\n')}`);
       } else {
-        alert('Failed to generate reports. Please try again.');
+        alert(`No reports were generated.\n\n${skipped.slice(0, 8).join('\n') || 'Please try again.'}`);
       }
 
       // Refresh the data to show updated report status
@@ -1403,6 +1779,8 @@ const Reports: React.FC = () => {
     } catch (e) {
       console.error('Error generating reports:', e);
       alert('An error occurred while generating reports');
+    } finally {
+      setIsGeneratingSelectedReports(false);
     }
   };
 
@@ -1623,20 +2001,20 @@ const Reports: React.FC = () => {
       );
     }
 
+    if (group.is_report_ready) {
+      return (
+        <span className="inline-flex items-center px-3 py-1 rounded-full text-xs font-medium bg-green-100 text-green-800 border border-green-200">
+          <CheckCircle className="w-3 h-3 mr-1" />
+          Fully Verified
+        </span>
+      );
+    }
+
     if (result?.has_draft_report) {
       return (
         <span className="inline-flex items-center px-3 py-1 rounded-full text-xs font-medium bg-blue-100 text-blue-800 border border-blue-200">
           <FileCheck className="w-3 h-3 mr-1" />
           Draft Available
-        </span>
-      );
-    }
-
-    if (group.is_report_ready) {
-      return (
-        <span className="inline-flex items-center px-3 py-1 rounded-full text-xs font-medium bg-amber-100 text-amber-800 border border-amber-200">
-          <Clock className="w-3 h-3 mr-1" />
-          Ready to Generate
         </span>
       );
     }
@@ -1789,7 +2167,7 @@ const Reports: React.FC = () => {
     <div className="space-y-4">
       {[...Array(5)].map((_, i) => (
         <div key={i} className="bg-white rounded-lg border border-gray-200 p-6 animate-pulse">
-          <div className="flex items-center justify-between">
+	              <div className="flex flex-wrap items-center justify-between gap-3">
             <div className="flex items-center space-x-4">
               <div className="w-4 h-4 bg-gray-200 rounded"></div>
               <div className="space-y-2">
@@ -1855,15 +2233,15 @@ const Reports: React.FC = () => {
             </div>
             <div className="text-center">
               <div className="text-2xl font-bold text-green-600">{statistics.readyForGeneration}</div>
-              <div className="text-xs text-gray-500">Ready</div>
+              <div className="text-xs text-gray-500">Fully Verified</div>
             </div>
             <div className="text-center">
               <div className="text-2xl font-bold text-amber-600">{statistics.pendingVerification}</div>
-              <div className="text-xs text-gray-500">Pending</div>
+              <div className="text-xs text-gray-500">Pending Verification</div>
             </div>
             <div className="text-center">
-              <div className="text-2xl font-bold text-gray-600">{statistics.completed}</div>
-              <div className="text-xs text-gray-500">Completed</div>
+              <div className="text-2xl font-bold text-gray-600">{statistics.finalReports}</div>
+              <div className="text-xs text-gray-500">Final Reports</div>
             </div>
           </div>
 
@@ -1918,23 +2296,31 @@ const Reports: React.FC = () => {
                 </button>
               )}
             </div>
-            <button
-              onClick={() => setShowFilters(!showFilters)}
-              className={`flex items-center space-x-2 px-4 py-3 border rounded-lg transition-colors ${showFilters ? 'bg-blue-50 border-blue-300 text-blue-700' : 'border-gray-300 text-gray-700 hover:bg-gray-50'
-                }`}
-            >
-              <Filter className="w-4 h-4" />
-              <span>Filters</span>
-              {(selectedStatus !== 'all' || selectedTestType !== 'all' || selectedDoctor !== 'all' || dateFilter !== 'today') && (
-                <span className="w-2 h-2 bg-blue-500 rounded-full"></span>
-              )}
-            </button>
-          </div>
+	            <button
+	              onClick={() => setShowFilters(!showFilters)}
+	              className={`flex items-center space-x-2 px-4 py-3 border rounded-lg transition-colors ${showFilters ? 'bg-blue-50 border-blue-300 text-blue-700' : 'border-gray-300 text-gray-700 hover:bg-gray-50'
+	                }`}
+	            >
+	              <Filter className="w-4 h-4" />
+	              <span>Filters</span>
+	              {(selectedStatus !== 'all' || selectedTestType !== 'all' || selectedDoctor !== 'all' || selectedAccount !== 'all' || dateFilter !== 'today') && (
+	                <span className="w-2 h-2 bg-blue-500 rounded-full"></span>
+	              )}
+	            </button>
+	            <button
+	              onClick={selectAllOrders}
+	              disabled={orderGroups.length === 0 || selectedOrders.size === orderGroups.length}
+	              className="flex items-center justify-center space-x-2 px-4 py-3 border border-blue-200 text-blue-700 rounded-lg hover:bg-blue-50 transition-colors disabled:cursor-not-allowed disabled:opacity-60"
+	            >
+	              <CheckCircle className="w-4 h-4" />
+	              <span>{selectedOrders.size === orderGroups.length && orderGroups.length > 0 ? 'All Selected' : 'Select All'}</span>
+	            </button>
+	          </div>
 
           {/* Advanced Filters */}
           {showFilters && (
             <div className="bg-gray-50 rounded-lg p-4 border border-gray-200">
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+	              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-2">Date Range</label>
                   <select
@@ -1958,9 +2344,9 @@ const Reports: React.FC = () => {
                     className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
                   >
                     <option value="all">All Statuses</option>
-                    <option value="ready">Ready to Generate</option>
+                    <option value="ready">Fully Verified</option>
                     <option value="pending">Pending Verification</option>
-                    <option value="processing">Processing</option>
+                    <option value="processing">Draft Available</option>
                   </select>
                 </div>
 
@@ -1978,8 +2364,8 @@ const Reports: React.FC = () => {
                   </select>
                 </div>
 
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-2">Doctor</label>
+	                <div>
+	                  <label className="block text-sm font-medium text-gray-700 mb-2">Doctor</label>
                   <select
                     value={selectedDoctor}
                     onChange={(e) => setSelectedDoctor(e.target.value)}
@@ -1989,9 +2375,42 @@ const Reports: React.FC = () => {
                     {uniqueDoctors.map(doctor => (
                       <option key={doctor} value={doctor}>{doctor}</option>
                     ))}
-                  </select>
-                </div>
-              </div>
+	                  </select>
+	                </div>
+
+	                <div>
+	                  <label className="block text-sm font-medium text-gray-700 mb-2">B2B Client</label>
+	                  <select
+	                    value={selectedAccount}
+	                    onChange={(e) => setSelectedAccount(e.target.value)}
+	                    className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+	                  >
+	                    <option value="all">All B2B Clients</option>
+	                    {uniqueAccounts.map(account => (
+	                      <option key={account} value={account}>{account}</option>
+	                    ))}
+	                  </select>
+	                </div>
+
+	                <div>
+	                  <label className="block text-sm font-medium text-gray-700 mb-2">Sort By</label>
+	                  <select
+	                    value={`${sortField}:${sortDirection}`}
+	                    onChange={(e) => {
+	                      const [field, direction] = e.target.value.split(':') as [SortField, SortDirection];
+	                      setSortField(field);
+	                      setSortDirection(direction);
+	                    }}
+	                    className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+	                  >
+	                    <option value="sample_id:desc">Sample ID newest first</option>
+	                    <option value="sample_id:asc">Sample ID oldest first</option>
+	                    <option value="verified_at:desc">Verified newest first</option>
+	                    <option value="order_date:desc">Order date newest first</option>
+	                    <option value="patient_name:asc">Patient A-Z</option>
+	                  </select>
+	                </div>
+	              </div>
 
               <div className="flex items-center justify-between mt-4 pt-4 border-t border-gray-200">
                 <div className="text-sm text-gray-600">
@@ -2018,7 +2437,7 @@ const Reports: React.FC = () => {
           {/* Selection Actions */}
           {selectedOrders.size > 0 && (
             <div className="bg-blue-50 rounded-lg p-4 border border-blue-200">
-              <div className="flex items-center justify-between">
+              <div className="flex flex-wrap items-center justify-between gap-3">
                 <div className="flex items-center space-x-3">
                   <span className="text-sm font-medium text-blue-900">
                     {selectedOrders.size} order{selectedOrders.size !== 1 ? 's' : ''} selected
@@ -2030,13 +2449,56 @@ const Reports: React.FC = () => {
                     Clear selection
                   </button>
                 </div>
-                <button
-                  onClick={generateReport}
-                  className="flex items-center space-x-2 px-4 py-2 bg-green-600 text-white rounded-md hover:bg-green-700 transition-colors"
-                >
-                  <FileText className="w-4 h-4" />
-                  <span>Generate Reports</span>
-                </button>
+                <div className="flex flex-wrap items-center justify-end gap-2">
+                  <button
+                    onClick={queueSelectedReportsForWhatsApp}
+                    disabled={isQueueingSelectedReports}
+                    className={`flex items-center space-x-2 px-4 py-2 rounded-md transition-colors ${
+                      isQueueingSelectedReports
+                        ? 'bg-emerald-300 text-white cursor-not-allowed'
+                        : 'bg-emerald-600 text-white hover:bg-emerald-700'
+                    }`}
+                  >
+                    {isQueueingSelectedReports ? (
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                    ) : (
+                      <Send className="w-4 h-4" />
+                    )}
+                    <span>{isQueueingSelectedReports ? 'Queueing...' : 'Queue WhatsApp'}</span>
+                  </button>
+                  <button
+                    onClick={handleDeleteSelectedReports}
+                    disabled={isDeletingSelectedReports}
+                    className={`flex items-center space-x-2 px-4 py-2 rounded-md transition-colors ${
+                      isDeletingSelectedReports
+                        ? 'bg-red-300 text-white cursor-not-allowed'
+                        : 'bg-red-600 text-white hover:bg-red-700'
+                    }`}
+                  >
+                    {isDeletingSelectedReports ? (
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                    ) : (
+                      <Trash2 className="w-4 h-4" />
+                    )}
+                    <span>{isDeletingSelectedReports ? 'Deleting...' : 'Delete Generated Report'}</span>
+                  </button>
+                  <button
+                    onClick={generateReport}
+                    disabled={isGeneratingSelectedReports}
+                    className={`flex items-center space-x-2 px-4 py-2 rounded-md transition-colors ${
+                      isGeneratingSelectedReports
+                        ? 'bg-green-300 text-white cursor-not-allowed'
+                        : 'bg-green-600 text-white hover:bg-green-700'
+                    }`}
+                  >
+                    {isGeneratingSelectedReports ? (
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                    ) : (
+                      <FileText className="w-4 h-4" />
+                    )}
+                    <span>{isGeneratingSelectedReports ? 'Generating...' : 'Generate Reports'}</span>
+                  </button>
+                </div>
               </div>
             </div>
           )}
@@ -2066,7 +2528,7 @@ const Reports: React.FC = () => {
               </div>
               <div className="ml-4">
                 <div className="text-2xl font-bold text-gray-900">{statistics.readyForGeneration}</div>
-                <div className="text-sm text-gray-600">Ready for Reports</div>
+                <div className="text-sm text-gray-600">Fully Verified</div>
               </div>
             </div>
           </div>
@@ -2089,8 +2551,8 @@ const Reports: React.FC = () => {
                 <TrendingUp className="h-6 w-6 text-purple-600" />
               </div>
               <div className="ml-4">
-                <div className="text-2xl font-bold text-gray-900">{statistics.completed}</div>
-                <div className="text-sm text-gray-600">Completed</div>
+                <div className="text-2xl font-bold text-gray-900">{statistics.finalReports}</div>
+                <div className="text-sm text-gray-600">Final Reports</div>
               </div>
             </div>
           </div>
@@ -2103,7 +2565,7 @@ const Reports: React.FC = () => {
               <div>
                 <h2 className="text-xl font-semibold text-gray-900">Approved Results</h2>
                 <p className="text-sm text-gray-600 mt-1">
-                  {orderGroups.length} orders ready for report generation
+                  {orderGroups.length} approved result orders
                 </p>
               </div>
 
@@ -2246,6 +2708,20 @@ const Reports: React.FC = () => {
 
                       {/* Action Buttons Row */}
                       <div className="mt-2 ml-12 flex flex-wrap items-center gap-1.5">
+                        {/* View & Design */}
+                        <button
+                          className="flex items-center space-x-1 px-2 py-1 text-xs bg-blue-600 text-white rounded hover:bg-blue-700 transition-colors"
+                          onClick={() => handleView(group.order_id)}
+                          title="Quick preview"
+                        >
+                          <Eye className="w-3.5 h-3.5" />
+                          <span>View</span>
+                        </button>
+
+                        {/* Design button hidden — not functional yet */}
+
+                        <span className="w-px h-4 bg-gray-300" />
+
                         {(group.is_report_ready || (group.results[0] as ApprovedResult)?.has_final_report || (group.results[0] as ApprovedResult)?.has_draft_report) ? (
                           <>
                             {!(group.results[0] as ApprovedResult)?.has_final_report ? (
@@ -2308,75 +2784,65 @@ const Reports: React.FC = () => {
                                   );
                                 })()}
                                 <button
-                                  className="flex items-center gap-1 px-2 py-1 text-xs bg-gray-200 text-gray-700 rounded hover:bg-gray-300 transition-colors"
+                                  className="flex items-center px-1.5 py-1 text-xs bg-gray-200 text-gray-700 rounded hover:bg-gray-300 transition-colors"
                                   onClick={() => handleOpenPDFSettings(group.order_id)}
-                                  title="Print Settings"
+                                  title="PDF Settings"
                                 >
                                   <Settings className="w-3.5 h-3.5" />
-                                  <span>Print Settings</span>
                                 </button>
-                                {(() => {
-                                  const result = group.results[0] as ApprovedResult;
-                                  const reportUrl = getSendableReportUrl(result);
-                                  if (!reportUrl) return null;
-                                  return (
-                                    <>
-                                      <QuickSendReport
-                                        reportUrl={reportUrl}
-                                        reportName={`${group.patient_full_name} - ${(group.test_names || []).join(', ')}`}
-                                        patientName={group.patient_full_name}
-                                        patientPhone={result?.phone}
-                                        testName={(group.test_names || []).join(', ')}
-                                        onSent={(sendResult) => alert(sendResult.success ? 'Report sent via WhatsApp!' : 'Failed: ' + sendResult.message)}
-                                      />
-                                      <button
-                                        onClick={() => handleOpenSendDoctor(group)}
-                                        className="flex items-center px-1.5 py-1 text-xs bg-green-100 text-green-700 rounded hover:bg-green-200 transition-colors"
-                                        title="Send to Doctor"
-                                      >
-                                        <User className="w-3.5 h-3.5" />
-                                      </button>
-                                    </>
-                                  );
-                                })()}
                               </>
                             ) : (
                               /* Already generated */
                               <>
                                 <button
-                                  className={`flex items-center space-x-1 px-2 py-1 text-xs rounded transition-colors ${isTempPdfUrl((group.results[0] as ApprovedResult)?.final_report?.pdf_url) ? 'bg-amber-500 text-white hover:bg-amber-600' : 'bg-green-600 text-white hover:bg-green-700'}`}
+                                  className={`flex items-center space-x-1 px-2 py-1 text-xs rounded transition-colors ${isTempPdfUrl((group.results[0] as ApprovedResult)?.final_report?.pdf_url) ? 'bg-amber-500 text-white hover:bg-amber-600' : 'bg-green-600 text-white hover:bg-green-700'} ${isPdfGenerating(group.order_id, 'ecopy') ? 'opacity-60 cursor-not-allowed' : ''}`}
                                   onClick={() => {
                                     const finalReport = (group.results[0] as ApprovedResult)?.final_report;
-                                    if (finalReport?.pdf_url && !isTempPdfUrl(finalReport.pdf_url)) window.open(finalReport.pdf_url, '_blank');
-                                    else void handleLetterheadGeneration(group.order_id);
+	                                    if (finalReport?.pdf_url && !isTempPdfUrl(finalReport.pdf_url)) { window.open(finalReport.pdf_url, '_blank'); return; }
+	                                    const compactUrl = (group.results[0] as ApprovedResult)?.compact_ecopy_url || finalReport?.compact_ecopy_url || finalReport?.print_pdf_url;
+	                                    if (compactUrl) { window.open(compactUrl, '_blank'); return; }
+	                                    void handleLetterheadGeneration(group.order_id, 'standard', 'ecopy');
                                   }}
-                                  title={isTempPdfUrl((group.results[0] as ApprovedResult)?.final_report?.pdf_url) ? 'PDF link expired — click to regenerate' : 'Download final report'}
+                                  disabled={isPdfGenerating(group.order_id, 'ecopy')}
+                                  title={isPdfGenerating(group.order_id, 'ecopy') ? 'Generating eCopy…' : isTempPdfUrl((group.results[0] as ApprovedResult)?.final_report?.pdf_url) ? 'PDF link expired — click to regenerate' : 'Download final report'}
                                 >
-                                  <Download className="w-3.5 h-3.5" />
-                                  <span>{isTempPdfUrl((group.results[0] as ApprovedResult)?.final_report?.pdf_url) ? 'Re-generate' : 'Download'}</span>
+                                  {isPdfGenerating(group.order_id, 'ecopy') ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Download className="w-3.5 h-3.5" />}
+                                  <span>{isPdfGenerating(group.order_id, 'ecopy') ? 'Gen…' : isTempPdfUrl((group.results[0] as ApprovedResult)?.final_report?.pdf_url) ? 'Re-gen' : 'Download'}</span>
                                 </button>
 
                                 <button
-                                  className={`flex items-center px-1.5 py-1 text-xs rounded transition-colors ${(group.results[0] as ApprovedResult)?.final_report?.print_pdf_url ? 'bg-emerald-600 text-white hover:bg-emerald-700' : 'bg-gray-200 text-gray-700 hover:bg-gray-300'}`}
-                                  onClick={() => { void handleLocalCompactPrint(group.order_id); }}
-                                  onContextMenu={(event) => {
-                                    event.preventDefault();
-                                    if (window.confirm('Open compact print settings for this order?')) {
-                                      void handleOpenPDFSettings(group.order_id);
-                                    }
+                                  className={`flex items-center px-1.5 py-1 text-xs rounded transition-colors ${(group.results[0] as ApprovedResult)?.final_report?.print_pdf_url ? 'bg-emerald-600 text-white hover:bg-emerald-700' : 'bg-gray-200 text-gray-700 hover:bg-gray-300'} ${isPdfGenerating(group.order_id, 'compact-print') ? 'opacity-60 cursor-not-allowed' : ''}`}
+                                  onClick={() => {
+                                    const printUrl = (group.results[0] as ApprovedResult)?.final_report?.print_pdf_url;
+                                    if (printUrl) { window.open(printUrl, '_blank'); return; }
+                                    void handleLetterheadGeneration(group.order_id, 'compact', 'compact-print');
                                   }}
-                                  title="Quick compact print PDF"
+                                  onContextMenu={(e) => { e.preventDefault(); if (window.confirm('Regenerate compact print PDF?')) void handleLetterheadGeneration(group.order_id, 'compact', 'compact-print'); }}
+                                  disabled={isPdfGenerating(group.order_id, 'compact-print')}
+                                  title={isPdfGenerating(group.order_id, 'compact-print') ? 'Generating compact print…' : (group.results[0] as ApprovedResult)?.final_report?.print_pdf_url ? 'Open compact print PDF. Right-click to regenerate.' : 'Generate compact print PDF'}
                                 >
-                                  <Printer className="w-3.5 h-3.5" />
+                                  {isPdfGenerating(group.order_id, 'compact-print') ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Printer className="w-3.5 h-3.5" />}
+                                </button>
+                                <button
+                                  className={`flex items-center px-1.5 py-1 text-xs rounded transition-colors ${(group.results[0] as ApprovedResult)?.compact_ecopy_url ? 'bg-indigo-600 text-white hover:bg-indigo-700' : 'bg-gray-200 text-gray-700 hover:bg-gray-300'} ${isPdfGenerating(group.order_id, 'compact-ecopy') ? 'opacity-60 cursor-not-allowed' : ''}`}
+                                  onClick={() => {
+                                    const ecopyUrl = (group.results[0] as ApprovedResult)?.compact_ecopy_url;
+                                    if (ecopyUrl) { window.open(ecopyUrl, '_blank'); return; }
+                                    void handleLetterheadGeneration(group.order_id, 'compact', 'compact-ecopy');
+                                  }}
+                                  onContextMenu={(e) => { e.preventDefault(); if (window.confirm('Regenerate compact eCopy PDF?')) void handleLetterheadGeneration(group.order_id, 'compact', 'compact-ecopy'); }}
+                                  disabled={isPdfGenerating(group.order_id, 'compact-ecopy')}
+                                  title={isPdfGenerating(group.order_id, 'compact-ecopy') ? 'Generating compact eCopy…' : (group.results[0] as ApprovedResult)?.compact_ecopy_url ? 'Open compact eCopy PDF. Right-click to regenerate.' : 'Generate compact eCopy PDF'}
+                                >
+                                  {isPdfGenerating(group.order_id, 'compact-ecopy') ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <FileText className="w-3.5 h-3.5" />}
                                 </button>
 
                                 <button
-                                  className="flex items-center gap-1 px-2 py-1 text-xs bg-gray-200 text-gray-700 rounded hover:bg-gray-300 transition-colors"
+                                  className="flex items-center px-1.5 py-1 text-xs bg-gray-200 text-gray-700 rounded hover:bg-gray-300 transition-colors"
                                   onClick={() => handleOpenPDFSettings(group.order_id)}
-                                  title="Print Settings"
+                                  title="Settings"
                                 >
                                   <Settings className="w-3.5 h-3.5" />
-                                  <span>Print Settings</span>
                                 </button>
 
                                 <span className="w-px h-4 bg-gray-300" />
@@ -2425,7 +2891,7 @@ const Reports: React.FC = () => {
                                 {/* WhatsApp & Doctor */}
                                 {(() => {
                                   const result = group.results[0] as ApprovedResult;
-                                  const reportUrl = result?.final_report?.pdf_url;
+	                                  const reportUrl = result?.final_report?.pdf_url || result?.compact_ecopy_url || result?.final_report?.compact_ecopy_url;
                                   const customDomainReportUrl = reportUrl ? convertToCustomDomain(reportUrl) : reportUrl;
                                   if (result?.has_final_report || result?.final_report) {
                                     return (
@@ -2560,6 +3026,14 @@ const Reports: React.FC = () => {
                         )}
 
                         <div className="flex space-x-2 mt-4 pt-4 border-t border-gray-200">
+                          <button
+                            className="flex-1 flex items-center justify-center space-x-1 px-3 py-2 text-sm bg-blue-600 text-white rounded-md hover:bg-blue-700 transition-colors"
+                            onClick={() => handleView(group.order_id)}
+                          >
+                            <Eye className="w-4 h-4" />
+                            <span>View</span>
+                          </button>
+
                           {(group.is_report_ready || (group.results[0] as ApprovedResult)?.has_final_report || (group.results[0] as ApprovedResult)?.has_draft_report) ? (
                             <>
                               {!(group.results[0] as ApprovedResult)?.has_final_report ? (
@@ -2669,38 +3143,6 @@ const Reports: React.FC = () => {
                                   >
                                     <Settings className="w-4 h-4" />
                                   </button>
-                                  {(() => {
-                                    const result = group.results[0] as ApprovedResult;
-                                    const reportUrl = getSendableReportUrl(result);
-                                    if (!reportUrl) return null;
-                                    return (
-                                      <>
-                                        <div className="flex-1">
-                                          <QuickSendReport
-                                            reportUrl={reportUrl}
-                                            reportName={`${group.patient_full_name} - ${(group.test_names || []).join(', ')}`}
-                                            patientName={group.patient_full_name}
-                                            patientPhone={result?.phone}
-                                            testName={(group.test_names || []).join(', ')}
-                                            onSent={(sendResult) => {
-                                              if (sendResult.success) {
-                                                alert('Report sent successfully via WhatsApp!');
-                                              } else {
-                                                alert('Failed to send report: ' + sendResult.message);
-                                              }
-                                            }}
-                                          />
-                                        </div>
-                                        <button
-                                          onClick={() => handleOpenSendDoctor(group)}
-                                          className="flex items-center justify-center px-3 py-2 text-sm bg-green-100 text-green-700 rounded-md hover:bg-green-200 transition-colors"
-                                          title="Send to Doctor"
-                                        >
-                                          <User className="w-4 h-4" />
-                                        </button>
-                                      </>
-                                    );
-                                  })()}
                                 </>
                               ) : (
                                 <>
@@ -2708,11 +3150,13 @@ const Reports: React.FC = () => {
                                     className={`flex-1 flex items-center justify-center space-x-1 px-3 py-2 text-sm rounded-md transition-colors ${isTempPdfUrl((group.results[0] as ApprovedResult)?.final_report?.pdf_url) ? 'bg-amber-500 text-white hover:bg-amber-600' : 'bg-green-600 text-white hover:bg-green-700'}`}
                                     onClick={() => {
                                       const finalReport = (group.results[0] as ApprovedResult)?.final_report;
-                                      if (finalReport?.pdf_url && !isTempPdfUrl(finalReport.pdf_url)) {
-                                        window.open(finalReport.pdf_url, '_blank');
-                                      } else {
-                                        void handleLetterheadGeneration(group.order_id);
-                                      }
+	                                      if (finalReport?.pdf_url && !isTempPdfUrl(finalReport.pdf_url)) {
+	                                        window.open(finalReport.pdf_url, '_blank');
+	                                      } else if ((group.results[0] as ApprovedResult)?.compact_ecopy_url || finalReport?.compact_ecopy_url || finalReport?.print_pdf_url) {
+	                                        window.open((group.results[0] as ApprovedResult)?.compact_ecopy_url || finalReport?.compact_ecopy_url || finalReport?.print_pdf_url, '_blank');
+	                                      } else {
+	                                        void handleLetterheadGeneration(group.order_id);
+	                                      }
                                     }}
                                     title={isTempPdfUrl((group.results[0] as ApprovedResult)?.final_report?.pdf_url) ? 'PDF link expired — click to regenerate' : 'Download final report'}
                                   >
@@ -2793,29 +3237,37 @@ const Reports: React.FC = () => {
                                   })()}
 
                                   <button
-                                    className="flex items-center justify-center gap-1 px-3 py-2 text-sm bg-gray-600 text-white rounded-md hover:bg-gray-700 transition-colors"
+                                    className="flex items-center justify-center px-3 py-2 text-sm bg-gray-600 text-white rounded-md hover:bg-gray-700 transition-colors"
                                     onClick={() => handleOpenPDFSettings(group.order_id)}
-                                    title="Print Settings"
+                                    title="PDF Settings"
                                   >
                                     <Settings className="w-4 h-4" />
-                                    <span className="hidden sm:inline">Print Settings</span>
                                   </button>
                                   <button
-                                    className={`flex-1 flex items-center justify-center space-x-1 px-3 py-2 text-sm rounded-md transition-colors ${(group.results[0] as ApprovedResult)?.final_report?.print_pdf_url
-                                      ? 'bg-emerald-600 text-white hover:bg-emerald-700'
-                                      : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
-                                      }`}
-                                    onClick={() => { void handleLocalCompactPrint(group.order_id); }}
-                                    onContextMenu={(event) => {
-                                      event.preventDefault();
-                                      if (window.confirm('Open compact print settings for this order?')) {
-                                        void handleOpenPDFSettings(group.order_id);
-                                      }
+                                    className={`flex-1 flex items-center justify-center space-x-1 px-3 py-2 text-sm rounded-md transition-colors ${(group.results[0] as ApprovedResult)?.final_report?.print_pdf_url ? 'bg-emerald-600 text-white hover:bg-emerald-700' : 'bg-gray-200 text-gray-700 hover:bg-gray-300'}`}
+                                    onClick={() => {
+                                      const printUrl = (group.results[0] as ApprovedResult)?.final_report?.print_pdf_url;
+                                      if (printUrl) { window.open(printUrl, '_blank'); return; }
+                                      void handleLetterheadGeneration(group.order_id, 'compact');
                                     }}
-                                    title="Quick compact print PDF"
+                                    onContextMenu={(e) => { e.preventDefault(); if (window.confirm('Regenerate compact print PDF?')) void handleLetterheadGeneration(group.order_id, 'compact'); }}
+                                    title={(group.results[0] as ApprovedResult)?.final_report?.print_pdf_url ? 'Open compact print PDF. Right-click to regenerate.' : 'Generate compact print PDF'}
                                   >
                                     <Printer className="w-4 h-4" />
                                     <span>Print</span>
+                                  </button>
+                                  <button
+                                    className={`flex-1 flex items-center justify-center space-x-1 px-3 py-2 text-sm rounded-md transition-colors ${(group.results[0] as ApprovedResult)?.compact_ecopy_url ? 'bg-indigo-600 text-white hover:bg-indigo-700' : 'bg-gray-200 text-gray-700 hover:bg-gray-300'}`}
+                                    onClick={() => {
+                                      const ecopyUrl = (group.results[0] as ApprovedResult)?.compact_ecopy_url;
+                                      if (ecopyUrl) { window.open(ecopyUrl, '_blank'); return; }
+                                      void handleLetterheadGeneration(group.order_id, 'compact');
+                                    }}
+                                    onContextMenu={(e) => { e.preventDefault(); if (window.confirm('Regenerate compact eCopy PDF?')) void handleLetterheadGeneration(group.order_id, 'compact'); }}
+                                    title={(group.results[0] as ApprovedResult)?.compact_ecopy_url ? 'Open compact eCopy. Right-click to regenerate.' : 'Generate compact eCopy PDF'}
+                                  >
+                                    <FileText className="w-4 h-4" />
+                                    <span>eCopy</span>
                                   </button>
 
                                   {/* WhatsApp Send Button for Mobile */}
@@ -3009,9 +3461,6 @@ const Reports: React.FC = () => {
                     Compact
                   </button>
                 </div>
-                  <p className="mt-2 text-xs text-gray-500">
-                    `Compact` now uses the same server-side letterhead/template print pipeline, but applies your compact page planner for paper-saving output.
-                  </p>
               </div>
 
               <div>
@@ -3033,7 +3482,7 @@ const Reports: React.FC = () => {
                         <div>
                           <div className="text-sm font-medium text-gray-900">{index + 1}. {group.testName}</div>
                           <div className="text-xs text-gray-500">
-                            {group.reportPriority !== null ? `Global priority ${group.reportPriority}` : 'No global priority'}
+                            {getActiveReportPriority(group.reportPriority) !== Number.MAX_SAFE_INTEGER ? `Global priority ${group.reportPriority}` : 'No global priority'}
                           </div>
                         </div>
                         <div className="flex items-center gap-2">
@@ -3060,6 +3509,7 @@ const Reports: React.FC = () => {
                 )}
               </div>
 
+              {/* Compact Page Planner — shown only when compact mode is selected */}
               {orderSettingsLayoutMode === 'compact' && (
                 <div className="space-y-4 rounded-xl border border-emerald-200 bg-emerald-50/50 p-4">
                   <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
@@ -3077,7 +3527,7 @@ const Reports: React.FC = () => {
                           min={1}
                           max={20}
                           value={orderSettingsMaxClubbedAnalytes}
-                          onChange={(event) => setOrderSettingsMaxClubbedAnalytes(Math.max(1, Number(event.target.value) || 5))}
+                          onChange={(e) => setOrderSettingsMaxClubbedAnalytes(Math.max(1, Number(e.target.value) || 5))}
                           className="w-24 rounded-md border border-gray-300 px-3 py-2 text-sm"
                           disabled={orderSettingsSaving}
                         />
@@ -3093,58 +3543,47 @@ const Reports: React.FC = () => {
                     </div>
                   </div>
 
-                  <div className="space-y-2">
-                    <div className="grid gap-2 sm:grid-cols-2">
-                      {Array.from(new Set(orderSettingsGroups.map((group) => group.pageNumber))).sort((a, b) => a - b).map((pageNumber) => {
-                        const pageGroups = orderSettingsGroups.filter((group) => group.pageNumber === pageNumber);
-                        const totalAnalytes = pageGroups.reduce((sum, group) => sum + (group.analyteCount || 0), 0);
-                        return (
-                          <div key={`summary-${pageNumber}`} className="rounded-lg border border-emerald-100 bg-white px-3 py-3">
-                            <div className="flex items-center justify-between">
-                              <div className="text-sm font-semibold text-gray-900">Page {pageNumber}</div>
-                              <div className="text-[11px] font-medium text-emerald-700">
-                                {totalAnalytes} analyte{totalAnalytes === 1 ? '' : 's'}
-                              </div>
-                            </div>
-                            <div className="mt-2 text-xs text-gray-600">
-                              {pageGroups.map((group) => group.testName).join(', ')}
-                            </div>
+                  {/* Page summary cards */}
+                  <div className="grid gap-2 sm:grid-cols-2">
+                    {Array.from(new Set(orderSettingsGroups.map((g) => g.pageNumber))).sort((a, b) => a - b).map((pageNumber) => {
+                      const pageGroups = orderSettingsGroups.filter((g) => g.pageNumber === pageNumber);
+                      const totalAnalytes = pageGroups.reduce((sum, g) => sum + (g.analyteCount || 0), 0);
+                      return (
+                        <div key={`summary-${pageNumber}`} className="rounded-lg border border-emerald-100 bg-white px-3 py-3">
+                          <div className="flex items-center justify-between">
+                            <div className="text-sm font-semibold text-gray-900">Page {pageNumber}</div>
+                            <div className="text-[11px] font-medium text-emerald-700">{totalAnalytes} analyte{totalAnalytes === 1 ? '' : 's'}</div>
                           </div>
-                        );
-                      })}
-                    </div>
+                          <div className="mt-2 text-xs text-gray-600">{pageGroups.map((g) => g.testName).join(', ')}</div>
+                        </div>
+                      );
+                    })}
+                  </div>
 
+                  {/* Per-group controls */}
+                  <div className="space-y-2">
                     {orderSettingsGroups.map((group) => {
-                      const pageOptions = Array.from({ length: Math.max(6, orderSettingsGroups.length) }, (_, index) => index + 1);
+                      const pageOptions = Array.from({ length: Math.max(6, orderSettingsGroups.length) }, (_, i) => i + 1);
                       const suggestion = getCompactPlannerSuggestion(
                         orderSettingsGroups,
                         group.testGroupId,
-                        Object.fromEntries(orderSettingsGroups.map((item) => [item.testGroupId, item.pageNumber])),
+                        Object.fromEntries(orderSettingsGroups.map((g) => [g.testGroupId, g.pageNumber])),
                         orderSettingsMaxClubbedAnalytes,
                       );
                       const suggestionTone =
-                        suggestion.kind === 'standalone-large'
-                          ? 'bg-amber-100 text-amber-800'
-                          : suggestion.kind === 'clubbed'
-                            ? 'bg-emerald-100 text-emerald-800'
-                            : suggestion.kind === 'manual-shared'
-                              ? 'bg-violet-100 text-violet-800'
+                        suggestion.kind === 'standalone-large' ? 'bg-amber-100 text-amber-800'
+                          : suggestion.kind === 'clubbed' ? 'bg-emerald-100 text-emerald-800'
+                            : suggestion.kind === 'manual-shared' ? 'bg-violet-100 text-violet-800'
                               : 'bg-sky-100 text-sky-800';
                       return (
                         <div key={`${group.testGroupId}-page`} className="flex flex-col gap-2 rounded-lg border border-emerald-100 bg-white px-3 py-3 sm:flex-row sm:items-center sm:justify-between">
                           <div>
                             <div className="flex flex-wrap items-center gap-2">
                               <div className="text-sm font-medium text-gray-900">{group.testName}</div>
-                              <span className={`rounded-full px-2 py-0.5 text-[11px] font-semibold ${suggestionTone}`}>
-                                {suggestion.label}
-                              </span>
+                              <span className={`rounded-full px-2 py-0.5 text-[11px] font-semibold ${suggestionTone}`}>{suggestion.label}</span>
                             </div>
-                            <div className="text-xs text-gray-500 mt-1">
-                              {group.analyteCount} analyte{group.analyteCount === 1 ? '' : 's'}
-                            </div>
-                            <div className="text-[11px] text-gray-500 mt-1">
-                              {suggestion.description}
-                            </div>
+                            <div className="text-xs text-gray-500 mt-1">{group.analyteCount} analyte{group.analyteCount === 1 ? '' : 's'}</div>
+                            <div className="text-[11px] text-gray-500 mt-1">{suggestion.description}</div>
                           </div>
                           <div className="flex flex-wrap items-center gap-2">
                             <button
@@ -3166,14 +3605,12 @@ const Reports: React.FC = () => {
                             <span className="text-xs font-medium text-gray-600">Print on page</span>
                             <select
                               value={group.pageNumber}
-                              onChange={(event) => setOrderSettingsGroupPage(group.testGroupId, Number(event.target.value))}
+                              onChange={(e) => setOrderSettingsGroupPage(group.testGroupId, Number(e.target.value))}
                               className="rounded-md border border-gray-300 px-3 py-2 text-sm"
                               disabled={orderSettingsSaving}
                             >
                               {pageOptions.map((pageNo) => (
-                                <option key={pageNo} value={pageNo}>
-                                  Page {pageNo}
-                                </option>
+                                <option key={pageNo} value={pageNo}>Page {pageNo}</option>
                               ))}
                             </select>
                           </div>
@@ -3219,14 +3656,58 @@ const Reports: React.FC = () => {
                 >
                   Close
                 </button>
-                <button
-                  type="button"
-                  className="px-4 py-2 text-sm rounded-md bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-50"
-                  onClick={handleRegenerateFromOrderSettings}
-                  disabled={orderSettingsLoading || orderSettingsSaving || !orderSettingsOrderId}
-                >
-                  {orderSettingsSaving ? 'Working...' : orderSettingsLayoutMode === 'compact' ? 'Open Quick Compact Print' : 'Regenerate Standard Print'}
-                </button>
+                {orderSettingsLayoutMode === 'compact' && (
+                  <div className="flex items-center rounded-md overflow-hidden border border-indigo-300">
+                    <button
+                      type="button"
+                      className="px-4 py-2 text-sm bg-indigo-50 text-indigo-700 hover:bg-indigo-100 disabled:opacity-50"
+                      onClick={() => {
+                        if (orderSettingsExistingEcopyUrl) window.open(orderSettingsExistingEcopyUrl, '_blank');
+                        else void handleRegenerateEcopyFromOrderSettings();
+                      }}
+                      disabled={orderSettingsLoading || orderSettingsSaving || !orderSettingsOrderId}
+                    >
+                      {orderSettingsSaving ? 'Working...' : orderSettingsExistingEcopyUrl ? 'Open Compact eCopy' : 'Generate Compact eCopy'}
+                    </button>
+                    {orderSettingsExistingEcopyUrl && (
+                      <button
+                        type="button"
+                        className="px-2 py-2 text-sm bg-indigo-100 text-indigo-700 hover:bg-indigo-200 border-l border-indigo-300 disabled:opacity-50"
+                        onClick={() => { if (window.confirm('Regenerate compact eCopy PDF?')) void handleRegenerateEcopyFromOrderSettings(); }}
+                        disabled={orderSettingsSaving}
+                        title="Force regenerate"
+                      >
+                        ↺
+                      </button>
+                    )}
+                  </div>
+                )}
+                <div className="flex items-center rounded-md overflow-hidden border border-emerald-600">
+                  <button
+                    type="button"
+                    className="px-4 py-2 text-sm bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-50"
+                    onClick={() => {
+                      if (orderSettingsExistingPrintUrl) window.open(orderSettingsExistingPrintUrl, '_blank');
+                      else void handleRegenerateFromOrderSettings();
+                    }}
+                    disabled={orderSettingsLoading || orderSettingsSaving || !orderSettingsOrderId}
+                  >
+                    {orderSettingsSaving ? 'Working...' : orderSettingsExistingPrintUrl
+                      ? `Open ${orderSettingsLayoutMode === 'compact' ? 'Compact' : 'Standard'} Print`
+                      : `Generate ${orderSettingsLayoutMode === 'compact' ? 'Compact' : 'Standard'} Print`}
+                  </button>
+                  {orderSettingsExistingPrintUrl && (
+                    <button
+                      type="button"
+                      className="px-2 py-2 text-sm bg-emerald-700 text-white hover:bg-emerald-800 border-l border-emerald-500 disabled:opacity-50"
+                      onClick={() => { if (window.confirm('Force regenerate print PDF?')) void handleRegenerateFromOrderSettings(); }}
+                      disabled={orderSettingsSaving}
+                      title="Force regenerate"
+                    >
+                      ↺
+                    </button>
+                  )}
+                </div>
               </div>
             </div>
           </div>
@@ -3242,11 +3723,37 @@ const Reports: React.FC = () => {
         labId={userLabId ?? undefined}
       />
 
+      {/* Report Design Studio */}
+      {reportStudioOrderId && (
+        <ReportDesignStudio
+          orderId={reportStudioOrderId}
+          onClose={() => setReportStudioOrderId(null)}
+          onSuccess={(url) => {
+            alert('Report Generated Successfully!');
+            loadApprovedResults(); // Refresh list to show new report
+            if (url) window.open(url, '_blank'); // Open the generated PDF
+          }}
+        />
+      )}
+
       {/* Send Report Modal */}
       {sendReportModalData && (
         <SendReportModal
           {...sendReportModalData}
           onClose={() => setSendReportModalData(null)}
+        />
+      )}
+
+      {/* Report Preview Modal */}
+      {viewingOrder && (
+        <ReportPreviewModal
+          isOpen={!!viewingOrder}
+          onClose={() => setViewingOrder(null)}
+          orderId={viewingOrder.order_id}
+          patientName={viewingOrder.patient_full_name}
+          patientPhone={viewingOrder.results[0]?.phone}
+          testNames={Array.isArray(viewingOrder.test_names) ? viewingOrder.test_names : []}
+          doctorName={viewingOrder.results[0]?.doctor}
         />
       )}
 

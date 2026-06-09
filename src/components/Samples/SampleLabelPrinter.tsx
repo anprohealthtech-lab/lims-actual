@@ -6,6 +6,8 @@ import { Printer, Download, Loader } from 'lucide-react';
 import { Sample } from '../../services/sampleService';
 import { generateBarcodeSync } from '../../utils/barcodeGenerator';
 import { generateSampleQRCode } from '../../utils/qrCodeGenerator';
+import { useQZTray } from '../../contexts/QZTrayContext';
+import * as qzTrayService from '../../utils/qzTrayService';
 import JsBarcode from 'jsbarcode';
 
 interface SampleLabelPrinterProps {
@@ -22,7 +24,9 @@ export const SampleLabelPrinter: React.FC<SampleLabelPrinterProps> = ({
   const [barcodeDataUrl, setBarcodeDataUrl] = useState<string>('');
   const [qrCodeDataUrl, setQrCodeDataUrl] = useState<string>('');
   const [loading, setLoading] = useState(true);
+  const [printing, setPrinting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const { settings, connect } = useQZTray();
 
   useEffect(() => {
     generateCodes();
@@ -61,99 +65,54 @@ export const SampleLabelPrinter: React.FC<SampleLabelPrinterProps> = ({
     }
   };
 
-  const handlePrint = () => {
-    const printWindow = window.open('', '_blank', 'width=400,height=300');
+  const handlePrint = async () => {
+    console.debug('[PrintBridge][BarcodeLabel] print button clicked', {
+      sampleId: sample.id,
+      barcode: sample.barcode,
+      sampleType: sample.sample_type,
+      configuredPrinter: settings.barcodePrinterName,
+      queueReady: qzTrayService.isConnected(),
+    });
 
-    if (!printWindow) {
-      alert('Please allow popups for this website');
+    if (!settings.barcodePrinterName) {
+      console.warn('[PrintBridge][BarcodeLabel] print blocked: barcode printer is not configured');
+      alert('Barcode / Label Printer is not configured in Workflow Settings.');
       return;
     }
 
-    const labelHTML = `
-      <html>
-        <head>
-          <title>Sample Label - ${sample.id}</title>
-          <style>
-            @page { 
-              size: 3in 2in; 
-              margin: 0; 
-            }
-            body { 
-              font-family: 'Courier New', monospace; 
-              text-align: center; 
-              padding: 10px;
-              margin: 0;
-            }
-            .sample-id { 
-              font-size: 13px; 
-              font-weight: bold; 
-              margin-bottom: 4px;
-              letter-spacing: 0.5px;
-            }
-            .barcode { 
-              margin: 6px 0; 
-            }
-            .barcode img {
-              max-width: 95%;
-              height: auto;
-            }
-            .qr-section {
-              display: flex;
-              align-items: center;
-              justify-content: center;
-              gap: 8px;
-              margin: 6px 0;
-            }
-            .qr {
-              flex-shrink: 0;
-            }
-            .metadata { 
-              font-size: 10px; 
-              color: #000; 
-              line-height: 1.4;
-              text-align: center;
-              margin-top: 5px;
-            }
-            .metadata-row {
-              margin: 2px 0;
-            }
-            .timestamp {
-              font-size: 8px;
-              color: #666;
-              margin-top: 6px;
-              text-align: center;
-            }
-          </style>
-        </head>
-        <body>
-          <div class="sample-id">${sample.id}</div>
-          <div class="barcode">
-            <img src="${barcodeDataUrl}" alt="Barcode" />
-          </div>
-          
-          <!-- QR Code removed from print as requested -->
-          
-          <div class="metadata">
-            <div class="metadata-row"><strong>Type:</strong> ${sample.sample_type}</div>
-            <div class="metadata-row"><strong>Container:</strong> ${sample.container_type}</div>
-            ${patientName ? `<div class="metadata-row"><strong>Patient:</strong> ${patientName}</div>` : ''}
-          </div>
-          
-          <div class="timestamp">Created: ${new Date(sample.created_at).toLocaleString()}</div>
-          <script>
-            window.onload = function() {
-              window.print();
-              setTimeout(function() {
-                window.close();
-              }, 100);
-            };
-          </script>
-        </body>
-      </html>
-    `;
+    try {
+      setPrinting(true);
+      setError(null);
 
-    printWindow.document.write(labelHTML);
-    printWindow.document.close();
+      if (!qzTrayService.isConnected()) {
+        console.debug('[PrintBridge][BarcodeLabel] queue paused, resuming');
+        await connect();
+      }
+
+      console.debug('[PrintBridge][BarcodeLabel] queueing label print job', {
+        printerName: settings.barcodePrinterName,
+        sampleIdForBarcode: sample.barcode || sample.id,
+        labelId: sample.id,
+      });
+      await qzTrayService.printBarcodeLabel(settings.barcodePrinterName, {
+        sampleId: sample.barcode || sample.id,
+        labelId: sample.id,
+        patientName: patientName || 'Sample',
+        sampleType: sample.sample_type,
+        date: new Date(sample.created_at).toLocaleDateString('en-GB'),
+      });
+      console.debug('[PrintBridge][BarcodeLabel] print job queued', {
+        printerName: settings.barcodePrinterName,
+        sampleId: sample.id,
+      });
+      return;
+    } catch (err: any) {
+      console.error('Print bridge label queue failed:', err);
+      setError(err?.message || 'Failed to queue label for LIMS Utility');
+    } finally {
+      setPrinting(false);
+    }
+
   };
 
   const handleDownload = () => {
@@ -257,10 +216,11 @@ export const SampleLabelPrinter: React.FC<SampleLabelPrinterProps> = ({
       <div className="flex gap-2">
         <button
           onClick={handlePrint}
-          className="flex-1 flex items-center justify-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
+          disabled={printing}
+          className="flex-1 flex items-center justify-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:bg-blue-300 disabled:cursor-not-allowed transition-colors"
         >
-          <Printer className="h-4 w-4" />
-          Print Label
+          {printing ? <Loader className="h-4 w-4 animate-spin" /> : <Printer className="h-4 w-4" />}
+          {printing ? 'Printing...' : 'Print Label'}
         </button>
         {showDownload && (
           <button

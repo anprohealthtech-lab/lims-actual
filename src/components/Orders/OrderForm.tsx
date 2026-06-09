@@ -1440,7 +1440,7 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
       // Mark TRF attachment as linked so handleClose won't delete it
       trfAttachmentLinked.current = true;
 
-      // Auto-print barcode via QZ Tray if enabled
+      // Auto-print barcode via LIMS Utility queue if enabled
       const newOrderId = result?.id || result;
       if (newOrderId) {
         supabase

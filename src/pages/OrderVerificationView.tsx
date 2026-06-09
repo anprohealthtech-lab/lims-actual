@@ -31,7 +31,7 @@ import {
   User,
   X,
   XCircle,
-  Zap
+	  Zap
 } from "lucide-react";
 import { buildBasicPreviewHtml } from "../utils/buildBasicPreviewHtml";
 import AttachmentSelector from "../components/Reports/AttachmentSelector";
@@ -43,12 +43,12 @@ import {
   type PatientSummaryResponse,
   type SupportedLanguage,
   type DeltaCheckResponse,
+  type OrderDeltaCheckResponse,
   LANGUAGE_DISPLAY_NAMES
 } from "../hooks/useAIResultIntelligence";
 import { supabase, database, aiAnalysis, formatAge } from "../utils/supabase";
 import { runAIFlagAnalysis, analyzeAndSaveFlag } from "../utils/aiFlagAnalysis";
-import { generateAndSaveTrendCharts, saveClinicalSummary, toggleOrderSummaryInReport, saveClinicalSummaryOptions } from "../utils/reportExtrasService";
-import { buildBlockedApprovalMessage, getBlockedApprovalCandidates } from "../utils/resultApprovalGuard";
+import { saveClinicalSummary, toggleOrderSummaryInReport, saveClinicalSummaryOptions } from "../utils/reportExtrasService";
 import TrendGraphPanel from "../components/Results/TrendGraphPanel";
 import PatientSummaryModal from "../components/Results/PatientSummaryModal";
 import SectionEditor from "../components/Results/SectionEditor";
@@ -59,15 +59,24 @@ interface PanelRow {
   result_id: string;
   test_group_id: string | null;
   test_group_name: string | null;
+  has_result?: boolean;
   is_section_only?: boolean;
   expected_analytes: number;
   entered_analytes: number;
   approved_analytes: number;
+  hidden_analytes?: number;
+  handled_analytes?: number;
   panel_ready: boolean;
   result_verification_status?: string | null;
   patient_id: string;
-  patient_name: string;
-  order_date: string;
+	  patient_name: string;
+	  order_date: string;
+  sample_id?: string | null;
+  order_number?: number | null;
+  doctor?: string | null;
+  account_id?: string | null;
+  account_name?: string | null;
+  priority?: "Normal" | "Urgent" | "STAT" | null;
 }
 
 interface Analyte {
@@ -83,10 +92,13 @@ interface Analyte {
   flag_confidence?: number | null;
   ai_interpretation?: string | null;
   ai_audit_status?: 'pending' | 'confirmed' | 'overridden' | 'needs_review' | 'none' | 'approved' | 'rejected' | null;
+  is_auto_calculated?: boolean | null;
   verify_status: "pending" | "approved" | "rejected" | null;
   verify_note: string | null;
   verified_by: string | null;
   verified_at: string | null;
+  is_hidden_from_report?: boolean | null;
+  hidden_reason?: string | null;
 }
 
 interface Attachment {
@@ -104,14 +116,27 @@ interface OrderGroup {
   patientName: string;
   orderDate: string;
   sortTimestamp: number;
+  sampleId: string | null;
+  orderNumber: number | null;
+  doctor: string | null;
+  accountName: string | null;
+  priority?: "Normal" | "Urgent" | "STAT" | null;
   panels: PanelRow[];
   stats: {
     expected: number;
     entered: number;
     approved: number;
+    hidden: number;
+    handled: number;
     readyPanels: number;
   };
 }
+
+type OrderProgressTotals = {
+  expected: number;
+  entered: number;
+  approved: number;
+};
 
 interface OrderVerificationViewProps {
   onBackToPanel?: () => void;
@@ -120,6 +145,7 @@ interface OrderVerificationViewProps {
 type AttachmentViewMode = "test" | "all";
 
 type StateFilter = "all" | "pending" | "partial" | "ready";
+type OrderSortMode = "sample_desc" | "sample_asc" | "date_desc" | "patient_az";
 
 const todayISO = () => new Date().toISOString().slice(0, 10);
 const fromYesterdayISO = () => {
@@ -128,12 +154,74 @@ const fromYesterdayISO = () => {
   return d.toISOString().slice(0, 10);
 };
 
+const fetchRowsByIds = async (
+  table: string,
+  select: string,
+  ids: string[],
+  chunkSize = 80,
+) => {
+  const uniqueIds = Array.from(new Set(ids.filter(Boolean)));
+  if (uniqueIds.length === 0) return [] as any[];
+
+  const rows: any[] = [];
+  for (let i = 0; i < uniqueIds.length; i += chunkSize) {
+    const chunk = uniqueIds.slice(i, i + chunkSize);
+    const { data, error } = await supabase
+      .from(table)
+      .select(select)
+      .in("id", chunk);
+
+    if (error) throw error;
+    rows.push(...(data || []));
+  }
+
+  return rows;
+};
+
+const fetchPanelStatusRows = async (
+  labId: string,
+  from: string,
+  to: string,
+  shouldFilter: boolean,
+  locationIds: string[],
+) => {
+  const pageSize = 1000;
+  const rows: any[] = [];
+
+  for (let start = 0; ; start += pageSize) {
+    let query = supabase
+      .from("v_result_panel_status")
+      .select("*")
+      .eq("lab_id", labId)
+      .gte("order_date", from)
+      .lte("order_date", to)
+      .order("order_date", { ascending: false })
+      .range(start, start + pageSize - 1);
+
+    if (shouldFilter && locationIds.length > 0) {
+      query = query.in("location_id", locationIds);
+    }
+
+    const { data, error } = await query;
+    if (error) throw error;
+
+    rows.push(...(data || []));
+    if (!data || data.length < pageSize) break;
+  }
+
+  return rows;
+};
+
 const OrderVerificationView: React.FC<OrderVerificationViewProps> = ({ onBackToPanel }) => {
   const [from, setFrom] = useState(fromYesterdayISO());
   const [to, setTo] = useState(todayISO());
   const [q, setQ] = useState("");
   const [stateFilter, setStateFilter] = useState<StateFilter>("all");
+  const [doctorFilter, setDoctorFilter] = useState("all");
+  const [accountFilter, setAccountFilter] = useState("all");
+  const [orderSortMode, setOrderSortMode] = useState<OrderSortMode>("sample_desc");
   const [panels, setPanels] = useState<PanelRow[]>([]);
+  const [orderProgressTotalsById, setOrderProgressTotalsById] = useState<Record<string, OrderProgressTotals>>({});
   const [orderSortTimestampById, setOrderSortTimestampById] = useState<Record<string, number>>({});
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -167,6 +255,11 @@ const OrderVerificationView: React.FC<OrderVerificationViewProps> = ({ onBackToP
   const [aiDeltaCheckResults, setAiDeltaCheckResults] = useState<Record<string, DeltaCheckResponse>>({});
   const [showDeltaCheckModal, setShowDeltaCheckModal] = useState(false);
   const [deltaCheckTargetResultId, setDeltaCheckTargetResultId] = useState<string | null>(null);
+  // Order-level AI Delta Check state - comprehensive order validation with inter-test group analysis
+  const [orderDeltaCheckResults, setOrderDeltaCheckResults] = useState<Record<string, OrderDeltaCheckResponse>>({});
+  const [showOrderDeltaCheckModal, setShowOrderDeltaCheckModal] = useState(false);
+  const [orderDeltaCheckTargetOrderId, setOrderDeltaCheckTargetOrderId] = useState<string | null>(null);
+  const [generatingOrderDeltaCheck, setGeneratingOrderDeltaCheck] = useState<Record<string, boolean>>({});
   // Track clinical summary options per order
   const [sendSummaryToDoctor, setSendSummaryToDoctor] = useState<Record<string, boolean>>({});
   // Loading state for clinical summary generation per order
@@ -182,6 +275,8 @@ const OrderVerificationView: React.FC<OrderVerificationViewProps> = ({ onBackToP
 
   // Quick preview state
   const [labPrintOptions, setLabPrintOptions] = useState<Record<string, unknown>>({});
+  const [labPdfLayoutSettings, setLabPdfLayoutSettings] = useState<Record<string, any>>({});
+  const [labSignatoryDefaults, setLabSignatoryDefaults] = useState<{ name: string; designation: string }>({ name: "", designation: "" });
   const [quickPreview, setQuickPreview] = useState<{ html: string; patientName: string } | null>(null);
   const [quickPreviewLoading, setQuickPreviewLoading] = useState<Record<string, boolean>>({});
   const previewIframeRef = useRef<HTMLIFrameElement>(null);
@@ -237,6 +332,13 @@ const OrderVerificationView: React.FC<OrderVerificationViewProps> = ({ onBackToP
 
   const aiIntelligence = useAIResultIntelligence();
 
+  const getDailySeq = (order: Pick<OrderGroup, "orderNumber" | "sampleId">) => {
+    if (typeof order.orderNumber === "number" && Number.isFinite(order.orderNumber)) return order.orderNumber;
+    const tail = String(order.sampleId || "").match(/(?:^|[/-])(\d+)\s*$/)?.[1] || "";
+    const parsed = parseInt(tail, 10);
+    return Number.isFinite(parsed) ? parsed : 0;
+  };
+
   // Check if current user is admin (for reopen-for-correction feature)
   useEffect(() => {
     const checkAdmin = async () => {
@@ -266,12 +368,19 @@ const OrderVerificationView: React.FC<OrderVerificationViewProps> = ({ onBackToP
         try {
           const { data: labData } = await supabase
             .from("labs")
-            .select("pdf_layout_settings")
+            .select("pdf_layout_settings, default_signatory_name, default_signatory_designation")
             .eq("id", labId)
             .single();
-          if (labData?.pdf_layout_settings?.printOptions) {
-            setLabPrintOptions(labData.pdf_layout_settings.printOptions as Record<string, unknown>);
+          if (labData?.pdf_layout_settings) {
+            setLabPdfLayoutSettings(labData.pdf_layout_settings as Record<string, any>);
+            if (labData.pdf_layout_settings.printOptions) {
+              setLabPrintOptions(labData.pdf_layout_settings.printOptions as Record<string, unknown>);
+            }
           }
+          setLabSignatoryDefaults({
+            name: labData?.default_signatory_name || "",
+            designation: labData?.default_signatory_designation || "",
+          });
         } catch { /* non-critical, preview will fall back to defaults */ }
       }
     };
@@ -291,50 +400,100 @@ const OrderVerificationView: React.FC<OrderVerificationViewProps> = ({ onBackToP
       return;
     }
 
-    const { data, error } = await supabase
-      .from("v_result_panel_status")
-      .select("*")
-      .eq("lab_id", labId)
-      .gte("order_date", from)
-      .lte("order_date", to)
-      .order("order_date", { ascending: false });
+    const { shouldFilter, locationIds } = await database.shouldFilterByLocation();
 
-    if (error) {
-      setError(error.message);
+    let data: any[];
+    try {
+      data = await fetchPanelStatusRows(labId, from, to, shouldFilter, locationIds);
+    } catch (error: any) {
+      setError(error?.message || "Failed to load verification panels");
       setPanels([]);
-    } else {
-      const basePanels = (data || []) as PanelRow[];
-      const resultIds = Array.from(new Set(basePanels.map((row) => row.result_id).filter(Boolean)));
+      setLoading(false);
+      return;
+    }
 
-      if (resultIds.length > 0) {
-        const { data: resultStatuses } = await supabase
-          .from("results")
-          .select("id, verification_status")
-          .in("id", resultIds);
+	      const basePanels = (data || []) as PanelRow[];
+      const needsStatusFallback = basePanels.some((row) => !Object.prototype.hasOwnProperty.call(row, "result_verification_status"));
+      const resultIds = needsStatusFallback
+        ? Array.from(new Set(basePanels
+          .filter((row) =>
+            row.has_result === true ||
+            (row.has_result === undefined && (
+              (row.entered_analytes || 0) > 0 ||
+              (row.handled_analytes || 0) > 0 ||
+              row.panel_ready ||
+              !!row.is_section_only
+            ))
+          )
+          .map((row) => row.result_id)
+          .filter(Boolean)))
+        : [];
+      const baseOrderIds = Array.from(new Set(basePanels.map((row) => row.order_id).filter(Boolean)));
 
-        const statusMap = new Map((resultStatuses || []).map((row: any) => [row.id, row.verification_status || null]));
+      if (baseOrderIds.length > 0) {
+        const { data: progressRows, error: progressErr } = await supabase
+          .from("v_order_test_progress_enhanced")
+          .select("order_id, expected_analytes, entered_analytes, is_verified, panel_status")
+          .in("order_id", baseOrderIds);
+
+        if (progressErr) {
+          console.warn("Unable to load dashboard-style order progress totals:", progressErr);
+          setOrderProgressTotalsById({});
+        } else {
+          const totals: Record<string, OrderProgressTotals> = {};
+          (progressRows || []).forEach((row: any) => {
+            const orderId = row.order_id;
+            if (!orderId) return;
+            const expected = Number(row.expected_analytes || 0);
+            const entered = Math.min(Number(row.entered_analytes || 0), expected);
+            const verified = !!row.is_verified || row.panel_status === "Verified";
+            if (!totals[orderId]) totals[orderId] = { expected: 0, entered: 0, approved: 0 };
+            totals[orderId].expected += expected;
+            totals[orderId].entered += entered;
+            if (verified) totals[orderId].approved += entered;
+          });
+          setOrderProgressTotalsById(totals);
+        }
+      } else {
+        setOrderProgressTotalsById({});
+      }
+
+      if (basePanels.length > 0) {
+        const resultStatuses = await fetchRowsByIds("results", "id, verification_status", resultIds);
+
+        const statusMap = new Map(resultStatuses.map((row: any) => [row.id, row.verification_status || null]));
         const panelRows = basePanels.map((row) => ({
           ...row,
-          result_verification_status: statusMap.has(row.result_id) ? statusMap.get(row.result_id) ?? null : null,
+          result_verification_status: row.result_verification_status ?? (statusMap.has(row.result_id) ? statusMap.get(row.result_id) ?? null : null),
         }));
         setPanels(panelRows);
 
-        // Build deterministic newest-first sort key from orders.created_at (fallback: order_date)
+        // Enrich panel rows with order metadata for sample sorting and cross-page filters.
         try {
           const orderIds = Array.from(new Set(panelRows.map((row) => row.order_id).filter(Boolean)));
           if (orderIds.length > 0) {
-            const { data: orderRows, error: orderFetchError } = await supabase
-              .from("orders")
-              .select("id, created_at, order_date")
-              .in("id", orderIds);
-
-            if (orderFetchError) throw orderFetchError;
+            const orderRows = await fetchRowsByIds(
+              "orders",
+              "id, created_at, order_date, sample_id, order_number, doctor, account_id, priority, accounts(name)",
+              orderIds,
+            );
 
             const nextSortMap: Record<string, number> = {};
-            (orderRows || []).forEach((o: any) => {
+            const orderMeta = new Map<string, Partial<PanelRow>>();
+            orderRows.forEach((o: any) => {
               const ts = new Date(o.created_at || o.order_date).getTime();
               if (Number.isFinite(ts)) nextSortMap[o.id] = ts;
+              const accountInfo = Array.isArray(o.accounts) ? o.accounts[0] : o.accounts;
+              orderMeta.set(o.id, {
+                sample_id: o.sample_id || null,
+                order_number: o.order_number ?? null,
+                doctor: o.doctor || null,
+                account_id: o.account_id || null,
+                account_name: accountInfo?.name || null,
+                priority: o.priority || "Normal",
+              });
             });
+            setPanels(panelRows.map(row => ({ ...row, ...(orderMeta.get(row.order_id) || {}) })));
             setOrderSortTimestampById(nextSortMap);
           } else {
             setOrderSortTimestampById({});
@@ -347,9 +506,8 @@ const OrderVerificationView: React.FC<OrderVerificationViewProps> = ({ onBackToP
         setPanels(basePanels);
         setOrderSortTimestampById({});
       }
-    }
-    setLoading(false);
-  };
+	    setLoading(false);
+	  };
 
   useEffect(() => {
     if (currentLabId) {
@@ -358,34 +516,48 @@ const OrderVerificationView: React.FC<OrderVerificationViewProps> = ({ onBackToP
   }, [from, to, currentLabId]);
 
   const groupByOrder = useMemo(() => {
-    // Show analyte-backed panels once values are entered, and always allow
-    // section-only panels because they are verified via report sections.
+    // Prefer the view's real-result marker. Older databases do not expose it,
+    // so fall back to the previous entered/handled analyte behavior.
     const filtered = (panels || []).filter(row => {
-      if ((row?.entered_analytes || 0) === 0 && !row.is_section_only) return false;
+      const hasResultForVerification =
+        row.has_result === true ||
+        (row.has_result === undefined && (
+          (row?.entered_analytes || 0) > 0 ||
+          (row?.handled_analytes || 0) > 0 ||
+          !!row.is_section_only
+        ));
+      if (!hasResultForVerification) return false;
 
-      const matchesSearch = q
-        ? (row.patient_name || "").toLowerCase().includes(q.toLowerCase()) ||
-        (row.test_group_name || "").toLowerCase().includes(q.toLowerCase()) ||
-        row.order_id.toLowerCase().includes(q.toLowerCase())
-        : true;
+	      const matchesSearch = q
+	        ? (row.patient_name || "").toLowerCase().includes(q.toLowerCase()) ||
+	        (row.test_group_name || "").toLowerCase().includes(q.toLowerCase()) ||
+	        row.order_id.toLowerCase().includes(q.toLowerCase()) ||
+	        (row.sample_id || "").toLowerCase().includes(q.toLowerCase())
+	        : true;
 
-      if (!matchesSearch) return false;
+	      if (!matchesSearch) return false;
+      if (doctorFilter !== "all" && !(row.doctor || "").toLowerCase().includes(doctorFilter.toLowerCase())) return false;
+      if (accountFilter !== "all" && !(row.account_name || "").toLowerCase().includes(accountFilter.toLowerCase())) return false;
 
       if (stateFilter === "ready") {
         return row.is_section_only
           ? row.result_verification_status === "verified"
           : row.panel_ready;
       }
-      if (stateFilter === "pending") {
-        return row.is_section_only
-          ? row.result_verification_status !== "verified"
-          : (!row.panel_ready && row.approved_analytes === 0);
-      }
-      if (stateFilter === "partial") {
-        return row.is_section_only
-          ? false
-          : (!row.panel_ready && row.approved_analytes > 0);
-      }
+	      if (stateFilter === "pending") {
+	        return row.is_section_only
+	          ? row.result_verification_status !== "verified"
+	          : (!row.panel_ready && (row.approved_analytes || 0) === 0);
+	      }
+	      if (stateFilter === "partial") {
+	        return row.is_section_only
+	          ? false
+	          : (
+	              !row.panel_ready &&
+	              (row.approved_analytes || 0) > 0 &&
+	              (row.approved_analytes || 0) < row.expected_analytes
+	            );
+	      }
       return true;
     });
 
@@ -396,23 +568,32 @@ const OrderVerificationView: React.FC<OrderVerificationViewProps> = ({ onBackToP
         bucket[row.order_id] = {
           orderId: row.order_id,
           patientId: row.patient_id,
-          patientName: row.patient_name,
-          orderDate: row.order_date,
-          sortTimestamp: orderSortTimestampById[row.order_id] ?? new Date(row.order_date).getTime(),
-          panels: [],
-          stats: {
-            expected: 0,
-            entered: 0,
-            approved: 0,
-            readyPanels: 0
-          }
+	          patientName: row.patient_name,
+	          orderDate: row.order_date,
+	          sortTimestamp: orderSortTimestampById[row.order_id] ?? new Date(row.order_date).getTime(),
+          sampleId: row.sample_id || null,
+          orderNumber: row.order_number ?? null,
+          doctor: row.doctor || null,
+          accountName: row.account_name || null,
+          priority: row.priority || "Normal",
+	          panels: [],
+	          stats: {
+	            expected: 0,
+	            entered: 0,
+	            approved: 0,
+	            hidden: 0,
+	            handled: 0,
+	            readyPanels: 0
+	          }
         };
       }
 
       bucket[row.order_id].panels.push(row);
-      bucket[row.order_id].stats.expected += row.expected_analytes;
-      bucket[row.order_id].stats.entered += row.entered_analytes;
-      bucket[row.order_id].stats.approved += row.approved_analytes;
+	      bucket[row.order_id].stats.expected += row.expected_analytes;
+	      bucket[row.order_id].stats.entered += row.entered_analytes;
+	      bucket[row.order_id].stats.approved += row.approved_analytes;
+	      bucket[row.order_id].stats.hidden += row.hidden_analytes || 0;
+	      bucket[row.order_id].stats.handled += row.handled_analytes || row.entered_analytes || 0;
       if (row.is_section_only ? row.result_verification_status === "verified" : row.panel_ready) {
         bucket[row.order_id].stats.readyPanels += 1;
       }
@@ -423,11 +604,40 @@ const OrderVerificationView: React.FC<OrderVerificationViewProps> = ({ onBackToP
       }
     });
 
-    return Object.values(bucket).sort((a, b) => {
-      if (b.sortTimestamp !== a.sortTimestamp) return b.sortTimestamp - a.sortTimestamp;
-      return b.orderId.localeCompare(a.orderId);
+    Object.values(bucket).forEach(order => {
+      const dashboardTotals = orderProgressTotalsById[order.orderId];
+      if (!dashboardTotals) return;
+      order.stats.expected = dashboardTotals.expected;
+      order.stats.entered = Math.max(dashboardTotals.entered, order.stats.handled);
+      order.stats.approved = Math.max(order.stats.approved, dashboardTotals.approved);
+      order.stats.handled = Math.max(order.stats.handled, order.stats.entered);
     });
-  }, [panels, q, stateFilter, orderSortTimestampById]);
+
+	    return Object.values(bucket).sort((a, b) => {
+      if (orderSortMode === "patient_az") {
+        return a.patientName.localeCompare(b.patientName);
+      }
+
+      if (orderSortMode === "date_desc") {
+        const dateDiff = new Date(b.orderDate).getTime() - new Date(a.orderDate).getTime();
+        if (dateDiff !== 0) return dateDiff;
+      }
+
+      const nA = getDailySeq(a);
+      const nB = getDailySeq(b);
+      if (nA !== nB) return orderSortMode === "sample_asc" ? nA - nB : nB - nA;
+	      if (b.sortTimestamp !== a.sortTimestamp) return b.sortTimestamp - a.sortTimestamp;
+	      return b.orderId.localeCompare(a.orderId);
+	    });
+	  }, [panels, q, stateFilter, doctorFilter, accountFilter, orderSortMode, orderSortTimestampById, orderProgressTotalsById]);
+
+  const doctorOptions = useMemo(() => (
+    Array.from(new Set((panels || []).map(row => row.doctor).filter(Boolean) as string[])).sort()
+  ), [panels]);
+
+  const accountOptions = useMemo(() => (
+    Array.from(new Set((panels || []).map(row => row.account_name).filter(Boolean) as string[])).sort()
+  ), [panels]);
 
   const stats = useMemo(() => {
     const totalOrders = groupByOrder.length;
@@ -445,7 +655,7 @@ const OrderVerificationView: React.FC<OrderVerificationViewProps> = ({ onBackToP
     const { data, error } = await supabase
       .from("result_values")
       .select(
-        "id,result_id,analyte_id,parameter,value,unit,reference_range,flag,flag_source,flag_confidence,ai_interpretation,ai_audit_status,verify_status,verify_note,verified_by,verified_at"
+	        "id,result_id,analyte_id,parameter,value,unit,reference_range,flag,flag_source,flag_confidence,ai_interpretation,ai_audit_status,verify_status,verify_note,verified_by,verified_at,is_hidden_from_report,hidden_reason"
       )
       .eq("result_id", resultId)
       .order("parameter", { ascending: true });
@@ -476,12 +686,14 @@ const OrderVerificationView: React.FC<OrderVerificationViewProps> = ({ onBackToP
           flag_source: row.flag_source,
           flag_confidence: row.flag_confidence,
           ai_interpretation: row.ai_interpretation,
-          ai_audit_status: null,
-          verify_status: "pending",
-          verify_note: null,
-          verified_by: null,
-          verified_at: null
-        })) as Analyte[];
+	          ai_audit_status: null,
+	          verify_status: "pending",
+	          verify_note: null,
+	          verified_by: null,
+	          verified_at: null,
+	          is_hidden_from_report: false,
+	          hidden_reason: null
+	        })) as Analyte[];
         setRowsByResult(prev => ({ ...prev, [resultId]: mapped }));
         return mapped;
       }
@@ -608,8 +820,13 @@ const OrderVerificationView: React.FC<OrderVerificationViewProps> = ({ onBackToP
   };
 
   const toggleOrder = async (orderId: string) => {
+    const isOpening = !openOrders[orderId];
     setOpenOrders(prev => ({ ...prev, [orderId]: !prev[orderId] }));
     if (!attachmentsByOrder[orderId]) await loadAttachments(orderId);
+    if (isOpening) {
+      const orderPanels = panels.filter(panel => panel.order_id === orderId);
+      await Promise.all(orderPanels.map(panel => ensureAnalytesLoaded(panel.result_id)));
+    }
   };
 
   const togglePanel = async (resultId: string) => {
@@ -622,15 +839,6 @@ const OrderVerificationView: React.FC<OrderVerificationViewProps> = ({ onBackToP
   const setBusyFor = (key: string, val: boolean) => setBusy(prev => ({ ...prev, [key]: val }));
 
   const approveAnalyte = async (analyteId: string) => {
-    const analyte = Object.values(rowsByResult).flat().find((row) => row.id === analyteId);
-    if (analyte) {
-      const blocked = getBlockedApprovalCandidates([analyte]);
-      if (blocked.length) {
-        alert(buildBlockedApprovalMessage("this analyte", blocked));
-        return;
-      }
-    }
-
     setBusyFor(analyteId, true);
     const { error } = await supabase
       .from("result_values")
@@ -675,7 +883,7 @@ const OrderVerificationView: React.FC<OrderVerificationViewProps> = ({ onBackToP
     }
   };
 
-  const approvePanel = async (panel: PanelRow, analytes: Analyte[]): Promise<boolean> => {
+  const approvePanel = async (panel: PanelRow, analytes: Analyte[]) => {
     if (panel.is_section_only) {
       setBusyFor(panel.result_id, true);
       try {
@@ -690,23 +898,15 @@ const OrderVerificationView: React.FC<OrderVerificationViewProps> = ({ onBackToP
 
         if (error) throw error;
         await loadPanels();
-        return true;
       } catch (err) {
         console.error("Failed to approve section-only panel", err);
-        return false;
       } finally {
         setBusyFor(panel.result_id, false);
       }
-      return false;
+      return;
     }
 
-    if (!analytes.length) return false;
-    const blocked = getBlockedApprovalCandidates(analytes);
-    if (blocked.length) {
-      alert(buildBlockedApprovalMessage(`panel "${panel.test_group_name || "Unknown"}"`, blocked));
-      return false;
-    }
-
+    if (!analytes.length) return;
     const ids = analytes.map(a => a.id);
     setBusyFor(panel.result_id, true);
     setSavingReportExtras(prev => ({ ...prev, [panel.order_id]: true }));
@@ -724,19 +924,6 @@ const OrderVerificationView: React.FC<OrderVerificationViewProps> = ({ onBackToP
         [panel.result_id]: (prev[panel.result_id] || []).map(analyte => ({ ...analyte, verify_status: "approved" }))
       }));
 
-      if (includeTrendsInReport[panel.order_id]) {
-        const flagged = analytes.filter(a => a.flag && getNormalizedFlag(a.flag) !== '');
-        if (flagged.length) {
-          await generateAndSaveTrendCharts(
-            panel.result_id,
-            panel.order_id,
-            panel.patient_id,
-            flagged.map(a => ({ name: a.parameter, flag: a.flag })),
-            true
-          );
-        }
-      }
-
       if (includeSummaryInReport[panel.order_id] && aiClinicalSummary[panel.order_id]) {
         const summary = aiClinicalSummary[panel.order_id];
         await saveClinicalSummary(panel.result_id, {
@@ -748,10 +935,8 @@ const OrderVerificationView: React.FC<OrderVerificationViewProps> = ({ onBackToP
       }
 
       await loadPanels();
-      return true;
     } catch (err) {
       console.error("Failed to approve panel", err);
-      return false;
     } finally {
       setBusyFor(panel.result_id, false);
       setSavingReportExtras(prev => ({ ...prev, [panel.order_id]: false }));
@@ -893,8 +1078,7 @@ const OrderVerificationView: React.FC<OrderVerificationViewProps> = ({ onBackToP
         // immediately after setState, which can still be stale unless the UI
         // has already preloaded them via "Show All Analytes".
         const analytes = await ensureAnalytesLoaded(panel.result_id);
-        const approved = await approvePanel(panel, analytes);
-        if (!approved) break;
+        await approvePanel(panel, analytes);
       }
     } finally {
       setBulkProcessing(false);
@@ -914,24 +1098,201 @@ const OrderVerificationView: React.FC<OrderVerificationViewProps> = ({ onBackToP
 
       const allResultIds = order.panels.map(p => p.result_id);
 
+      const fetchOrderForPreview = async () => {
+        const primary = await supabase
+          .from("orders")
+          .select("sample_id, doctor, report_settings")
+          .eq("id", order.orderId)
+          .single();
+
+        if (!primary.error) return primary;
+
+        console.warn("[QuickPreview] orders rich select failed, retrying without report_settings", {
+          orderId: order.orderId,
+          error: primary.error,
+        });
+
+        return supabase
+          .from("orders")
+          .select("sample_id, doctor")
+          .eq("id", order.orderId)
+          .single();
+      };
+
+      const fetchTestGroupAnalyteMetaForPreview = async () => {
+        if (groupIds.length === 0) return { data: [] as any[], error: null };
+
+        const primary = await supabase
+          .from("test_group_analytes")
+          .select("test_group_id, analyte_id, sort_order, section_heading, analytes(name)")
+          .in("test_group_id", groupIds);
+
+        if (!primary.error) return primary;
+
+        console.warn("[QuickPreview] test_group_analytes metadata select failed, retrying without analytes join", {
+          groupIds,
+          error: primary.error,
+        });
+
+        return supabase
+          .from("test_group_analytes")
+          .select("test_group_id, analyte_id, sort_order, section_heading")
+          .in("test_group_id", groupIds);
+      };
+
+      const fetchVerifierForPreview = async () => {
+        if (allResultIds.length === 0) return { data: null as any, error: null };
+
+        const rv = await supabase
+          .from("result_values")
+          .select("verified_by")
+          .in("result_id", allResultIds)
+          .not("verified_by", "is", null)
+          .limit(1)
+          .maybeSingle();
+
+        if (rv.error || !rv.data?.verified_by) {
+          if (rv.error) {
+            console.warn("[QuickPreview] verifier result_values lookup failed", {
+              resultIds: allResultIds,
+              error: rv.error,
+            });
+          }
+          return { data: null as any, error: rv.error };
+        }
+
+        const user = await supabase
+          .from("users")
+          .select("name, role")
+          .eq("id", rv.data.verified_by)
+          .maybeSingle();
+
+        if (user.error) {
+          console.warn("[QuickPreview] verifier user lookup failed", {
+            userId: rv.data.verified_by,
+            error: user.error,
+          });
+        }
+
+        return {
+          data: {
+            verified_by: rv.data.verified_by,
+            users: user.data || null,
+          },
+          error: user.error,
+        };
+      };
+
+      const applySignatureTransformations = (url: string): string => {
+        if (!url || !url.includes("ik.imagekit.io") || url.includes("tr=")) return url;
+        try {
+          const urlObj = new URL(url);
+          const pathParts = urlObj.pathname.split("/");
+          const insertIndex = pathParts.findIndex((part) => part && !part.includes(".")) + 1;
+          pathParts.splice(insertIndex, 0, "tr:fo-auto,e-removebg,t-true");
+          urlObj.pathname = pathParts.join("/");
+          return urlObj.toString();
+        } catch {
+          return url;
+        }
+      };
+
+      const getOptimizedSignatureUrl = (signature: any): string => {
+        const variants = typeof signature?.variants === "string"
+          ? (() => {
+              try { return JSON.parse(signature.variants); } catch { return {}; }
+            })()
+          : signature?.variants;
+        return variants?.optimized ||
+          (signature?.imagekit_url ? applySignatureTransformations(signature.imagekit_url) : "") ||
+          signature?.file_url ||
+          "";
+      };
+
+      const fetchSignatoryForPreview = async (verifierUserId?: string | null, verifierUser?: any) => {
+        const fallback = {
+          name: verifierUser?.name || labSignatoryDefaults.name || "Authorized Signatory",
+          designation: verifierUser?.role || labSignatoryDefaults.designation || "",
+          imageUrl: "",
+        };
+
+        if (!currentLabId) return fallback;
+
+        if (verifierUserId) {
+          const { data: userSignature, error } = await supabase
+            .from("lab_user_signatures")
+            .select("imagekit_url, file_url, signature_name, is_default, variants")
+            .eq("user_id", verifierUserId)
+            .eq("lab_id", currentLabId)
+            .eq("is_active", true)
+            .order("is_default", { ascending: false })
+            .limit(1)
+            .maybeSingle();
+
+          if (error) {
+            console.warn("[QuickPreview] verifier signature lookup failed", error);
+          }
+
+          const sigUrl = getOptimizedSignatureUrl(userSignature);
+          if (sigUrl) {
+            return {
+              name: userSignature?.signature_name || fallback.name,
+              designation: userSignature?.signature_name ? "" : fallback.designation,
+              imageUrl: sigUrl,
+            };
+          }
+        }
+
+        const { data: labSignature, error: labSigError } = await supabase
+          .from("lab_branding_assets")
+          .select("file_url, imagekit_url")
+          .eq("lab_id", currentLabId)
+          .eq("asset_type", "signature")
+          .eq("is_active", true)
+          .order("is_default", { ascending: false })
+          .limit(1)
+          .maybeSingle();
+
+        if (labSigError) {
+          console.warn("[QuickPreview] lab signature lookup failed", labSigError);
+        }
+
+        let sigUrl = labSignature?.imagekit_url
+          ? applySignatureTransformations(labSignature.imagekit_url)
+          : labSignature?.file_url || "";
+
+        if (!sigUrl) {
+          const { data: anyUserSignature, error: anySigError } = await supabase
+            .from("lab_user_signatures")
+            .select("imagekit_url, file_url, signature_name, is_default, variants")
+            .eq("lab_id", currentLabId)
+            .eq("is_active", true)
+            .order("is_default", { ascending: false })
+            .limit(1)
+            .maybeSingle();
+
+          if (anySigError) {
+            console.warn("[QuickPreview] fallback signature lookup failed", anySigError);
+          }
+
+          sigUrl = getOptimizedSignatureUrl(anyUserSignature);
+          if (sigUrl && anyUserSignature?.signature_name && !fallback.name) {
+            fallback.name = anyUserSignature.signature_name;
+          }
+        }
+
+        return { ...fallback, imageUrl: sigUrl };
+      };
+
       const [patientRes, orderRes, tgaRes, tgRes, sectionsRes, verifierRes] = await Promise.all([
         supabase
           .from("patients")
           .select("age, age_unit, gender, display_id")
           .eq("id", order.patientId)
           .single(),
-        supabase
-          .from("orders")
-          .select("sample_id, physician_name")
-          .eq("id", order.orderId)
-          .single(),
+        fetchOrderForPreview(),
         // section_heading + sort_order + is_auto_calculated from test_group_analytes
-        groupIds.length > 0
-          ? supabase
-              .from("test_group_analytes")
-              .select("test_group_id, analyte_id, sort_order, section_heading, analytes(name, is_auto_calculated)")
-              .in("test_group_id", groupIds)
-          : Promise.resolve({ data: [] as any[], error: null }),
+        fetchTestGroupAnalyteMetaForPreview(),
         // per-group print_options override
         groupIds.length > 0
           ? supabase
@@ -948,22 +1309,27 @@ const OrderVerificationView: React.FC<OrderVerificationViewProps> = ({ onBackToP
               .order("section_id")
           : Promise.resolve({ data: [] as any[], error: null }),
         // signatory: first verified_by user across all result_values
-        allResultIds.length > 0
-          ? supabase
-              .from("result_values")
-              .select("verified_by, users!result_values_verified_by_fkey(name, role)")
-              .in("result_id", allResultIds)
-              .not("verified_by", "is", null)
-              .limit(1)
-              .maybeSingle()
-          : Promise.resolve({ data: null as any, error: null }),
+        fetchVerifierForPreview(),
       ]);
+
+      [
+        ["patients", patientRes.error],
+        ["orders", orderRes.error],
+        ["test_group_analytes", tgaRes.error],
+        ["test_groups", tgRes.error],
+        ["result_section_content", sectionsRes.error],
+        ["verifier", verifierRes.error],
+      ].forEach(([label, error]) => {
+        if (error) {
+          console.warn(`[QuickPreview] ${label} query returned an error`, error);
+        }
+      });
 
       const ageFormatted = formatAge(patientRes.data?.age, patientRes.data?.age_unit);
       const gender = patientRes.data?.gender ?? "";
       const patientCode = patientRes.data?.display_id ?? "";
       const sampleId = orderRes.data?.sample_id ?? "";
-      const referredBy = orderRes.data?.physician_name ?? "";
+      const referredBy = orderRes.data?.doctor ?? "";
       const ageGender = [ageFormatted !== "N/A" ? ageFormatted : "", gender].filter(Boolean).join(" / ");
       const orderDate = order.orderDate
         ? new Date(order.orderDate).toLocaleDateString()
@@ -1005,10 +1371,31 @@ const OrderVerificationView: React.FC<OrderVerificationViewProps> = ({ onBackToP
           return acc;
         }, []);
 
-      // Signatory
-      const verifierUser = (verifierRes.data as any)?.users;
-      const signatoryName = verifierUser?.name || "";
-      const signatoryDesignation = verifierUser?.role || "";
+	      // Signatory
+	      const verifierUser = (verifierRes.data as any)?.users;
+	      const verifierUserId = (verifierRes.data as any)?.verified_by || null;
+	      const previewSignatory = await fetchSignatoryForPreview(verifierUserId, verifierUser);
+	      const signatoryName = previewSignatory.name || "";
+	      const signatoryDesignation = previewSignatory.designation || "";
+	      const signatoryImageUrl = previewSignatory.imageUrl || "";
+	      const verificationUrl = `https://app.limsapp.in/verify?id=${encodeURIComponent(order.orderId || sampleId || "")}`;
+      const orderReportSettings = ((orderRes.data as any)?.report_settings || {}) as {
+        groupOrderOverrideEnabled?: boolean;
+        groupOrder?: string[];
+        printLayoutMode?: "standard" | "compact";
+        compactPageAssignments?: Record<string, number>;
+        compactMaxClubbedAnalytes?: number;
+      };
+      const labCompactPrint = (labPdfLayoutSettings?.compactPrint || {}) as Record<string, any>;
+      const printLayoutMode: "standard" | "compact" =
+        orderReportSettings.printLayoutMode === "compact" ||
+        labCompactPrint.defaultMode === "compact"
+          ? "compact"
+          : "standard";
+      const groupOrder = Array.isArray(orderReportSettings.groupOrder)
+        ? orderReportSettings.groupOrder
+        : [];
+      const groupOrderIndex = new Map(groupOrder.map((id, index) => [id, index]));
 
       // Build lookup: test_group_id → merged printOptions (lab-level overridden by group-level)
       const groupPrintOptions = new Map<string, Record<string, unknown>>();
@@ -1033,8 +1420,18 @@ const OrderVerificationView: React.FC<OrderVerificationViewProps> = ({ onBackToP
       }
 
       // 4. Build test groups with sorted + section-headed analytes
-      const testGroups = order.panels
-        .map(panel => {
+      const orderedPanels = [...order.panels].sort((a, b) => {
+        const aOrder = a.test_group_id && groupOrderIndex.has(a.test_group_id)
+          ? groupOrderIndex.get(a.test_group_id)!
+          : Number.MAX_SAFE_INTEGER;
+        const bOrder = b.test_group_id && groupOrderIndex.has(b.test_group_id)
+          ? groupOrderIndex.get(b.test_group_id)!
+          : Number.MAX_SAFE_INTEGER;
+        return aOrder - bOrder;
+      });
+
+	      const testGroups = orderedPanels
+	        .map(panel => {
           // Use captured return values (not stale rowsByResult closure)
           const raw = loadedByResultId.get(panel.result_id) || [];
           const metaMap = panel.test_group_id
@@ -1050,31 +1447,53 @@ const OrderVerificationView: React.FC<OrderVerificationViewProps> = ({ onBackToP
               const meta =
                 (a.analyte_id ? metaMap.get(a.analyte_id) : undefined) ??
                 nameMap.get(a.parameter?.toLowerCase() ?? "");
-              return {
-                parameter: a.parameter,
-                value: a.value,
-                unit: a.unit,
-                reference_range: a.reference_range,
-                flag: a.flag,
-                section_heading: meta?.section_heading ?? null,
-                is_auto_calculated: meta?.is_auto_calculated ?? false,
-                _sort: meta?.sort_order ?? 999,
-              };
+	              return {
+	                parameter: a.parameter,
+	                value: a.value,
+	                unit: a.unit,
+	                reference_range: a.reference_range,
+	                flag: a.flag,
+	                section_heading: meta?.section_heading ?? null,
+	                is_auto_calculated: a.is_auto_calculated ?? meta?.is_auto_calculated ?? false,
+	                _sort: meta?.sort_order ?? 999,
+	              };
             })
             .sort((x, y) => x._sort - y._sort)
             .map(({ _sort: _s, ...rest }) => rest);
 
           return {
+            testGroupId: panel.test_group_id,
             testGroupName: panel.test_group_name || "Test Results",
             analytes,
             groupInterpretation: panel.test_group_id
               ? (groupInterpretations.get(panel.test_group_id) ?? null)
               : null,
           };
-        })
-        .filter(g => g.analytes.length > 0);
+	        })
+	        .filter(g => g.analytes.length > 0);
+
+      console.info("[QuickPreview] building preview", {
+        orderId: order.orderId,
+        printLayoutMode,
+        groupCount: testGroups.length,
+        groupOrder,
+        compactPageAssignments: orderReportSettings.compactPageAssignments || null,
+	        compactMaxClubbedAnalytes: orderReportSettings.compactMaxClubbedAnalytes || Number(labCompactPrint.maxClubbedAnalytes || 5),
+	        hasSignatureImage: !!signatoryImageUrl,
+	        hasVerificationUrl: !!verificationUrl,
+	        pdfLayoutSettings: labPdfLayoutSettings,
+	        queryErrors: {
+          patients: !!patientRes.error,
+          orders: !!orderRes.error,
+          testGroupAnalytes: !!tgaRes.error,
+          testGroups: !!tgRes.error,
+          sections: !!sectionsRes.error,
+          verifier: !!verifierRes.error,
+        },
+      });
 
       const html = buildBasicPreviewHtml({
+        orderId: order.orderId,
         patientName: order.patientName,
         patientCode,
         ageGender,
@@ -1082,10 +1501,19 @@ const OrderVerificationView: React.FC<OrderVerificationViewProps> = ({ onBackToP
         referredBy,
         sampleId,
         testGroups,
-        sections: reportSections,
-        signatoryName,
-        signatoryDesignation,
-        printOptions: resolvedPrintOptions,
+	        sections: reportSections,
+	        signatoryName,
+	        signatoryDesignation,
+	        signatoryImageUrl,
+	        verificationUrl,
+	        printOptions: resolvedPrintOptions,
+	        pdfLayoutSettings: labPdfLayoutSettings,
+	        printLayoutMode,
+        compactPlan: {
+          orderedGroupIds: groupOrder,
+          pageAssignments: orderReportSettings.compactPageAssignments,
+          maxClubbedAnalytes: orderReportSettings.compactMaxClubbedAnalytes || Number(labCompactPrint.maxClubbedAnalytes || 5),
+        },
       });
 
       setQuickPreview({ html, patientName: order.patientName });
@@ -1576,7 +2004,7 @@ const OrderVerificationView: React.FC<OrderVerificationViewProps> = ({ onBackToP
         .from('external_result_values')
         .select(`
           id, original_analyte_name, value, unit, reference_range, created_at,
-          external_reports!fk_erv_report(patient_id)
+          external_reports!fk_erv_report!inner(patient_id)
         `)
         .eq('external_reports.patient_id', patientId)
         .order('created_at', { ascending: false })
@@ -1634,6 +2062,141 @@ const OrderVerificationView: React.FC<OrderVerificationViewProps> = ({ onBackToP
     } catch (error) {
       console.error('AI Delta Check failed:', error);
       alert('Failed to run Delta Check. Please try again.');
+    }
+  };
+
+  // Order-level AI Delta Check handler - validates ALL test groups together with inter-test-group analysis
+  const handleOrderDeltaCheck = async (order: OrderGroup) => {
+    // Calculate entry percentage
+    const entryPercentage = order.stats.expected > 0
+      ? (order.stats.entered / order.stats.expected) * 100
+      : 0;
+
+    if (entryPercentage < 80) {
+      alert(`Only ${entryPercentage.toFixed(0)}% of results are entered. Order-level delta check requires at least 80% completion.`);
+      return;
+    }
+
+    setGeneratingOrderDeltaCheck(prev => ({ ...prev, [order.orderId]: true }));
+
+    try {
+      // Load all analytes for all panels
+      const allPanelAnalytes = await Promise.all(
+        order.panels.map(async (panel) => {
+          const analytes = await ensureAnalytesLoaded(panel.result_id);
+          return { panel, analytes };
+        })
+      );
+
+      // Fetch historical data for this patient
+      const patientId = order.patientId;
+      const [{ data: historicalData }, { data: externalData }] = await Promise.all([
+        supabase
+          .from('result_values')
+          .select(`
+            id, analyte_id, parameter, value, unit, reference_range, flag, created_at,
+            results!inner(order_id, created_at, orders!inner(patient_id))
+          `)
+          .eq('results.orders.patient_id', patientId)
+          .not('results.order_id', 'eq', order.orderId)
+          .order('created_at', { ascending: false })
+          .limit(100),
+        supabase
+          .from('external_result_values')
+          .select(`
+            id, original_analyte_name, value, unit, reference_range, created_at,
+            external_reports!fk_erv_report!inner(patient_id)
+          `)
+          .eq('external_reports.patient_id', patientId)
+          .order('created_at', { ascending: false })
+          .limit(50),
+      ]);
+
+      // Group historical data by date
+      const historyByDate = new Map<string, { test_date: string; source: 'in-house' | 'external'; analytes: any[] }>();
+
+      (historicalData || []).forEach((h: any) => {
+        const date = (h.results?.created_at || h.created_at)?.split('T')[0] || 'unknown';
+        if (!historyByDate.has(date)) {
+          historyByDate.set(date, { test_date: date, source: 'in-house', analytes: [] });
+        }
+        historyByDate.get(date)!.analytes.push({
+          name: h.parameter,
+          value: h.value,
+          unit: h.unit,
+          reference_range: h.reference_range,
+          flag: h.flag,
+        });
+      });
+
+      (externalData || []).forEach((e: any) => {
+        const date = e.created_at?.split('T')[0] || 'unknown';
+        const key = `ext_${date}`;
+        if (!historyByDate.has(key)) {
+          historyByDate.set(key, { test_date: date, source: 'external', analytes: [] });
+        }
+        historyByDate.get(key)!.analytes.push({
+          name: e.original_analyte_name,
+          value: e.value,
+          unit: e.unit,
+          reference_range: e.reference_range,
+          flag: null,
+        });
+      });
+
+      // Build test groups array with result values
+      const testGroups = allPanelAnalytes.map(({ panel, analytes }) => ({
+        test_group_name: panel.test_group_name || 'Unknown',
+        test_group_code: panel.test_group_id || '',
+        category: 'General',
+        result_values: analytes
+          .filter(a => a.value !== null && a.value !== '')
+          .map(a => ({
+            id: a.id,
+            analyte_name: a.parameter,
+            value: a.value || '',
+            unit: a.unit,
+            reference_range: a.reference_range,
+            flag: a.flag,
+          })),
+      })).filter(tg => tg.result_values.length > 0);
+
+      if (testGroups.length === 0) {
+        alert('No test results to analyze. Please enter values first.');
+        setGeneratingOrderDeltaCheck(prev => ({ ...prev, [order.orderId]: false }));
+        return;
+      }
+
+      // Get patient info from first panel
+      const firstPanel = order.panels[0];
+      const { data: patientData } = await supabase
+        .from('patients')
+        .select('age, gender')
+        .eq('id', patientId)
+        .single();
+
+      // Call order-level delta check
+      const result = await aiIntelligence.performOrderDeltaCheck(
+        testGroups,
+        {
+          age: patientData?.age,
+          gender: patientData?.gender,
+        },
+        Array.from(historyByDate.values())
+      );
+
+      if (result) {
+        setOrderDeltaCheckResults(prev => ({ ...prev, [order.orderId]: result }));
+        setOrderDeltaCheckTargetOrderId(order.orderId);
+        setShowOrderDeltaCheckModal(true);
+      } else {
+        alert('No delta check results generated. Please try again.');
+      }
+    } catch (error) {
+      console.error('Order-level AI Delta Check failed:', error);
+      alert('Failed to run Order Delta Check: ' + (error instanceof Error ? error.message : 'Unknown error'));
+    } finally {
+      setGeneratingOrderDeltaCheck(prev => ({ ...prev, [order.orderId]: false }));
     }
   };
 
@@ -2026,7 +2589,7 @@ ${summary.urgent_findings.map(f => `• ${f}`).join('\n')}` : ''}
 
         <div className="bg-white rounded-2xl shadow-sm border border-gray-200 p-4 space-y-3">
           <div className="flex flex-col lg:flex-row gap-4">
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 flex-1">
+	            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 flex-1">
               <label className="flex flex-col text-sm text-gray-600">
                 From
                 <input
@@ -2043,19 +2606,56 @@ ${summary.urgent_findings.map(f => `• ${f}`).join('\n')}` : ''}
                   value={to}
                   onChange={e => setTo(e.target.value)}
                   className="mt-1 px-3 py-2 border-2 border-gray-200 rounded-xl text-sm"
-                />
+	                />
+	              </label>
+              <label className="flex flex-col text-sm text-gray-600">
+                Ref Doctor
+                <select
+                  value={doctorFilter}
+                  onChange={e => setDoctorFilter(e.target.value)}
+                  className="mt-1 px-3 py-2 border-2 border-gray-200 rounded-xl text-sm"
+                >
+                  <option value="all">All Doctors</option>
+                  {doctorOptions.map(doctor => (
+                    <option key={doctor} value={doctor}>{doctor}</option>
+                  ))}
+                </select>
               </label>
-            </div>
-            <div className="flex-1 relative">
+              <label className="flex flex-col text-sm text-gray-600">
+                B2B Client
+                <select
+                  value={accountFilter}
+                  onChange={e => setAccountFilter(e.target.value)}
+                  className="mt-1 px-3 py-2 border-2 border-gray-200 rounded-xl text-sm"
+                >
+                  <option value="all">All B2B Clients</option>
+                  {accountOptions.map(account => (
+                    <option key={account} value={account}>{account}</option>
+                  ))}
+                </select>
+              </label>
+	            </div>
+	            <div className="flex-1 relative">
               <Search className="absolute left-4 top-1/2 -translate-y-1/2 h-5 w-5 text-gray-400" />
               <input
                 value={q}
                 onChange={e => setQ(e.target.value)}
-                placeholder="Search patients, tests, or order IDs..."
+	                placeholder="Search patients, tests, sample IDs, or order IDs..."
                 className="w-full pl-12 pr-4 py-2.5 text-sm border-2 border-gray-200 rounded-xl"
               />
-            </div>
-            <div className="flex items-center space-x-3">
+	            </div>
+            <select
+              value={orderSortMode}
+              onChange={e => setOrderSortMode(e.target.value as OrderSortMode)}
+              className="px-3 py-2.5 border-2 border-gray-200 rounded-xl text-sm"
+              title="Sort orders"
+            >
+              <option value="sample_desc">Sample ID newest first</option>
+              <option value="sample_asc">Sample ID oldest first</option>
+              <option value="date_desc">Order date newest first</option>
+              <option value="patient_az">Patient A-Z</option>
+            </select>
+	            <div className="flex items-center space-x-3">
               {(["all", "ready", "partial", "pending"] as StateFilter[]).map(filter => (
                 <button
                   key={filter}
@@ -2104,9 +2704,12 @@ ${summary.urgent_findings.map(f => `• ${f}`).join('\n')}` : ''}
             <div className="flex justify-center space-x-4">
               <button
                 onClick={() => {
-                  setQ("");
-                  setStateFilter("all");
-                  setDateRange(7);
+	                  setQ("");
+	                  setStateFilter("all");
+                  setDoctorFilter("all");
+                  setAccountFilter("all");
+                  setOrderSortMode("sample_desc");
+	                  setDateRange(7);
                 }}
                 className="px-6 py-3 bg-blue-600 text-white rounded-xl hover:bg-blue-700"
               >
@@ -2124,9 +2727,14 @@ ${summary.urgent_findings.map(f => `• ${f}`).join('\n')}` : ''}
 
         {!loading && groupByOrder.length > 0 && (
           <div className="space-y-6">
-            {groupByOrder.map(order => {
-              const orderApprovedPct = percentage(order.stats.approved, order.stats.expected);
-              const allReady = order.stats.readyPanels === order.panels.length;
+	            {groupByOrder.map(order => {
+	              const enteredCount = Math.min(order.stats.entered || order.stats.handled || 0, order.stats.expected);
+	              const approvedCount = Math.min(order.stats.approved || 0, order.stats.expected);
+	              const orderHandledPct = percentage(enteredCount, order.stats.expected);
+	              const pendingCount = Math.max(0, order.stats.expected - enteredCount);
+	              const forApprovalCount = Math.max(0, enteredCount - approvedCount);
+	              const allReady = order.stats.expected > 0 && approvedCount >= order.stats.expected;
+	              const allAnalytesHandled = order.stats.expected > 0 && pendingCount === 0;
 
               return (
                 <div key={order.orderId} className="border-2 rounded-2xl bg-white shadow-sm">
@@ -2151,17 +2759,30 @@ ${summary.urgent_findings.map(f => `• ${f}`).join('\n')}` : ''}
                             </div>
                           </div>
                           <div className="mt-3 flex items-center space-x-3">
-                            {allReady ? (
-                              <span className="inline-flex items-center px-3 py-1.5 rounded-full bg-green-100 text-green-700 text-sm font-semibold">
-                                <ShieldCheck className="h-4 w-4 mr-2" /> Fully Verified
-                              </span>
-                            ) : order.stats.approved > 0 ? (
-                              <span className="inline-flex items-center px-3 py-1.5 rounded-full bg-amber-100 text-amber-700 text-sm font-semibold">
-                                <AlertTriangle className="h-4 w-4 mr-2" /> Partial ({order.stats.approved}/{order.stats.expected})
-                              </span>
+	                            {allReady ? (
+	                              <span className="inline-flex items-center px-3 py-1.5 rounded-full bg-green-100 text-green-700 text-sm font-semibold">
+	                                <ShieldCheck className="h-4 w-4 mr-2" /> Fully Verified
+	                              </span>
+	                            ) : allAnalytesHandled ? (
+	                              <span className="inline-flex items-center px-3 py-1.5 rounded-full bg-blue-100 text-blue-700 text-sm font-semibold">
+	                                <CheckCircle2 className="h-4 w-4 mr-2" /> Ready for Approval ({enteredCount}/{order.stats.expected})
+	                              </span>
+		                            ) : enteredCount > 0 ? (
+		                              <span className="inline-flex items-center px-3 py-1.5 rounded-full bg-amber-100 text-amber-700 text-sm font-semibold">
+		                                <AlertTriangle className="h-4 w-4 mr-2" /> Partial ({enteredCount}/{order.stats.expected})
+		                              </span>
                             ) : (
                               <span className="inline-flex items-center px-3 py-1.5 rounded-full bg-red-100 text-red-700 text-sm font-semibold">
                                 <AlertCircle className="h-4 w-4 mr-2" /> Pending
+                              </span>
+                            )}
+                            {order.priority && order.priority !== "Normal" && (
+                              <span className={`inline-flex items-center px-3 py-1.5 rounded-full text-sm font-semibold ${
+                                order.priority === "STAT"
+                                  ? "bg-red-100 text-red-800 border border-red-300 animate-pulse"
+                                  : "bg-orange-100 text-orange-800 border border-orange-300"
+                              }`}>
+                                {order.priority === "STAT" ? "🚨 STAT" : "⚡ Urgent"}
                               </span>
                             )}
                           </div>
@@ -2171,10 +2792,19 @@ ${summary.urgent_findings.map(f => `• ${f}`).join('\n')}` : ''}
                         <div className="text-sm text-gray-500">Progress</div>
                         <div className="flex items-center space-x-3">
                           <div className="w-48 bg-gray-100 rounded-full h-3">
-                            <div className="h-3 rounded-full bg-gradient-to-r from-blue-500 to-indigo-600" style={{ width: `${orderApprovedPct}%` }} />
-                          </div>
-                          <span className="text-gray-700 font-semibold">{orderApprovedPct}%</span>
-                        </div>
+	                            <div className="h-3 rounded-full bg-gradient-to-r from-blue-500 to-indigo-600" style={{ width: `${orderHandledPct}%` }} />
+	                          </div>
+	                          <span className="text-gray-700 font-semibold">{orderHandledPct}%</span>
+	                        </div>
+	                        <div className="flex flex-wrap justify-end gap-1 text-[11px]">
+	                          <span className="rounded bg-red-50 px-2 py-0.5 text-red-600">Pending: {pendingCount}</span>
+	                          <span className="rounded bg-amber-50 px-2 py-0.5 text-amber-700">For approval: {forApprovalCount}</span>
+	                          <span className="rounded bg-green-50 px-2 py-0.5 text-green-700">Approved: {approvedCount}</span>
+	                          {order.stats.hidden > 0 && (
+	                            <span className="rounded bg-slate-50 px-2 py-0.5 text-slate-700">Hidden: {order.stats.hidden}</span>
+	                          )}
+	                          <span className="rounded bg-blue-50 px-2 py-0.5 text-blue-700">Total: {order.stats.expected}</span>
+	                        </div>
                         <div className="flex flex-wrap gap-2">
                           <button
                             onClick={() => toggleOrder(order.orderId)}
@@ -2222,6 +2852,28 @@ ${summary.urgent_findings.map(f => `• ${f}`).join('\n')}` : ''}
                               <User className="h-4 w-4 mr-2" />
                             )}
                             {generatingPatientSummary[order.orderId] ? 'Generating...' : 'Patient Summary'}
+                          </button>
+                          {/* Order-level AI Delta Check - only enabled when 80%+ results are entered */}
+                          <button
+                            onClick={() => handleOrderDeltaCheck(order)}
+                            disabled={generatingOrderDeltaCheck[order.orderId] || order.stats.expected === 0 || (order.stats.entered / order.stats.expected) < 0.8}
+                            className={`inline-flex items-center px-4 py-2 rounded-xl bg-gradient-to-r from-amber-500 to-orange-500 text-white transition-all duration-200 ${
+                              generatingOrderDeltaCheck[order.orderId] || (order.stats.expected > 0 && (order.stats.entered / order.stats.expected) < 0.8)
+                                ? 'opacity-50 cursor-not-allowed'
+                                : 'hover:from-amber-600 hover:to-orange-600 active:scale-95'
+                            }`}
+                            title={
+                              order.stats.expected > 0 && (order.stats.entered / order.stats.expected) < 0.8
+                                ? `Order Delta Check requires 80%+ results entered (currently ${Math.round((order.stats.entered / order.stats.expected) * 100)}%)`
+                                : 'Order-level AI Delta Check - Validates ALL test groups together with inter-test-group analysis'
+                            }
+                          >
+                            {generatingOrderDeltaCheck[order.orderId] ? (
+                              <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                            ) : (
+                              <Zap className="h-4 w-4 mr-2" />
+                            )}
+                            {generatingOrderDeltaCheck[order.orderId] ? 'Analyzing...' : 'Order Delta Check'}
                           </button>
                           {/* AI Flags button hidden - flag analysis now done in backend automatically */}
                           <button
@@ -2322,19 +2974,30 @@ ${summary.urgent_findings.map(f => `• ${f}`).join('\n')}` : ''}
                                     </thead>
                                     <tbody className="divide-y divide-gray-100">
                                       {analytes.map(analyte => {
-                                        const isRerunRequest = analyte.verify_note && analyte.verify_note.toUpperCase().includes("RE-RUN");
-                                        return (
-                                        <tr key={analyte.id} className={`hover:bg-blue-50 ${isRerunRequest ? 'bg-orange-50' : ''}`}>
+	                                        const isRerunRequest = analyte.verify_note && analyte.verify_note.toUpperCase().includes("RE-RUN");
+	                                        const isHidden = !!analyte.is_hidden_from_report;
+	                                        return (
+	                                        <tr key={analyte.id} className={`hover:bg-blue-50 ${isHidden ? 'bg-slate-50 text-slate-500' : isRerunRequest ? 'bg-orange-50' : ''}`}>
                                           <td className="px-4 py-4">
                                             <div className="flex items-center gap-2">
                                               <div className="font-semibold text-gray-900">{analyte.parameter}</div>
-                                              {isRerunRequest && (
-                                                <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-orange-100 text-orange-800 border border-orange-200">
+	                                              {isRerunRequest && (
+	                                                <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-orange-100 text-orange-800 border border-orange-200">
                                                   <RefreshCw className="h-3 w-3 mr-1" />
                                                   RE-RUN
-                                                </span>
-                                              )}
-                                            </div>
+	                                                </span>
+	                                              )}
+	                                              {isHidden && (
+	                                                <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-slate-200 text-slate-700 border border-slate-300">
+	                                                  Hidden from report
+	                                                </span>
+	                                              )}
+	                                            </div>
+	                                            {isHidden && (
+	                                              <div className="mt-1 text-xs text-slate-500">
+	                                                {analyte.hidden_reason || "Will not print on final report"}
+	                                              </div>
+	                                            )}
                                             {isRerunRequest && analyte.verify_note && (
                                               <div className="mt-1 text-xs text-orange-600 bg-orange-50 px-2 py-1 rounded border border-orange-200">
                                                 {analyte.verify_note}
@@ -2539,10 +3202,10 @@ ${summary.urgent_findings.map(f => `• ${f}`).join('\n')}` : ''}
                         return (
                           <div className="bg-white rounded-2xl shadow-sm border border-gray-200 mt-6">
                             <TrendGraphPanel
-                              orderId={order.orderId}
-                              patientId={order.patientId}
-                              analyteIds={allAnalytes.filter((a: any) => a.analyte_id).map((a: any) => a.analyte_id)}
-                              analyteNames={allAnalytes.map((a: any) => a.parameter)}
+	                              orderId={order.orderId}
+	                              patientId={order.patientId}
+	                              analyteIds={allAnalytes.map((a: any) => a.analyte_id || '')}
+	                              analyteNames={allAnalytes.map((a: any) => a.parameter)}
                               includeInReport={includeTrendsInReport[order.orderId] ?? false}
                               onIncludeInReportChange={(include) => {
                                 setIncludeTrendsInReport(prev => ({ ...prev, [order.orderId]: include }));
@@ -2620,13 +3283,24 @@ ${summary.urgent_findings.map(f => `• ${f}`).join('\n')}` : ''}
         />
       )}
 
-      {/* AI Delta Check Modal */}
+      {/* AI Delta Check Modal (Panel-level) */}
       {showDeltaCheckModal && deltaCheckTargetResultId && aiDeltaCheckResults[deltaCheckTargetResultId] && (
         <AIDeltaCheckModal
           deltaCheck={aiDeltaCheckResults[deltaCheckTargetResultId]}
           onClose={() => {
             setShowDeltaCheckModal(false);
             setDeltaCheckTargetResultId(null);
+          }}
+        />
+      )}
+
+      {/* Order-Level AI Delta Check Modal */}
+      {showOrderDeltaCheckModal && orderDeltaCheckTargetOrderId && orderDeltaCheckResults[orderDeltaCheckTargetOrderId] && (
+        <OrderDeltaCheckModal
+          deltaCheck={orderDeltaCheckResults[orderDeltaCheckTargetOrderId]}
+          onClose={() => {
+            setShowOrderDeltaCheckModal(false);
+            setOrderDeltaCheckTargetOrderId(null);
           }}
         />
       )}
@@ -2648,7 +3322,7 @@ ${summary.urgent_findings.map(f => `• ${f}`).join('\n')}` : ''}
                 <span className="font-semibold text-gray-800">
                   Quick Preview — {quickPreview.patientName}
                 </span>
-                <span className="text-xs text-gray-400 ml-1">(Matches generate letterhead print version)</span>
+                <span className="text-xs text-gray-400 ml-1">(Basic print style)</span>
               </div>
               <div className="flex items-center space-x-2">
                 <button
@@ -2667,12 +3341,12 @@ ${summary.urgent_findings.map(f => `• ${f}`).join('\n')}` : ''}
               </div>
             </div>
             {/* iframe */}
-            <iframe
-              ref={previewIframeRef}
-              srcDoc={quickPreview.html}
-              className="flex-1 w-full border-0"
-              title="Quick Preview"
-            />
+	            <iframe
+	              ref={previewIframeRef}
+	              srcDoc={quickPreview.html}
+	              className="flex-1 w-full border-0 bg-slate-100"
+	              title="Quick Preview"
+	            />
           </div>
         </div>,
         document.body
@@ -3601,6 +4275,302 @@ const AIDeltaCheckModal: React.FC<AIDeltaCheckModalProps> = ({ deltaCheck, onClo
           >
             Close
           </button>
+        </div>
+      </div>
+    </div>,
+    document.body
+  );
+};
+
+/* ----------------- Order-Level AI Delta Check Modal Component ----------------- */
+interface OrderDeltaCheckModalProps {
+  deltaCheck: OrderDeltaCheckResponse;
+  onClose: () => void;
+}
+
+const OrderDeltaCheckModal: React.FC<OrderDeltaCheckModalProps> = ({ deltaCheck, onClose }) => {
+  const getConfidenceColor = (level: string) => {
+    switch (level) {
+      case 'high': return 'from-green-500 to-emerald-500';
+      case 'medium': return 'from-yellow-500 to-amber-500';
+      case 'low': return 'from-red-500 to-rose-500';
+      default: return 'from-gray-500 to-slate-500';
+    }
+  };
+
+  const getRecommendationColor = (rec: string) => {
+    switch (rec) {
+      case 'approve': return 'bg-green-100 text-green-800 border-green-200';
+      case 'review_required': return 'bg-yellow-100 text-yellow-800 border-yellow-200';
+      case 'reject': return 'bg-red-100 text-red-800 border-red-200';
+      default: return 'bg-gray-100 text-gray-800 border-gray-200';
+    }
+  };
+
+  const getSeverityColor = (severity: string) => {
+    switch (severity) {
+      case 'critical': return 'bg-red-100 text-red-800 border-red-300';
+      case 'warning': return 'bg-yellow-100 text-yellow-800 border-yellow-300';
+      case 'info': return 'bg-blue-100 text-blue-800 border-blue-300';
+      default: return 'bg-gray-100 text-gray-800 border-gray-300';
+    }
+  };
+
+  const getStatusColor = (status: string) => {
+    switch (status) {
+      case 'pass': return 'bg-green-100 text-green-800 border-green-200';
+      case 'warning': return 'bg-yellow-100 text-yellow-800 border-yellow-200';
+      case 'fail': return 'bg-red-100 text-red-800 border-red-200';
+      default: return 'bg-gray-100 text-gray-800 border-gray-200';
+    }
+  };
+
+  const totalIssues = (deltaCheck.test_group_issues?.reduce((sum, tg) => sum + (tg.issues?.length || 0), 0) || 0) +
+    (deltaCheck.inter_test_group_issues?.length || 0);
+
+  return ReactDOM.createPortal(
+    <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+      <div className="bg-white rounded-2xl shadow-2xl max-w-5xl w-full max-h-[90vh] overflow-hidden">
+        {/* Header */}
+        <div className="bg-gradient-to-r from-amber-500 to-orange-600 px-6 py-4 flex items-center justify-between">
+          <div className="flex items-center space-x-3">
+            <ShieldCheck className="h-6 w-6 text-white" />
+            <h3 className="text-xl font-bold text-white">Order-Level AI Delta Check</h3>
+            <span className={`px-3 py-1 rounded-full text-sm font-semibold bg-gradient-to-r ${getConfidenceColor(deltaCheck.confidence_level)} text-white shadow-sm`}>
+              {deltaCheck.confidence_score}% Confidence
+            </span>
+          </div>
+          <button
+            onClick={onClose}
+            className="text-white hover:bg-white hover:bg-opacity-20 rounded-full p-2 transition-colors"
+          >
+            <X className="h-5 w-5" />
+          </button>
+        </div>
+
+        {/* Content */}
+        <div className="p-6 overflow-y-auto max-h-[calc(90vh-180px)] space-y-6">
+          {/* Summary Section */}
+          <div className="bg-gradient-to-r from-gray-50 to-slate-50 rounded-xl p-4 border border-gray-200">
+            <div className="flex items-start gap-4">
+              <div className={`flex-shrink-0 p-3 rounded-full ${deltaCheck.confidence_level === 'high' ? 'bg-green-100' : deltaCheck.confidence_level === 'medium' ? 'bg-yellow-100' : 'bg-red-100'}`}>
+                {deltaCheck.confidence_level === 'high' ? (
+                  <CheckCircle2 className="h-6 w-6 text-green-600" />
+                ) : deltaCheck.confidence_level === 'medium' ? (
+                  <AlertTriangle className="h-6 w-6 text-yellow-600" />
+                ) : (
+                  <AlertCircle className="h-6 w-6 text-red-600" />
+                )}
+              </div>
+              <div className="flex-1">
+                <p className="text-gray-700 text-lg">{deltaCheck.summary}</p>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  <span className={`inline-flex items-center px-3 py-1 rounded-full text-sm font-semibold border ${getRecommendationColor(deltaCheck.recommendation)}`}>
+                    Recommendation: {deltaCheck.recommendation?.replace('_', ' ').toUpperCase()}
+                  </span>
+                  <span className="inline-flex items-center px-3 py-1 rounded-full text-sm font-medium bg-gray-100 text-gray-700 border border-gray-200">
+                    {totalIssues} Issue{totalIssues !== 1 ? 's' : ''} Found
+                  </span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* Quality Breakdown by Test Group */}
+          {deltaCheck.quality_breakdown && deltaCheck.quality_breakdown.length > 0 && (
+            <div className="space-y-3">
+              <h4 className="text-lg font-semibold text-gray-900 flex items-center gap-2">
+                <BarChart3 className="h-5 w-5 text-indigo-500" />
+                Quality Score by Test Group
+              </h4>
+              <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
+                {deltaCheck.quality_breakdown.map((item, idx) => (
+                  <div key={idx} className={`rounded-xl p-4 border ${getStatusColor(item.status)}`}>
+                    <div className="font-medium text-sm truncate">{item.test_group}</div>
+                    <div className="flex items-center justify-between mt-2">
+                      <span className="text-2xl font-bold">{item.score}</span>
+                      <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${getStatusColor(item.status)}`}>
+                        {item.status.toUpperCase()}
+                      </span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Inter-Test Group Issues - The key differentiator */}
+          {deltaCheck.inter_test_group_issues && deltaCheck.inter_test_group_issues.length > 0 && (
+            <div className="space-y-3">
+              <h4 className="text-lg font-semibold text-gray-900 flex items-center gap-2">
+                <Activity className="h-5 w-5 text-purple-500" />
+                Inter-Test Group Validation ({deltaCheck.inter_test_group_issues.length})
+              </h4>
+              <div className="space-y-3">
+                {deltaCheck.inter_test_group_issues.map((issue, idx) => (
+                  <div key={idx} className={`rounded-xl p-4 border ${getSeverityColor(issue.severity)}`}>
+                    <div className="flex items-start justify-between">
+                      <div className="flex-1">
+                        <div className="flex items-center gap-2 mb-2">
+                          <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${getSeverityColor(issue.severity)}`}>
+                            {issue.severity?.toUpperCase()}
+                          </span>
+                          <span className="text-xs px-2 py-0.5 rounded-full bg-purple-100 text-purple-700">
+                            {issue.issue_type?.replace(/_/g, ' ')}
+                          </span>
+                        </div>
+                        <p className="text-sm text-gray-700 font-medium">{issue.description}</p>
+                        <div className="mt-2 flex flex-wrap gap-1">
+                          <span className="text-xs text-gray-500">Groups:</span>
+                          {issue.test_groups_involved?.map((tg, i) => (
+                            <span key={i} className="text-xs px-2 py-0.5 rounded bg-gray-200 text-gray-700">{tg}</span>
+                          ))}
+                        </div>
+                        {issue.affected_analytes && issue.affected_analytes.length > 0 && (
+                          <div className="mt-1 flex flex-wrap gap-1">
+                            <span className="text-xs text-gray-500">Analytes:</span>
+                            {issue.affected_analytes.map((a, i) => (
+                              <span key={i} className="text-xs px-2 py-0.5 rounded bg-amber-100 text-amber-800">{a}</span>
+                            ))}
+                          </div>
+                        )}
+                        {issue.clinical_rationale && (
+                          <p className="text-xs text-gray-600 mt-2 italic">
+                            <strong>Clinical rationale:</strong> {issue.clinical_rationale}
+                          </p>
+                        )}
+                        {issue.suggested_action && (
+                          <p className="text-sm text-blue-700 mt-2 flex items-center gap-1">
+                            <Zap className="h-3 w-3" /> {issue.suggested_action}
+                          </p>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Per-Test-Group Issues */}
+          {deltaCheck.test_group_issues && deltaCheck.test_group_issues.some(tg => tg.issues && tg.issues.length > 0) && (
+            <div className="space-y-3">
+              <h4 className="text-lg font-semibold text-gray-900 flex items-center gap-2">
+                <AlertCircle className="h-5 w-5 text-red-500" />
+                Issues by Test Group
+              </h4>
+              <div className="space-y-4">
+                {deltaCheck.test_group_issues.filter(tg => tg.issues && tg.issues.length > 0).map((tg, tgIdx) => (
+                  <div key={tgIdx} className="border border-gray-200 rounded-xl overflow-hidden">
+                    <div className="bg-gray-100 px-4 py-2 font-medium text-gray-800 flex items-center gap-2">
+                      <TestTube className="h-4 w-4" />
+                      {tg.test_group_name}
+                      <span className="text-xs bg-red-100 text-red-700 px-2 py-0.5 rounded-full">
+                        {tg.issues.length} issue{tg.issues.length !== 1 ? 's' : ''}
+                      </span>
+                    </div>
+                    <div className="p-4 space-y-2">
+                      {tg.issues.map((issue, issueIdx) => (
+                        <div key={issueIdx} className={`rounded-lg p-3 border ${getSeverityColor(issue.severity)}`}>
+                          <div className="flex items-center gap-2 mb-1">
+                            <span className="font-medium text-sm">{issue.affected_analytes?.join(', ')}</span>
+                            <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${getSeverityColor(issue.severity)}`}>
+                              {issue.severity?.toUpperCase()}
+                            </span>
+                          </div>
+                          <p className="text-sm text-gray-700">{issue.description}</p>
+                          {issue.suggested_action && (
+                            <p className="text-xs text-blue-700 mt-1 flex items-center gap-1">
+                              <Zap className="h-3 w-3" /> {issue.suggested_action}
+                            </p>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Attention Required */}
+          {deltaCheck.attention_required && deltaCheck.attention_required.length > 0 && (
+            <div className="space-y-3">
+              <h4 className="text-lg font-semibold text-gray-900 flex items-center gap-2">
+                <Eye className="h-5 w-5 text-amber-500" />
+                Attention Required ({deltaCheck.attention_required.length})
+              </h4>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                {deltaCheck.attention_required.map((item, idx) => (
+                  <div key={idx} className="flex items-center gap-3 p-3 bg-amber-50 rounded-lg border border-amber-200">
+                    <AlertTriangle className="h-4 w-4 text-amber-600 flex-shrink-0" />
+                    <div>
+                      <span className="text-sm font-medium text-amber-800">{item.analyte}</span>
+                      <span className="text-xs text-amber-600 ml-2">({item.test_group})</span>
+                      <p className="text-xs text-amber-700 mt-0.5">{item.reason}</p>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Validated Results Section */}
+          {deltaCheck.validated_results && deltaCheck.validated_results.length > 0 && (
+            <div className="space-y-3">
+              <h4 className="text-lg font-semibold text-gray-900 flex items-center gap-2">
+                <CheckCircle2 className="h-5 w-5 text-green-500" />
+                Validated Results ({deltaCheck.validated_results.length})
+              </h4>
+              <div className="flex flex-wrap gap-2">
+                {deltaCheck.validated_results.slice(0, 20).map((result, idx) => (
+                  <span key={idx} className="inline-flex items-center px-3 py-1.5 rounded-lg bg-green-50 text-green-800 text-sm border border-green-200">
+                    <CheckCircle2 className="h-3 w-3 mr-1.5" />
+                    {result}
+                  </span>
+                ))}
+                {deltaCheck.validated_results.length > 20 && (
+                  <span className="inline-flex items-center px-3 py-1.5 rounded-lg bg-gray-100 text-gray-600 text-sm border border-gray-200">
+                    +{deltaCheck.validated_results.length - 20} more
+                  </span>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* Verifier Notes Section */}
+          {deltaCheck.verifier_notes && (
+            <div className="bg-blue-50 rounded-xl p-4 border border-blue-200">
+              <h4 className="text-sm font-semibold text-blue-900 mb-2 flex items-center gap-2">
+                <FileText className="h-4 w-4" />
+                Notes for Verifier
+              </h4>
+              <p className="text-sm text-blue-800 whitespace-pre-wrap">{deltaCheck.verifier_notes}</p>
+            </div>
+          )}
+        </div>
+
+        {/* Footer */}
+        <div className="border-t bg-gray-50 px-6 py-4 flex items-center justify-between">
+          <p className="text-sm text-gray-600">Review the comprehensive order-level delta check before proceeding.</p>
+          <div className="flex gap-3">
+            <button
+              onClick={() => {
+                const text = `Order Delta Check Results\n\nConfidence: ${deltaCheck.confidence_score}%\nRecommendation: ${deltaCheck.recommendation}\n\nSummary:\n${deltaCheck.summary}\n\nVerifier Notes:\n${deltaCheck.verifier_notes || 'None'}`;
+                navigator.clipboard.writeText(text);
+                alert('Results copied to clipboard!');
+              }}
+              className="px-4 py-2 bg-white border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 transition-colors"
+            >
+              Copy to Clipboard
+            </button>
+            <button
+              onClick={onClose}
+              className="px-6 py-2 bg-gradient-to-r from-gray-600 to-slate-600 text-white rounded-lg hover:from-gray-700 hover:to-slate-700 transition-colors"
+            >
+              Close
+            </button>
+          </div>
         </div>
       </div>
     </div>,

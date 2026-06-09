@@ -4,8 +4,12 @@ import {
   generateOrderSampleId,
   getOrderAssignedColor,
 } from "./colorAssignment";
+import {
+  autoAssignCompactPages,
+  buildCompactGroupDefinitions,
+} from "./compactPrintPdf";
 import { notificationTriggerService } from "./notificationTriggerService";
-import { getBlockedApprovalCandidates } from "./resultApprovalGuard";
+import { optimizeBatch, smartOptimizeImage } from "./imageOptimizer";
 
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
 const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
@@ -15,6 +19,173 @@ if (!supabaseUrl || !supabaseAnonKey) {
 }
 
 export const supabase = createClient(supabaseUrl, supabaseAnonKey);
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const isUuid = (value: unknown): value is string =>
+  typeof value === "string" && UUID_RE.test(value);
+
+const isSampleIdConflictError = (error: any) =>
+  error?.code === "23505" &&
+  String(error?.message || error?.details || "").includes("unique_sample_id_per_lab");
+
+const getDailySequenceFromOrder = (order: any): number => {
+  if (typeof order?.order_number === "number" && Number.isFinite(order.order_number)) {
+    return order.order_number;
+  }
+
+  const tail = String(order?.sample_id || "").match(/(?:^|[/-])(\d+)\s*$/)?.[1] || "";
+  const parsed = parseInt(tail, 10);
+  return Number.isFinite(parsed) ? parsed : 0;
+};
+
+const normalizeActiveReportPriority = (priority: unknown): number => {
+  const numeric = Number(priority);
+  return Number.isFinite(numeric) && numeric > 0 ? numeric : Number.MAX_SAFE_INTEGER;
+};
+
+const autoSaveCompactPlannerForOrder = async (
+  orderId: string,
+  labId?: string | null,
+  pdfLayoutSettings?: Record<string, any> | null,
+) => {
+  try {
+    if (!isUuid(orderId)) return;
+
+    const { data: orderRow, error: orderError } = await supabase
+      .from("orders")
+      .select("report_settings")
+      .eq("id", orderId)
+      .maybeSingle();
+
+    if (orderError) {
+      console.warn("Auto compact planner: failed to fetch order settings", orderError);
+      return;
+    }
+
+    const currentSettings = ((orderRow as any)?.report_settings || {}) as Record<string, any>;
+    if (
+      currentSettings.groupOrderManualOverride === true ||
+      currentSettings.compactPageAssignmentsManualOverride === true
+    ) {
+      console.log(`Auto compact planner skipped for order ${orderId}: manual planner exists`);
+      return;
+    }
+
+    let effectivePdfSettings = pdfLayoutSettings || null;
+    if (!effectivePdfSettings && labId) {
+      const { data: lab } = await supabase
+        .from("labs")
+        .select("pdf_layout_settings")
+        .eq("id", labId)
+        .maybeSingle();
+      effectivePdfSettings = ((lab as any)?.pdf_layout_settings || null) as Record<string, any> | null;
+    }
+
+    const compactPrint = (effectivePdfSettings?.compactPrint || {}) as Record<string, any>;
+    const maxClubbedAnalytes = Math.max(
+      1,
+      Number(
+        currentSettings.compactMaxClubbedAnalytes ||
+          compactPrint.maxClubbedAnalytes ||
+          compactPrint.maxClusterAnalytes ||
+          5,
+      ) || 5,
+    );
+
+    const { data: context, error: contextError } = await database.reports.getTemplateContext(orderId);
+    if (contextError || !context) {
+      console.warn("Auto compact planner: failed to load report context", contextError);
+      return;
+    }
+
+    const [{ data: orderTestGroupRows }, { data: orderTestRows }] = await Promise.all([
+      supabase
+        .from("order_test_groups")
+        .select("test_group_id, test_name, print_order, created_at, test_groups(report_priority)")
+        .eq("order_id", orderId),
+      supabase
+        .from("order_tests")
+        .select("test_group_id, test_name, print_order, created_at, test_groups(report_priority)")
+        .eq("order_id", orderId)
+        .neq("is_canceled", true),
+    ]);
+
+    const descriptorMap = new Map<string, {
+      testGroupId: string;
+      testName: string;
+      reportPriority: number | null;
+      printOrder: number;
+      createdAt?: string | null;
+    }>();
+
+    const pushDescriptor = (row: any) => {
+      if (!row?.test_group_id || descriptorMap.has(row.test_group_id)) return;
+      const testGroup = Array.isArray(row.test_groups) ? row.test_groups[0] : row.test_groups;
+      const priority = Number(testGroup?.report_priority);
+      descriptorMap.set(row.test_group_id, {
+        testGroupId: row.test_group_id,
+        testName: row.test_name || "Test Results",
+        reportPriority: Number.isFinite(priority) ? priority : null,
+        printOrder: Number(row.print_order ?? 0),
+        createdAt: row.created_at || null,
+      });
+    };
+
+    (orderTestGroupRows || []).forEach(pushDescriptor);
+    (orderTestRows || []).forEach(pushDescriptor);
+
+    for (const groupId of context.testGroupIds || []) {
+      if (!groupId || descriptorMap.has(groupId)) continue;
+      descriptorMap.set(groupId, {
+        testGroupId: groupId,
+        testName: "Test Results",
+        reportPriority: null,
+        printOrder: 999,
+        createdAt: null,
+      });
+    }
+
+    const orderedGroups = [...descriptorMap.values()].sort((a, b) => {
+      const aPriority = normalizeActiveReportPriority(a.reportPriority);
+      const bPriority = normalizeActiveReportPriority(b.reportPriority);
+      if (aPriority !== bPriority) return aPriority - bPriority;
+      if (a.printOrder !== b.printOrder) return a.printOrder - b.printOrder;
+      return a.testName.localeCompare(b.testName);
+    });
+
+    const orderedGroupIds = orderedGroups.map((group) => group.testGroupId);
+    const compactGroups = buildCompactGroupDefinitions(context, orderedGroupIds);
+    const compactPageAssignments = autoAssignCompactPages(compactGroups, maxClubbedAnalytes);
+    const now = new Date().toISOString();
+
+    await supabase
+      .from("orders")
+      .update({
+        report_settings: {
+          ...currentSettings,
+          ...(currentSettings.printLayoutMode || compactPrint.defaultMode === "compact"
+            ? { printLayoutMode: currentSettings.printLayoutMode || "compact" }
+            : {}),
+          groupOrder: orderedGroupIds,
+          groupOrderManualOverride: false,
+          compactPageAssignments,
+          compactPageAssignmentsManualOverride: false,
+          compactPageAssignmentsAutoGenerated: true,
+          compactPlannerGeneratedAt: now,
+          compactMaxClubbedAnalytes: maxClubbedAnalytes,
+        },
+        updated_at: now,
+      })
+      .eq("id", orderId);
+
+    console.log(`✅ Auto compact planner saved for order ${orderId}`, {
+      groups: orderedGroupIds.length,
+      pages: new Set(Object.values(compactPageAssignments)).size,
+    });
+  } catch (error) {
+    console.warn("Auto compact planner failed:", error);
+  }
+};
 
 export interface ReportTemplateContextMeta {
   orderNumber: string;
@@ -71,9 +242,6 @@ export interface ReportTemplateAnalyteRow {
   expected_normal_values?: string[];
   is_auto_calculated?: boolean;
   is_calculated?: boolean;
-  group_interpretation?: string | null;
-  show_group_interpretation_in_report?: boolean;
-  print_options?: Record<string, unknown> | null;
 }
 
 export interface ReportTemplateContext {
@@ -1031,7 +1199,6 @@ export const database = {
       preferred_language?: string;
       method_options?: string[];
       pdf_letterhead_mode?: "background" | "header_footer";
-      show_dual_signatory?: boolean;
       loyalty_enabled?: boolean;
       loyalty_conversion_rate?: number;
       loyalty_min_redeem_points?: number;
@@ -2086,6 +2253,16 @@ export const database = {
         .select()
         .single();
 
+      notificationTriggerService.triggerLoyaltyPoints(
+        patientId,
+        orderId,
+        lab_id,
+        "earned",
+        { points: pointsEarned, balance: newBalance },
+      ).catch((err) =>
+        console.warn("Loyalty points WhatsApp notification failed:", err)
+      );
+
       return { data: { pointsEarned, newBalance }, error: txnError };
     },
 
@@ -2178,6 +2355,20 @@ export const database = {
           loyalty_discount_amount: discountAmount,
         })
         .eq("id", orderId);
+
+      notificationTriggerService.triggerLoyaltyPoints(
+        patientId,
+        orderId,
+        lab_id,
+        "redeemed",
+        {
+          points: pointsToRedeem,
+          balance: newBalance,
+          discountAmount,
+        },
+      ).catch((err) =>
+        console.warn("Loyalty redemption WhatsApp notification failed:", err)
+      );
 
       return {
         data: { discountAmount, pointsRedeemed: pointsToRedeem, newBalance },
@@ -3232,10 +3423,11 @@ export const database = {
         .maybeSingle();
       const labCode: string | undefined = labRow?.code ?? undefined;
 
-      // Count existing orders for this date to get sequence number (filtered by lab_id)
-      const { count: dailyOrderCount, error: countError } = await supabase
+      // Read existing orders for this date and start after the highest used
+      // sequence. Counting alone can reuse IDs after deletes or concurrent saves.
+      const { data: dailyOrders, error: sequenceError } = await supabase
         .from("orders")
-        .select("id", { count: "exact", head: true })
+        .select("sample_id, order_number")
         .eq("lab_id", lab_id)
         .gte("order_date", orderDate)
         .lt(
@@ -3244,43 +3436,67 @@ export const database = {
             .toISOString().split("T")[0],
         );
 
-      if (countError) {
-        console.error("Error counting daily orders:", countError);
-        return { data: null, error: countError };
+      if (sequenceError) {
+        console.error("Error reading daily order sequence:", sequenceError);
+        return { data: null, error: sequenceError };
       }
-
-      const dailySequence = (dailyOrderCount || 0) + 1;
-
-      // Generate sample tracking data for this order
-      // Include lab code prefix so each lab has its own independent sequence
-      const sampleId = generateOrderSampleId(
-        new Date(orderDate),
-        dailySequence,
-        labCode,
-      );
-      const { color_code, color_name } = getOrderAssignedColor(dailySequence);
 
       // Create the order with sample tracking data and lab_id
       // Strip frontend-only fields that don't exist as DB columns
       const { tests, trfAttachmentId, ...orderDetails } = orderData;
-      const orderWithSample = {
-        ...orderDetails,
-        sample_id: sampleId,
-        color_code,
-        color_name,
-        lab_id,
-        created_by: orderDetails?.created_by ?? authUserId,
-        status: orderData.status || "Order Created", // Default status
-      };
+      let dailySequence = Math.max(
+        dailyOrders?.length || 0,
+        ...(dailyOrders || []).map(getDailySequenceFromOrder),
+      ) + 1;
 
-      const { data: order, error } = await supabase
-        .from("orders")
-        .insert([orderWithSample])
-        .select()
-        .single();
+      let order: any = null;
+      let lastInsertError: any = null;
 
-      if (error) {
-        return { data: null, error };
+      for (let attempt = 0; attempt < 10; attempt += 1) {
+        const sampleId = generateOrderSampleId(
+          new Date(orderDate),
+          dailySequence,
+          labCode,
+        );
+        const { color_code, color_name } = getOrderAssignedColor(dailySequence);
+        const orderWithSample = {
+          ...orderDetails,
+          sample_id: sampleId,
+          color_code,
+          color_name,
+          lab_id,
+          created_by: orderDetails?.created_by ?? authUserId,
+          status: orderData.status || "Order Created", // Default status
+        };
+
+        const { data: insertedOrder, error } = await supabase
+          .from("orders")
+          .insert([orderWithSample])
+          .select()
+          .single();
+
+        if (!error) {
+          order = insertedOrder;
+          break;
+        }
+
+        lastInsertError = error;
+        if (!isSampleIdConflictError(error)) {
+          return { data: null, error };
+        }
+
+        dailySequence += 1;
+      }
+
+      if (!order) {
+        return {
+          data: null,
+          error: new Error(
+            lastInsertError
+              ? "Could not assign a unique sample ID. Please try again."
+              : "Order creation failed",
+          ),
+        };
       }
 
       // Generate QR code data with the created order ID
@@ -3715,11 +3931,53 @@ export const database = {
     // Auto-update order status based on results
     checkAndUpdateStatus: async (orderId: string) => {
       try {
+        if (!isUuid(orderId)) {
+          return { data: null, error: new Error("Invalid order ID") };
+        }
+
+        const { data: rpcData, error: rpcError } = await supabase
+          .rpc("check_and_update_order_status", { p_order_id: orderId });
+
+        if (!rpcError) {
+          const rpcStatus = String((rpcData as any)?.new_status || (rpcData as any)?.status || "");
+          const rpcStatusChanged = (rpcData as any)?.status_changed === true;
+          if (rpcStatusChanged && (rpcStatus === "Report Ready" || rpcStatus === "Completed")) {
+            supabase
+              .from("orders")
+              .select("lab_id")
+              .eq("id", orderId)
+              .maybeSingle()
+              .then(async ({ data: readyOrder }) => {
+                if (!(readyOrder as any)?.lab_id) return;
+                const { data: lab } = await supabase
+                  .from("labs")
+                  .select("pdf_layout_settings")
+                  .eq("id", (readyOrder as any).lab_id)
+                  .maybeSingle();
+
+                await autoSaveCompactPlannerForOrder(orderId, (readyOrder as any).lab_id, (lab as any)?.pdf_layout_settings);
+
+                if ((lab as any)?.pdf_layout_settings?.compactPrint?.autoOnApproval === true) {
+                  supabase.functions
+                    .invoke("generate-pdf-letterhead", {
+                      body: { orderId, printLayoutMode: "compact" },
+                    })
+                    .then(() => console.log(`✅ Auto compact print triggered for order ${orderId}`))
+                    .catch((e) => console.error("Auto compact print failed:", e));
+                }
+              })
+              .catch((e) => console.error("Auto compact planner RPC follow-up failed:", e));
+          }
+          return { data: rpcData, error: null };
+        }
+
+        console.warn("RPC check_and_update_order_status failed, falling back to client status check:", rpcError);
+
         // Get order with tests and results
         const { data: order, error: orderError } = await supabase
           .from("orders")
           .select(`
-            id, status,
+            id, status, lab_id,
             order_tests(id),
             results(id, status, verification_status, result_values(id))
           `)
@@ -3782,6 +4040,28 @@ export const database = {
           console.log(
             `Order ${orderId} status automatically updated from "${order.status}" to "${newStatus}"`,
           );
+
+          // Auto-save compact planner on approval, then optionally auto-generate compact print.
+          if ((newStatus === "Report Ready" || newStatus === "Completed") && order.lab_id) {
+            supabase
+              .from("labs")
+              .select("pdf_layout_settings")
+              .eq("id", order.lab_id)
+              .single()
+              .then(async ({ data: lab }) => {
+                await autoSaveCompactPlannerForOrder(orderId, order.lab_id, lab?.pdf_layout_settings);
+
+                if (lab?.pdf_layout_settings?.compactPrint?.autoOnApproval === true) {
+                  supabase.functions
+                    .invoke("generate-pdf-letterhead", {
+                      body: { orderId, printLayoutMode: "compact" },
+                    })
+                    .then(() => console.log(`✅ Auto compact print triggered for order ${orderId}`))
+                    .catch((e) => console.error("Auto compact print failed:", e));
+                }
+              });
+          }
+
           return {
             data: {
               ...updatedOrder,
@@ -4046,9 +4326,12 @@ export const database = {
           parameter: val.parameter, // Keep parameter name as well
           value: val.value,
           unit: val.unit,
-          reference_range: val.reference_range,
-          flag: val.flag,
-        }));
+	          reference_range: val.reference_range,
+	          flag: val.flag,
+	          verify_status: val.is_hidden_from_report ? "approved" : (val.verify_status || "pending"),
+	          is_hidden_from_report: !!val.is_hidden_from_report,
+	          hidden_reason: val.is_hidden_from_report ? (val.hidden_reason || "Hidden from report") : null,
+	        }));
 
         const { error: valuesError } = await supabase
           .from("result_values")
@@ -4137,9 +4420,12 @@ export const database = {
           parameter: val.parameter, // Keep parameter name as well
           value: val.value,
           unit: val.unit,
-          reference_range: val.reference_range,
-          flag: val.flag,
-        }));
+	          reference_range: val.reference_range,
+	          flag: val.flag,
+	          verify_status: val.is_hidden_from_report ? "approved" : (val.verify_status || "pending"),
+	          is_hidden_from_report: !!val.is_hidden_from_report,
+	          hidden_reason: val.is_hidden_from_report ? (val.hidden_reason || "Hidden from report") : null,
+	        }));
 
         const { error: valuesError } = await supabase
           .from("result_values")
@@ -4324,43 +4610,6 @@ export const database = {
       note?: string,
     ): Promise<{ data: any; error: any }> => {
       try {
-        if (status === "approved" && resultValueIds.length > 0) {
-          let validationRows: any[] | null = null;
-
-          const withCalc = await supabase
-            .from("result_values")
-            .select("id, parameter, value, is_auto_calculated")
-            .in("id", resultValueIds);
-
-          if (!withCalc.error) {
-            validationRows = withCalc.data || [];
-          } else if (String(withCalc.error.message || "").includes("is_auto_calculated")) {
-            const fallback = await supabase
-              .from("result_values")
-              .select("id, parameter, value")
-              .in("id", resultValueIds);
-
-            if (fallback.error) {
-              throw fallback.error;
-            }
-            validationRows = fallback.data || [];
-          } else {
-            throw withCalc.error;
-          }
-
-          const blocked = getBlockedApprovalCandidates(validationRows || []);
-          if (blocked.length > 0) {
-            throw new Error(
-              `Cannot approve blank or placeholder result values: ${
-                blocked
-                  .slice(0, 6)
-                  .map((row: any) => row.parameter || row.id)
-                  .join(", ")
-              }${blocked.length > 6 ? ` and ${blocked.length - 6} more` : ""}`,
-            );
-          }
-        }
-
         // Get current user
         const { data: currentUser } = await database.auth.getCurrentUser();
         if (!currentUser?.user) {
@@ -6853,10 +7102,11 @@ export const database = {
             test_group_analytes(
               analyte_id,
               lab_analyte_id,
-              sort_order,
-              section_heading,
-              is_visible,
-              analytes(
+	              sort_order,
+	              section_heading,
+	              is_visible,
+	              report_display_options,
+	              analytes(
                 id,
                 name,
                 code,
@@ -6961,10 +7211,11 @@ export const database = {
 	            test_group_analytes(
               analyte_id,
               lab_analyte_id,
-              sort_order,
-              section_heading,
-              is_visible,
-              analytes(
+	              sort_order,
+	              section_heading,
+	              is_visible,
+	              report_display_options,
+	              analytes(
                 id,
                 name,
                 code,
@@ -7062,10 +7313,11 @@ export const database = {
             test_group_analytes(
               analyte_id,
               lab_analyte_id,
-              sort_order,
-              section_heading,
-              is_visible,
-              analytes(
+	              sort_order,
+	              section_heading,
+	              is_visible,
+	              report_display_options,
+	              analytes(
                 id,
                 name,
                 code,
@@ -7201,13 +7453,20 @@ export const database = {
             }
           }
 
-          const analyteRelations = testGroupData.analytes.map((
-            analyteId: string,
-          ) => ({
-            test_group_id: testGroup.id,
-            analyte_id: analyteId,
-            lab_analyte_id: labAnalyteMap[analyteId] || null,
-          }));
+	          const analyteMetadata: Record<string, { sort_order?: number; section_heading?: string; is_visible?: boolean; report_display_options?: Record<string, unknown> }> =
+	            testGroupData.analyteMetadata || {};
+
+	          const analyteRelations = testGroupData.analytes.map((
+	            analyteId: string,
+	          ) => ({
+	            test_group_id: testGroup.id,
+	            analyte_id: analyteId,
+	            lab_analyte_id: labAnalyteMap[analyteId] || null,
+	            sort_order: analyteMetadata[analyteId]?.sort_order ?? 0,
+	            section_heading: analyteMetadata[analyteId]?.section_heading || null,
+	            is_visible: analyteMetadata[analyteId]?.is_visible ?? true,
+	            report_display_options: analyteMetadata[analyteId]?.report_display_options || {},
+	          }));
 
           const { error: relationError } = await supabase
             .from("test_group_analytes")
@@ -7403,8 +7662,8 @@ export const database = {
         // Step 2: Update analyte relationships if analytes are provided
 	        if (updates.analytes && Array.isArray(updates.analytes)) {
           const newAnalyteIds: string[] = updates.analytes;
-          const analyteMetadata: Record<string, { sort_order?: number; section_heading?: string; is_visible?: boolean }> =
-            updates.analyteMetadata || {};
+	          const analyteMetadata: Record<string, { sort_order?: number; section_heading?: string; is_visible?: boolean; report_display_options?: Record<string, unknown> }> =
+	            updates.analyteMetadata || {};
 
           // Resolve lab_analyte_id for each analyte_id (use the test group's lab_id)
           let labAnalyteMap: Record<string, string> = {};
@@ -7449,11 +7708,12 @@ export const database = {
             for (const analyteId of newAnalyteIds) {
               const meta = analyteMetadata[analyteId];
               const labAnalyteId = labAnalyteMap[analyteId] || null;
-              const updatePayload: Record<string, any> = {
-                sort_order: meta?.sort_order ?? 0,
-                section_heading: meta?.section_heading || null,
-                is_visible: meta?.is_visible ?? true,
-              };
+	              const updatePayload: Record<string, any> = {
+	                sort_order: meta?.sort_order ?? 0,
+	                section_heading: meta?.section_heading || null,
+	                is_visible: meta?.is_visible ?? true,
+	                report_display_options: meta?.report_display_options || {},
+	              };
               // Always backfill lab_analyte_id when we have it resolved
               if (labAnalyteId) updatePayload.lab_analyte_id = labAnalyteId;
               await supabase
@@ -7860,7 +8120,6 @@ export const database = {
       section_type: string;
       section_name: string;
       display_order?: number;
-      font_size?: number;
       default_content?: string;
       predefined_options?: string[];
       is_required?: boolean;
@@ -7890,7 +8149,6 @@ export const database = {
         section_type: string;
         section_name: string;
         display_order: number;
-        font_size: number;
         default_content: string;
         predefined_options: string[];
         is_required: boolean;
@@ -7950,7 +8208,6 @@ export const database = {
             allow_technician_entry,
             placeholder_key,
             display_order,
-            font_size,
             section_config
           )
         `)
@@ -8368,11 +8625,12 @@ export const database = {
           deleteQuery = deleteQuery.eq("calculated_analyte_id", calculatedAnalyteId);
         }
 
-        if (labId) {
-          await deleteQuery.eq("lab_id", labId);
-        } else {
-        await deleteQuery.is("lab_id", null);
-      }
+        const { error: deleteError } = labId
+          ? await deleteQuery.eq("lab_id", labId)
+          : await deleteQuery.is("lab_id", null);
+        if (deleteError) {
+          return { data: null, error: deleteError };
+        }
 
       if (dependencies.length === 0) {
         return { data: [], error: null };
@@ -8678,8 +8936,6 @@ export const attachmentBatch = {
 
     if (context.optimize !== false) {
       console.log(`Optimizing ${files.length} files for batch upload...`);
-      const { optimizeBatch } = await import("./imageOptimizer");
-
       const optimizationResult = await optimizeBatch(
         files,
         context.onOptimizationProgress,
@@ -8965,9 +9221,6 @@ export const attachments = {
     onOptimizationProgress?: (progress: number, fileName: string) => void;
   }) => {
     try {
-      // Import optimization function dynamically to avoid circular imports
-      const { smartOptimizeImage } = await import("./imageOptimizer");
-
       // Optimize image if enabled and it's an image file
       let fileToUpload = file;
       let optimizationStats = null;
@@ -11094,44 +11347,6 @@ const brandingSignatureAPI = {
       return { data, error };
     },
 
-    setLabDefault: async (
-      signatureId: string,
-      labIdOverride?: string,
-    ) => {
-      const labId = labIdOverride || await database.getCurrentUserLabId();
-      if (!labId) {
-        return {
-          data: null,
-          error: new Error("No lab_id found for current user"),
-        };
-      }
-
-      const { error: clearError } = await supabase
-        .from("lab_user_signatures")
-        .update({
-          is_default: false,
-          updated_at: new Date().toISOString(),
-        })
-        .eq("lab_id", labId);
-
-      if (clearError) {
-        return { data: null, error: clearError };
-      }
-
-      const { data, error } = await supabase
-        .from("lab_user_signatures")
-        .update({
-          is_default: true,
-          updated_at: new Date().toISOString(),
-        })
-        .eq("id", signatureId)
-        .eq("lab_id", labId)
-        .select()
-        .single();
-
-      return { data, error };
-    },
-
     delete: async (signatureId: string) => {
       // Get signature file path
       const { data: signature, error: fetchError } = await supabase
@@ -12517,10 +12732,11 @@ export const aiAnalysis = {
   /**
    * Update include_in_report flag for trend data and generate/upload images if included
    */
-  updateTrendIncludeInReport: async (
-    orderId: string,
-    includeInReport: boolean,
-  ) => {
+	  updateTrendIncludeInReport: async (
+	    orderId: string,
+	    includeInReport: boolean,
+	    selectedAnalyteKeys?: string[],
+	  ) => {
     try {
       // First get the existing trend data
       const { data: orderData, error: fetchError } = await supabase
@@ -12532,11 +12748,27 @@ export const aiAnalysis = {
       if (fetchError) throw fetchError;
 
       const existingData = orderData?.trend_graph_data || {};
-      let updatedData = {
-        ...existingData,
-        include_in_report: includeInReport,
-        include_in_report_updated_at: new Date().toISOString(),
-      };
+	      const normalizedSelectedKeys = (selectedAnalyteKeys || existingData.selected_analyte_keys || [])
+	        .map((key: string) => key?.toString().trim().toLowerCase())
+	        .filter(Boolean);
+	      const shouldIncludeAnalyte = (analyte: any) => {
+	        if (normalizedSelectedKeys.length === 0) return true;
+	        const key = (analyte.analyte_id || analyte.analyte_name || "").toString().trim().toLowerCase();
+	        return normalizedSelectedKeys.includes(key);
+	      };
+	      const baseAnalytes = Array.isArray(existingData.analytes)
+	        ? existingData.analytes.map((analyte: any) => ({
+	          ...analyte,
+	          selected_for_report: shouldIncludeAnalyte(analyte),
+	        }))
+	        : existingData.analytes;
+	      let updatedData = {
+	        ...existingData,
+	        analytes: baseAnalytes,
+	        selected_analyte_keys: normalizedSelectedKeys,
+	        include_in_report: includeInReport,
+	        include_in_report_updated_at: new Date().toISOString(),
+	      };
 
       // If including in report and we have analytes, generate and upload images
       if (
@@ -12551,9 +12783,15 @@ export const aiAnalysis = {
         const { generateTrendSVG, svgToPngBlob, uploadChartImage } =
           await import("./trendChartGenerator");
 
-        const analytesWithImages = await Promise.all(
-          existingData.analytes.map(async (analyte: any) => {
-            try {
+	        const analytesWithImages = await Promise.all(
+	          baseAnalytes.map(async (analyte: any) => {
+	            if (!shouldIncludeAnalyte(analyte)) {
+	              return {
+	                ...analyte,
+	                selected_for_report: false,
+	              };
+	            }
+	            try {
               // Convert stored data format to TrendDataPoint format for SVG generation
               const trendDataPoints = analyte.dataPoints?.map((dp: any) => ({
                 order_date: dp.date || dp.timestamp,
@@ -12595,11 +12833,12 @@ export const aiAnalysis = {
                   console.log(
                     `✅ Uploaded trend image for ${analyte.analyte_name}`,
                   );
-                  return {
-                    ...analyte,
-                    image_url: imageUrl,
-                    image_generated_at: new Date().toISOString(),
-                  };
+	                  return {
+	                    ...analyte,
+	                    selected_for_report: true,
+	                    image_url: imageUrl,
+	                    image_generated_at: new Date().toISOString(),
+	                  };
                 }
               }
 
@@ -12770,16 +13009,15 @@ const whatsappTemplates = {
     const { data: { user } } = await supabase.auth.getUser();
     const userId = user?.id;
 
-    // Check if templates already exist
+    // Check existing categories so new default categories can be added later
     const { data: existing } = await supabase
       .from("whatsapp_message_templates")
-      .select("id")
-      .eq("lab_id", labId)
-      .limit(1);
+      .select("category")
+      .eq("lab_id", labId);
 
-    if (existing && existing.length > 0) {
-      return { error: null }; // Already seeded
-    }
+    const existingCategories = new Set(
+      (existing || []).map((template: any) => template.category),
+    );
 
     // Import default templates
     const { DEFAULT_TEMPLATES, extractPlaceholders } = await import(
@@ -12881,11 +13119,43 @@ const whatsappTemplates = {
         is_default: true,
         is_active: true,
       },
+      {
+        name: DEFAULT_TEMPLATES.loyalty_points_earned.name,
+        category: "loyalty_points_earned",
+        message_content: DEFAULT_TEMPLATES.loyalty_points_earned.message,
+        requires_attachment:
+          DEFAULT_TEMPLATES.loyalty_points_earned.requires_attachment,
+        placeholders: extractPlaceholders(
+          DEFAULT_TEMPLATES.loyalty_points_earned.message,
+        ),
+        is_default: true,
+        is_active: true,
+      },
+      {
+        name: DEFAULT_TEMPLATES.loyalty_points_redeemed.name,
+        category: "loyalty_points_redeemed",
+        message_content: DEFAULT_TEMPLATES.loyalty_points_redeemed.message,
+        requires_attachment:
+          DEFAULT_TEMPLATES.loyalty_points_redeemed.requires_attachment,
+        placeholders: extractPlaceholders(
+          DEFAULT_TEMPLATES.loyalty_points_redeemed.message,
+        ),
+        is_default: true,
+        is_active: true,
+      },
     ];
+
+    const templatesToInsert = templates.filter((template) =>
+      !existingCategories.has(template.category)
+    );
+
+    if (templatesToInsert.length === 0) {
+      return { error: null };
+    }
 
     const { error } = await supabase
       .from("whatsapp_message_templates")
-      .insert(templates.map((t) => ({
+      .insert(templatesToInsert.map((t) => ({
         ...t,
         lab_id: labId,
         created_by: userId,
@@ -13602,6 +13872,8 @@ const notificationSettings = {
     send_report_on_status?: string;
     auto_send_invoice_to_patient?: boolean;
     auto_send_registration_confirmation?: boolean;
+    auto_send_loyalty_points?: boolean;
+    auto_send_loyalty_redemption?: boolean;
     include_test_details_in_registration?: boolean;
     include_invoice_in_registration?: boolean;
     default_patient_channel?: string;
@@ -13698,7 +13970,9 @@ const notificationQueue = {
       | "report_ready"
       | "invoice_generated"
       | "order_registered"
-      | "payment_reminder";
+      | "payment_reminder"
+      | "loyalty_points_earned"
+      | "loyalty_points_redeemed";
     order_id?: string;
     report_id?: string;
     invoice_id?: string;

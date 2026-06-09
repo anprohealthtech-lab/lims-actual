@@ -1,7 +1,7 @@
 // Supabase Edge Function: AI Result Intelligence
 // Deno port of netlify/functions/ai-result-intelligence.ts
-// Handles: patient_summary, clinical_summary, delta_check, verifier_summary,
-//          generate_interpretations, analyze_result_values
+// Handles: patient_summary, clinical_summary, delta_check, order_delta_check,
+//          verifier_summary, generate_interpretations, analyze_result_values
 
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 
@@ -130,13 +130,36 @@ interface DeltaCheckRequest {
   }>;
 }
 
+interface OrderDeltaCheckRequest {
+  action: "order_delta_check";
+  test_groups: Array<{
+    test_group_name: string;
+    test_group_code: string;
+    category?: string;
+    result_values: ResultValue[];
+  }>;
+  patient?: PatientContext;
+  historical_data?: Array<{
+    test_date: string;
+    source: "in-house" | "external";
+    analytes: Array<{
+      name: string;
+      value: string;
+      unit: string;
+      reference_range?: string;
+      flag?: string | null;
+    }>;
+  }>;
+}
+
 type AIRequest =
   | GenerateInterpretationsRequest
   | VerifierSummaryRequest
   | ClinicalSummaryRequest
   | AnalyzeResultValuesRequest
   | PatientSummaryRequest
-  | DeltaCheckRequest;
+  | DeltaCheckRequest
+  | OrderDeltaCheckRequest;
 
 // ── Flag helpers ─────────────────────────────────────────────────────────────
 
@@ -591,6 +614,229 @@ If no issues are found, return an empty issues array and high confidence.
 Return ONLY the JSON object, no additional text.`;
 }
 
+function buildOrderDeltaCheckPrompt(req: OrderDeltaCheckRequest): string {
+  const { test_groups, patient, historical_data } = req;
+
+  const patientInfo = [
+    patient?.age ? `Age: ${patient.age} years` : "",
+    patient?.gender ? `Gender: ${patient.gender}` : "",
+    patient?.clinical_notes ? `Clinical Notes: ${patient.clinical_notes}` : "",
+  ].filter(Boolean).join("\n");
+
+  // Build current results section organized by test group
+  const currentResultsSection = test_groups.map((tg, tgIdx) => {
+    const resultsText = tg.result_values.map((r, i) => {
+      const historyForAnalyte = (historical_data || []).flatMap(h =>
+        h.analytes.filter(a => a.name.toLowerCase() === r.analyte_name.toLowerCase())
+          .map(a => ({ ...a, date: h.test_date, source: h.source }))
+      ).slice(0, 2);
+
+      const historyStr = historyForAnalyte.length > 0
+        ? `Prior: ${historyForAnalyte.map(h => `${h.date}: ${h.value} ${h.unit || ""} (${h.source})`).join(" -> ")}`
+        : "No historical data";
+
+      return `   ${i + 1}. ${r.analyte_name}: ${r.value} ${r.unit} (Ref: ${r.reference_range})
+      ${historyStr}`;
+    }).join("\n");
+
+    return `
+━━━ TEST GROUP ${tgIdx + 1}: ${tg.test_group_name} (${tg.test_group_code}) ━━━
+Category: ${tg.category || "General"}
+Results:
+${resultsText}`;
+  }).join("\n\n");
+
+  // Collect all analytes for cross-validation patterns
+  const allAnalytes = test_groups.flatMap(tg =>
+    tg.result_values.map(r => ({ ...r, test_group: tg.test_group_name }))
+  );
+
+  // Detect common panel combinations for inter-test validation
+  const panelPatterns: string[] = [];
+
+  // CBC Differential check
+  const diffPatterns: Record<string, RegExp[]> = {
+    neutrophils: [/\bneutrophils?\b/i, /\bneut\b/i, /\bpoly\b/i],
+    lymphocytes: [/\blymphocytes?\b/i, /\blymph\b/i],
+    monocytes: [/\bmonocytes?\b/i, /\bmono\b/i],
+    eosinophils: [/\beosinophils?\b/i, /\beos\b/i],
+    basophils: [/\bbasophils?\b/i, /\bbaso\b/i],
+  };
+  const findPct = (patterns: RegExp[]): number | null => {
+    const row = allAnalytes.find(r => patterns.some(p => p.test(r.analyte_name || "")));
+    if (!row) return null;
+    const v = parseFloat(String(row.value || "").replace("%", "").trim());
+    return Number.isFinite(v) ? v : null;
+  };
+  const neutPct = findPct(diffPatterns.neutrophils);
+  const lymphPct = findPct(diffPatterns.lymphocytes);
+  const monoPct = findPct(diffPatterns.monocytes);
+  const eosPct = findPct(diffPatterns.eosinophils);
+  const basoPct = findPct(diffPatterns.basophils);
+  const diffValues = [neutPct, lymphPct, monoPct, eosPct, basoPct].filter((v): v is number => v !== null);
+  if (diffValues.length >= 3) {
+    panelPatterns.push(`CBC DIFFERENTIAL CHECK:
+- Neutrophils%: ${neutPct ?? "NA"}, Lymphocytes%: ${lymphPct ?? "NA"}, Monocytes%: ${monoPct ?? "NA"}, Eosinophils%: ${eosPct ?? "NA"}, Basophils%: ${basoPct ?? "NA"}
+- Total: ${diffValues.reduce((s, v) => s + v, 0).toFixed(1)}% (should be ~100%)`);
+  }
+
+  // Renal panel consistency
+  const creatinine = allAnalytes.find(a => /creatinine/i.test(a.analyte_name));
+  const bun = allAnalytes.find(a => /\b(bun|urea nitrogen|blood urea)\b/i.test(a.analyte_name));
+  const egfr = allAnalytes.find(a => /\b(egfr|gfr)\b/i.test(a.analyte_name));
+  if (creatinine && (bun || egfr)) {
+    const renalItems = [
+      creatinine ? `Creatinine: ${creatinine.value} ${creatinine.unit}` : null,
+      bun ? `BUN: ${bun.value} ${bun.unit}` : null,
+      egfr ? `eGFR: ${egfr.value} ${egfr.unit}` : null,
+    ].filter(Boolean);
+    panelPatterns.push(`RENAL PANEL CROSS-CHECK:\n${renalItems.join(", ")}`);
+  }
+
+  // Liver panel consistency
+  const alt = allAnalytes.find(a => /\b(alt|sgpt|alanine)\b/i.test(a.analyte_name));
+  const ast = allAnalytes.find(a => /\b(ast|sgot|aspartate)\b/i.test(a.analyte_name));
+  const alp = allAnalytes.find(a => /\b(alp|alkaline phosphatase)\b/i.test(a.analyte_name));
+  const bilirubin = allAnalytes.find(a => /\bbilirubin\b/i.test(a.analyte_name));
+  const albumin = allAnalytes.find(a => /\balbumin\b/i.test(a.analyte_name));
+  if ((alt || ast) && (alp || bilirubin)) {
+    const liverItems = [
+      alt ? `ALT: ${alt.value} ${alt.unit}` : null,
+      ast ? `AST: ${ast.value} ${ast.unit}` : null,
+      alp ? `ALP: ${alp.value} ${alp.unit}` : null,
+      bilirubin ? `Bilirubin: ${bilirubin.value} ${bilirubin.unit}` : null,
+      albumin ? `Albumin: ${albumin.value} ${albumin.unit}` : null,
+    ].filter(Boolean);
+    panelPatterns.push(`LIVER PANEL CROSS-CHECK:\n${liverItems.join(", ")}`);
+  }
+
+  // Lipid panel consistency
+  const totalChol = allAnalytes.find(a => /\b(total cholesterol|t\.?\s*cholesterol)\b/i.test(a.analyte_name));
+  const hdl = allAnalytes.find(a => /\bhdl\b/i.test(a.analyte_name));
+  const ldl = allAnalytes.find(a => /\bldl\b/i.test(a.analyte_name));
+  const trig = allAnalytes.find(a => /\b(triglycerides?|tg)\b/i.test(a.analyte_name));
+  if (totalChol && (hdl || ldl || trig)) {
+    const lipidItems = [
+      totalChol ? `Total Chol: ${totalChol.value}` : null,
+      hdl ? `HDL: ${hdl.value}` : null,
+      ldl ? `LDL: ${ldl.value}` : null,
+      trig ? `TG: ${trig.value}` : null,
+    ].filter(Boolean);
+    panelPatterns.push(`LIPID PANEL CROSS-CHECK (TC ≈ HDL + LDL + TG/5):\n${lipidItems.join(", ")}`);
+  }
+
+  // Thyroid panel
+  const tsh = allAnalytes.find(a => /\btsh\b/i.test(a.analyte_name));
+  const t3 = allAnalytes.find(a => /\bt3\b/i.test(a.analyte_name) && !/\bt4\b/i.test(a.analyte_name));
+  const t4 = allAnalytes.find(a => /\b(t4|thyroxine)\b/i.test(a.analyte_name));
+  if (tsh && (t3 || t4)) {
+    const thyroidItems = [
+      tsh ? `TSH: ${tsh.value} ${tsh.unit}` : null,
+      t3 ? `T3: ${t3.value} ${t3.unit}` : null,
+      t4 ? `T4: ${t4.value} ${t4.unit}` : null,
+    ].filter(Boolean);
+    panelPatterns.push(`THYROID PANEL CROSS-CHECK:\n${thyroidItems.join(", ")}`);
+  }
+
+  const panelPatternsSection = panelPatterns.length > 0
+    ? `\n═══ INTER-TEST GROUP VALIDATION PATTERNS ═══\n${panelPatterns.join("\n\n")}`
+    : "";
+
+  return `You are a senior clinical laboratory quality control specialist performing a focused ORDER-LEVEL DELTA CHECK.
+
+ORDER-LEVEL DELTA CHECK PURPOSE:
+This is a focused clinical/laboratory QC review of all test groups in one order. You must:
+1. Score the whole order and each test group.
+2. Identify clinically meaningful delta changes from prior matched values.
+3. Cross-validate physiological consistency between test groups.
+4. Validate mathematical panel relationships and impossible/unlikely combinations.
+5. Flag sample integrity patterns, critical combinations, or missing companion tests.
+
+OUT OF SCOPE:
+- Do not analyze LIS/app-generated flag correctness.
+- Do not report H/L/N flag mismatch, reference-range flagging errors, or unit display formatting issues.
+- Ignore result flags except where the value itself suggests a critical clinical/sample concern.
+- Do not list every normal or validated analyte.
+
+${patientInfo ? `PATIENT CONTEXT:\n${patientInfo}` : ""}
+
+═══ CURRENT ORDER RESULTS ═══
+${currentResultsSection}
+${panelPatternsSection}
+
+═══ INTER-TEST GROUP VALIDATION RULES ═══
+1. CBC + CRP/ESR: High WBC should correlate with elevated inflammatory markers
+2. Renal + Electrolytes: High creatinine often accompanies electrolyte abnormalities
+3. Liver + Coagulation: Severe liver dysfunction affects PT/INR
+4. Lipid Panel: Total Cholesterol ≈ HDL + LDL + (TG/5) for TG < 400
+5. Thyroid: Low TSH with high T3/T4 = hyperthyroid; High TSH with low T3/T4 = hypothyroid
+6. CBC Differential: Must total 95-105% (accounting for rounding)
+7. A/G Ratio: Should match albumin and globulin values
+8. Anemia patterns: Low Hb should correlate with RBC indices (MCV, MCH, MCHC)
+9. Diabetes: HbA1c should correlate with recent glucose patterns
+10. Kidney-Liver: Both BUN/Creatinine and liver enzymes elevated may indicate systemic issue
+
+CONFIDENCE SCORING:
+- 90-100 (HIGH): All results pass validation, no inter-test conflicts
+- 70-89 (MEDIUM): Minor issues or expected variations, generally acceptable
+- 50-69 (LOW): Significant concerns requiring review before release
+- 0-49: Critical issues, results should NOT be released without investigation
+
+Respond with a JSON object:
+{
+  "confidence_score": 85,
+  "confidence_level": "high|medium|low",
+  "summary": "Maximum 2 short sentences focused on clinically meaningful QC findings.",
+  "test_group_issues": [
+    {
+      "test_group_name": "Name",
+      "issues": [
+        {
+          "issue_type": "sample_issue|conflicting_result|unusual_change|quality_concern|critical_combination|missing_companion_test",
+          "severity": "critical|warning|info",
+          "affected_analytes": ["Analyte1"],
+          "description": "One concise clinically meaningful issue.",
+          "suggested_action": "One concise action, only if action is needed.",
+          "evidence": "Short supporting values only."
+        }
+      ]
+    }
+  ],
+  "inter_test_group_issues": [
+    {
+      "issue_type": "conflicting_results|pattern_mismatch|physiological_inconsistency|sample_integrity",
+      "severity": "critical|warning|info",
+      "test_groups_involved": ["Group1", "Group2"],
+      "affected_analytes": ["Analyte1", "Analyte2"],
+      "description": "One concise cross-test issue.",
+      "suggested_action": "One concise action, only if action is needed.",
+      "clinical_rationale": "One short rationale."
+    }
+  ],
+  "validated_results": [],
+  "attention_required": [
+    {
+      "test_group": "Group name",
+      "analyte": "Analyte name",
+      "reason": "Short reason"
+    }
+  ],
+  "recommendation": "approve|review_required|reject",
+  "verifier_notes": "One short verifier note, no repeated issue details.",
+  "quality_breakdown": [
+    {
+      "test_group": "Group name",
+      "score": 95,
+      "status": "pass|warning|fail"
+    }
+  ]
+}
+
+Keep output compact: maximum 3 test-group issues, maximum 3 inter-test-group issues, maximum 5 attention_required items.
+IMPORTANT: Focus on clinical/lab QC only. Do not mention flag mismatch or app/LIS flagging.
+Return ONLY the JSON object, no additional text.`;
+}
+
 // ── Gemini caller ─────────────────────────────────────────────────────────────
 
 function extractJsonFromResponse(response: unknown): unknown {
@@ -620,7 +866,7 @@ function extractJsonFromResponse(response: unknown): unknown {
   throw new Error("Could not extract JSON from Gemini response");
 }
 
-async function callGemini(prompt: string, apiKey: string, maxRetries = 4): Promise<unknown> {
+async function callGemini(prompt: string, apiKey: string, maxRetries = 4, maxOutputTokens = 65536): Promise<unknown> {
   let lastError: Error | null = null;
 
   for (let attempt = 0; attempt < maxRetries; attempt++) {
@@ -640,7 +886,7 @@ async function callGemini(prompt: string, apiKey: string, maxRetries = 4): Promi
           generationConfig: {
             temperature: 0.2,
             topP: 0.9,
-            maxOutputTokens: 65536,
+            maxOutputTokens,
             responseMimeType: "application/json",
           },
         }),
@@ -766,6 +1012,17 @@ serve(async (req) => {
         }
         prompt = buildDeltaCheckPrompt(body as DeltaCheckRequest);
         result = await callGemini(prompt, apiKey);
+        break;
+
+      case "order_delta_check":
+        if (!body.test_groups || body.test_groups.length === 0) {
+          return new Response(
+            JSON.stringify({ error: "test_groups array is required for order_delta_check" }),
+            { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } },
+          );
+        }
+        prompt = buildOrderDeltaCheckPrompt(body as OrderDeltaCheckRequest);
+        result = await callGemini(prompt, apiKey, 4, 8192);
         break;
 
       default:
