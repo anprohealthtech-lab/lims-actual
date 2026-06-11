@@ -383,6 +383,12 @@ verify_jwt = false
 [functions.auto-dispatch-analyzer]
 verify_jwt = false
 
+# Called internally with the service-role key and validates that key in the function.
+[functions.resolve-reference-ranges]
+enabled = true
+verify_jwt = false
+entrypoint = "./functions/resolve-reference-ranges/index.ts"
+
 # Payment gateway callbacks (browser redirects) - no JWT, CCAvenue/Razorpay POST directly
 [functions.payment-callback]
 enabled = true

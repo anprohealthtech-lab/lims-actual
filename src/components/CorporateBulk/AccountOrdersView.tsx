@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { supabase, database } from '../../utils/supabase';
 import { Download, FileDown, RefreshCw, Loader2, CheckCircle2, Clock, AlertCircle, ExternalLink, Filter, ClipboardEdit, Printer, Layers, FileSpreadsheet } from 'lucide-react';
 import QuickResultModal from './QuickResultModal';
@@ -294,6 +294,11 @@ const AccountOrdersView: React.FC<AccountOrdersViewProps> = ({ initialAccountId,
     return new Date(b.order_date).getTime() - new Date(a.order_date).getTime();
   };
 
+  const sortedOrders = useMemo(
+    () => [...orders].sort(compareOrdersForBulkPdf),
+    [orders, bulkPdfSortMode],
+  );
+
   const getBulkEligibleOrderIds = (pdfVariant: 'print' | 'ecopy' = 'print') => {
 	    const sourceOrders = selectedOrderIds.size > 0
 	      ? orders.filter((order) => selectedOrderIds.has(order.id))
@@ -352,7 +357,7 @@ const AccountOrdersView: React.FC<AccountOrdersViewProps> = ({ initialAccountId,
       const orderIds = candidateOrders.map((order) => order.id);
       const { data: existingRows, error: existingError } = await supabase
         .from('order_tests')
-        .select('order_id, test_group_id, package_id')
+        .select('id, order_id, test_group_id, package_id')
         .in('order_id', orderIds);
 
       if (existingError) throw existingError;
@@ -365,8 +370,57 @@ const AccountOrdersView: React.FC<AccountOrdersViewProps> = ({ initialAccountId,
         if (row.package_id === selectedPackageId) packagePresentOrders.add(row.order_id);
       });
 
+      const hasExplicitSelection = selectedOrderIds.size > 0;
+      const packageTestIds = new Set(packageTests.map((test) => test.id));
+      const stalePackageRows = (existingRows || []).filter((row: any) =>
+        row.package_id === selectedPackageId &&
+        row.test_group_id &&
+        !packageTestIds.has(row.test_group_id)
+      );
+
+      let removedTestCount = 0;
+      let retainedResultTestCount = 0;
+      const removedRowIds = new Set<string>();
+      if (stalePackageRows.length > 0) {
+        const staleIds = stalePackageRows.map((row: any) => row.id);
+        const { data: resultRows, error: resultError } = await supabase
+          .from('results')
+          .select('order_test_id, order_id, test_group_id')
+          .in('order_id', orderIds);
+        if (resultError) throw resultError;
+
+        const resultBearingIds = new Set(
+          (resultRows || []).map((row: any) => row.order_test_id).filter(Boolean)
+        );
+        const resultBearingGroups = new Set(
+          (resultRows || [])
+            .filter((row: any) => row.order_id && row.test_group_id)
+            .map((row: any) => `${row.order_id}:${row.test_group_id}`)
+        );
+        const removableIds = stalePackageRows
+          .filter((row: any) =>
+            !resultBearingIds.has(row.id) &&
+            !resultBearingGroups.has(`${row.order_id}:${row.test_group_id}`)
+          )
+          .map((row: any) => row.id);
+        retainedResultTestCount = staleIds.length - removableIds.length;
+
+        if (removableIds.length > 0) {
+          const { error: deleteError } = await supabase
+            .from('order_tests')
+            .delete()
+            .in('id', removableIds);
+          if (deleteError) throw deleteError;
+          removedTestCount = removableIds.length;
+          removableIds.forEach((id: string) => removedRowIds.add(id));
+        }
+      }
+
       const rowsToInsert = candidateOrders.flatMap((order) => {
-        if (!packagePresentOrders.has(order.id)) return [];
+        // An explicit row selection is an intentional package change. With no
+        // selection, retain the safer behavior of updating only existing users
+        // of this package within the current filters.
+        if (!hasExplicitSelection && !packagePresentOrders.has(order.id)) return [];
         const existingTestIds = existingByOrder.get(order.id) || new Set<string>();
         return packageTests
           .filter((test) => !existingTestIds.has(test.id))
@@ -382,18 +436,32 @@ const AccountOrdersView: React.FC<AccountOrdersViewProps> = ({ initialAccountId,
           }));
       });
 
-      if (rowsToInsert.length === 0) {
-        setPackageUpdateMessage('No missing tests found. These orders already match the selected package.');
+      if (rowsToInsert.length === 0 && removedTestCount === 0) {
+        setPackageUpdateMessage(
+          retainedResultTestCount > 0
+            ? `Package tests are current. ${retainedResultTestCount} removed package test${retainedResultTestCount === 1 ? '' : 's'} were retained because results already exist.`
+            : hasExplicitSelection
+            ? 'No missing tests found. The selected orders already contain all tests from this package.'
+            : 'No matching orders need an update. Select specific rows to apply this package to different orders.'
+        );
         return;
       }
 
-      const { error: insertError } = await supabase
-        .from('order_tests')
-        .insert(rowsToInsert);
+      if (rowsToInsert.length > 0) {
+        const { error: insertError } = await supabase
+          .from('order_tests')
+          .insert(rowsToInsert);
 
-      if (insertError) throw insertError;
+        if (insertError) throw insertError;
+      }
 
-      const affectedOrderIds = new Set(rowsToInsert.map((row) => row.order_id));
+      const removedOrderIds = stalePackageRows
+        .filter((row: any) => removedRowIds.has(row.id))
+        .map((row: any) => row.order_id);
+      const affectedOrderIds = new Set([
+        ...rowsToInsert.map((row) => row.order_id),
+        ...removedOrderIds,
+      ]);
       const activityRows = candidateOrders
         .filter((order) => affectedOrderIds.has(order.id))
         .map((order) => ({
@@ -401,11 +469,14 @@ const AccountOrdersView: React.FC<AccountOrdersViewProps> = ({ initialAccountId,
           order_id: order.id,
           lab_id: labId,
           activity_type: 'package_update_applied',
-          description: `Missing tests from package "${pkg.name}" were added with no billing impact.`,
+          description: `Package "${pkg.name}" was synchronized with no billing impact.`,
           metadata: {
             package_id: selectedPackageId,
             package_name: pkg.name,
             added_test_count: rowsToInsert.filter((row) => row.order_id === order.id).length,
+            removed_test_count: stalePackageRows.filter((row: any) =>
+              row.order_id === order.id && removedRowIds.has(row.id)
+            ).length,
             price_policy: 'zero_price_no_total_change',
           },
           performed_by: null,
@@ -420,7 +491,9 @@ const AccountOrdersView: React.FC<AccountOrdersViewProps> = ({ initialAccountId,
       }
 
       setPackageUpdateMessage(
-        `Added ${rowsToInsert.length} missing test${rowsToInsert.length === 1 ? '' : 's'} to ${affectedOrderIds.size} order${affectedOrderIds.size === 1 ? '' : 's'}. Prices and totals were not changed.`
+        `Package synchronized for ${affectedOrderIds.size} order${affectedOrderIds.size === 1 ? '' : 's'}: ` +
+        `${rowsToInsert.length} test${rowsToInsert.length === 1 ? '' : 's'} added, ${removedTestCount} removed` +
+        `${retainedResultTestCount > 0 ? `, ${retainedResultTestCount} retained because results exist` : ''}. Prices and totals were not changed.`
       );
       await loadOrders();
       setSelectedOrderIds(new Set());
@@ -671,12 +744,12 @@ const AccountOrdersView: React.FC<AccountOrdersViewProps> = ({ initialAccountId,
 
 	        <div className="flex items-center gap-2">
           <label className="flex items-center gap-2 text-xs text-gray-600">
-            PDF sort
+            Order sort
             <select
               value={bulkPdfSortMode}
               onChange={(e) => setBulkPdfSortMode(e.target.value as BulkPdfSortMode)}
               className="border border-gray-300 rounded-lg px-2 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-              title="Sort order used for ZIP and merged PDF"
+              title="Sort the visible orders and bulk PDF downloads"
             >
               <option value="sample_desc">Sample ID newest first</option>
               <option value="sample_asc">Sample ID oldest first</option>
@@ -813,7 +886,7 @@ const AccountOrdersView: React.FC<AccountOrdersViewProps> = ({ initialAccountId,
                 </tr>
               </thead>
               <tbody>
-	                {orders.map((order) => (
+	                {sortedOrders.map((order) => (
 	                  <tr key={order.id} className={`border-b hover:bg-gray-50 ${selectedOrderIds.has(order.id) ? 'bg-blue-50' : ''}`}>
                     <td className="px-3 py-2.5">
                       <input

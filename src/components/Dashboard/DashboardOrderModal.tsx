@@ -297,18 +297,15 @@ const DashboardOrderModal: React.FC<DashboardOrderModalProps> = ({
     fetchInvoiceDiscount();
   }, [order.invoice_id, invoiceRefreshTrigger]);
 
-  // When invoice has a discount, recalculate currentDue using total_after_discount
-  // instead of order.total_amount (which doesn't reflect the discount)
+  // Keep due based on the live order total so newly added, uninvoiced tests are included.
   useEffect(() => {
     if (invoiceDiscount && invoiceDiscount.total_discount > 0) {
-      const chargesTotal = orderBillingItems.reduce((s: number, i: any) => s + (i.amount || 0), 0);
-      setCurrentDue(Math.max(0, invoiceDiscount.total_after_discount + chargesTotal - (order.paid_amount || 0)));
+      setCurrentDue(Math.max(0, currentTotal - invoiceDiscount.total_discount - (order.paid_amount || 0)));
     }
-  }, [invoiceDiscount, orderBillingItems]);
+  }, [invoiceDiscount, currentTotal, order.paid_amount]);
 
-  const testsSubtotalDisplay = invoiceDiscount?.subtotal != null
-    ? invoiceDiscount.subtotal
-    : Math.max(0, (order.total_amount || 0) - collectionCharge);
+  const billingItemsTotal = orderBillingItems.reduce((sum, item) => sum + (item.amount || 0), 0);
+  const testsSubtotalDisplay = Math.max(0, currentTotal - billingItemsTotal - collectionCharge);
 
   // Load order billing items (extra charges) and item type catalog.
   // order.total_amount = tests + collection ONLY (charges are always separate in order_billing_items).
@@ -465,6 +462,8 @@ const DashboardOrderModal: React.FC<DashboardOrderModalProps> = ({
       }
 
       setIsAddingTest(true);
+      const addedOrderTests: any[] = [];
+      let addedCollectionCharge = Number(item.collection_charge) || 0;
 
       if (item.type === 'package') {
         // --- PACKAGE ADD LOGIC ---
@@ -494,6 +493,10 @@ const DashboardOrderModal: React.FC<DashboardOrderModalProps> = ({
         // 2. Insert Component Tests (Non-billed items linked to package)
         // Note: We use source_package_id to link them, and price 0
         if (pkgGroups && pkgGroups.length > 0) {
+          addedCollectionCharge = pkgGroups.reduce(
+            (sum: number, pg: any) => sum + (Number(pg.test_groups?.collection_charge) || 0),
+            0
+          );
           const components = pkgGroups.map((pg: any) => ({
             order_id: order.id,
             test_group_id: pg.test_group_id,
@@ -504,35 +507,20 @@ const DashboardOrderModal: React.FC<DashboardOrderModalProps> = ({
             is_billed: false
           }));
 
-          const { error: compError } = await supabase
+          const { data: componentTests, error: compError } = await supabase
             .from('order_tests')
-            .insert(components);
+            .insert(components)
+            .select();
           if (compError) throw compError;
+          addedOrderTests.push(...(componentTests || []));
         }
-
-        // 3. Update Order Totals
-        const newTotal = (currentTotal || 0) + (item.price || 0);
-
-        // If order was fully billed, it is now partially billed because we added a new unbilled item
-        const newBillingStatus = order.billing_status === 'billed' ? 'partial' : order.billing_status;
-
-        const { error: orderError } = await supabase
-          .from('orders')
-          .update({
-            total_amount: newTotal,
-            billing_status: newBillingStatus
-          })
-          .eq('id', order.id);
-        if (orderError) throw orderError;
 
         setTests(prev => [...prev, {
           id: headerTest.id,
           test_name: headerTest.test_name,
           outsourced_lab_id: null
         }]);
-        setCurrentTotal(newTotal);
         console.log(`Added package ${item.name}`);
-        await onUpdateStatus(order.id, order.status);
 
       } else {
         // --- INDIVIDUAL TEST LOGIC ---
@@ -550,31 +538,117 @@ const DashboardOrderModal: React.FC<DashboardOrderModalProps> = ({
           .single();
 
         if (error) throw error;
-
-        const newTotal = (currentTotal || 0) + (item.price || 0);
-
-        // If order was fully billed, it is now partially billed because we added a new unbilled item
-        const newBillingStatus = order.billing_status === 'billed' ? 'partial' : order.billing_status;
-
-        const { error: orderError } = await supabase
-          .from('orders')
-          .update({
-            total_amount: newTotal,
-            billing_status: newBillingStatus
-          })
-          .eq('id', order.id);
-
-        if (orderError) throw orderError;
+        addedOrderTests.push(newTest);
 
         setTests(prev => [...prev, {
           id: newTest.id,
           test_name: newTest.test_name,
           outsourced_lab_id: null
         }]);
-        setCurrentTotal(newTotal);
         console.log(`Added ${item.name} successfully.`);
-        await onUpdateStatus(order.id, order.status);
       }
+
+      // Use fresh persisted values. currentTotal also contains extra billing items and must
+      // never be written back to orders.total_amount.
+      const { data: freshOrder, error: freshOrderError } = await supabase
+        .from('orders')
+        .select('total_amount, collection_charge, billing_status, paid_amount, patient_id')
+        .eq('id', order.id)
+        .single();
+      if (freshOrderError) throw freshOrderError;
+
+      const newOrderTotal = (Number(freshOrder.total_amount) || 0)
+        + (Number(item.price) || 0)
+        + addedCollectionCharge;
+      const newCollectionCharge = (Number(freshOrder.collection_charge) || 0) + addedCollectionCharge;
+      const newBillingStatus = freshOrder.billing_status === 'billed'
+        ? 'partial'
+        : freshOrder.billing_status;
+
+      const { error: orderError } = await supabase
+        .from('orders')
+        .update({
+          total_amount: newOrderTotal,
+          collection_charge: newCollectionCharge > 0 ? newCollectionCharge : null,
+          billing_status: newBillingStatus
+        })
+        .eq('id', order.id);
+      if (orderError) throw orderError;
+
+      // Reuse a compatible sample only while it is still awaiting collection.
+      // Otherwise create an additional sample and link the newly added tests to it.
+      if (addedOrderTests.length > 0) {
+        const testGroupIds = addedOrderTests
+          .map(test => test.test_group_id)
+          .filter(Boolean);
+        const { data: groupRows, error: groupError } = await supabase
+          .from('test_groups')
+          .select('id, sample_type, sample_color')
+          .in('id', testGroupIds);
+        if (groupError) throw groupError;
+
+        const groupById = new Map((groupRows || []).map(group => [group.id, group]));
+        const testsBySampleType = new Map<string, any[]>();
+        for (const addedTest of addedOrderTests) {
+          const group = groupById.get(addedTest.test_group_id) as any;
+          const sampleType = group?.sample_type || 'Blood';
+          const matchingTests = testsBySampleType.get(sampleType) || [];
+          matchingTests.push({ addedTest, group, sampleType });
+          testsBySampleType.set(sampleType, matchingTests);
+        }
+
+        const { data: existingSamples, error: samplesError } = await supabase
+          .from('samples')
+          .select('id, sample_type, status')
+          .eq('order_id', order.id);
+        if (samplesError) throw samplesError;
+
+        for (const [sampleType, matchingTests] of testsBySampleType) {
+          const reusableSample = (existingSamples || []).find(sample =>
+            sample.sample_type?.toLowerCase() === sampleType.toLowerCase()
+            && sample.status === 'created'
+          );
+
+          if (reusableSample) {
+            const { error: linkError } = await supabase
+              .from('order_tests')
+              .update({ sample_id: reusableSample.id })
+              .in('id', matchingTests.map(({ addedTest }) => addedTest.id));
+            if (linkError) throw linkError;
+          } else {
+            const { createSamplesForOrder } = await import('../../services/sampleService');
+            const samples = await createSamplesForOrder(
+              order.id,
+              matchingTests.map(({ addedTest, group }) => ({
+                id: addedTest.id,
+                order_id: order.id,
+                test_group_id: addedTest.test_group_id,
+                test_name: addedTest.test_name,
+                test_group: {
+                  sample_type: group?.sample_type || 'Blood',
+                  sample_color: group?.sample_color
+                }
+              })),
+              labId,
+              freshOrder.patient_id || order.patient_id
+            );
+            if (samples.length === 0) {
+              throw new Error(`Could not create the required ${sampleType} sample`);
+            }
+          }
+        }
+      }
+
+      const newCurrentTotal = newOrderTotal + billingItemsTotal;
+      setCollectionCharge(newCollectionCharge);
+      setCurrentTotal(newCurrentTotal);
+      setCurrentDue(Math.max(
+        0,
+        newCurrentTotal
+          - (invoiceDiscount?.total_discount || 0)
+          - (Number(freshOrder.paid_amount) || order.paid_amount || 0)
+      ));
+      await onUpdateStatus(order.id, order.status);
 
       setTestSearch('');
       setTimeout(() => {

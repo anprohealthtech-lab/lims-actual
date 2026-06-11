@@ -149,6 +149,8 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
     hiddenWhenRenderedAsSibling?: boolean;
   };
   type AnalyteMetadata = {
+    tga_id?: string;
+    lab_analyte_id?: string | null;
     sort_order: number;
     section_heading: string;
     is_visible: boolean;
@@ -256,7 +258,7 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
 	        requests.push(
 	          supabase
 	            .from('test_group_analytes')
-	            .select('analyte_id, lab_analyte_id, sort_order, section_heading, is_visible, report_display_options')
+	            .select('id, analyte_id, lab_analyte_id, sort_order, section_heading, is_visible, report_display_options')
 	            .eq('test_group_id', testGroup.id) as unknown as Promise<any>
 	        );
 	      }
@@ -425,6 +427,8 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
 	        const meta: Record<string, AnalyteMetadata> = {};
 	        for (const row of tgaRes.data) {
 	          meta[row.analyte_id] = {
+	            tga_id: row.id,
+	            lab_analyte_id: row.lab_analyte_id,
 	            sort_order: row.sort_order ?? 0,
 	            section_heading: row.section_heading ?? '',
 	            is_visible: row.is_visible ?? true,
@@ -2289,9 +2293,11 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
               methodology: formData.methodology,
               sampleType: formData.sampleType,
             }}
-            existingAnalytes={analytes.map(a => ({
+            existingAnalytes={analytes
+              .filter(a => Boolean(a.lab_analyte_id))
+              .map(a => ({
                 id: a.id,
-                lab_analyte_id: a.lab_analyte_id ?? a.id,
+                lab_analyte_id: a.lab_analyte_id,
                 name: a.name,
                 code: a.code ?? '',
                 category: a.category ?? 'General',
@@ -2301,7 +2307,9 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
                 reference_range_female: a.reference_range_female ?? null,
               }))}
             existingTga={Object.entries(analyteMetadata).map(([analyte_id, meta]) => ({
+              id: meta.tga_id,
               analyte_id,
+              lab_analyte_id: meta.lab_analyte_id ?? null,
               sort_order: meta.sort_order,
               section_heading: meta.section_heading,
             }))}

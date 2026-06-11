@@ -1665,7 +1665,7 @@ id,
               <div className="flex justify-center">
                 <button
                   onClick={() => setShowOrderForm(true)}
-                  className="inline-flex items-center gap-2 px-8 py-3 bg-blue-600 text-white text-lg font-bold rounded-xl hover:bg-blue-700 active:bg-blue-800 shadow-lg hover:shadow-xl transition-all"
+                  className="inline-flex items-center gap-2 px-8 py-3 bg-primary-600 text-white text-lg font-bold rounded-xl hover:bg-primary-700 active:bg-primary-800 shadow-lg hover:shadow-xl transition-all"
                 >
                   <Plus className="h-6 w-6" />
                   Create Order
@@ -1675,7 +1675,7 @@ id,
               <div className="flex justify-end">
                 <button
                   onClick={() => setIsCollapsedView(!isCollapsedView)}
-                  className={`px-4 py-2 rounded-lg font-medium transition-colors ${isCollapsedView ? "bg-blue-600 text-white" : "bg-gray-100 text-gray-700 hover:bg-gray-200"}`}
+                  className={`px-4 py-2 rounded-lg font-medium transition-colors ${isCollapsedView ? "bg-primary-600 text-white" : "bg-gray-100 text-gray-700 hover:bg-gray-200"}`}
                 >
                   {isCollapsedView ? "Expand Cards" : "Collapse Cards"}
                 </button>
@@ -1699,7 +1699,7 @@ id,
           {mobile.isMobile && (
             <button
               onClick={() => setShowOrderForm(true)}
-              className="w-full inline-flex items-center justify-center gap-2 rounded-lg bg-blue-600 text-white px-4 py-3 text-sm font-semibold shadow-sm hover:bg-blue-700 transition-colors"
+              className="w-full inline-flex items-center justify-center gap-2 rounded-lg bg-primary-600 text-white px-4 py-3 text-sm font-semibold shadow-sm hover:bg-primary-700 transition-colors"
             >
               <Plus className="h-5 w-5" />
               Create Order
@@ -1909,7 +1909,7 @@ id,
                     )}
 
                     <div className="grid grid-cols-2 gap-2">
-                      <button onClick={setToday} className="px-3 py-2.5 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700 font-medium shadow-sm">
+                      <button onClick={setToday} className="px-3 py-2.5 text-sm bg-primary-600 text-white rounded-lg hover:bg-primary-700 font-medium shadow-sm">
                         Today
                       </button>
                       <button onClick={() => setDateRange(5)} className="px-3 py-2.5 text-sm bg-white border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 font-medium">
@@ -2552,7 +2552,7 @@ id,
                                     e.stopPropagation();
                                     openDetails(o);
                                   }}
-                                  className="inline-flex items-center justify-center px-3 py-1.5 text-sm font-medium bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
+                                  className="inline-flex items-center justify-center px-3 py-1.5 text-sm font-medium bg-primary-600 text-white rounded-lg hover:bg-primary-700 transition-colors"
                                 >
                                   <Eye className="h-4 w-4 mr-1.5" />
                                   View
@@ -2982,7 +2982,7 @@ id,
                   <button onClick={() => setShowCollectionModal(false)} className="px-4 py-2 text-sm font-medium text-gray-700 bg-gray-100 rounded-lg hover:bg-gray-200">
                     Close
                   </button>
-                  <button onClick={handleSaveCollection} className="px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 shadow-sm">
+                  <button onClick={handleSaveCollection} className="px-4 py-2 text-sm font-medium text-white bg-primary-600 rounded-lg hover:bg-primary-700 shadow-sm">
                     Save & Finish
                   </button>
                 </div>

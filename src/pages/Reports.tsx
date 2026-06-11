@@ -119,6 +119,7 @@ interface ApprovedResult {
   print_pdf_generated_at?: string;
   compact_ecopy_url?: string;
   compact_ecopy_generated_at?: string;
+  ordered_test_names?: string[];
   // Smart Report fields
   smart_report_url?: string;
   smart_report_generated_at?: string;
@@ -490,6 +491,37 @@ const Reports: React.FC = () => {
           reportsByOrder.set(report.order_id, orderReports);
         }
 
+        // Use the same all-panel readiness source as the verification page and
+        // PDF edge function. view_approved_results only contains approved rows,
+        // so it cannot determine whether other ordered panels are still pending.
+        const panelStatusByOrder = new Map<string, Array<{
+          panel_ready: boolean;
+          test_group_name: string | null;
+        }>>();
+        if (orderIds.length > 0) {
+          for (const orderIdBatch of chunkArray(orderIds, RELATED_LOOKUP_BATCH_SIZE)) {
+            const { data: panelStatusData, error: panelStatusError } = await supabase
+              .from('v_result_panel_status')
+              .select('order_id, panel_ready, test_group_name')
+              .in('order_id', orderIdBatch);
+
+            if (panelStatusError) {
+              console.warn('Could not load panel readiness for reports:', panelStatusError.message);
+              break;
+            }
+
+            for (const panel of panelStatusData || []) {
+              if (!panel?.order_id) continue;
+              const panels = panelStatusByOrder.get(panel.order_id) || [];
+              panels.push({
+                panel_ready: panel.panel_ready === true,
+                test_group_name: panel.test_group_name || null,
+              });
+              panelStatusByOrder.set(panel.order_id, panels);
+            }
+          }
+        }
+
         const getLatestReport = (reports: any[], reportType: 'draft' | 'final') => {
           return reports
             .filter((report) => report.report_type === reportType)
@@ -516,7 +548,15 @@ const Reports: React.FC = () => {
             draftReport?.print_pdf_url ||
             draftReport?.compact_ecopy_url
           );
-          const isReady = result.verification_status === 'verified';
+          const panelStatuses = panelStatusByOrder.get(result.order_id);
+          const isReady = panelStatuses
+            ? panelStatuses.length > 0 && panelStatuses.every((panel) => panel.panel_ready)
+            : result.verification_status === 'verified';
+          const orderedTestNames = Array.from(new Set(
+            (panelStatuses || [])
+              .map((panel) => panel.test_group_name)
+              .filter((name): name is string => Boolean(name))
+          ));
           const resolvedPhone = result.phone || patientPhoneMap.get(result.patient_id) || '';
           const smartReport = smartReportMap.get(result.order_id);
           const orderMeta = orderMetaMap.get(result.order_id);
@@ -543,6 +583,7 @@ const Reports: React.FC = () => {
             compact_ecopy_url: (finalReport?.compact_ecopy_url || draftReport?.compact_ecopy_url) || undefined,
             compact_ecopy_generated_at: (finalReport?.compact_ecopy_generated_at || draftReport?.compact_ecopy_generated_at) || undefined,
             phone: resolvedPhone,
+            ordered_test_names: orderedTestNames.length > 0 ? orderedTestNames : undefined,
             // Smart Report fields
             smart_report_url: smartReport?.url,
             smart_report_generated_at: smartReport?.generated_at
@@ -739,7 +780,9 @@ const Reports: React.FC = () => {
           order_numbers: typeof r.order_number === 'number' ? [r.order_number] : [],
           verified_at: r.verified_at,
           verified_by: r.verified_by,
-          test_names: r.test_name ? [r.test_name] : [],
+          test_names: r.ordered_test_names?.length
+            ? [...r.ordered_test_names]
+            : r.test_name ? [r.test_name] : [],
           results: [r],
           is_report_ready: r.is_report_ready || false
         };
@@ -753,7 +796,10 @@ const Reports: React.FC = () => {
         if (r.sample_id && !group.sample_ids.includes(r.sample_id)) group.sample_ids.push(r.sample_id);
         if (r.account_name && !group.account_names.includes(r.account_name)) group.account_names.push(r.account_name);
         if (typeof r.order_number === 'number' && !group.order_numbers.includes(r.order_number)) group.order_numbers.push(r.order_number);
-        if (r.test_name && !group.test_names.includes(r.test_name)) group.test_names.push(r.test_name);
+        const resultTestNames = r.ordered_test_names?.length ? r.ordered_test_names : [r.test_name];
+        for (const testName of resultTestNames) {
+          if (testName && !group.test_names.includes(testName)) group.test_names.push(testName);
+        }
         if (new Date(r.verified_at) > new Date(group.verified_at)) {
           group.verified_at = r.verified_at;
           group.verified_by = r.verified_by;
@@ -2020,9 +2066,9 @@ const Reports: React.FC = () => {
     }
 
     return (
-      <span className="inline-flex items-center px-3 py-1 rounded-full text-xs font-medium bg-gray-100 text-gray-600 border border-gray-200">
-        <XCircle className="w-3 h-3 mr-1" />
-        Pending Verification
+      <span className="inline-flex items-center px-3 py-1 rounded-full text-xs font-medium bg-amber-100 text-amber-800 border border-amber-200">
+        <AlertTriangle className="w-3 h-3 mr-1" />
+        Partial Verification
       </span>
     );
   };
@@ -2929,7 +2975,7 @@ const Reports: React.FC = () => {
                                 title="Generate eCopy draft (letterhead)"
                               >
                                 {(generatingOrderId === group.order_id || pdfQueueStatus.get(group.order_id)?.status === 'processing') ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Download className="w-3.5 h-3.5" />}
-                                <span>eCopy</span>
+                                <span>Draft eCopy</span>
                               </button>
                               <button
                                 className={`flex items-center space-x-1 px-2 py-1 text-xs bg-amber-500 text-white rounded-r hover:bg-amber-600 transition-colors border-l border-amber-700 ${(generatingOrderId === group.order_id || pdfQueueStatus.get(group.order_id)?.status === 'processing') ? 'opacity-50 cursor-not-allowed' : ''}`}
@@ -2938,7 +2984,7 @@ const Reports: React.FC = () => {
                                 title="Generate print draft (no letterhead)"
                               >
                                 <Printer className="w-3.5 h-3.5" />
-                                <span>Print</span>
+                                <span>Draft Print</span>
                               </button>
                             </div>
                             {(() => {
@@ -3324,7 +3370,7 @@ const Reports: React.FC = () => {
                                   ) : (
                                     <Download className="w-4 h-4" />
                                   )}
-                                  <span>{(generatingOrderId === group.order_id || pdfQueueStatus.get(group.order_id)?.status === 'processing') ? 'Gen...' : 'eCopy'}</span>
+                                  <span>{(generatingOrderId === group.order_id || pdfQueueStatus.get(group.order_id)?.status === 'processing') ? 'Gen...' : 'Draft eCopy'}</span>
                                 </button>
                                 <button
                                   className={`flex items-center justify-center px-3 py-2 text-sm bg-amber-500 text-white rounded-r-md hover:bg-amber-600 transition-colors border-l border-amber-700 ${(generatingOrderId === group.order_id || pdfQueueStatus.get(group.order_id)?.status === 'processing')
@@ -3334,6 +3380,7 @@ const Reports: React.FC = () => {
                                   onClick={() => handleDownload(group.order_id, true, 'print')}
                                   disabled={generatingOrderId === group.order_id || pdfQueueStatus.get(group.order_id)?.status === 'processing'}
                                   title="Generate print draft (no letterhead)"
+                                  aria-label="Generate draft print PDF"
                                 >
                                   <Printer className="w-4 h-4" />
                                 </button>

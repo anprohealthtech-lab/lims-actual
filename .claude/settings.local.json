@@ -31,7 +31,10 @@
       "Bash(curl -s -X POST \"https://api.limsapp.in/functions/v1/create-auth-user\" -H \"Content-Type: application/json\" -H \"Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.test\" -d '{\"email\":\"test@test.com\",\"password\":\"Test@1234\",\"lab_id\":\"test\",\"name\":\"Test\"}')",
       "Bash(curl -s -X POST \"https://api.limsapp.in/functions/v1/create-auth-user\" -H \"Content-Type: application/json\" -d '{\"email\":\"test@test.com\",\"password\":\"Test@1234\",\"lab_id\":\"test\",\"name\":\"Test\"}')",
       "Bash(curl -s -w \"\\\\nHTTP_CODE:%{http_code}\" -X POST \"https://api.limsapp.in/functions/v1/create-auth-user\" -H \"Content-Type: application/json\" -H \"Origin: https://limsapp.in\" -H \"Authorization: Bearer test-token\" -d '{\"email\":\"test@test.com\",\"password\":\"Test@1234\",\"lab_id\":\"3be1e989-d81c-498d-b096-fbb14d29d74d\",\"name\":\"Test\"}')",
-      "Bash(curl -s -I -X OPTIONS \"https://api.limsapp.in/functions/v1/create-auth-user\" -H \"Origin: https://limsapp.in\" -H \"Access-Control-Request-Method: POST\" -H \"Access-Control-Request-Headers: Content-Type, Authorization\")"
+      "Bash(curl -s -I -X OPTIONS \"https://api.limsapp.in/functions/v1/create-auth-user\" -H \"Origin: https://limsapp.in\" -H \"Access-Control-Request-Method: POST\" -H \"Access-Control-Request-Headers: Content-Type, Authorization\")",
+      "Bash(node -e \"require\\('fs'\\).readFileSync\\('supabase/functions/dispatch-order-to-analyzer/index.ts', 'utf8'\\)\")",
+      "Bash(node -e \"require\\('fs'\\).readFileSync\\('supabase/functions/auto-dispatch-analyzer/index.ts', 'utf8'\\)\")",
+      "Bash(node -e \"require\\('fs'\\).readFileSync\\('supabase/functions/process-analyzer-result/index.ts', 'utf8'\\)\")"
     ]
   }
 }

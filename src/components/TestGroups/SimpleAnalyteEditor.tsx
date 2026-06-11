@@ -14,6 +14,48 @@ interface SelectedSourceAnalyte extends SourceAnalyte {
   variableName: string;
 }
 
+const parseRefRangeKnowledge = (value: any): any => {
+  if (typeof value !== 'string') return value;
+
+  try {
+    return JSON.parse(value);
+  } catch {
+    return value;
+  }
+};
+
+const formatRefRangeKnowledge = (value: any): string => {
+  const parsed = parseRefRangeKnowledge(value);
+
+  if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+    if (typeof parsed.text_rules === 'string') return parsed.text_rules;
+    return Object.keys(parsed).length > 0 ? JSON.stringify(parsed, null, 2) : '';
+  }
+
+  return typeof parsed === 'string' ? parsed : '';
+};
+
+const buildRefRangeKnowledge = (text: string, originalValue: any): any => {
+  const trimmed = text.trim();
+  if (!trimmed) return null;
+
+  try {
+    const parsed = JSON.parse(trimmed);
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      return parsed;
+    }
+  } catch {
+    // Plain text continues to use the legacy text_rules wrapper.
+  }
+
+  const original = parseRefRangeKnowledge(originalValue);
+  if (original && typeof original === 'object' && !Array.isArray(original) && 'text_rules' in original) {
+    return { ...original, text_rules: text };
+  }
+
+  return { text_rules: text };
+};
+
 interface SimpleAnalyteEditorProps {
   /** IDs of analytes currently attached to this test group — used to surface them first in the dependency picker */
   testGroupAnalyteIds?: string[];
@@ -78,6 +120,9 @@ export const SimpleAnalyteEditor: React.FC<SimpleAnalyteEditorProps> = ({
   );
   const [valueType, setValueType] = useState<string>(analyte.value_type || '');
   const [defaultValue, setDefaultValue] = useState<string>(analyte.default_value || '');
+  const [refRangeKnowledgeText, setRefRangeKnowledgeText] = useState(
+    formatRefRangeKnowledge(analyte.ref_range_knowledge)
+  );
   // Quick codes state: array of { code, value } pairs for UI editing
   const [quickCodes, setQuickCodes] = useState<Array<{ code: string; value: string }>>(
     Object.entries(analyte.expected_value_codes || {}).map(([code, value]) => ({ code, value }))
@@ -108,6 +153,7 @@ export const SimpleAnalyteEditor: React.FC<SimpleAnalyteEditorProps> = ({
     setExpectedNormalValuesText(analyte.expected_normal_values?.join('\n') || '');
     setValueType(analyte.value_type || '');
     setDefaultValue(analyte.default_value || '');
+    setRefRangeKnowledgeText(formatRefRangeKnowledge(analyte.ref_range_knowledge));
     setQuickCodes(
       Object.entries(analyte.expected_value_codes || {}).map(([code, value]) => ({ code, value }))
     );
@@ -438,7 +484,10 @@ export const SimpleAnalyteEditor: React.FC<SimpleAnalyteEditorProps> = ({
           lab_specific_interpretation_low: formData.interpretation_low,
           lab_specific_interpretation_normal: formData.interpretation_normal,
           lab_specific_interpretation_high: formData.interpretation_high,
-          ref_range_knowledge: formData.ref_range_knowledge,
+          ref_range_knowledge: buildRefRangeKnowledge(
+            refRangeKnowledgeText,
+            formData.ref_range_knowledge
+          ),
           // Value type (numeric, qualitative, semi_quantitative, descriptive)
           value_type: valueType || null,
           // Default pre-fill value for result entry
@@ -1115,16 +1164,15 @@ export const SimpleAnalyteEditor: React.FC<SimpleAnalyteEditorProps> = ({
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">Reference Range Rules (AI Context)</label>
                 <textarea
-                  value={formData.ref_range_knowledge?.text_rules || ''}
-                  onChange={(e) => setFormData(prev => ({
-                    ...prev,
-                    ref_range_knowledge: { text_rules: e.target.value }
-                  }))}
-                  rows={4}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                  placeholder="Describe specific rules for this analyte (e.g., 'Adult Males: 13-17, Females: 12-16. Pregnancy T1: 11-14...'). The AI will use this knowledge to resolve ranges dynamically."
+                  value={refRangeKnowledgeText}
+                  onChange={(e) => setRefRangeKnowledgeText(e.target.value)}
+                  rows={6}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-transparent font-mono text-sm"
+                  placeholder="Enter plain-text rules, or a JSON object such as {&quot;dog&quot;:&quot;...&quot;,&quot;cat&quot;:&quot;...&quot;}."
                 />
-                <p className="text-xs text-gray-500 mt-1">Provide specific context, conditions, or rules that the AI should follow when determining reference ranges</p>
+                <p className="text-xs text-gray-500 mt-1">
+                  Plain text is saved as text_rules. Existing species-keyed JSON is displayed and preserved as an object.
+                </p>
               </div>
 
             </div>

@@ -2018,6 +2018,7 @@ const PATIENT_INFO_FIELD_MAP: Record<string, { label: string; placeholder: strin
   sampleCollectedBy:    { label: 'Collected By',     placeholder: '{{sampleCollectedBy}}' },
   receivedAt:           { label: 'Received Date/Time', placeholder: '{{receivedAt}}' },
   collectionCenter:     { label: 'Collection Center', placeholder: '{{collectionCenter}}' },
+  b2bAccountName:       { label: 'B2B / Account Name', placeholder: '{{b2bAccountName}}' },
 };
 
 function buildPatientInfoHtml(
@@ -7197,6 +7198,107 @@ serve(async (req) => {
         );
       }
 
+      // Keep report rendering resilient when an RPC definition omits patient
+      // custom fields or cannot resolve a collector stored as plain text.
+      const [patientContextResult, orderContextResult] = await Promise.all([
+        supabaseClient
+          .from("patients")
+          .select("custom_fields")
+          .eq("id", context.patientId)
+          .maybeSingle(),
+        supabaseClient
+          .from("orders")
+          .select(
+            "sample_collected_by, account_id, location_id, collected_at_location_id",
+          )
+          .eq("id", orderId)
+          .maybeSingle(),
+      ]);
+
+      if (patientContextResult.error) {
+        console.warn(
+          "Failed to enrich report with patient custom fields:",
+          patientContextResult.error.message,
+        );
+      } else {
+        context.patient = {
+          ...(context.patient || {}),
+          custom_fields: patientContextResult.data?.custom_fields || {},
+        };
+      }
+
+      const rawSampleCollectedBy =
+        orderContextResult.data?.sample_collected_by || "";
+      if (orderContextResult.error) {
+        console.warn(
+          "Failed to enrich report with raw collector value:",
+          orderContextResult.error.message,
+        );
+      } else if (!context.order?.sampleCollectedBy && rawSampleCollectedBy) {
+        context.order = {
+          ...(context.order || {}),
+          sampleCollectedBy: rawSampleCollectedBy,
+        };
+        context.placeholderValues = {
+          ...(context.placeholderValues || {}),
+          sampleCollectedBy: rawSampleCollectedBy,
+        };
+      }
+
+      if (!orderContextResult.error && orderContextResult.data) {
+        const accountId = orderContextResult.data.account_id;
+        const collectionLocationId =
+          orderContextResult.data.collected_at_location_id ||
+          orderContextResult.data.location_id;
+        const [accountResult, collectionLocationResult] = await Promise.all([
+          accountId
+            ? supabaseClient
+              .from("accounts")
+              .select("name")
+              .eq("id", accountId)
+              .maybeSingle()
+            : Promise.resolve({ data: null, error: null }),
+          collectionLocationId
+            ? supabaseClient
+              .from("locations")
+              .select("name")
+              .eq("id", collectionLocationId)
+              .maybeSingle()
+            : Promise.resolve({ data: null, error: null }),
+        ]);
+
+        if (accountResult.error) {
+          console.warn(
+            "Failed to enrich report with B2B account name:",
+            accountResult.error.message,
+          );
+        }
+        if (collectionLocationResult.error) {
+          console.warn(
+            "Failed to enrich report with collection location name:",
+            collectionLocationResult.error.message,
+          );
+        }
+
+        const b2bAccountName = accountResult.data?.name || "";
+        const collectionCenter =
+          collectionLocationResult.data?.name ||
+          context.order?.collectionCenter ||
+          context.order?.locationName ||
+          "";
+
+        context.order = {
+          ...(context.order || {}),
+          collectionCenter,
+          b2bAccountName,
+        };
+        context.placeholderValues = {
+          ...(context.placeholderValues || {}),
+          collectionCenter,
+          b2bAccountName,
+        };
+      }
+
       // RPC returns nested structure: context.patient.name, context.order.sampleId, etc.
       console.log(
         "âœ… Context fetched (full structure):",
@@ -8797,6 +8899,8 @@ serve(async (req) => {
           collectionCenter: baseContext.order?.collectionCenter ||
             baseContext.order?.locationName || "",
           sampleCollectedBy: baseContext.order?.sampleCollectedBy || "",
+          b2bAccountName: baseContext.order?.b2bAccountName ||
+            baseContext.placeholderValues?.b2bAccountName || "",
           referringDoctorName: baseContext.order?.referringDoctorName || "",
           approvedAt: baseContext.order?.approvedAtFormatted ||
             baseContext.order?.approved_at || baseContext.meta?.approvedAt ||
@@ -8833,7 +8937,9 @@ serve(async (req) => {
           // Custom patient fields (from patients.custom_fields JSONB)
           ...Object.entries(baseContext.patient?.custom_fields || {}).reduce(
             (acc: Record<string, string>, [k, v]) => {
-              acc[`custom_${k}`] = String(v ?? '');
+              const value = String(v ?? '');
+              acc[`custom_${k}`] = value;
+              acc[`custom_${k.toLowerCase()}`] = value;
               return acc;
             },
             {},

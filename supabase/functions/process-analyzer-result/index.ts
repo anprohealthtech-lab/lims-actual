@@ -191,8 +191,208 @@ function firstComponent(value: string | undefined): string {
 }
 
 function normalizeHl7Flag(value: string | undefined): string {
-  const flag = String(value ?? '').trim()
-  return flag || 'N'
+  const flag = String(value ?? '').trim().replace(/^["']+|["']+$/g, '')
+  if (!flag) return 'N'
+
+  const components = flag
+    .split(/[~\\]/)
+    .map((component) => component.trim().replace(/^["']+|["']+$/g, '').toUpperCase())
+    .filter(Boolean)
+  return components.find((component) => ['LL', 'HH', 'L', 'H', 'A', 'N'].includes(component))
+    || 'N'
+}
+
+function normalizeAnalyzerValue(value: unknown): string | null {
+  const normalized = String(value ?? '').trim()
+  if (!normalized) return null
+
+  const unquoted = normalized.replace(/^["']+|["']+$/g, '').trim()
+  if (!unquoted) return null
+
+  const placeholder = unquoted.toUpperCase()
+  if (['NULL', 'N/A', 'NA', 'NIL', '*****', '****', '***'].includes(placeholder)) {
+    return null
+  }
+
+  return unquoted
+}
+
+function logAiRefRange(event: string, details: Record<string, unknown> = {}) {
+  console.log(`[interface-ai-ref-range] ${event} ${JSON.stringify(details)}`)
+}
+
+function normalizeAnalyteName(value: unknown): string {
+  return String(value ?? '').toLowerCase().replace(/[^a-z0-9]/g, '')
+}
+
+function matchResolvedRange(candidate: {
+  analyte_id: string
+  analyte_name: string
+}, results: any[]): { result: any; matchType: string } | null {
+  let result = results.find((item) => item?.analyte_id === candidate.analyte_id)
+  if (result) return { result, matchType: 'exact_id' }
+
+  result = results.find((item) => item?.analyte_name === candidate.analyte_name)
+  if (result) return { result, matchType: 'exact_name' }
+
+  const candidateName = normalizeAnalyteName(candidate.analyte_name)
+  if (candidateName) {
+    result = results.find((item) => {
+      const resultName = normalizeAnalyteName(item?.analyte_name)
+      return resultName && (candidateName.includes(resultName) || resultName.includes(candidateName))
+    })
+    if (result) return { result, matchType: 'fuzzy_name' }
+  }
+
+  if (results.length === 1) return { result: results[0], matchType: 'single_result' }
+  return null
+}
+
+async function resolveAiReferenceRanges(
+  orderId: string,
+  candidates: Array<{
+    analyte_id: string
+    lab_analyte_id: string | null
+    analyte_name: string
+    value: string
+    unit: string
+    test_group_id: string | null
+  }>,
+): Promise<Map<string, any>> {
+  const resolvedByKey = new Map<string, any>()
+  const grouped = new Map<string, typeof candidates>()
+
+  for (const candidate of candidates) {
+    if (!candidate.test_group_id) continue
+    const group = grouped.get(candidate.test_group_id) ?? []
+    group.push(candidate)
+    grouped.set(candidate.test_group_id, group)
+  }
+
+  if (grouped.size === 0) {
+    logAiRefRange('resolver_skipped_no_candidates', { order_id: orderId })
+    return resolvedByKey
+  }
+
+  const supabaseUrl = Deno.env.get('SUPABASE_URL')
+  const serviceRoleKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')
+  if (!supabaseUrl || !serviceRoleKey) {
+    logAiRefRange('resolver_skipped_missing_credentials', {
+      order_id: orderId,
+      test_group_count: grouped.size,
+    })
+    return resolvedByKey
+  }
+
+  logAiRefRange('resolver_started', {
+    order_id: orderId,
+    test_group_count: grouped.size,
+    analyte_count: candidates.length,
+  })
+
+  for (const [testGroupId, groupCandidates] of grouped) {
+    try {
+      const startedAt = Date.now()
+      logAiRefRange('group_request_started', {
+        order_id: orderId,
+        test_group_id: testGroupId,
+        analyte_count: groupCandidates.length,
+        analyte_ids: groupCandidates.map((candidate) => candidate.analyte_id),
+      })
+
+      const response = await fetch(`${supabaseUrl}/functions/v1/resolve-reference-ranges`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${serviceRoleKey}`,
+          'x-internal-service-key': serviceRoleKey,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          orderId,
+          testGroupId,
+          analytes: groupCandidates.map((candidate) => ({
+            id: candidate.analyte_id,
+            lab_analyte_id: candidate.lab_analyte_id,
+            name: candidate.analyte_name,
+            value: candidate.value,
+            unit: candidate.unit,
+          })),
+        }),
+      })
+
+      if (!response.ok) {
+        const responseText = await response.text().catch(() => '')
+        logAiRefRange('group_request_failed', {
+          order_id: orderId,
+          test_group_id: testGroupId,
+          status: response.status,
+          duration_ms: Date.now() - startedAt,
+          response: responseText.slice(0, 500),
+        })
+        continue
+      }
+
+      const payload = await response.json()
+      if (!payload?.success || !Array.isArray(payload.results)) {
+        logAiRefRange('group_response_invalid', {
+          order_id: orderId,
+          test_group_id: testGroupId,
+          duration_ms: Date.now() - startedAt,
+          error: payload?.error || 'Missing results array',
+        })
+        continue
+      }
+
+      const unmatchedCandidates: Array<{ analyte_id: string; analyte_name: string }> = []
+      for (const candidate of groupCandidates) {
+        const match = matchResolvedRange(candidate, payload.results)
+        if (match) {
+          resolvedByKey.set(`${testGroupId}:${candidate.analyte_id}`, match.result)
+          logAiRefRange('analyte_response_matched', {
+            order_id: orderId,
+            test_group_id: testGroupId,
+            requested_analyte_id: candidate.analyte_id,
+            requested_analyte_name: candidate.analyte_name,
+            returned_analyte_id: match.result?.analyte_id || null,
+            returned_analyte_name: match.result?.analyte_name || null,
+            match_type: match.matchType,
+          })
+        } else {
+          unmatchedCandidates.push({
+            analyte_id: candidate.analyte_id,
+            analyte_name: candidate.analyte_name,
+          })
+        }
+      }
+
+      logAiRefRange('group_request_completed', {
+        order_id: orderId,
+        test_group_id: testGroupId,
+        requested_count: groupCandidates.length,
+        returned_count: payload.results.length,
+        matched_count: groupCandidates.length - unmatchedCandidates.length,
+        unmatched_candidates: unmatchedCandidates,
+        returned_results: payload.results.map((result: any) => ({
+          analyte_id: result?.analyte_id || null,
+          analyte_name: result?.analyte_name || null,
+          used_reference_range: result?.used_reference_range || null,
+        })),
+        duration_ms: Date.now() - startedAt,
+      })
+    } catch (error) {
+      logAiRefRange('group_request_exception', {
+        order_id: orderId,
+        test_group_id: testGroupId,
+        error: error instanceof Error ? error.message : String(error),
+      })
+    }
+  }
+
+  logAiRefRange('resolver_completed', {
+    order_id: orderId,
+    resolved_count: resolvedByKey.size,
+  })
+  return resolvedByKey
 }
 
 function parseHl7ResultsDeterministic(rawContent: string): {
@@ -566,9 +766,10 @@ Do NOT include or describe binary histogram data — it is already extracted sep
                 const NON_CLINICAL_PREFIXES = ['080', '010', '120', '150']
                 const clinicalResults = (parsedData.results || []).filter((r: any) => {
                     const code = String(r.test_code ?? '')
+                    const value = normalizeAnalyzerValue(r.value)
                     // r.flag = HL7 OBX-8 (abnormal flag: H/L/HH/LL) NOT OBX-11 result status (F=Final).
                     // Never filter out based on flag value — F here means Final result, not a clinical flag.
-                    return !NON_CLINICAL_PREFIXES.some(p => code.startsWith(p)) && r.value !== ''
+                    return !NON_CLINICAL_PREFIXES.some(p => code.startsWith(p)) && value !== null
                 })
 
                 const machineCodes = clinicalResults
@@ -579,46 +780,90 @@ Do NOT include or describe binary histogram data — it is already extracted sep
                     .filter(Boolean)
                 let deterministicMappingRows: any[] = []
 
-                if (machineCodes.length > 0 && expectedAnalyteIds.length > 0) {
-                    let deterministicQuery = supabase
-                        .from('test_mappings')
-                        .select('analyzer_code, analyte_id, test_name, test_group_id, ai_confidence, analyzer_connection_id')
-                        .eq('lab_id', sample.lab_id)
-                        .eq('mapping_type', 'result_analyte')
-                        .in('direction', ['inbound', 'bidirectional'])
-                        .in('analyzer_code', machineCodes)
-                        .in('analyte_id', expectedAnalyteIds)
+                // Collect lab_analyte_ids from missingAnalytes view
+                const expectedLabAnalyteIds = missingAnalytes
+                    .map((a: any) => a.lab_analyte_id)
+                    .filter(Boolean)
 
-                    if (record.analyzer_connection_id) {
-                        deterministicQuery = deterministicQuery.or(`analyzer_connection_id.eq.${record.analyzer_connection_id},analyzer_connection_id.is.null`)
+                if (machineCodes.length > 0 && (expectedAnalyteIds.length > 0 || expectedLabAnalyteIds.length > 0)) {
+                    // Primary: lookup by lab_analyte_id (most specific)
+                    if (expectedLabAnalyteIds.length > 0) {
+                        let laQuery = supabase
+                            .from('test_mappings')
+                            .select('analyzer_code, analyte_id, lab_analyte_id, test_name, test_group_id, ai_confidence, analyzer_connection_id')
+                            .eq('lab_id', sample.lab_id)
+                            .eq('mapping_type', 'result_analyte')
+                            .in('direction', ['inbound', 'bidirectional'])
+                            .in('analyzer_code', machineCodes)
+                            .in('lab_analyte_id', expectedLabAnalyteIds)
+
+                        if (record.analyzer_connection_id) {
+                            laQuery = laQuery.or(`analyzer_connection_id.eq.${record.analyzer_connection_id},analyzer_connection_id.is.null`)
+                        }
+
+                        const { data: laRows, error: laError } = await laQuery
+                        if (!laError && laRows) {
+                            deterministicMappingRows.push(...laRows)
+                        }
                     }
 
-                    const { data: mappingRows, error: mappingRowsError } = await deterministicQuery
-                    if (mappingRowsError) {
-                        console.error('Deterministic analyzer mapping lookup failed:', mappingRowsError)
-                    } else {
-                        deterministicMappingRows = mappingRows ?? []
+                    // Fallback: lookup by analyte_id (legacy)
+                    const foundMachineCodes = new Set(deterministicMappingRows.map((r: any) => String(r.analyzer_code).toUpperCase()))
+                    const remainingCodes = machineCodes.filter((c: string) => !foundMachineCodes.has(c))
+
+                    if (remainingCodes.length > 0 && expectedAnalyteIds.length > 0) {
+                        let deterministicQuery = supabase
+                            .from('test_mappings')
+                            .select('analyzer_code, analyte_id, lab_analyte_id, test_name, test_group_id, ai_confidence, analyzer_connection_id')
+                            .eq('lab_id', sample.lab_id)
+                            .eq('mapping_type', 'result_analyte')
+                            .in('direction', ['inbound', 'bidirectional'])
+                            .in('analyzer_code', remainingCodes)
+                            .in('analyte_id', expectedAnalyteIds)
+
+                        if (record.analyzer_connection_id) {
+                            deterministicQuery = deterministicQuery.or(`analyzer_connection_id.eq.${record.analyzer_connection_id},analyzer_connection_id.is.null`)
+                        }
+
+                        const { data: mappingRows, error: mappingRowsError } = await deterministicQuery
+                        if (mappingRowsError) {
+                            console.error('Deterministic analyzer mapping lookup failed:', mappingRowsError)
+                        } else if (mappingRows) {
+                            deterministicMappingRows.push(...mappingRows)
+                        }
                     }
                 }
 
-	                const analyteMap = new Map()
-	                for (const row of deterministicMappingRows) {
-	                    const machineCode = String(row.analyzer_code ?? '').toUpperCase()
-	                    if (!machineCode || !row.analyte_id) continue
+                const analyteMap = new Map()
+                const mappingSpecificity = (row: any) => {
+                    if (record.analyzer_connection_id && row.analyzer_connection_id === record.analyzer_connection_id) return 2
+                    return 1
+                }
+                deterministicMappingRows.sort((a: any, b: any) => mappingSpecificity(a) - mappingSpecificity(b))
+                for (const row of deterministicMappingRows) {
+                    const machineCode = String(row.analyzer_code ?? '').toUpperCase()
+                    if (!machineCode) continue
 
-	                    const expected = missingAnalytes.find((a: any) => a.analyte_id === row.analyte_id)
-	                    if (!expected) continue
+                    // Match by lab_analyte_id first, then analyte_id
+                    let expected = row.lab_analyte_id
+                        ? missingAnalytes.find((a: any) => a.lab_analyte_id === row.lab_analyte_id)
+                        : null
+                    if (!expected && row.analyte_id) {
+                        expected = missingAnalytes.find((a: any) => a.analyte_id === row.analyte_id)
+                    }
+                    if (!expected) continue
 
-	                    analyteMap.set(machineCode, {
-	                        analyte_id: row.analyte_id,
-	                        analyte_name: expected.analyte_name || row.test_name,
-	                        test_group_id: expected.test_group_id || row.test_group_id,
-	                        order_test_group_id: null,
-	                        order_test_id: expected.order_test_id,
-	                        confidence: row.ai_confidence || 1.0,
-	                        mapping_source: 'test_mappings'
-	                    })
-	                }
+                    analyteMap.set(machineCode, {
+                        analyte_id: row.analyte_id || expected.analyte_id,
+                        lab_analyte_id: row.lab_analyte_id || expected.lab_analyte_id,
+                        analyte_name: expected.analyte_name || row.test_name,
+                        test_group_id: expected.test_group_id || row.test_group_id,
+                        order_test_group_id: null,
+                        order_test_id: expected.order_test_id,
+                        confidence: row.ai_confidence || 1.0,
+                        mapping_source: 'test_mappings'
+                    })
+                }
 
 	                const unresolvedClinicalResults = clinicalResults.filter((r: any) => {
 	                    const code = String(r.test_code ?? '').toUpperCase()
@@ -688,23 +933,27 @@ OUTPUT ONLY valid JSON in this exact format (no markdown, no explanation):
 	                }
 	                }
 
-	                // Build lookup map from AI mappings
-	                if (aiMappings.mappings && Array.isArray(aiMappings.mappings)) {
-	                    for (const mapping of aiMappings.mappings) {
-	                        if (mapping.machine_code && mapping.analyte_id) {
-	                            const machineCode = mapping.machine_code.toUpperCase()
-	                            if (analyteMap.has(machineCode)) continue
-	                            analyteMap.set(machineCode, {
-	                                analyte_id: mapping.analyte_id,
-	                                analyte_name: mapping.analyte_name,
-	                                test_group_id: mapping.test_group_id,
-                                order_test_group_id: null, // Not in view, will be populated by trigger
+                // Build lookup map from AI mappings
+                if (aiMappings.mappings && Array.isArray(aiMappings.mappings)) {
+                    for (const mapping of aiMappings.mappings) {
+                        if (mapping.machine_code && mapping.analyte_id) {
+                            const machineCode = mapping.machine_code.toUpperCase()
+                            if (analyteMap.has(machineCode)) continue
+                            // Resolve lab_analyte_id from missingAnalytes
+                            const expectedForAi = missingAnalytes.find((a: any) => a.analyte_id === mapping.analyte_id)
+                            analyteMap.set(machineCode, {
+                                analyte_id: mapping.analyte_id,
+                                lab_analyte_id: expectedForAi?.lab_analyte_id || null,
+                                analyte_name: mapping.analyte_name,
+                                test_group_id: mapping.test_group_id,
+                                order_test_group_id: null,
                                 order_test_id: mapping.order_test_id,
-                                confidence: mapping.confidence || 0.8
+                                confidence: mapping.confidence || 0.8,
+                                mapping_source: 'ai'
                             })
-	                        }
-	                    }
-	                }
+                        }
+                    }
+                }
 
                 console.log(`DEBUG: Mapped ${analyteMap.size} analytes:`, Array.from(analyteMap.keys()).join(', '))
 
@@ -855,15 +1104,20 @@ OUTPUT ONLY valid JSON in this exact format (no markdown, no explanation):
             let mappedCount = 0
             let unmappedCount = 0
 
-            // Batch-resolve lab_analyte_id for all mapped analytes
-            const allMappedAnalyteIds = Array.from(analyteMap.values()).map((m: any) => m.analyte_id).filter(Boolean) as string[]
+            // Preserve exact IDs from mappings; only resolve legacy rows by global analyte_id.
             const labAnalyteIdMap = new Map<string, string>() // analyte_id → lab_analyte_id
-            if (allMappedAnalyteIds.length > 0) {
+            const exactLabAnalyteIds = Array.from(analyteMap.values())
+              .map((m: any) => m.lab_analyte_id)
+              .filter(Boolean) as string[]
+            const analyteIdsNeedingFallback = Array.from(analyteMap.values())
+              .filter((m: any) => !m.lab_analyte_id && m.analyte_id)
+              .map((m: any) => m.analyte_id) as string[]
+            if (analyteIdsNeedingFallback.length > 0) {
               const { data: laRows } = await supabase
                 .from('lab_analytes')
                 .select('id, analyte_id')
                 .eq('lab_id', sample.lab_id)
-                .in('analyte_id', allMappedAnalyteIds)
+                .in('analyte_id', [...new Set(analyteIdsNeedingFallback)])
                 .order('created_at', { ascending: true })
               if (laRows) {
                 for (const la of laRows) {
@@ -879,7 +1133,9 @@ OUTPUT ONLY valid JSON in this exact format (no markdown, no explanation):
               lims_unit: string | null; auto_verify: boolean;
               analyzer_connection_id: string | null
             }>() // lab_analyte_id → config
-            const allLabAnalyteIds = [...labAnalyteIdMap.values()]
+            const allLabAnalyteIds = [
+              ...new Set([...exactLabAnalyteIds, ...labAnalyteIdMap.values()]),
+            ]
             if (allLabAnalyteIds.length > 0) {
               const { data: configRows } = await supabase
                 .from('lab_analyte_interface_config')
@@ -932,8 +1188,30 @@ OUTPUT ONLY valid JSON in this exact format (no markdown, no explanation):
               }
             }
 
+            const mappedCandidates: Array<{
+              item: any
+              mapping: any
+              labAnalyteId: string | null
+              finalParamName: string
+              finalValue: string
+              finalUnit: string
+              verifyStatus: string
+              fallbackReferenceRange: string
+            }> = []
+
             for (const item of parsedData.results) {
                 const machineCode = item.test_code?.toUpperCase()
+                const normalizedValue = normalizeAnalyzerValue(item.value)
+
+                if (normalizedValue === null) {
+                    console.log(`[analyzer-result] skipped_empty_value ${JSON.stringify({
+                      raw_message_id: record.id,
+                      order_id: sample.order_id,
+                      analyzer_code: item.test_code || null,
+                      raw_value: item.value ?? null,
+                    })}`)
+                    continue
+                }
 
                 // Only use context-aware lookup from order
                 const mapping = analyteMap.get(machineCode)
@@ -952,10 +1230,10 @@ OUTPUT ONLY valid JSON in this exact format (no markdown, no explanation):
                 // Apply dilution + unit conversion + auto-verify from lab_analyte_interface_config.
                 // Manual dilution means the analyzer measured a diluted specimen, so multiply
                 // back to the original specimen concentration before unit conversion.
-                const labAnalyteId = labAnalyteIdMap.get(mapping.analyte_id) || null
+                const labAnalyteId = mapping.lab_analyte_id || labAnalyteIdMap.get(mapping.analyte_id) || null
                 const ifCfg = labAnalyteId ? interfaceConfigMap.get(labAnalyteId) : null
 
-                let finalValue = String(item.value ?? '')
+                let finalValue = normalizedValue
                 let finalUnit  = item.unit
                 let verifyStatus = 'pending'
 
@@ -973,6 +1251,106 @@ OUTPUT ONLY valid JSON in this exact format (no markdown, no explanation):
                   console.log(`DEBUG: Conversion applied to ${item.test_code}: ${item.value}${item.unit} → ${finalValue}${finalUnit}`)
                 }
 
+                const rr = labAnalyteId ? refRangeMap.get(labAnalyteId) : null
+                const isMale = patientGender?.toLowerCase().startsWith('m')
+                const isFemale = patientGender?.toLowerCase().startsWith('f')
+                const fallbackReferenceRange =
+                  rr?.lab_specific ||
+                  (isMale ? rr?.ref_male : null) ||
+                  (isFemale ? rr?.ref_female : null) ||
+                  item.reference_range ||
+                  rr?.ref_generic ||
+                  '-'
+
+                mappedCandidates.push({
+                  item,
+                  mapping,
+                  labAnalyteId,
+                  finalParamName,
+                  finalValue,
+                  finalUnit,
+                  verifyStatus,
+                  fallbackReferenceRange,
+                })
+            }
+
+            const candidateTestGroupIds = [
+              ...new Set(mappedCandidates.map((candidate) => candidate.mapping.test_group_id).filter(Boolean)),
+            ] as string[]
+            const aiEnabledTestGroupIds = new Set<string>()
+            if (candidateTestGroupIds.length > 0) {
+              const { data: aiGroups, error: aiGroupsError } = await supabase
+                .from('test_groups')
+                .select('id, ref_range_ai_config')
+                .in('id', candidateTestGroupIds)
+
+              if (aiGroupsError) {
+                console.warn('Failed to load AI reference range configuration:', aiGroupsError)
+              } else {
+                for (const group of aiGroups ?? []) {
+                  if (group.ref_range_ai_config?.enabled === true) aiEnabledTestGroupIds.add(group.id)
+                }
+              }
+            }
+
+            logAiRefRange('configuration_evaluated', {
+              order_id: sample.order_id,
+              raw_message_id: record.id,
+              candidate_count: mappedCandidates.length,
+              candidate_test_group_ids: candidateTestGroupIds,
+              enabled_test_group_ids: [...aiEnabledTestGroupIds],
+            })
+
+            const aiResolvedRanges = await resolveAiReferenceRanges(
+              sample.order_id,
+              mappedCandidates
+                .filter((candidate) => aiEnabledTestGroupIds.has(candidate.mapping.test_group_id))
+                .map((candidate) => ({
+                  analyte_id: candidate.mapping.analyte_id,
+                  lab_analyte_id: candidate.labAnalyteId,
+                  analyte_name: candidate.finalParamName,
+                  value: candidate.finalValue,
+                  unit: candidate.finalUnit,
+                  test_group_id: candidate.mapping.test_group_id,
+                })),
+            )
+
+            for (const candidate of mappedCandidates) {
+                const {
+                  item,
+                  mapping,
+                  labAnalyteId,
+                  finalParamName,
+                  finalValue,
+                  finalUnit,
+                  verifyStatus,
+                  fallbackReferenceRange,
+                } = candidate
+                const aiResolution = mapping.test_group_id
+                  ? aiResolvedRanges.get(`${mapping.test_group_id}:${mapping.analyte_id}`)
+                  : null
+                const finalFlag = aiResolution?.flag || normalizeHl7Flag(item.flag)
+                const finalReferenceRange = aiResolution?.used_reference_range || fallbackReferenceRange
+                const fallbackReason = aiResolution
+                  ? null
+                  : !mapping.test_group_id
+                    ? 'missing_test_group'
+                    : !aiEnabledTestGroupIds.has(mapping.test_group_id)
+                      ? 'ai_disabled'
+                      : 'ai_no_resolution'
+
+                logAiRefRange(aiResolution ? 'result_resolution_applied' : 'result_fallback_used', {
+                  order_id: sample.order_id,
+                  raw_message_id: record.id,
+                  test_group_id: mapping.test_group_id || null,
+                  analyte_id: mapping.analyte_id,
+                  analyzer_code: item.test_code || null,
+                  range_source: aiResolution ? 'ai' : 'analyzer_or_lab',
+                  fallback_reason: fallbackReason,
+                  reference_range: finalReferenceRange,
+                  flag: finalFlag,
+                })
+
                 const { error: valError } = await supabase.from('result_values').insert({
                     result_id: resultHeader.id,
                     analyte_id: mapping.analyte_id,
@@ -981,26 +1359,12 @@ OUTPUT ONLY valid JSON in this exact format (no markdown, no explanation):
                     analyte_name: finalParamName,
                     value: finalValue,
                     unit: finalUnit,
-                    flag: item.flag,
-                    reference_range: (() => {
-                      const rr = labAnalyteId ? refRangeMap.get(labAnalyteId) : null
-                      // 1. Lab-specific override (highest priority)
-                      if (rr?.lab_specific) return rr.lab_specific
-                      // 2. Gender-specific from lab_analytes
-                      const isMale = patientGender?.toLowerCase().startsWith('m')
-                      const isFemale = patientGender?.toLowerCase().startsWith('f')
-                      if (isMale && rr?.ref_male) return rr.ref_male
-                      if (isFemale && rr?.ref_female) return rr.ref_female
-                      // 3. Analyzer-sent value from HL7 OBX-7
-                      if (item.reference_range) return item.reference_range
-                      // 4. Generic lab_analytes.reference_range
-                      if (rr?.ref_generic) return rr.ref_generic
-                      return '-'
-                    })(),
+                    flag: finalFlag,
+                    reference_range: finalReferenceRange,
                     reference_range_male: labAnalyteId ? (refRangeMap.get(labAnalyteId)?.ref_male ?? null) : null,
                     reference_range_female: labAnalyteId ? (refRangeMap.get(labAnalyteId)?.ref_female ?? null) : null,
                     extracted_by_ai: true,
-                    flag_source: 'ai',
+                    flag_source: aiResolution ? 'ai' : 'analyzer',
                     verify_status: verifyStatus,
                     order_id: sample.order_id,
                     test_group_id: mapping.test_group_id,

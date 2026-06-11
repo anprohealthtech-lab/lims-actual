@@ -72,12 +72,23 @@ interface UnmatchedAnalyte {
   position: number;
 }
 
+interface MissingAttachedAnalyte {
+  tga_id?: string;
+  analyte_id: string;
+  lab_analyte_id: string;
+  name: string;
+  code: string;
+  section_heading: string;
+  sort_order: number;
+}
+
 interface ImportResult {
   test_group_updates: { methodology?: string; sample_type?: string };
   test_group_current: { methodology: string; sample_type: string };
   has_test_group_changes: boolean;
   analyte_changes: AnalyteChange[];
   unmatched_analytes: UnmatchedAnalyte[];
+  missing_attached_analytes?: MissingAttachedAnalyte[];
   extraction_notes?: string;
 }
 
@@ -94,7 +105,9 @@ interface ExistingAnalyte {
 }
 
 interface ExistingTGA {
+  id?: string;
   analyte_id: string;
+  lab_analyte_id?: string | null;
   sort_order: number;
   section_heading: string;
 }
@@ -164,7 +177,7 @@ const ReportImportWizard: React.FC<Props> = ({
 
   // Selection state — track which items user wants to apply
   const [applyTestGroup, setApplyTestGroup] = useState(true);
-  const [selectedChanges, setSelectedChanges] = useState<Set<string>>(new Set()); // keyed by analyte_id
+  const [selectedChanges, setSelectedChanges] = useState<Set<string>>(new Set()); // keyed by lab_analyte_id
   const [selectedNewAnalytes, setSelectedNewAnalytes] = useState<Set<string>>(new Set());
   const [showUnmatched, setShowUnmatched] = useState(false);
 
@@ -248,7 +261,7 @@ const ReportImportWizard: React.FC<Props> = ({
     const initial = new Set<string>();
     for (const c of importResult.analyte_changes ?? []) {
       if (c.has_lab_analyte_changes || c.has_tga_changes || c.needs_attachment) {
-        initial.add(c.analyte_id);
+        initial.add(c.lab_analyte_id);
       }
     }
     setSelectedChanges(initial);
@@ -293,7 +306,7 @@ const ReportImportWizard: React.FC<Props> = ({
 
     // 2. Analyte-level updates
     for (const change of result.analyte_changes ?? []) {
-      if (!selectedChanges.has(change.analyte_id)) continue;
+      if (!selectedChanges.has(change.lab_analyte_id)) continue;
 
       // 2a. lab_analytes update
       if (change.has_lab_analyte_changes && Object.keys(change.lab_analyte_updates).length > 0) {
@@ -320,9 +333,15 @@ const ReportImportWizard: React.FC<Props> = ({
           section_heading: change.tga_updates.section_heading ?? change.current_values.section_heading ?? null,
           is_visible: true,
         };
-        const { error: tgaErr } = await supabase
-          .from('test_group_analytes')
-          .upsert(tgaPayload, { onConflict: 'test_group_id,analyte_id' });
+        const existingTgaRow = existingTga.find((row) =>
+          row.lab_analyte_id
+            ? row.lab_analyte_id === change.lab_analyte_id
+            : row.analyte_id === change.analyte_id
+        );
+        const tgaQuery = existingTgaRow?.id
+          ? supabase.from('test_group_analytes').update(tgaPayload).eq('id', existingTgaRow.id)
+          : supabase.from('test_group_analytes').insert(tgaPayload);
+        const { error: tgaErr } = await tgaQuery;
         if (tgaErr) {
           log.push(`✗ ${change.matched_name} — test group attach/update failed: ${tgaErr.message}`);
           fail++;
@@ -368,14 +387,14 @@ const ReportImportWizard: React.FC<Props> = ({
 
       const { error: attachErr } = await supabase
         .from('test_group_analytes')
-        .upsert({
+        .insert({
           test_group_id: testGroupId,
           analyte_id: createdAnalyte.id,
           lab_analyte_id: createdAnalyte.lab_analyte_id,
           sort_order: unmatched.position || 0,
           section_heading: unmatched.section_header || null,
           is_visible: true,
-        }, { onConflict: 'test_group_id,analyte_id' });
+        });
 
       if (attachErr) {
         log.push(`✗ ${unmatched.extracted_name} — created but failed to attach: ${attachErr.message}`);
@@ -548,7 +567,7 @@ const ReportImportWizard: React.FC<Props> = ({
                     <div className="flex gap-3 text-xs text-gray-500">
                       <button
                         type="button"
-                        onClick={() => setSelectedChanges(new Set(result.analyte_changes.map(c => c.analyte_id)))}
+                        onClick={() => setSelectedChanges(new Set(result.analyte_changes.map(c => c.lab_analyte_id)))}
                         className="text-purple-600 hover:underline"
                       >
                         Select all
@@ -565,16 +584,16 @@ const ReportImportWizard: React.FC<Props> = ({
 
                   <div className="divide-y divide-gray-100 max-h-72 overflow-y-auto">
                     {result.analyte_changes.map((change) => (
-                      <div key={change.analyte_id} className="px-4 py-3">
+                      <div key={change.lab_analyte_id} className="px-4 py-3">
                         <div className="flex items-start justify-between gap-3">
                           <div className="flex items-start gap-3 min-w-0">
                             <input
                               type="checkbox"
-                              checked={selectedChanges.has(change.analyte_id)}
+                              checked={selectedChanges.has(change.lab_analyte_id)}
                               onChange={(e) => {
                                 const next = new Set(selectedChanges);
-                                if (e.target.checked) next.add(change.analyte_id);
-                                else next.delete(change.analyte_id);
+                                if (e.target.checked) next.add(change.lab_analyte_id);
+                                else next.delete(change.lab_analyte_id);
                                 setSelectedChanges(next);
                               }}
                               className="h-4 w-4 rounded text-purple-600 mt-0.5 shrink-0"
@@ -629,6 +648,21 @@ const ReportImportWizard: React.FC<Props> = ({
                   <p className="text-sm font-medium">Everything is already up to date!</p>
                   <p className="text-xs text-gray-400 mt-1">
                     No differences found between your report format and current configuration.
+                  </p>
+                </div>
+              )}
+
+              {(result.missing_attached_analytes?.length ?? 0) > 0 && (
+                <div className="border border-orange-200 rounded-lg bg-orange-50 px-4 py-3">
+                  <p className="text-sm font-medium text-orange-800">
+                    {result.missing_attached_analytes!.length} attached analyte
+                    {result.missing_attached_analytes!.length !== 1 ? 's are' : ' is'} missing from this report
+                  </p>
+                  <p className="text-xs text-orange-700 mt-1">
+                    Nothing will be removed automatically. Review these test-group-specific analytes manually:
+                  </p>
+                  <p className="text-xs text-orange-800 mt-2">
+                    {result.missing_attached_analytes!.map((item) => item.name).join(', ')}
                   </p>
                 </div>
               )}

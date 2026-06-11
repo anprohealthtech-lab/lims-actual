@@ -1,10 +1,11 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { LogOut, Download, Filter, Search, Calendar, RefreshCw, PlusCircle, X, Clock, User, Phone, Trash2, Printer, FileText, Wallet, CreditCard, Receipt, Loader2, CheckCircle, AlertCircle } from 'lucide-react';
+import { LogOut, Download, Filter, Search, Calendar, RefreshCw, PlusCircle, X, Clock, User, Phone, Trash2, Printer, FileText, Wallet, CreditCard, Receipt, Loader2, CheckCircle, AlertCircle, BarChart3, Building2 } from 'lucide-react';
 import { supabase } from '../utils/supabase';
 import { getCurrentB2BAccount } from '../utils/b2bAuth';
 import AccountInfoCard from '../components/B2B/AccountInfoCard';
 import B2BBookingModal from '../components/B2B/B2BBookingModal';
+import B2BResultAnalysisModal from '../components/B2B/B2BResultAnalysisModal';
 import { format } from 'date-fns';
 import type { InitiatePaymentResponse } from '../types/payment';
 
@@ -35,6 +36,8 @@ const getBookingAmount = (booking: any): number => {
 
 interface Order {
     id: string;
+    order_display?: string | null;
+    order_number?: number | null;
     patient_name: string;
     patient_id: string;
     status: string;
@@ -56,6 +59,8 @@ interface Order {
         generated_date?: string;
     } | null;
 }
+
+type OrderSortMode = 'sample_desc' | 'sample_asc' | 'order_id_asc' | 'order_id_desc' | 'date_desc' | 'patient_az';
 
 interface PaymentAttempt {
     id: string;
@@ -107,6 +112,12 @@ const B2BPortal: React.FC = () => {
     const [topUpAmountEdited, setTopUpAmountEdited] = useState(false);
     const [paymentLoading, setPaymentLoading] = useState(false);
     const [paymentError, setPaymentError] = useState<string | null>(null);
+    const [sortMode, setSortMode] = useState<OrderSortMode>(() =>
+        (localStorage.getItem('b2b-order-sort') as OrderSortMode) || 'sample_desc'
+    );
+    const [selectedOrderIds, setSelectedOrderIds] = useState<Set<string>>(new Set());
+    const [showResultAnalysis, setShowResultAnalysis] = useState(false);
+    const [labInfo, setLabInfo] = useState<{ name: string; logo: string | null } | null>(null);
 
     // Load account and orders
     useEffect(() => {
@@ -116,7 +127,7 @@ const B2BPortal: React.FC = () => {
     // Apply filters
     useEffect(() => {
         applyFilters();
-    }, [orders, searchTerm, statusFilter, dateRange]);
+    }, [orders, searchTerm, statusFilter, dateRange, sortMode]);
 
     const loadData = async () => {
         try {
@@ -130,6 +141,31 @@ const B2BPortal: React.FC = () => {
                 return;
             }
             setAccount(accountData);
+
+            // Fetch lab info for header display
+            if (accountData.lab_id) {
+                const { data: labData } = await supabase
+                    .from('labs')
+                    .select('name')
+                    .eq('id', accountData.lab_id)
+                    .single();
+
+                // Fetch lab logo (prefer default, fallback to any logo)
+                const { data: logoAssets } = await supabase
+                    .from('lab_branding_assets')
+                    .select('file_url, is_default')
+                    .eq('lab_id', accountData.lab_id)
+                    .eq('asset_type', 'logo')
+                    .order('is_default', { ascending: false })
+                    .limit(1);
+
+                if (labData) {
+                    setLabInfo({
+                        name: labData.name,
+                        logo: logoAssets?.[0]?.file_url || null,
+                    });
+                }
+            }
 
             // Fetch orders for this account
             // Note: Don't join with patients table - B2B users don't have access
@@ -284,7 +320,51 @@ const B2BPortal: React.FC = () => {
             filtered = filtered.filter((order) => order.order_date <= dateRange.to);
         }
 
+        const dailySequence = (order: Order) => {
+            if (typeof order.order_number === 'number' && Number.isFinite(order.order_number)) return order.order_number;
+            const tail = String(order.sample_id || '').match(/(?:^|[/-])(\d+)\s*$/)?.[1];
+            return tail ? Number(tail) : 0;
+        };
+
+        filtered.sort((a, b) => {
+            if (sortMode === 'patient_az') return (a.patient_name || '').localeCompare(b.patient_name || '');
+            if (sortMode === 'date_desc') return new Date(b.order_date).getTime() - new Date(a.order_date).getTime();
+            if (sortMode === 'order_id_asc' || sortMode === 'order_id_desc') {
+                const aRef = a.order_display || a.id;
+                const bRef = b.order_display || b.id;
+                return sortMode === 'order_id_asc'
+                    ? aRef.localeCompare(bRef, undefined, { numeric: true })
+                    : bRef.localeCompare(aRef, undefined, { numeric: true });
+            }
+            const difference = dailySequence(a) - dailySequence(b);
+            return sortMode === 'sample_asc' ? difference : -difference;
+        });
+
         setFilteredOrders(filtered);
+    };
+
+    const updateSortMode = (value: OrderSortMode) => {
+        setSortMode(value);
+        localStorage.setItem('b2b-order-sort', value);
+    };
+
+    const toggleOrderSelection = (orderId: string) => {
+        setSelectedOrderIds((current) => {
+            const next = new Set(current);
+            if (next.has(orderId)) next.delete(orderId);
+            else next.add(orderId);
+            return next;
+        });
+    };
+
+    const toggleAllVisibleOrders = () => {
+        const visibleIds = filteredOrders.map((order) => order.id);
+        const allVisibleSelected = visibleIds.length > 0 && visibleIds.every((id) => selectedOrderIds.has(id));
+        setSelectedOrderIds((current) => {
+            const next = new Set(current);
+            visibleIds.forEach((id) => allVisibleSelected ? next.delete(id) : next.add(id));
+            return next;
+        });
     };
 
     const handleLogout = async () => {
@@ -493,22 +573,44 @@ const B2BPortal: React.FC = () => {
         <div className="min-h-screen bg-gray-50">
             {/* Header */}
             <header className="bg-white shadow-sm border-b border-gray-200">
-                <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4">
+                <div className="px-4 sm:px-6 lg:px-8 py-3">
                     <div className="flex items-center justify-between">
-                        <div>
-                            <h1 className="text-2xl font-bold text-gray-900">B2B Portal</h1>
-                            <p className="text-sm text-gray-600 mt-1">Welcome back, {account?.name}</p>
+                        {/* Lab Info Section - Centered */}
+                        <div className="flex items-center gap-3">
+                            {labInfo?.logo ? (
+                                <img
+                                    src={labInfo.logo}
+                                    alt={labInfo.name || 'Lab Logo'}
+                                    className="h-10 w-auto max-w-[120px] object-contain rounded border border-gray-200 bg-white"
+                                />
+                            ) : (
+                                <div className="h-10 w-10 rounded-lg bg-blue-100 flex items-center justify-center">
+                                    <Building2 className="h-5 w-5 text-blue-600" />
+                                </div>
+                            )}
+                            <div className="min-w-0">
+                                <div className="text-base font-semibold text-gray-900">
+                                    {labInfo?.name || 'Laboratory'}
+                                </div>
+                                <div className="text-xs text-gray-500">B2B Portal</div>
+                            </div>
                         </div>
-	                        <div className="flex items-center gap-3">
-	                            <button
-	                                onClick={() => setShowBookingModal(true)}
-                                    disabled={isCreditBlocked}
-                                    title={isCreditBlocked ? 'Clear pending credit before booking a new test' : 'Book New Test'}
-	                                className="flex items-center px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors shadow-sm disabled:bg-gray-300 disabled:text-gray-500 disabled:cursor-not-allowed disabled:shadow-none"
-	                            >
-	                                <PlusCircle className="h-4 w-4 mr-2" />
-	                                Book New Test
-	                            </button>
+
+                        {/* Account & Actions */}
+                        <div className="flex items-center gap-3">
+                            <div className="hidden sm:block text-right mr-2">
+                                <div className="text-sm font-medium text-gray-900">{account?.name}</div>
+                                <div className="text-xs text-gray-500">Welcome back</div>
+                            </div>
+                            <button
+                                onClick={() => setShowBookingModal(true)}
+                                disabled={isCreditBlocked}
+                                title={isCreditBlocked ? 'Clear pending credit before booking a new test' : 'Book New Test'}
+                                className="flex items-center px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors shadow-sm disabled:bg-gray-300 disabled:text-gray-500 disabled:cursor-not-allowed disabled:shadow-none"
+                            >
+                                <PlusCircle className="h-4 w-4 mr-2" />
+                                Book New Test
+                            </button>
                             <button
                                 onClick={handleLogout}
                                 className="flex items-center px-4 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 transition-colors"
@@ -813,7 +915,7 @@ const B2BPortal: React.FC = () => {
                             </button>
                         </div>
 
-                        <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+                        <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
                             {/* Search */}
                             <div className="relative">
                                 <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-gray-400" />
@@ -867,10 +969,40 @@ const B2BPortal: React.FC = () => {
                                     placeholder="To Date"
                                 />
                             </div>
+
+                            <div>
+                                <label htmlFor="b2b-order-sort" className="mb-1 block text-xs font-medium text-gray-600">
+                                    Order sort
+                                </label>
+                                <select
+                                    id="b2b-order-sort"
+                                    value={sortMode}
+                                    onChange={(e) => updateSortMode(e.target.value as OrderSortMode)}
+                                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                                >
+                                    <option value="sample_desc">Sample ID newest first</option>
+                                    <option value="sample_asc">Sample ID oldest first</option>
+                                    <option value="order_id_asc">Order ID A-Z</option>
+                                    <option value="order_id_desc">Order ID Z-A</option>
+                                    <option value="date_desc">Order date newest first</option>
+                                    <option value="patient_az">Patient A-Z</option>
+                                </select>
+                            </div>
                         </div>
 
-                        <div className="mt-4 text-sm text-gray-600">
-                            Showing {filteredOrders.length} of {orders.length} orders
+                        <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
+                            <div className="text-sm text-gray-600">
+                                Showing {filteredOrders.length} of {orders.length} orders
+                                {selectedOrderIds.size > 0 && <span className="ml-2 font-medium text-indigo-600">· {selectedOrderIds.size} selected</span>}
+                            </div>
+                            <button
+                                onClick={() => setShowResultAnalysis(true)}
+                                disabled={selectedOrderIds.size === 0}
+                                className="inline-flex items-center gap-2 rounded-lg bg-indigo-600 px-3 py-2 text-sm font-medium text-white hover:bg-indigo-700 disabled:cursor-not-allowed disabled:bg-gray-300"
+                            >
+                                <BarChart3 className="h-4 w-4" />
+                                Analyze selected
+                            </button>
                         </div>
                     </div>
 
@@ -879,6 +1011,15 @@ const B2BPortal: React.FC = () => {
                         <table className="w-full">
                             <thead className="bg-gray-50 border-b border-gray-200">
                                 <tr>
+                                    <th className="px-4 py-3 text-left">
+                                        <input
+                                            type="checkbox"
+                                            checked={filteredOrders.length > 0 && filteredOrders.every((order) => selectedOrderIds.has(order.id))}
+                                            onChange={toggleAllVisibleOrders}
+                                            className="rounded border-gray-300 text-indigo-600 focus:ring-indigo-500"
+                                            aria-label="Select all visible orders"
+                                        />
+                                    </th>
                                     <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                                         Sample ID
                                     </th>
@@ -902,13 +1043,22 @@ const B2BPortal: React.FC = () => {
                             <tbody className="bg-white divide-y divide-gray-200">
                                 {filteredOrders.length === 0 ? (
                                     <tr>
-                                        <td colSpan={6} className="px-6 py-12 text-center text-gray-500">
+                                        <td colSpan={7} className="px-6 py-12 text-center text-gray-500">
                                             No orders found
                                         </td>
                                     </tr>
                                 ) : (
                                     filteredOrders.map((order) => (
                                         <tr key={order.id} className="hover:bg-gray-50 transition-colors">
+                                            <td className="px-4 py-4">
+                                                <input
+                                                    type="checkbox"
+                                                    checked={selectedOrderIds.has(order.id)}
+                                                    onChange={() => toggleOrderSelection(order.id)}
+                                                    className="rounded border-gray-300 text-indigo-600 focus:ring-indigo-500"
+                                                    aria-label={`Select ${order.sample_id || order.id}`}
+                                                />
+                                            </td>
                                             <td className="px-6 py-4 whitespace-nowrap">
                                                 <div className="flex items-center">
                                                     {order.color_code && (
@@ -989,6 +1139,12 @@ const B2BPortal: React.FC = () => {
                         loadData();
                         alert('Booking created successfully! It will appear in your orders once processed by the lab.');
                     }}
+                />
+            )}
+            {showResultAnalysis && selectedOrderIds.size > 0 && (
+                <B2BResultAnalysisModal
+                    orderIds={Array.from(selectedOrderIds)}
+                    onClose={() => setShowResultAnalysis(false)}
                 />
             )}
         </div>

@@ -85,7 +85,7 @@ Deno.serve(async (req) => {
     // Get account credit details
     const { data: account, error: accountError } = await supabase
       .from('accounts')
-      .select('id, name, credit_limit, credit_used, payment_gateway_enabled')
+      .select('id, name, credit_limit, credit_used')
       .eq('id', account_id)
       .eq('lab_id', lab_id)
       .eq('is_active', true)
@@ -193,19 +193,19 @@ Deno.serve(async (req) => {
     const canProceed = availableCredit >= order_amount;
     const paymentRequired = !canProceed && shortfall > 0;
 
-    // Check if lab has payment gateway configured
-    let paymentGatewayEnabled = account.payment_gateway_enabled ?? false;
+    // Match initiate-payment: any active gateway for the lab enables checkout.
+    const { data: gateways, error: gatewaysError } = await supabase
+      .from('lab_payment_gateways')
+      .select('id')
+      .eq('lab_id', lab_id)
+      .eq('is_active', true)
+      .limit(1);
 
-    if (paymentGatewayEnabled) {
-      const { data: gateways } = await supabase
-        .from('lab_payment_gateways')
-        .select('id')
-        .eq('lab_id', lab_id)
-        .eq('is_active', true)
-        .limit(1);
-
-      paymentGatewayEnabled = (gateways?.length ?? 0) > 0;
+    if (gatewaysError) {
+      console.warn('[CHECK-B2B-CREDIT] Payment gateway lookup failed:', gatewaysError);
     }
+
+    const paymentGatewayEnabled = !gatewaysError && (gateways?.length ?? 0) > 0;
 
     // Generate payment suggestions
     const suggestedPayments: CreditCheckResponse['suggested_payments'] = [];
@@ -227,17 +227,7 @@ Deno.serve(async (req) => {
         });
       }
 
-      // Option 3: Top-up to restore full credit limit
-      const topUpToFull = effectiveCreditUsed;
-      if (topUpToFull > 0 && topUpToFull !== shortfall && topUpToFull !== order_amount) {
-        suggestedPayments.push({
-          label: 'Restore Full Credit',
-          amount: topUpToFull,
-          description: `Pay ₹${topUpToFull.toLocaleString('en-IN')} to restore full credit limit`
-        });
-      }
-
-      // Option 4: Custom top-up (just indicate it's available)
+      // Option 3: Custom top-up (just indicate it's available)
       suggestedPayments.push({
         label: 'Custom Amount',
         amount: 0,

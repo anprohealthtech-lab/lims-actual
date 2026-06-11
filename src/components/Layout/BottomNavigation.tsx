@@ -23,7 +23,7 @@ const BottomNavigation: React.FC = () => {
                         <button
                             key={item.id}
                             onClick={() => navigate(item.path)}
-                            className={`flex flex-col items-center justify-center w-full h-full space-y-1 ${isActive ? 'text-blue-600' : 'text-gray-500'
+                            className={`flex flex-col items-center justify-center w-full h-full space-y-1 ${isActive ? 'text-primary-600' : 'text-gray-500'
                                 }`}
                         >
                             <item.icon className={`h-6 w-6 ${isActive ? 'fill-current' : ''}`} />

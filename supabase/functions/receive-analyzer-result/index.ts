@@ -29,6 +29,218 @@ function parseMessageType(rawContent: string): { type: string; controlId: string
   return { type: 'UNKNOWN', controlId: '' }
 }
 
+function normalizeAnalyzerFlag(value: unknown): string {
+  const flag = String(value ?? '').trim().replace(/^["']+|["']+$/g, '')
+  if (!flag) return 'N'
+
+  const components = flag
+    .split(/[~\\]/)
+    .map((component) => component.trim().replace(/^["']+|["']+$/g, '').toUpperCase())
+    .filter(Boolean)
+  return components.find((component) => ['LL', 'HH', 'L', 'H', 'A', 'N'].includes(component))
+    || 'N'
+}
+
+function normalizeAnalyzerValue(value: unknown): string | null {
+  const normalized = String(value ?? '').trim()
+  if (!normalized) return null
+
+  const unquoted = normalized.replace(/^["']+|["']+$/g, '').trim()
+  if (!unquoted) return null
+
+  const placeholder = unquoted.toUpperCase()
+  if (['NULL', 'N/A', 'NA', 'NIL', '*****', '****', '***'].includes(placeholder)) {
+    return null
+  }
+
+  return unquoted
+}
+
+function logAiRefRange(event: string, details: Record<string, unknown> = {}) {
+  console.log(`[interface-ai-ref-range] ${event} ${JSON.stringify(details)}`)
+}
+
+function normalizeAnalyteName(value: unknown): string {
+  return String(value ?? '').toLowerCase().replace(/[^a-z0-9]/g, '')
+}
+
+function matchResolvedRange(candidate: {
+  analyte_id: string
+  analyte_name: string
+}, results: any[]): { result: any; matchType: string } | null {
+  let result = results.find((item) => item?.analyte_id === candidate.analyte_id)
+  if (result) return { result, matchType: 'exact_id' }
+
+  result = results.find((item) => item?.analyte_name === candidate.analyte_name)
+  if (result) return { result, matchType: 'exact_name' }
+
+  const candidateName = normalizeAnalyteName(candidate.analyte_name)
+  if (candidateName) {
+    result = results.find((item) => {
+      const resultName = normalizeAnalyteName(item?.analyte_name)
+      return resultName && (candidateName.includes(resultName) || resultName.includes(candidateName))
+    })
+    if (result) return { result, matchType: 'fuzzy_name' }
+  }
+
+  if (results.length === 1) return { result: results[0], matchType: 'single_result' }
+  return null
+}
+
+async function resolveAiReferenceRanges(
+  orderId: string,
+  candidates: Array<{
+    analyte_id: string
+    lab_analyte_id: string | null
+    analyte_name: string
+    value: string
+    unit: string
+    test_group_id: string | null
+  }>,
+): Promise<Map<string, any>> {
+  const resolvedByKey = new Map<string, any>()
+  const grouped = new Map<string, typeof candidates>()
+
+  for (const candidate of candidates) {
+    if (!candidate.test_group_id) continue
+    const group = grouped.get(candidate.test_group_id) ?? []
+    group.push(candidate)
+    grouped.set(candidate.test_group_id, group)
+  }
+
+  const supabaseUrl = Deno.env.get('SUPABASE_URL')
+  const serviceRoleKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')
+  if (grouped.size === 0) {
+    logAiRefRange('resolver_skipped_no_candidates', { order_id: orderId, processor: 'fallback' })
+    return resolvedByKey
+  }
+  if (!supabaseUrl || !serviceRoleKey) {
+    logAiRefRange('resolver_skipped_missing_credentials', {
+      order_id: orderId,
+      processor: 'fallback',
+      test_group_count: grouped.size,
+    })
+    return resolvedByKey
+  }
+
+  logAiRefRange('resolver_started', {
+    order_id: orderId,
+    processor: 'fallback',
+    test_group_count: grouped.size,
+    analyte_count: candidates.length,
+  })
+
+  for (const [testGroupId, groupCandidates] of grouped) {
+    try {
+      const startedAt = Date.now()
+      logAiRefRange('group_request_started', {
+        order_id: orderId,
+        processor: 'fallback',
+        test_group_id: testGroupId,
+        analyte_count: groupCandidates.length,
+        analyte_ids: groupCandidates.map((candidate) => candidate.analyte_id),
+      })
+
+      const response = await fetch(`${supabaseUrl}/functions/v1/resolve-reference-ranges`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${serviceRoleKey}`,
+          'x-internal-service-key': serviceRoleKey,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          orderId,
+          testGroupId,
+          analytes: groupCandidates.map((candidate) => ({
+            id: candidate.analyte_id,
+            lab_analyte_id: candidate.lab_analyte_id,
+            name: candidate.analyte_name,
+            value: candidate.value,
+            unit: candidate.unit,
+          })),
+        }),
+      })
+
+      if (!response.ok) {
+        const responseText = await response.text().catch(() => '')
+        logAiRefRange('group_request_failed', {
+          order_id: orderId,
+          processor: 'fallback',
+          test_group_id: testGroupId,
+          status: response.status,
+          duration_ms: Date.now() - startedAt,
+          response: responseText.slice(0, 500),
+        })
+        continue
+      }
+      const payload = await response.json()
+      if (!payload?.success || !Array.isArray(payload.results)) {
+        logAiRefRange('group_response_invalid', {
+          order_id: orderId,
+          processor: 'fallback',
+          test_group_id: testGroupId,
+          duration_ms: Date.now() - startedAt,
+          error: payload?.error || 'Missing results array',
+        })
+        continue
+      }
+
+      const unmatchedCandidates: Array<{ analyte_id: string; analyte_name: string }> = []
+      for (const candidate of groupCandidates) {
+        const match = matchResolvedRange(candidate, payload.results)
+        if (match) {
+          resolvedByKey.set(`${testGroupId}:${candidate.analyte_id}`, match.result)
+          logAiRefRange('analyte_response_matched', {
+            order_id: orderId,
+            processor: 'fallback',
+            test_group_id: testGroupId,
+            requested_analyte_id: candidate.analyte_id,
+            requested_analyte_name: candidate.analyte_name,
+            returned_analyte_id: match.result?.analyte_id || null,
+            returned_analyte_name: match.result?.analyte_name || null,
+            match_type: match.matchType,
+          })
+        } else {
+          unmatchedCandidates.push({
+            analyte_id: candidate.analyte_id,
+            analyte_name: candidate.analyte_name,
+          })
+        }
+      }
+
+      logAiRefRange('group_request_completed', {
+        order_id: orderId,
+        processor: 'fallback',
+        test_group_id: testGroupId,
+        requested_count: groupCandidates.length,
+        returned_count: payload.results.length,
+        matched_count: groupCandidates.length - unmatchedCandidates.length,
+        unmatched_candidates: unmatchedCandidates,
+        returned_results: payload.results.map((result: any) => ({
+          analyte_id: result?.analyte_id || null,
+          analyte_name: result?.analyte_name || null,
+          used_reference_range: result?.used_reference_range || null,
+        })),
+        duration_ms: Date.now() - startedAt,
+      })
+    } catch (error) {
+      logAiRefRange('group_request_exception', {
+        order_id: orderId,
+        processor: 'fallback',
+        test_group_id: testGroupId,
+        error: error instanceof Error ? error.message : String(error),
+      })
+    }
+  }
+
+  logAiRefRange('resolver_completed', {
+    order_id: orderId,
+    processor: 'fallback',
+    resolved_count: resolvedByKey.size,
+  })
+  return resolvedByKey
+}
+
 // Handle ACK/NAK messages - update order queue status
 async function handleAcknowledgment(
   supabase: any, 
@@ -361,8 +573,21 @@ OUTPUT JSON:
     }
   }
 
+  const mappedCandidates: Array<{ item: any; mapping: any }> = []
   for (const item of parsedData.results) {
     const code = (item.analyzer_code || item.test_code)?.toUpperCase()
+    const normalizedValue = normalizeAnalyzerValue(item.value)
+
+    if (normalizedValue === null) {
+      console.log(`[analyzer-result] skipped_empty_value ${JSON.stringify({
+        order_id: order.id,
+        analyzer_code: item.analyzer_code || item.test_code || null,
+        raw_value: item.value ?? null,
+        processor: 'fallback',
+      })}`)
+      continue
+    }
+
     const mapping = analyteMap.get(code)
     
     if (!mapping?.analyte_id) {
@@ -370,7 +595,75 @@ OUTPUT JSON:
       log += `Unmapped: ${item.test_code}. `
       continue
     }
-    
+
+    mappedCandidates.push({
+      item: { ...item, value: normalizedValue },
+      mapping,
+    })
+  }
+
+  const candidateTestGroupIds = [
+    ...new Set(mappedCandidates.map(({ mapping }) => mapping.test_group_id).filter(Boolean)),
+  ] as string[]
+  const aiEnabledTestGroupIds = new Set<string>()
+  if (candidateTestGroupIds.length > 0) {
+    const { data: aiGroups } = await supabase
+      .from('test_groups')
+      .select('id, ref_range_ai_config')
+      .in('id', candidateTestGroupIds)
+    for (const group of aiGroups ?? []) {
+      if (group.ref_range_ai_config?.enabled === true) aiEnabledTestGroupIds.add(group.id)
+    }
+  }
+
+  logAiRefRange('configuration_evaluated', {
+    order_id: order.id,
+    processor: 'fallback',
+    candidate_count: mappedCandidates.length,
+    candidate_test_group_ids: candidateTestGroupIds,
+    enabled_test_group_ids: [...aiEnabledTestGroupIds],
+  })
+
+  const aiResolvedRanges = await resolveAiReferenceRanges(
+    order.id,
+    mappedCandidates
+      .filter(({ mapping }) => aiEnabledTestGroupIds.has(mapping.test_group_id))
+      .map(({ item, mapping }) => ({
+        analyte_id: mapping.analyte_id,
+        lab_analyte_id: labAnalyteIdMap.get(mapping.analyte_id) || null,
+        analyte_name: mapping.analyte_name,
+        value: String(item.value ?? ''),
+        unit: String(item.unit ?? ''),
+        test_group_id: mapping.test_group_id,
+      })),
+  )
+
+  for (const { item, mapping } of mappedCandidates) {
+    const aiResolution = mapping.test_group_id
+      ? aiResolvedRanges.get(`${mapping.test_group_id}:${mapping.analyte_id}`)
+      : null
+    const finalFlag = aiResolution?.flag || normalizeAnalyzerFlag(item.flag)
+    const finalReferenceRange = aiResolution?.used_reference_range || item.reference_range || '-'
+    const fallbackReason = aiResolution
+      ? null
+      : !mapping.test_group_id
+        ? 'missing_test_group'
+        : !aiEnabledTestGroupIds.has(mapping.test_group_id)
+          ? 'ai_disabled'
+          : 'ai_no_resolution'
+
+    logAiRefRange(aiResolution ? 'result_resolution_applied' : 'result_fallback_used', {
+      order_id: order.id,
+      processor: 'fallback',
+      test_group_id: mapping.test_group_id || null,
+      analyte_id: mapping.analyte_id,
+      analyzer_code: item.analyzer_code || item.test_code || null,
+      range_source: aiResolution ? 'ai' : 'analyzer',
+      fallback_reason: fallbackReason,
+      reference_range: finalReferenceRange,
+      flag: finalFlag,
+    })
+
     const { error } = await supabase.from('result_values').insert({
       result_id: resultHeader.id,
       order_id: order.id,
@@ -381,10 +674,10 @@ OUTPUT JSON:
       analyte_name: mapping.analyte_name,
       value: item.value,
       unit: item.unit,
-      flag: item.flag,
-      reference_range: item.reference_range || '-',
+      flag: finalFlag,
+      reference_range: finalReferenceRange,
       extracted_by_ai: true,
-      flag_source: 'analyzer',
+      flag_source: aiResolution ? 'ai' : 'analyzer',
       test_group_id: mapping.test_group_id,
       order_test_id: mapping.order_test_id
     })
@@ -554,7 +847,8 @@ Deno.serve(async (req) => {
 
   } catch (error) {
     console.error('Process error:', error)
-    return new Response(JSON.stringify({ error: error.message }), {
+    const message = error instanceof Error ? error.message : String(error)
+    return new Response(JSON.stringify({ error: message }), {
       headers: { ...corsHeaders, 'Content-Type': 'application/json' },
       status: 500
     })

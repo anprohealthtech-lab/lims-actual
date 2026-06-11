@@ -2,6 +2,7 @@
 import React, { useEffect } from 'react';
 import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
 import { AuthProvider, useAuth } from './contexts/AuthContext';
+import { ThemeProvider } from './contexts/ThemeContext';
 import { QZTrayProvider } from './contexts/QZTrayContext';
 import ProtectedRoute from './components/Auth/ProtectedRoute';
 import Login from './components/Auth/Login';
@@ -285,13 +286,15 @@ const AppRoutes: React.FC = () => {
 function App() {
   return (
     <AuthProvider>
-      <QZTrayProvider>
-        <Router>
-          <AppRoutes />
-          {/* Global WhatsApp Failed Notification Toast - shows realtime alerts */}
-          <FailedNotificationToast />
-        </Router>
-      </QZTrayProvider>
+      <ThemeProvider>
+        <QZTrayProvider>
+          <Router>
+            <AppRoutes />
+            {/* Global WhatsApp Failed Notification Toast - shows realtime alerts */}
+            <FailedNotificationToast />
+          </Router>
+        </QZTrayProvider>
+      </ThemeProvider>
     </AuthProvider>
   );
 }

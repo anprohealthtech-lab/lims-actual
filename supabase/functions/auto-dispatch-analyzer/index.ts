@@ -183,8 +183,44 @@ Deno.serve(async (req) => {
       uniqueLinks.push(...retryLinks)
     }
 
-    // 3. Group test group codes by analyzer_connection_id
-    const byAnalyzer = new Map<string, { tests: string[]; testGroupIds: string[] }>()
+    // 3. Fetch lab_analytes for all test groups (via test_group_analytes)
+    const allTestGroupIds = uniqueLinks.map((l) => l.tgId)
+    const { data: tgaRows, error: tgaError } = await supabase
+      .from('test_group_analytes')
+      .select(`
+        test_group_id,
+        lab_analyte_id,
+        lab_analytes!inner(id, code, name, analyte_id)
+      `)
+      .in('test_group_id', allTestGroupIds)
+      .eq('is_active', true)
+
+    if (tgaError) throw new Error(`test_group_analytes query failed: ${tgaError.message}`)
+
+    // Build map: test_group_id → lab_analyte info[]
+    const tgToLabAnalytes = new Map<string, Array<{ lab_analyte_id: string; code: string; name: string }>>()
+    const seenLabAnalytesByGroup = new Set<string>()
+    for (const row of tgaRows ?? []) {
+      const la = (row as any).lab_analytes
+      if (!la || !row.lab_analyte_id) continue
+      const dedupeKey = `${row.test_group_id}:${row.lab_analyte_id}`
+      if (seenLabAnalytesByGroup.has(dedupeKey)) continue
+      seenLabAnalytesByGroup.add(dedupeKey)
+      const list = tgToLabAnalytes.get(row.test_group_id) ?? []
+      list.push({
+        lab_analyte_id: row.lab_analyte_id,
+        code: la.code || la.name,
+        name: la.name,
+      })
+      tgToLabAnalytes.set(row.test_group_id, list)
+    }
+
+    // 4. Group by analyzer_connection_id with lab_analyte details
+    const byAnalyzer = new Map<string, {
+      tests: string[]
+      testGroupIds: string[]
+      labAnalytes: Array<{ lab_analyte_id: string; code: string; name: string; test_group_id: string }>
+    }>()
 
     for (const link of uniqueLinks) {
       const tg = link.tg
@@ -192,11 +228,17 @@ Deno.serve(async (req) => {
       const code: string = tg.code || tg.name
 
       if (!byAnalyzer.has(connId)) {
-        byAnalyzer.set(connId, { tests: [], testGroupIds: [] })
+        byAnalyzer.set(connId, { tests: [], testGroupIds: [], labAnalytes: [] })
       }
       const group = byAnalyzer.get(connId)!
       group.tests.push(code)
       group.testGroupIds.push(tg.id)
+
+      // Add lab_analytes for this test_group
+      const labAnalytesForTg = tgToLabAnalytes.get(tg.id) ?? []
+      for (const la of labAnalytesForTg) {
+        group.labAnalytes.push({ ...la, test_group_id: tg.id })
+      }
     }
 
     // 4. Check for existing queue entries to avoid double-dispatch
@@ -235,6 +277,7 @@ Deno.serve(async (req) => {
               sample_barcode: sampleBarcode,
               analyzer_connection_id: analyzerConnectionId,
               tests: group.tests,
+              lab_analytes: group.labAnalytes,
               patient: patient
                 ? {
                     name: patient.name ?? '',

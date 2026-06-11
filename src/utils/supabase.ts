@@ -6038,6 +6038,9 @@ export const database = {
           is_active,
           visible,
           category,
+          reference_range,
+          reference_range_male,
+          reference_range_female,
           low_critical,
           high_critical,
           method,
@@ -6132,7 +6135,13 @@ export const database = {
                 analyteObj.method,
               // Prioritize lab-specific values if they exist, otherwise use global
               referenceRange: item.lab_specific_reference_range ||
-                analyteObj.reference_range,
+                item.reference_range || analyteObj.reference_range,
+              reference_range: item.lab_specific_reference_range ??
+                item.reference_range ?? analyteObj.reference_range,
+              reference_range_male: item.reference_range_male ??
+                analyteObj.reference_range_male,
+              reference_range_female: item.reference_range_female ??
+                analyteObj.reference_range_female,
               interpretation: {
                 low: item.lab_specific_interpretation_low ||
                   analyteObj.interpretation_low,

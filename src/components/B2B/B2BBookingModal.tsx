@@ -1,5 +1,5 @@
-import React, { useState, useEffect } from 'react';
-import { X, Search, Calendar, User, Phone, Loader, Package, FlaskConical, Info, AlertTriangle } from 'lucide-react';
+import React, { useState, useEffect, useMemo } from 'react';
+import { X, Search, User, Loader, Package, FlaskConical, Info, AlertTriangle } from 'lucide-react';
 import { supabase } from '../../utils/supabase';
 import CreditCheckModal from './CreditCheckModal';
 
@@ -16,13 +16,14 @@ interface CatalogItem {
     price: number;
     type: 'test' | 'package';
     category?: string;
+    code?: string;
     includedTests?: string[]; // for packages
 }
 
 const B2BBookingModal: React.FC<B2BBookingModalProps> = ({ accountId, labId, onClose, onSuccess }) => {
     const [loading, setLoading] = useState(false);
     const [searchTerm, setSearchTerm] = useState('');
-    const [searchResults, setSearchResults] = useState<CatalogItem[]>([]);
+    const [catalogItems, setCatalogItems] = useState<CatalogItem[]>([]);
     const [searching, setSearching] = useState(false);
     const [selectedItems, setSelectedItems] = useState<CatalogItem[]>([]);
 
@@ -39,27 +40,17 @@ const B2BBookingModal: React.FC<B2BBookingModalProps> = ({ accountId, labId, onC
         email: ''
     });
 
-    const [scheduledDate, setScheduledDate] = useState('');
-
     useEffect(() => {
-        if (searchTerm.length < 2) {
-            setSearchResults([]);
-            return;
-        }
-
-        const doSearch = async () => {
+        const loadCatalog = async () => {
             setSearching(true);
             try {
-                const term = `%${searchTerm}%`;
-
                 const [testsResult, packagesResult] = await Promise.all([
                     supabase
                         .from('test_groups')
                         .select('id, name, price, category, code')
                         .eq('is_active', true)
                         .or(`lab_id.eq.${labId},lab_id.is.null`)
-                        .ilike('name', term)
-                        .limit(8),
+                        .order('name'),
                     supabase
                         .from('packages')
                         .select(`
@@ -70,9 +61,11 @@ const B2BBookingModal: React.FC<B2BBookingModalProps> = ({ accountId, labId, onC
                         `)
                         .eq('is_active', true)
                         .eq('lab_id', labId)
-                        .ilike('name', term)
-                        .limit(4)
+                        .order('name')
                 ]);
+
+                if (testsResult.error) throw testsResult.error;
+                if (packagesResult.error) throw packagesResult.error;
 
                 const tests: CatalogItem[] = (testsResult.data || []).map((t: any) => ({
                     id: t.id,
@@ -80,6 +73,7 @@ const B2BBookingModal: React.FC<B2BBookingModalProps> = ({ accountId, labId, onC
                     price: t.price || 0,
                     type: 'test',
                     category: t.category,
+                    code: t.code,
                 }));
 
                 const packages: CatalogItem[] = (packagesResult.data || []).map((p: any) => ({
@@ -93,22 +87,35 @@ const B2BBookingModal: React.FC<B2BBookingModalProps> = ({ accountId, labId, onC
                         .filter(Boolean),
                 }));
 
-                setSearchResults([...packages, ...tests]);
+                setCatalogItems([...packages, ...tests]);
+            } catch (error) {
+                console.error('Error loading B2B test catalog:', error);
+                setCatalogItems([]);
             } finally {
                 setSearching(false);
             }
         };
 
-        const debounce = setTimeout(doSearch, 300);
-        return () => clearTimeout(debounce);
-    }, [searchTerm, labId]);
+        loadCatalog();
+    }, [labId]);
+
+    const searchResults = useMemo(() => {
+        const search = searchTerm.trim().toLowerCase();
+        if (search.length < 2) return [];
+
+        return catalogItems.filter(item =>
+            item.name.toLowerCase().includes(search) ||
+            item.category?.toLowerCase().includes(search) ||
+            item.code?.toLowerCase().includes(search) ||
+            (item.type === 'package' && 'package'.includes(search))
+        );
+    }, [catalogItems, searchTerm]);
 
     const handleAdd = (item: CatalogItem) => {
         if (!selectedItems.find(s => s.id === item.id)) {
             setSelectedItems(prev => [...prev, item]);
         }
         setSearchTerm('');
-        setSearchResults([]);
     };
 
     const handleRemove = (id: string) => {
@@ -156,7 +163,6 @@ const B2BBookingModal: React.FC<B2BBookingModalProps> = ({ accountId, labId, onC
                         price: item.price,
                         type: item.type,
                     })),
-                    scheduled_at: scheduledDate ? new Date(scheduledDate).toISOString() : null,
                     order_amount: totalAmount,
                 };
                 setPendingOrderData(orderData);
@@ -201,7 +207,6 @@ const B2BBookingModal: React.FC<B2BBookingModalProps> = ({ accountId, labId, onC
                     price: item.price,
                     type: item.type,
                 })),
-                scheduled_at: scheduledDate ? new Date(scheduledDate).toISOString() : null,
                 created_at: new Date().toISOString(),
                 updated_at: new Date().toISOString(),
             }]);
@@ -222,8 +227,9 @@ const B2BBookingModal: React.FC<B2BBookingModalProps> = ({ accountId, labId, onC
         console.log('Payment successful:', paymentId);
         setCreditCheckPassed(true);
         setShowCreditModal(false);
-        // After successful payment, create the booking
-        createBooking();
+        // The verified payment callback applies credit and releases the pending booking.
+        onSuccess();
+        onClose();
     };
 
     const handleProceedWithCredit = () => {
@@ -309,19 +315,6 @@ const B2BBookingModal: React.FC<B2BBookingModalProps> = ({ accountId, labId, onC
                                 />
                             </div>
                         </div>
-                    </div>
-
-                    {/* Schedule */}
-                    <div className="space-y-3 pt-4 border-t border-gray-100">
-                        <h3 className="text-sm font-semibold text-gray-700 flex items-center gap-2">
-                            <Calendar className="w-4 h-4" /> Preferred Schedule (Optional)
-                        </h3>
-                        <input
-                            type="datetime-local"
-                            value={scheduledDate}
-                            onChange={e => setScheduledDate(e.target.value)}
-                            className="w-full md:w-1/2 border rounded-lg p-2.5 focus:ring-2 focus:ring-blue-100 outline-none border-gray-300"
-                        />
                     </div>
 
                     {/* Test / Package Selection */}

@@ -169,22 +169,27 @@ const CreateInvoiceModal: React.FC<CreateInvoiceModalProps> = ({ orderId, onClos
         .order('created_at');
       const chargeList = charges || [];
 
-      // Inject collection_charge from the order as a synthetic billing item if present and not yet invoiced
+      // Inject only the collection charge that has not already been invoiced.
+      // This matters when a later-added test increases orders.collection_charge.
       const collectionCharge = parseFloat(orderData?.collection_charge || 0);
-      const collectionAlreadyInvoiced = (charges || []).some((c: any) => c.name === 'Sample Collection Charge');
-      if (collectionCharge > 0 && !collectionAlreadyInvoiced) {
-        // Check invoice_items to see if collection charge was already invoiced
-        const { data: existingCollectionItem } = await supabase
+      if (collectionCharge > 0) {
+        const { data: existingCollectionItems } = await supabase
           .from('invoice_items')
-          .select('id')
+          .select('price, quantity')
           .eq('order_id', orderId)
-          .eq('test_name', 'Sample Collection Charge')
-          .limit(1);
-        if (!existingCollectionItem || existingCollectionItem.length === 0) {
+          .eq('test_name', 'Sample Collection Charge');
+        const invoicedCollectionCharge = (existingCollectionItems || []).reduce(
+          (sum: number, existing: any) =>
+            sum + (toNum(existing.price) * Math.max(1, toNum(existing.quantity))),
+          0
+        );
+        const outstandingCollectionCharge = Math.max(0, collectionCharge - invoicedCollectionCharge);
+
+        if (outstandingCollectionCharge > 0) {
           chargeList.unshift({
             id: `collection-charge-${orderId}`,
             name: 'Sample Collection Charge',
-            amount: collectionCharge,
+            amount: outstandingCollectionCharge,
             is_shareable_with_doctor: false,
             is_shareable_with_phlebotomist: false,
             is_invoiced: false,

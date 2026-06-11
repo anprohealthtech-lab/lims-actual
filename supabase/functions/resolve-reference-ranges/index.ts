@@ -3,7 +3,7 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.38.4'
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
+  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type, x-internal-service-key',
   'Access-Control-Allow-Methods': 'POST, OPTIONS',
 }
 
@@ -12,6 +12,7 @@ interface ResolveRequest {
   testGroupId: string;
   analytes: Array<{
     id: string;
+    lab_analyte_id?: string | null;
     name: string;
     value: string;
     unit: string;
@@ -38,13 +39,35 @@ serve(async (req) => {
   }
 
   try {
-    const { orderId, testGroupId, analytes }: ResolveRequest = await req.json()
-    
-    // Create Supabase Client (Service Role for data access)
-    const supabase = createClient(
-      Deno.env.get('SUPABASE_URL')!,
-      Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
+    const supabaseUrl = Deno.env.get('SUPABASE_URL')!
+    const serviceRoleKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')
+    const supabase = createClient(supabaseUrl, serviceRoleKey!)
+    const internalServiceKey = req.headers.get('x-internal-service-key')
+    const authorization = req.headers.get('authorization') || ''
+    const bearerToken = authorization.startsWith('Bearer ')
+      ? authorization.slice('Bearer '.length)
+      : ''
+    const hasInternalAccess = Boolean(
+      serviceRoleKey && (
+        internalServiceKey === serviceRoleKey ||
+        authorization === `Bearer ${serviceRoleKey}`
+      )
     )
+    let hasAuthenticatedUser = false
+
+    if (!hasInternalAccess && bearerToken) {
+      const { data: authData } = await supabase.auth.getUser(bearerToken)
+      hasAuthenticatedUser = Boolean(authData.user)
+    }
+
+    if (!hasInternalAccess && !hasAuthenticatedUser) {
+      return new Response(
+        JSON.stringify({ success: false, error: 'Unauthorized' }),
+        { status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      )
+    }
+
+    const { orderId, testGroupId, analytes }: ResolveRequest = await req.json()
 
     console.log(`Resolving ranges for Order: ${orderId}, TestGroup: ${testGroupId}`);
 
@@ -102,35 +125,87 @@ serve(async (req) => {
       .single()
 
     // 3. Fetch analyte knowledge bases
-    const analyteIds = analytes.map(a => a.id)
+    const analyteIds = [...new Set(analytes.map(a => a.id))]
     const { data: analyteData } = await supabase
       .from('analytes')
       .select('id, name, ref_range_knowledge, reference_range, unit')
       .in('id', analyteIds)
 
-    // 3b. Fetch lab specific overrides
-    let labOverridesMap: Record<string, any> = {};
+    // 3b. Fetch exact lab-specific rows when the caller supplies lab_analyte_id.
+    // Fall back to lab_id + analyte_id only for legacy/manual callers.
+    const exactLabAnalyteIds = [...new Set(
+      analytes.map(a => a.lab_analyte_id).filter(Boolean) as string[]
+    )]
+    const exactLabAnalytesMap = new Map<string, any>()
+    const fallbackLabAnalytesMap = new Map<string, any>()
+
     if (order.lab_id) {
-      const { data: labAnalytes } = await supabase
-        .from('lab_analytes')
-        .select('analyte_id, ref_range_knowledge')
-        .eq('lab_id', order.lab_id)
-        .in('analyte_id', analyteIds);
-      
-      if (labAnalytes) {
-        labOverridesMap = Object.fromEntries(
-          labAnalytes.map((la: any) => [la.analyte_id, la.ref_range_knowledge])
-        );
+      if (exactLabAnalyteIds.length > 0) {
+        const { data: exactRows } = await supabase
+          .from('lab_analytes')
+          .select('id, analyte_id, name, ref_range_knowledge, reference_range, lab_specific_reference_range, unit')
+          .eq('lab_id', order.lab_id)
+          .in('id', exactLabAnalyteIds)
+
+        for (const row of exactRows || []) exactLabAnalytesMap.set(row.id, row)
+      }
+
+      const fallbackAnalyteIds = analytes
+        .filter(a => !a.lab_analyte_id || !exactLabAnalytesMap.has(a.lab_analyte_id))
+        .map(a => a.id)
+
+      if (fallbackAnalyteIds.length > 0) {
+        const { data: fallbackRows } = await supabase
+          .from('lab_analytes')
+          .select('id, analyte_id, name, ref_range_knowledge, reference_range, lab_specific_reference_range, unit')
+          .eq('lab_id', order.lab_id)
+          .in('analyte_id', [...new Set(fallbackAnalyteIds)])
+          .order('created_at', { ascending: true })
+
+        for (const row of fallbackRows || []) {
+          if (!fallbackLabAnalytesMap.has(row.analyte_id)) {
+            fallbackLabAnalytesMap.set(row.analyte_id, row)
+          }
+        }
       }
     }
 
-    // Merge knowledge
-    const mergedAnalyteKnowledge = (analyteData || []).map((a: any) => ({
-      ...a,
-      ref_range_knowledge: labOverridesMap[a.id] && Object.keys(labOverridesMap[a.id]).length > 0
-        ? labOverridesMap[a.id] 
-        : a.ref_range_knowledge
-    }));
+    const globalAnalytesMap = new Map((analyteData || []).map((a: any) => [a.id, a]))
+    const mergedAnalyteKnowledge = analytes.map((requested) => {
+      const global = globalAnalytesMap.get(requested.id) as any
+      const labAnalyte = requested.lab_analyte_id
+        ? exactLabAnalytesMap.get(requested.lab_analyte_id)
+        : fallbackLabAnalytesMap.get(requested.id)
+      const labKnowledge = labAnalyte?.ref_range_knowledge
+      const hasLabKnowledge = labKnowledge && typeof labKnowledge === 'object'
+        ? Object.keys(labKnowledge).length > 0
+        : Boolean(labKnowledge)
+
+      return {
+        id: requested.id,
+        lab_analyte_id: labAnalyte?.id || requested.lab_analyte_id || null,
+        name: labAnalyte?.name || global?.name || requested.name,
+        unit: labAnalyte?.unit || global?.unit || requested.unit,
+        reference_range:
+          labAnalyte?.lab_specific_reference_range ||
+          labAnalyte?.reference_range ||
+          global?.reference_range ||
+          null,
+        ref_range_knowledge: hasLabKnowledge
+          ? labKnowledge
+          : global?.ref_range_knowledge,
+      }
+    })
+
+    console.log('[ai-ref-range] lab_analyte_resolution', JSON.stringify({
+      order_id: orderId,
+      test_group_id: testGroupId,
+      requested_exact_ids: exactLabAnalyteIds,
+      exact_rows_found: exactLabAnalytesMap.size,
+      fallback_rows_used: analytes.filter(a =>
+        !a.lab_analyte_id || !exactLabAnalytesMap.has(a.lab_analyte_id)
+      ).map(a => a.id),
+    }))
 
     // 4. Build AI prompt
     const prompt = buildReferenceRangePrompt(
@@ -199,8 +274,9 @@ serve(async (req) => {
 
   } catch (error) {
     console.error('Error in resolve-reference-ranges:', error);
+    const message = error instanceof Error ? error.message : String(error);
     return new Response(
-      JSON.stringify({ success: false, error: error.message }),
+      JSON.stringify({ success: false, error: message }),
       { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
     )
   }

@@ -1,6 +1,5 @@
 import React, { useState } from 'react';
 import { Link, useLocation } from 'react-router-dom';
-import { useAuth } from '../../contexts/AuthContext';
 import {
   LayoutDashboard,
   Users,
@@ -102,7 +101,7 @@ const categoryConfig: Record<CategoryKey, {
   activeBg: string; activeText: string; activeBorder: string;
   hoverBg: string; hoverText: string; hoverBorder: string; activeIcon: string;
 }> = {
-  core:          { activeBg: 'bg-blue-50',    activeText: 'text-blue-700',    activeBorder: 'border-l-blue-700',    hoverBg: 'hover:bg-blue-50',    hoverText: 'hover:text-blue-700',    hoverBorder: 'hover:border-l-blue-300',    activeIcon: 'text-blue-700'    },
+  core:          { activeBg: 'bg-primary-50', activeText: 'text-primary-700', activeBorder: 'border-l-primary-700', hoverBg: 'hover:bg-primary-50', hoverText: 'hover:text-primary-700', hoverBorder: 'hover:border-l-primary-300', activeIcon: 'text-primary-700' },
   management:    { activeBg: 'bg-green-50',   activeText: 'text-green-700',   activeBorder: 'border-l-green-700',   hoverBg: 'hover:bg-green-50',   hoverText: 'hover:text-green-700',   hoverBorder: 'hover:border-l-green-300',   activeIcon: 'text-green-700'   },
   business:      { activeBg: 'bg-purple-50',  activeText: 'text-purple-700',  activeBorder: 'border-l-purple-700',  hoverBg: 'hover:bg-purple-50',  hoverText: 'hover:text-purple-700',  hoverBorder: 'hover:border-l-purple-300',  activeIcon: 'text-purple-700'  },
   communication: { activeBg: 'bg-sky-50',     activeText: 'text-sky-700',     activeBorder: 'border-l-sky-700',     hoverBg: 'hover:bg-sky-50',     hoverText: 'hover:text-sky-700',     hoverBorder: 'hover:border-l-sky-300',     activeIcon: 'text-sky-700'     },
@@ -133,8 +132,6 @@ const sections: { label: string; emoji: string; category: CategoryKey }[] = [
 
 const Sidebar: React.FC<SidebarProps> = ({ isOpen, onToggle, isMobile = false, isCollapsed, setIsCollapsed }) => {
   const location = useLocation();
-  const { labName } = useAuth();
-  const displayLabName = labName?.trim();
 
   const [favorites, setFavorites] = useState<string[]>(() => {
     try {
@@ -219,7 +216,7 @@ const Sidebar: React.FC<SidebarProps> = ({ isOpen, onToggle, isMobile = false, i
         ${isCollapsed ? 'w-20' : 'w-64'}
       `}>
         {/* Header */}
-        <div className={`flex-none flex items-center justify-between bg-blue-600 ${isCollapsed ? 'h-16 px-2 justify-center' : 'h-20 px-5'}`}>
+        <div className={`flex-none flex items-center justify-between bg-primary-600 ${isCollapsed ? 'h-16 px-2 justify-center' : 'h-16 px-5'}`}>
           {!isCollapsed && (
             <div className="flex min-w-0 flex-1 items-center">
               <img
@@ -227,17 +224,7 @@ const Sidebar: React.FC<SidebarProps> = ({ isOpen, onToggle, isMobile = false, i
                 alt="AnPro LIMS"
                 className="h-8 w-8 object-contain rounded"
               />
-              <div className="ml-2 min-w-0">
-                <span className="block text-xl font-bold leading-tight text-white">AnPro LIMS</span>
-                {displayLabName && (
-                  <span
-                    className="mt-1 block truncate text-sm font-semibold leading-tight text-blue-50"
-                    title={displayLabName}
-                  >
-                    {displayLabName}
-                  </span>
-                )}
-              </div>
+              <span className="ml-2 text-xl font-bold leading-tight text-white">AnPro LIMS</span>
             </div>
           )}
           <div className="flex items-center gap-2">

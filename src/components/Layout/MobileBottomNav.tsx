@@ -42,7 +42,7 @@ export const MobileBottomNav: React.FC = () => {
               to={item.path}
               className={`relative flex min-h-[56px] flex-col items-center justify-center gap-1 rounded-xl px-1 py-1 text-center transition-colors ${
                 isActive 
-                  ? 'text-blue-600' 
+                  ? 'text-primary-600'
                   : 'text-gray-500 hover:text-gray-700'
               }`}
             >
@@ -58,7 +58,7 @@ export const MobileBottomNav: React.FC = () => {
                 {item.label}
               </span>
               {isActive && (
-                <div className="absolute left-3 right-3 top-0 h-0.5 rounded-full bg-blue-600" />
+                <div className="absolute left-3 right-3 top-0 h-0.5 rounded-full bg-primary-600" />
               )}
             </NavLink>
           );

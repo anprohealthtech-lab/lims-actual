@@ -1112,7 +1112,7 @@ const Settings: React.FC = () => {
             <select
               value={activeTab}
               onChange={(e) => setActiveTab(e.target.value as any)}
-              className="w-full rounded-lg border border-gray-200 bg-white px-3 py-2.5 text-sm font-medium text-gray-800 focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500/20"
+              className="w-full rounded-lg border border-gray-200 bg-white px-3 py-2.5 text-sm font-medium text-gray-800 focus:border-primary-500 focus:outline-none focus:ring-2 focus:ring-primary-500/20"
             >
               {tabs.map((tab) => (
                 <option key={tab.id} value={tab.id}>
@@ -1127,7 +1127,7 @@ const Settings: React.FC = () => {
                 key={tab.id}
                 onClick={() => setActiveTab(tab.id as any)}
                 className={`flex items-center px-4 py-3 rounded-md text-sm font-medium transition-all whitespace-nowrap ${activeTab === tab.id
-                  ? 'bg-blue-600 text-white shadow-sm'
+                  ? 'bg-primary-600 text-white shadow-sm'
                   : 'text-gray-600 hover:text-gray-900 hover:bg-gray-50'
                   }`}
               >
@@ -1143,7 +1143,7 @@ const Settings: React.FC = () => {
                 onClick={() => setActiveTab(tab.id as any)}
                 className={`shrink-0 rounded-full px-3 py-1.5 text-xs font-medium transition-colors ${
                   activeTab === tab.id
-                    ? 'bg-blue-100 text-blue-700'
+                    ? 'bg-primary-100 text-primary-700'
                     : 'bg-gray-100 text-gray-600'
                 }`}
               >
@@ -2213,6 +2213,7 @@ const Settings: React.FC = () => {
                           { key: 'sampleCollectedBy', label: 'Collected By' },
                           { key: 'receivedAt', label: 'Received Date/Time' },
                           { key: 'collectionCenter', label: 'Collection Center' },
+                          { key: 'b2bAccountName', label: 'B2B / Account Name' },
                           ...customPatientFields.map(f => ({ key: `custom_${f.field_key}`, label: f.label })),
                         ].map(field => {
                           const currentFields = labSettings.report_patient_info_config?.fields || ['patientName','patientId','age','gender','collectionDate','sampleId','referringDoctorName','approvedAt'];

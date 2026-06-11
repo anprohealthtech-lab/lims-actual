@@ -24,6 +24,14 @@ interface TestMapping {
   confidence: number
   from_cache: boolean
   source?: 'lab_mapping' | 'profile_mapping' | 'ai' | 'fallback'
+  lab_analyte_id?: string
+}
+
+interface LabAnalyteInfo {
+  lab_analyte_id: string
+  code: string
+  name: string
+  test_group_id?: string
 }
 
 interface OrderPayload {
@@ -31,6 +39,7 @@ interface OrderPayload {
   sample_barcode: string
   analyzer_connection_id: string
   tests: string[]
+  lab_analytes?: LabAnalyteInfo[]
   patient?: {
     name: string
     dob?: string
@@ -453,11 +462,13 @@ async function mapTestCodesWithAI(
   analyzerProfileId: string,
   analyzerConnectionId: string | null,
   limsCodes: string[],
+  labAnalytes?: LabAnalyteInfo[],
 ): Promise<TestMapping[]> {
   const mappedTests: TestMapping[] = []
   const unmappedCodes: string[] = []
+  const unmappedLabAnalytes: LabAnalyteInfo[] = []
 
-  const pushMapping = (limsCode: string, row: any, source: TestMapping['source']) => {
+  const pushMapping = (limsCode: string, row: any, source: TestMapping['source'], labAnalyteId?: string) => {
     mappedTests.push({
       lims_code: limsCode,
       analyzer_code: row.analyzer_code,
@@ -471,9 +482,56 @@ async function mapTestCodesWithAI(
       confidence: row.ai_confidence ?? 1,
       from_cache: true,
       source,
+      lab_analyte_id: labAnalyteId,
     })
   }
 
+  const uniqueLabAnalytes = Array.from(
+    new Map((labAnalytes ?? []).map((la) => [la.lab_analyte_id, la])).values(),
+  )
+  const labAnalyteIds = uniqueLabAnalytes.map((la) => la.lab_analyte_id).filter(Boolean)
+  const lookupCodes = [
+    ...new Set([
+      ...limsCodes,
+      ...uniqueLabAnalytes.map((la) => la.code),
+    ].filter(Boolean)),
+  ]
+  const mappingSpecificity = (row: any) => {
+    if (analyzerConnectionId && row.analyzer_connection_id === analyzerConnectionId) return 3
+    if (row.analyzer_profile_id === analyzerProfileId || row.analyzer_id === analyzerProfileId) return 2
+    return 1
+  }
+  const setPreferredMapping = (map: Map<string, any>, key: string, row: any) => {
+    const existing = map.get(key)
+    if (!existing || mappingSpecificity(row) > mappingSpecificity(existing)) {
+      map.set(key, row)
+    }
+  }
+
+  // 1. PRIMARY: Lookup by lab_analyte_id (most specific)
+  const labAnalyteMappings = new Map<string, any>()
+  if (labAnalyteIds.length > 0) {
+    let laQuery = supabase
+      .from('test_mappings')
+      .select('*')
+      .eq('lab_id', labId)
+      .eq('mapping_type', 'order_service')
+      .in('direction', ['outbound', 'bidirectional'])
+      .in('lab_analyte_id', labAnalyteIds)
+
+    if (analyzerConnectionId) {
+      laQuery = laQuery.or(`analyzer_connection_id.eq.${analyzerConnectionId},analyzer_connection_id.is.null`)
+    }
+
+    const { data: laRows } = await laQuery
+    for (const row of laRows ?? []) {
+      if (row.lab_analyte_id) {
+        setPreferredMapping(labAnalyteMappings, row.lab_analyte_id, row)
+      }
+    }
+  }
+
+  // 2. FALLBACK: Lookup by lims_code (legacy/backward compat)
   const profileMappings = new Map<string, any>()
   const { data: profileRows } = await supabase
     .from('analyzer_profile_code_mappings')
@@ -482,20 +540,20 @@ async function mapTestCodesWithAI(
     .eq('mapping_type', 'order_service')
     .in('direction', ['outbound', 'bidirectional'])
     .eq('is_active', true)
-    .in('lims_code', limsCodes)
+    .in('lims_code', lookupCodes)
 
   for (const row of profileRows ?? []) {
     profileMappings.set(String(row.lims_code).toUpperCase(), row)
   }
 
-  const labMappings = new Map<string, any>()
+  const labCodeMappings = new Map<string, any>()
   let labQuery = supabase
     .from('test_mappings')
     .select('*')
     .eq('lab_id', labId)
     .eq('mapping_type', 'order_service')
     .in('direction', ['outbound', 'bidirectional'])
-    .in('lims_code', limsCodes)
+    .in('lims_code', lookupCodes)
 
   if (analyzerConnectionId) {
     labQuery = labQuery.or(`analyzer_connection_id.eq.${analyzerConnectionId},analyzer_profile_id.eq.${analyzerProfileId},analyzer_id.eq.${analyzerProfileId}`)
@@ -505,23 +563,53 @@ async function mapTestCodesWithAI(
 
   const { data: labRows } = await labQuery
   for (const row of labRows ?? []) {
-    labMappings.set(String(row.lims_code).toUpperCase(), row)
+    setPreferredMapping(labCodeMappings, String(row.lims_code).toUpperCase(), row)
   }
 
-  for (const limsCode of limsCodes) {
-    const key = String(limsCode).toUpperCase()
-    const labMapping = labMappings.get(key)
-    const profileMapping = profileMappings.get(key)
+  // 3. Resolution: lab_analyte_id first, then lims_code, then profile, else unmapped
+  if (uniqueLabAnalytes.length > 0) {
+    // New path: resolve using lab_analyte_id
+    for (const la of uniqueLabAnalytes) {
+      const laMapping = labAnalyteMappings.get(la.lab_analyte_id)
+      if (laMapping) {
+        pushMapping(la.code, laMapping, 'lab_mapping', la.lab_analyte_id)
+        continue
+      }
 
-    if (labMapping) {
-      pushMapping(limsCode, labMapping, 'lab_mapping')
-    } else if (profileMapping) {
-      pushMapping(limsCode, profileMapping, 'profile_mapping')
-    } else {
-      unmappedCodes.push(limsCode)
+      const codeKey = String(la.code).toUpperCase()
+      const codeMapping = labCodeMappings.get(codeKey)
+      if (codeMapping) {
+        pushMapping(la.code, codeMapping, 'lab_mapping', la.lab_analyte_id)
+        continue
+      }
+
+      const profileMapping = profileMappings.get(codeKey)
+      if (profileMapping) {
+        pushMapping(la.code, profileMapping, 'profile_mapping', la.lab_analyte_id)
+        continue
+      }
+
+      unmappedLabAnalytes.push(la)
+      unmappedCodes.push(la.code)
+    }
+  } else {
+    // Legacy path: resolve using lims_code only
+    for (const limsCode of limsCodes) {
+      const key = String(limsCode).toUpperCase()
+      const labMapping = labCodeMappings.get(key)
+      const profileMapping = profileMappings.get(key)
+
+      if (labMapping) {
+        pushMapping(limsCode, labMapping, 'lab_mapping')
+      } else if (profileMapping) {
+        pushMapping(limsCode, profileMapping, 'profile_mapping')
+      } else {
+        unmappedCodes.push(limsCode)
+      }
     }
   }
 
+  // 4. AI fallback for unmapped codes
   if (unmappedCodes.length > 0) {
     const { data: profile } = await supabase
       .from('analyzer_profiles')
@@ -568,6 +656,10 @@ OUTPUT ONLY valid JSON:
         const aiResult = JSON.parse(jsonMatch[0])
 
         for (const mapping of aiResult.mappings || []) {
+          const matchedLa = unmappedLabAnalytes.find(
+            (la) => String(la.code).toUpperCase() === String(mapping.lims_code).toUpperCase()
+          )
+
           mappedTests.push({
             lims_code: mapping.lims_code,
             analyzer_code: mapping.analyzer_code,
@@ -580,6 +672,7 @@ OUTPUT ONLY valid JSON:
             confidence: mapping.confidence || 0.7,
             from_cache: false,
             source: 'ai',
+            lab_analyte_id: matchedLa?.lab_analyte_id,
           })
 
           await supabase.rpc('save_ai_mapping', {
@@ -589,12 +682,16 @@ OUTPUT ONLY valid JSON:
             p_analyzer_id: analyzerProfileId,
             p_confidence: mapping.confidence || 0.7,
             p_test_name: mapping.analyzer_display || mapping.lims_code,
+            p_lab_analyte_id: matchedLa?.lab_analyte_id || null,
           })
         }
       }
     } catch (e) {
       console.error('AI mapping failed:', e)
       for (const code of unmappedCodes) {
+        const matchedLa = unmappedLabAnalytes.find(
+          (la) => String(la.code).toUpperCase() === String(code).toUpperCase()
+        )
         mappedTests.push({
           lims_code: code,
           analyzer_code: code,
@@ -607,6 +704,7 @@ OUTPUT ONLY valid JSON:
           confidence: 0.5,
           from_cache: false,
           source: 'fallback',
+          lab_analyte_id: matchedLa?.lab_analyte_id,
         })
       }
     }
@@ -704,6 +802,7 @@ Deno.serve(async (req) => {
       connection.profile_id || 'generic-hl7',
       payload.analyzer_connection_id,
       payload.tests,
+      payload.lab_analytes,
     )
 
     const generated = protocol === 'ASTM'

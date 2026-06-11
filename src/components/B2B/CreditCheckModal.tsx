@@ -26,6 +26,9 @@ const PAYMENT_CANCEL_URL =
   import.meta.env.VITE_PAYMENT_CANCEL_URL ||
   `${window.location.origin}/b2b/payment/cancelled`;
 
+const roundUpPaymentAmount = (amount: number) =>
+  amount > 0 ? Math.ceil(amount / 500) * 500 : 0;
+
 interface CreditCheckModalProps {
   isOpen: boolean;
   onClose: () => void;
@@ -72,9 +75,9 @@ const CreditCheckModal: React.FC<CreditCheckModalProps> = ({
       if (error) throw error;
       setCreditInfo(data);
 
-      // Pre-select shortfall amount
+      // Give the account a useful round-number top-up while covering the order.
       if (data.shortfall > 0) {
-        setSelectedAmount(data.shortfall);
+        setSelectedAmount(roundUpPaymentAmount(data.shortfall));
       }
     } catch (err: any) {
       console.error('Credit check error:', err);
@@ -115,7 +118,9 @@ const CreditCheckModal: React.FC<CreditCheckModalProps> = ({
           account_id: accountId,
           lab_id: labId,
 	          amount: selectedAmount,
-	          purpose: creditInfo?.shortfall === selectedAmount ? 'shortfall_payment' : 'credit_topup',
+	          purpose: orderData && selectedAmount >= (creditInfo?.shortfall || 0)
+              ? 'shortfall_payment'
+              : 'credit_topup',
 	          order_data: orderData,
 	          return_url: PAYMENT_CALLBACK_URL,
 	          cancel_url: PAYMENT_CANCEL_URL,
@@ -313,7 +318,30 @@ const CreditCheckModal: React.FC<CreditCheckModalProps> = ({
                     <div className="space-y-3">
                       <h3 className="font-medium text-gray-900">Select Payment Amount</h3>
 
-                      {creditInfo.suggested_payments.map((option, index) => (
+                      <button
+                        onClick={() => handlePaymentOption(roundUpPaymentAmount(creditInfo.shortfall))}
+                        className={`w-full p-4 rounded-lg border-2 text-left transition-colors ${
+                          selectedAmount === roundUpPaymentAmount(creditInfo.shortfall)
+                            ? 'border-blue-500 bg-blue-50'
+                            : 'border-gray-200 hover:border-gray-300'
+                        }`}
+                      >
+                        <div className="flex items-center justify-between gap-4">
+                          <div>
+                            <p className="font-medium text-gray-900">Pay Now</p>
+                            <p className="text-sm text-gray-500">
+                              Rounded up to the next ₹500 and applied to your account credit
+                            </p>
+                          </div>
+                          <span className="text-lg font-semibold text-gray-900">
+                            {formatCurrency(roundUpPaymentAmount(creditInfo.shortfall))}
+                          </span>
+                        </div>
+                      </button>
+
+                      {creditInfo.suggested_payments
+                        .filter(option => option.amount !== roundUpPaymentAmount(creditInfo.shortfall))
+                        .map((option, index) => (
                         <button
                           key={index}
                           onClick={() => handlePaymentOption(option.amount)}
@@ -370,10 +398,10 @@ const CreditCheckModal: React.FC<CreditCheckModalProps> = ({
                   {!creditInfo.payment_gateway_enabled && (
                     <div className="bg-gray-50 border border-gray-200 rounded-lg p-4 text-center">
                       <p className="text-gray-600">
-                        Online payment is not enabled for your account.
+                        No active online payment gateway is configured for this lab.
                       </p>
                       <p className="text-sm text-gray-500 mt-1">
-                        Please contact the lab to increase your credit limit.
+                        Ask the lab administrator to enable CCAvenue or Razorpay in Payment Gateway settings.
                       </p>
                     </div>
                   )}

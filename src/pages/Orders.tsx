@@ -1757,7 +1757,7 @@ const Orders: React.FC = () => {
                                   e.stopPropagation();
                                   openDetails(o);
                                 }}
-                                className="inline-flex items-center px-3 py-1.5 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700"
+                                className="inline-flex items-center px-3 py-1.5 text-sm bg-primary-600 text-white rounded-lg hover:bg-primary-700"
                               >
                                 <Eye className="h-4 w-4 mr-1" />
                                 View Details
@@ -2050,7 +2050,7 @@ const Orders: React.FC = () => {
                     </button>
                     <button
                       onClick={handleAddSelectedTests}
-                      className="px-4 py-2 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700"
+                      className="px-4 py-2 text-sm bg-primary-600 text-white rounded-lg hover:bg-primary-700"
                     >
                       Add Selected Tests
                     </button>

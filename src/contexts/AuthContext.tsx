@@ -12,6 +12,7 @@ interface AuthContextType {
   labStatus: LabStatus;
   labStatusLoading: boolean;
   labName: string | null;
+  labLogo: string | null;
   labActiveUpto: Date | null;
   trialDaysRemaining: number | null;
   blockSendOnDue: boolean;
@@ -36,6 +37,7 @@ export const useAuth = () => {
       labStatus: null as LabStatus,
       labStatusLoading: true,
       labName: null,
+      labLogo: null,
       labActiveUpto: null,
       trialDaysRemaining: null,
       blockSendOnDue: false,
@@ -55,6 +57,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [labStatus, setLabStatus] = useState<LabStatus>(null);
   const [labStatusLoading, setLabStatusLoading] = useState(true);
   const [labName, setLabName] = useState<string | null>(null);
+  const [labLogo, setLabLogo] = useState<string | null>(null);
   const [labActiveUpto, setLabActiveUpto] = useState<Date | null>(null);
   const [trialDaysRemaining, setTrialDaysRemaining] = useState<number | null>(null);
   const [blockSendOnDue, setBlockSendOnDue] = useState<boolean>(false);
@@ -67,6 +70,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     if (!currentUser?.email) {
       setLabStatus(null);
       setLabName(null);
+      setLabLogo(null);
       setLabActiveUpto(null);
       setTrialDaysRemaining(null);
       setLabStatusLoading(false);
@@ -102,6 +106,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         // Default to active if no lab found (for backward compatibility)
         setLabStatus('active');
         setLabName(null);
+        setLabLogo(null);
         setLabActiveUpto(null);
         setTrialDaysRemaining(null);
         setLabStatusLoading(false);
@@ -121,6 +126,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         // Default to active if lab data not found
         setLabStatus('active');
         setLabName(null);
+        setLabLogo(null);
         setLabActiveUpto(null);
         setTrialDaysRemaining(null);
         setLabStatusLoading(false);
@@ -154,11 +160,23 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       setTrialDaysRemaining(daysRemaining);
       setBlockSendOnDue((labData as any).block_send_on_due ?? false);
       labStatusFetchedForUser.current = currentUser.email;
+
+      // Fetch lab logo from lab_branding_assets (prefer default, fallback to any logo)
+      const { data: logoAssets } = await supabase
+        .from('lab_branding_assets')
+        .select('file_url, is_default')
+        .eq('lab_id', userData.lab_id)
+        .eq('asset_type', 'logo')
+        .order('is_default', { ascending: false })
+        .limit(1);
+
+      setLabLogo(logoAssets?.[0]?.file_url || null);
     } catch (err) {
       console.error('Error fetching lab status:', err);
       // Default to active on error to not block users
       setLabStatus('active');
       setLabName(null);
+      setLabLogo(null);
       setLabActiveUpto(null);
       setTrialDaysRemaining(null);
       labStatusFetchedForUser.current = currentUser.email;
@@ -205,6 +223,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         // Sign out - clear lab status
         setLabStatus(null);
         setLabName(null);
+        setLabLogo(null);
         setLabActiveUpto(null);
         setTrialDaysRemaining(null);
         setLabStatusLoading(false);
@@ -238,6 +257,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const signOut = async () => {
     setLabStatus(null);
     setLabName(null);
+    setLabLogo(null);
     setLabActiveUpto(null);
     setTrialDaysRemaining(null);
     labStatusFetchedForUser.current = null;
@@ -251,6 +271,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     labStatus,
     labStatusLoading,
     labName,
+    labLogo,
     labActiveUpto,
     trialDaysRemaining,
     blockSendOnDue,

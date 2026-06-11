@@ -29,7 +29,9 @@ interface ExistingAnalyte {
 }
 
 interface ExistingTGA {
+  id?: string
   analyte_id: string
+  lab_analyte_id?: string | null
   sort_order: number
   section_heading: string
 }
@@ -161,7 +163,9 @@ function buildHaikuPrompt(
   existingTga: ExistingTGA[],
   currentTestGroup: { methodology: string; sample_type: string }
 ): string {
-  const tgaMap = Object.fromEntries(existingTga.map(t => [t.analyte_id, t]))
+  const tgaMap = Object.fromEntries(
+    existingTga.map(t => [t.lab_analyte_id || `legacy:${t.analyte_id}`, t])
+  )
 
   return `You are a laboratory informatics specialist. Match extracted lab report data to existing DB analytes and generate precise CRUD update payloads.
 
@@ -171,10 +175,11 @@ ${JSON.stringify(currentTestGroup)}
 ## Extracted From Report (Stage 1 output)
 ${JSON.stringify(extracted)}
 
-## Existing Database Analytes (match targets — use only these IDs)
+## Lab Analyte Catalog (lab_analyte_id is the primary identity; use only these IDs)
 ${JSON.stringify(existingAnalytes)}
 
-## Existing test_group_analytes config (keyed by analyte_id)
+## Analytes Currently Attached To This Test Group
+Keys are lab_analyte_id. Legacy rows without one use "legacy:<analyte_id>".
 ${JSON.stringify(tgaMap)}
 
 ## Instructions
@@ -184,7 +189,7 @@ Compare extracted methodology and sample_type to current values.
 Only include in test_group_updates if extracted value is non-null and meaningfully different.
 
 **2. Analyte Matching**
-For each extracted analyte find the best match using name/code/unit similarity across the FULL lab analyte catalog below.
+For each extracted analyte find the best match using name/code/unit similarity across the full lab analyte catalog.
 Handle common variants: Haemoglobin↔Hemoglobin, TLC/Total Leucocyte Count↔WBC,
 Platelet Count↔PLT, Haematocrit↔Hematocrit, MCHC, MCV, MCH, RBC, etc.
 - match_confidence: 0.0–1.0. Use ≥0.75 as valid-match threshold.
@@ -192,14 +197,14 @@ Platelet Count↔PLT, Haematocrit↔Hematocrit, MCHC, MCV, MCH, RBC, etc.
 
 **3. CRUD Payloads**
 - lab_analyte_updates: Only fields where extracted value DIFFERS from current DB value (unit, reference_range, reference_range_male, reference_range_female). Omit unchanged fields.
-- Check whether the matched analyte is already attached to this test group by looking it up in existing test_group_analytes config.
+- Check attachment by lab_analyte_id first. analyte_id is compatibility data and must not be used as lab_analyte_id.
 - needs_attachment: true if the analyte exists in the lab catalog but is NOT currently attached to this test group.
 - tga_updates: for attached analytes, include section_heading if different and sort_order if different. For unattached analytes, include the extracted section_heading and sort_order so a new test_group_analytes row can be created correctly.
 - has_lab_analyte_changes: true only if lab_analyte_updates has ≥1 key
 - has_tga_changes: true only if tga_updates has ≥1 key OR needs_attachment is true
 - current_values: Always fill from DB (not extracted) — used by diff UI.
 - is_currently_attached: true if found in existing test_group_analytes config, else false.
-- Do NOT include entries where both flags are false and needs_attachment is false.
+- Include every valid matched extracted analyte, even when it has no changes. The server will calculate the final diff and use the complete match list to detect attached analytes missing from the report.
 
 Return ONLY this JSON structure (no extra text or markdown):
 {
@@ -293,6 +298,130 @@ async function callClaudeHaiku(
 
 // ─── Handler ──────────────────────────────────────────────────────────────────
 
+function comparable(value: unknown): string {
+  return String(value ?? '').trim().replace(/\s+/g, ' ').toLowerCase()
+}
+
+function buildDeterministicResult(
+  rawResult: Record<string, unknown>,
+  extracted: GeminiExtractedData,
+  existingAnalytes: ExistingAnalyte[],
+  existingTga: ExistingTGA[],
+  currentTestGroup: { methodology: string; sample_type: string }
+): Record<string, unknown> {
+  const catalogByLabId = new Map(existingAnalytes.map(a => [a.lab_analyte_id, a]))
+  const extractedByName = new Map((extracted.analytes ?? []).map(a => [comparable(a.extracted_name), a]))
+  const attachedByLabId = new Map(
+    existingTga.filter(t => t.lab_analyte_id).map(t => [t.lab_analyte_id as string, t])
+  )
+  const legacyAttachedByAnalyteId = new Map(
+    existingTga.filter(t => !t.lab_analyte_id).map(t => [t.analyte_id, t])
+  )
+  const matchedLabIds = new Set<string>()
+  const matchedExtractedNames = new Set<string>()
+  const analyteChanges: Record<string, unknown>[] = []
+
+  for (const raw of (Array.isArray(rawResult.analyte_changes) ? rawResult.analyte_changes : [])) {
+    const match = raw as Record<string, unknown>
+    const labAnalyteId = String(match.lab_analyte_id ?? '')
+    const catalog = catalogByLabId.get(labAnalyteId)
+    const extractedName = comparable(match.extracted_name)
+    const item = extractedByName.get(extractedName)
+    const confidence = Number(match.match_confidence ?? 0)
+    if (!catalog || !item || confidence < 0.75) continue
+
+    const attached = attachedByLabId.get(labAnalyteId) || legacyAttachedByAnalyteId.get(catalog.id)
+    const labUpdates: Record<string, string> = {}
+    const fields: Array<[keyof ExtractedAnalyte, keyof ExistingAnalyte]> = [
+      ['unit', 'unit'],
+      ['reference_range', 'reference_range'],
+      ['reference_range_male', 'reference_range_male'],
+      ['reference_range_female', 'reference_range_female'],
+    ]
+    for (const [source, target] of fields) {
+      const proposed = item[source]
+      if (proposed && comparable(proposed) !== comparable(catalog[target])) {
+        labUpdates[target] = String(proposed).trim()
+      }
+    }
+
+    const section = String(item.section_header ?? '').trim()
+    const order = Number(item.position ?? 0)
+    const currentSection = String(attached?.section_heading ?? '')
+    const currentOrder = Number(attached?.sort_order ?? 0)
+    const tgaUpdates: Record<string, string | number> = {}
+    if (!attached || comparable(section) !== comparable(currentSection)) tgaUpdates.section_heading = section
+    if (!attached || order !== currentOrder) tgaUpdates.sort_order = order
+
+    matchedLabIds.add(labAnalyteId)
+    matchedExtractedNames.add(extractedName)
+    const needsAttachment = !attached
+    const hasLabChanges = Object.keys(labUpdates).length > 0
+    const hasTgaChanges = Object.keys(tgaUpdates).length > 0 || needsAttachment
+    if (!hasLabChanges && !hasTgaChanges) continue
+
+    analyteChanges.push({
+      extracted_name: item.extracted_name,
+      analyte_id: catalog.id,
+      lab_analyte_id: catalog.lab_analyte_id,
+      matched_name: catalog.name,
+      matched_code: catalog.code ?? '',
+      match_confidence: confidence,
+      is_currently_attached: Boolean(attached),
+      needs_attachment: needsAttachment,
+      lab_analyte_updates: labUpdates,
+      tga_updates: tgaUpdates,
+      current_values: {
+        unit: catalog.unit ?? '',
+        reference_range: catalog.reference_range ?? '',
+        reference_range_male: catalog.reference_range_male ?? '',
+        reference_range_female: catalog.reference_range_female ?? '',
+        section_heading: currentSection,
+        sort_order: currentOrder,
+      },
+      has_lab_analyte_changes: hasLabChanges,
+      has_tga_changes: hasTgaChanges,
+    })
+  }
+
+  const unmatched = (extracted.analytes ?? []).filter(
+    item => !matchedExtractedNames.has(comparable(item.extracted_name))
+  )
+
+  const missingAttached = existingTga.flatMap(tga => {
+    const catalog = tga.lab_analyte_id
+      ? catalogByLabId.get(tga.lab_analyte_id)
+      : existingAnalytes.find(a => a.id === tga.analyte_id)
+    if (!catalog || matchedLabIds.has(catalog.lab_analyte_id)) return []
+    return [{
+      tga_id: tga.id,
+      analyte_id: catalog.id,
+      lab_analyte_id: catalog.lab_analyte_id,
+      name: catalog.name,
+      code: catalog.code ?? '',
+      section_heading: tga.section_heading ?? '',
+      sort_order: tga.sort_order ?? 0,
+    }]
+  })
+
+  const testGroupUpdates: Record<string, string> = {}
+  if (extracted.methodology && comparable(extracted.methodology) !== comparable(currentTestGroup.methodology)) {
+    testGroupUpdates.methodology = extracted.methodology.trim()
+  }
+  if (extracted.sample_type && comparable(extracted.sample_type) !== comparable(currentTestGroup.sample_type)) {
+    testGroupUpdates.sample_type = extracted.sample_type.trim()
+  }
+
+  return {
+    test_group_updates: testGroupUpdates,
+    has_test_group_changes: Object.keys(testGroupUpdates).length > 0,
+    analyte_changes: analyteChanges,
+    unmatched_analytes: unmatched,
+    missing_attached_analytes: missingAttached,
+    extraction_notes: rawResult.extraction_notes,
+  }
+}
+
 Deno.serve(async (req: Request) => {
   if (req.method === 'OPTIONS') {
     return new Response('ok', { headers: corsHeaders })
@@ -355,7 +484,14 @@ Deno.serve(async (req: Request) => {
       existing_tga ?? [],
       currentTestGroup
     )
-    const result = await callClaudeHaiku(prompt, anthropicApiKey) as Record<string, unknown>
+    const aiResult = await callClaudeHaiku(prompt, anthropicApiKey) as Record<string, unknown>
+    const result = buildDeterministicResult(
+      aiResult,
+      extracted,
+      existing_analytes ?? [],
+      existing_tga ?? [],
+      currentTestGroup
+    )
 
     const enriched = {
       ...result,

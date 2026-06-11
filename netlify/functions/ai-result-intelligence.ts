@@ -901,7 +901,26 @@ function extractJsonFromResponse(response: any): any {
   throw new Error('Could not extract JSON from Gemini response');
 }
 
-async function callGemini(prompt: string, apiKey: string, maxRetries: number = 4): Promise<any> {
+interface GeminiCallOptions {
+  maxRetries?: number;
+  maxOutputTokens?: number;
+  temperature?: number;
+  thinkingBudget?: number;
+  timeoutMs?: number;
+}
+
+async function callGemini(
+  prompt: string,
+  apiKey: string,
+  options: GeminiCallOptions = {},
+): Promise<any> {
+  const {
+    maxRetries = 4,
+    maxOutputTokens = 8000,
+    temperature = 0.2,
+    thinkingBudget,
+    timeoutMs = 45000,
+  } = options;
   let lastError: Error | null = null;
 
   for (let attempt = 0; attempt < maxRetries; attempt++) {
@@ -912,29 +931,46 @@ async function callGemini(prompt: string, apiKey: string, maxRetries: number = 4
       await new Promise(resolve => setTimeout(resolve, delayMs));
     }
 
-    const response = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${apiKey}`,
-      {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          contents: [
-            {
-              role: 'user',
-              parts: [{ text: prompt }],
-            },
-          ],
-          generationConfig: {
-            temperature: 0.2, // Low temperature for consistent medical language
-            topP: 0.9,
-            maxOutputTokens: 8000,
-            responseMimeType: 'application/json',
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+    let response: Response;
+
+    try {
+      response = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${apiKey}`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
           },
-        }),
+          signal: controller.signal,
+          body: JSON.stringify({
+            contents: [
+              {
+                role: 'user',
+                parts: [{ text: prompt }],
+              },
+            ],
+            generationConfig: {
+              temperature,
+              topP: 0.9,
+              maxOutputTokens,
+              responseMimeType: 'application/json',
+              ...(thinkingBudget === undefined
+                ? {}
+                : { thinkingConfig: { thinkingBudget } }),
+            },
+          }),
+        }
+      );
+    } catch (error) {
+      if (error instanceof DOMException && error.name === 'AbortError') {
+        throw new Error(`Gemini request timed out after ${timeoutMs}ms`);
       }
-    );
+      throw error;
+    } finally {
+      clearTimeout(timeoutId);
+    }
 
     if (response.ok) {
       const responseData = await response.json();
@@ -1045,7 +1081,13 @@ async function handler(req: Request): Promise<Response> {
           );
         }
         prompt = buildPatientSummaryPrompt(body as PatientSummaryRequest);
-        result = await callGemini(prompt, apiKey);
+        result = await callGemini(prompt, apiKey, {
+          maxRetries: 2,
+          maxOutputTokens: 3000,
+          temperature: 0.1,
+          thinkingBudget: 512,
+          timeoutMs: 25000,
+        });
         break;
 
       case 'delta_check':
