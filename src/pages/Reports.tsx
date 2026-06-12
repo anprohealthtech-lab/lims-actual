@@ -47,7 +47,6 @@ import {
   getCompactPlannerSuggestion,
 } from '../utils/compactPrintPdf';
 import { convertToCustomDomain } from '../utils/storageUrlBuilder';
-import { quickViewPDF } from '../utils/pdfViewerService';
 import type { LabTemplateRecord, ReportData, LabBrandingHtmlDefaults } from '../utils/pdfService';
 import PDFProgressModal from '../components/PDFProgressModal';
 import { usePDFGeneration, isOrderReportReady } from '../hooks/usePDFGeneration';
@@ -3801,6 +3800,7 @@ const Reports: React.FC = () => {
           patientPhone={viewingOrder.results[0]?.phone}
           testNames={Array.isArray(viewingOrder.test_names) ? viewingOrder.test_names : []}
           doctorName={viewingOrder.results[0]?.doctor}
+          onReportGenerated={loadApprovedResults}
         />
       )}
 

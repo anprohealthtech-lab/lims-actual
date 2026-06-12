@@ -47,6 +47,7 @@ import {
   LANGUAGE_DISPLAY_NAMES
 } from "../hooks/useAIResultIntelligence";
 import { supabase, database, aiAnalysis, formatAge } from "../utils/supabase";
+import { loadOrderedAnalyteRows } from "../utils/analyteDisplayOrder";
 import { runAIFlagAnalysis, analyzeAndSaveFlag } from "../utils/aiFlagAnalysis";
 import { saveClinicalSummary, toggleOrderSummaryInReport, saveClinicalSummaryOptions } from "../utils/reportExtrasService";
 import TrendGraphPanel from "../components/Results/TrendGraphPanel";
@@ -68,6 +69,7 @@ interface PanelRow {
   handled_analytes?: number;
   panel_ready: boolean;
   result_verification_status?: string | null;
+  notes?: string | null;
   patient_id: string;
 	  patient_name: string;
 	  order_date: string;
@@ -99,6 +101,9 @@ interface Analyte {
   verified_at: string | null;
   is_hidden_from_report?: boolean | null;
   hidden_reason?: string | null;
+  section_heading?: string | null;
+  sort_order?: number | null;
+  display_order?: number | null;
 }
 
 interface Attachment {
@@ -229,6 +234,9 @@ const OrderVerificationView: React.FC<OrderVerificationViewProps> = ({ onBackToP
   const [openOrders, setOpenOrders] = useState<Record<string, boolean>>({});
   const [openPanels, setOpenPanels] = useState<Record<string, boolean>>({});
   const [busy, setBusy] = useState<Record<string, boolean>>({});
+  const [remarksByResult, setRemarksByResult] = useState<Record<string, string>>({});
+  const [remarkDirty, setRemarkDirty] = useState<Record<string, boolean>>({});
+  const [remarkSaving, setRemarkSaving] = useState<Record<string, boolean>>({});
   const [attachmentsByOrder, setAttachmentsByOrder] = useState<Record<string, Attachment[]>>({});
   const [attachmentViewMode, setAttachmentViewMode] = useState<AttachmentViewMode>("test");
   const [selectedOrders, setSelectedOrders] = useState<Set<string>>(new Set());
@@ -414,8 +422,7 @@ const OrderVerificationView: React.FC<OrderVerificationViewProps> = ({ onBackToP
 
 	      const basePanels = (data || []) as PanelRow[];
       const needsStatusFallback = basePanels.some((row) => !Object.prototype.hasOwnProperty.call(row, "result_verification_status"));
-      const resultIds = needsStatusFallback
-        ? Array.from(new Set(basePanels
+      const resultIds = Array.from(new Set(basePanels
           .filter((row) =>
             row.has_result === true ||
             (row.has_result === undefined && (
@@ -426,8 +433,7 @@ const OrderVerificationView: React.FC<OrderVerificationViewProps> = ({ onBackToP
             ))
           )
           .map((row) => row.result_id)
-          .filter(Boolean)))
-        : [];
+          .filter(Boolean)));
       const baseOrderIds = Array.from(new Set(basePanels.map((row) => row.order_id).filter(Boolean)));
 
       if (baseOrderIds.length > 0) {
@@ -459,14 +465,25 @@ const OrderVerificationView: React.FC<OrderVerificationViewProps> = ({ onBackToP
       }
 
       if (basePanels.length > 0) {
-        const resultStatuses = await fetchRowsByIds("results", "id, verification_status", resultIds);
+        const resultStatuses = await fetchRowsByIds("results", "id, verification_status, notes", resultIds);
 
-        const statusMap = new Map(resultStatuses.map((row: any) => [row.id, row.verification_status || null]));
-        const panelRows = basePanels.map((row) => ({
-          ...row,
-          result_verification_status: row.result_verification_status ?? (statusMap.has(row.result_id) ? statusMap.get(row.result_id) ?? null : null),
-        }));
+        const resultMap = new Map(resultStatuses.map((row: any) => [row.id, row]));
+        const panelRows = basePanels.map((row) => {
+          const result = resultMap.get(row.result_id) as any;
+          return {
+            ...row,
+            result_verification_status: row.result_verification_status ?? (needsStatusFallback ? result?.verification_status ?? null : null),
+            notes: result?.notes ?? row.notes ?? null,
+          };
+        });
         setPanels(panelRows);
+        setRemarksByResult((current) => {
+          const next = { ...current };
+          for (const panel of panelRows) {
+            if (!remarkDirty[panel.result_id]) next[panel.result_id] = panel.notes || "";
+          }
+          return next;
+        });
 
         // Enrich panel rows with order metadata for sample sorting and cross-page filters.
         try {
@@ -661,7 +678,12 @@ const OrderVerificationView: React.FC<OrderVerificationViewProps> = ({ onBackToP
       .order("parameter", { ascending: true });
 
     if (!error && data) {
-      const analytes = data as unknown as Analyte[];
+      const testGroupId = panels.find((panel) => panel.result_id === resultId)?.test_group_id;
+      const analytes = await loadOrderedAnalyteRows(
+        supabase,
+        testGroupId,
+        data as unknown as Analyte[]
+      );
       setRowsByResult(prev => ({ ...prev, [resultId]: analytes }));
       return analytes;
     }
@@ -694,8 +716,10 @@ const OrderVerificationView: React.FC<OrderVerificationViewProps> = ({ onBackToP
 	          is_hidden_from_report: false,
 	          hidden_reason: null
 	        })) as Analyte[];
-        setRowsByResult(prev => ({ ...prev, [resultId]: mapped }));
-        return mapped;
+        const testGroupId = panels.find((panel) => panel.result_id === resultId)?.test_group_id;
+        const ordered = await loadOrderedAnalyteRows(supabase, testGroupId, mapped);
+        setRowsByResult(prev => ({ ...prev, [resultId]: ordered }));
+        return ordered;
       }
     }
 
@@ -838,6 +862,28 @@ const OrderVerificationView: React.FC<OrderVerificationViewProps> = ({ onBackToP
 
   const setBusyFor = (key: string, val: boolean) => setBusy(prev => ({ ...prev, [key]: val }));
 
+  const saveGroupRemark = async (panel: PanelRow, silent = false): Promise<boolean> => {
+    const notes = remarksByResult[panel.result_id]?.trim() || null;
+    setRemarkSaving((current) => ({ ...current, [panel.result_id]: true }));
+    const { error } = await supabase
+      .from("results")
+      .update({ notes })
+      .eq("id", panel.result_id);
+    setRemarkSaving((current) => ({ ...current, [panel.result_id]: false }));
+
+    if (error) {
+      console.error("Failed to save report remark", error);
+      if (!silent) alert("Failed to save report remark");
+      return false;
+    }
+
+    setRemarkDirty((current) => ({ ...current, [panel.result_id]: false }));
+    setPanels((current) => current.map((row) =>
+      row.result_id === panel.result_id ? { ...row, notes } : row
+    ));
+    return true;
+  };
+
   const approveAnalyte = async (analyteId: string) => {
     setBusyFor(analyteId, true);
     const { error } = await supabase
@@ -884,6 +930,14 @@ const OrderVerificationView: React.FC<OrderVerificationViewProps> = ({ onBackToP
   };
 
   const approvePanel = async (panel: PanelRow, analytes: Analyte[]) => {
+    if (remarkDirty[panel.result_id]) {
+      const remarkSaved = await saveGroupRemark(panel, true);
+      if (!remarkSaved) {
+        alert("Approval stopped because the report remark could not be saved.");
+        return;
+      }
+    }
+
     if (panel.is_section_only) {
       setBusyFor(panel.result_id, true);
       try {
@@ -2973,11 +3027,19 @@ ${summary.urgent_findings.map(f => `• ${f}`).join('\n')}` : ''}
                                       </tr>
                                     </thead>
                                     <tbody className="divide-y divide-gray-100">
-                                      {analytes.map(analyte => {
+                                      {analytes.map((analyte, index) => {
 	                                        const isRerunRequest = analyte.verify_note && analyte.verify_note.toUpperCase().includes("RE-RUN");
 	                                        const isHidden = !!analyte.is_hidden_from_report;
 	                                        return (
-	                                        <tr key={analyte.id} className={`hover:bg-blue-50 ${isHidden ? 'bg-slate-50 text-slate-500' : isRerunRequest ? 'bg-orange-50' : ''}`}>
+                                          <React.Fragment key={analyte.id}>
+                                            {analyte.section_heading && analyte.section_heading !== analytes[index - 1]?.section_heading && (
+                                              <tr className="bg-blue-50">
+                                                <td colSpan={6} className="px-4 py-2 text-xs font-bold uppercase tracking-wide text-blue-800">
+                                                  {analyte.section_heading}
+                                                </td>
+                                              </tr>
+                                            )}
+	                                          <tr className={`hover:bg-blue-50 ${isHidden ? 'bg-slate-50 text-slate-500' : isRerunRequest ? 'bg-orange-50' : ''}`}>
                                           <td className="px-4 py-4">
                                             <div className="flex items-center gap-2">
                                               <div className="font-semibold text-gray-900">{analyte.parameter}</div>
@@ -3132,10 +3194,40 @@ ${summary.urgent_findings.map(f => `• ${f}`).join('\n')}` : ''}
                                               </div>
                                             )}
                                           </td>
-                                        </tr>
+	                                          </tr>
+                                          </React.Fragment>
                                       );})}
                                     </tbody>
                                   </table>
+                                </div>
+
+                                <div className="mt-6 rounded-xl border border-amber-200 bg-amber-50/50 p-5">
+                                  <div className="mb-2 flex items-center justify-between gap-3">
+                                    <div>
+                                      <h5 className="font-semibold text-amber-900">Report Remarks</h5>
+                                      <p className="text-xs text-amber-700">Printed below this test group in the final report.</p>
+                                    </div>
+                                    <button
+                                      type="button"
+                                      disabled={!remarkDirty[panel.result_id] || remarkSaving[panel.result_id]}
+                                      onClick={() => saveGroupRemark(panel)}
+                                      className="inline-flex items-center rounded-lg bg-amber-600 px-3 py-2 text-sm font-semibold text-white hover:bg-amber-700 disabled:cursor-not-allowed disabled:opacity-50"
+                                    >
+                                      {remarkSaving[panel.result_id] && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                                      Save Remark
+                                    </button>
+                                  </div>
+                                  <textarea
+                                    value={remarksByResult[panel.result_id] || ""}
+                                    onChange={(event) => {
+                                      setRemarksByResult((current) => ({ ...current, [panel.result_id]: event.target.value }));
+                                      setRemarkDirty((current) => ({ ...current, [panel.result_id]: true }));
+                                    }}
+                                    rows={3}
+                                    maxLength={2000}
+                                    placeholder="Optional report-visible remark"
+                                    className="w-full resize-y rounded-lg border border-amber-200 bg-white px-3 py-2 text-sm text-gray-800 outline-none focus:border-amber-400 focus:ring-2 focus:ring-amber-100"
+                                  />
                                 </div>
 
                                 {/* Report Sections Editor (PBS/Radiology findings, impressions, etc.) */}

@@ -39,6 +39,7 @@ import {
 	  Lock
 } from "lucide-react";
 import { supabase, database } from "../utils/supabase";
+import { loadOrderedAnalyteRows } from "../utils/analyteDisplayOrder";
 import AttachmentSelector from "../components/Reports/AttachmentSelector";
 import OrderVerificationView from "./OrderVerificationView";
 import { useAIResultIntelligence, type VerifierSummaryResponse, type ClinicalSummaryResponse, type GeneratedInterpretation, type ResultValue, type DeltaCheckResponse } from "../hooks/useAIResultIntelligence";
@@ -71,6 +72,7 @@ type PanelRow = {
   approved_analytes: number;
   panel_ready: boolean;
   result_verification_status?: string | null;
+  notes?: string | null;
   patient_id: string;
   patient_name: string;
   patient_age?: string | number | null;
@@ -105,6 +107,9 @@ type Analyte = {
 	  calculated_at?: string;
 	  is_hidden_from_report?: boolean | null;
 	  hidden_reason?: string | null;
+    section_heading?: string | null;
+    sort_order?: number | null;
+    display_order?: number | null;
 };
 
 type CalcDebugHintsByResult = Record<string, Record<string, string[]>>;
@@ -676,6 +681,9 @@ const ResultVerificationConsole: React.FC = () => {
   const [calcDebugHints, setCalcDebugHints] = useState<CalcDebugHintsByResult>({});
   const [open, setOpen] = useState<Record<string, boolean>>({}); // result_id -> bool
   const [busy, setBusy] = useState<Record<string, boolean>>({});  // small per-row spinner
+  const [remarksByResult, setRemarksByResult] = useState<Record<string, string>>({});
+  const [remarkDirty, setRemarkDirty] = useState<Record<string, boolean>>({});
+  const [remarkSaving, setRemarkSaving] = useState<Record<string, boolean>>({});
   const sectionEditorRefs = useRef<Record<string, SectionEditorRef | null>>({});
 
   // attachments cache by order_id
@@ -792,8 +800,7 @@ const ResultVerificationConsole: React.FC = () => {
       const data = await fetchPanelStatusRows(labId, from, to, shouldFilter, locationIds);
       const basePanels = (data || []) as PanelRow[];
       const needsStatusFallback = basePanels.some((row) => !Object.prototype.hasOwnProperty.call(row, "result_verification_status"));
-      const statusFallbackIds = needsStatusFallback
-        ? Array.from(new Set(basePanels
+      const resultIds = Array.from(new Set(basePanels
           .filter((row) =>
             row.has_result === true ||
             (row.has_result === undefined && (
@@ -803,18 +810,18 @@ const ResultVerificationConsole: React.FC = () => {
             ))
           )
           .map((row) => row.result_id)
-          .filter(Boolean)))
-        : [];
+          .filter(Boolean)));
+      const statusFallbackIds = needsStatusFallback ? resultIds : [];
       const patientIds = Array.from(new Set(basePanels.map((row) => row.patient_id).filter(Boolean)));
 	      const orderIds = Array.from(new Set(basePanels.map((row) => row.order_id).filter(Boolean)));
 
-	      const [resultStatuses, patientRows, orderRows] = await Promise.all([
-	        fetchRowsByIds("results", "id, verification_status", statusFallbackIds),
+	      const [resultRows, patientRows, orderRows] = await Promise.all([
+	        fetchRowsByIds("results", "id, verification_status, notes", resultIds),
 	        fetchRowsByIds("patients", "id, age, gender", patientIds),
 	        fetchRowsByIds("orders", "id, sample_id, order_number, doctor, account_id, priority, accounts(name)", orderIds),
 	      ]);
 
-	      const statusMap = new Map(resultStatuses.map((row: any) => [row.id, row.verification_status || null]));
+	      const resultMap = new Map(resultRows.map((row: any) => [row.id, row]));
 	      const patientMap = new Map(patientRows.map((patient: any) => [patient.id, patient]));
 	      const orderMap = new Map(orderRows.map((order: any) => {
         const accountInfo = Array.isArray(order.accounts) ? order.accounts[0] : order.accounts;
@@ -827,17 +834,29 @@ const ResultVerificationConsole: React.FC = () => {
           priority: order.priority || "Normal",
         }];
       }));
-      setPanels(basePanels.map((row) => {
+      const hydratedPanels = basePanels.map((row) => {
         const patient = patientMap.get(row.patient_id) as any;
         const order = orderMap.get(row.order_id) as Partial<PanelRow> | undefined;
+        const result = resultMap.get(row.result_id) as any;
         return {
           ...row,
 	          ...(order || {}),
-          result_verification_status: row.result_verification_status ?? (statusMap.has(row.result_id) ? statusMap.get(row.result_id) ?? null : null),
+          result_verification_status: row.result_verification_status ?? (statusFallbackIds.includes(row.result_id) ? result?.verification_status ?? null : null),
+          notes: result?.notes ?? row.notes ?? null,
           patient_age: row.patient_age ?? patient?.age ?? null,
 		          patient_gender: row.patient_gender ?? patient?.gender ?? null,
 	        };
-	      }));
+	      });
+      setPanels(hydratedPanels);
+      setRemarksByResult((current) => {
+        const next = { ...current };
+        for (const panel of hydratedPanels) {
+          if (!remarkDirty[panel.result_id]) {
+            next[panel.result_id] = panel.notes || "";
+          }
+        }
+        return next;
+      });
     } catch (error: any) {
       setErr(error?.message || "Failed to load verification panels");
       setPanels([]);
@@ -966,7 +985,12 @@ const ResultVerificationConsole: React.FC = () => {
       .order("parameter", { ascending: true });
 
     if (!error && data) {
-      const analytes = data as unknown as Analyte[];
+      const testGroupId = panels.find((panel) => panel.result_id === result_id)?.test_group_id;
+      const analytes = await loadOrderedAnalyteRows(
+        supabase,
+        testGroupId,
+        data as unknown as Analyte[]
+      );
       setRowsByResult((s) => ({ ...s, [result_id]: analytes }));
       return analytes;
     } else {
@@ -999,8 +1023,10 @@ const ResultVerificationConsole: React.FC = () => {
 	            is_hidden_from_report: false,
 	            hidden_reason: null,
 	          })) as Analyte[];
-          setRowsByResult((s) => ({ ...s, [result_id]: mapped }));
-          return mapped;
+          const testGroupId = panels.find((panel) => panel.result_id === result_id)?.test_group_id;
+          const ordered = await loadOrderedAnalyteRows(supabase, testGroupId, mapped);
+          setRowsByResult((s) => ({ ...s, [result_id]: ordered }));
+          return ordered;
         }
       }
     }
@@ -1095,6 +1121,28 @@ const ResultVerificationConsole: React.FC = () => {
     const { data: { user } } = await supabase.auth.getUser();
     currentVerifierIdRef.current = user?.id || null;
     return currentVerifierIdRef.current;
+  };
+
+  const saveGroupRemark = async (row: PanelRow, silent = false): Promise<boolean> => {
+    const notes = remarksByResult[row.result_id]?.trim() || null;
+    setRemarkSaving((current) => ({ ...current, [row.result_id]: true }));
+    const { error } = await supabase
+      .from("results")
+      .update({ notes })
+      .eq("id", row.result_id);
+    setRemarkSaving((current) => ({ ...current, [row.result_id]: false }));
+
+    if (error) {
+      console.error("Failed to save report remark:", error);
+      if (!silent) alert("Failed to save report remark");
+      return false;
+    }
+
+    setRemarkDirty((current) => ({ ...current, [row.result_id]: false }));
+    setPanels((current) => current.map((panel) =>
+      panel.result_id === row.result_id ? { ...panel, notes } : panel
+    ));
+    return true;
   };
 
   const approveAnalyte = async (rv_id: string) => {
@@ -1297,6 +1345,14 @@ const ResultVerificationConsole: React.FC = () => {
     if (!canVerifyRow(row)) {
       alert("You do not have permission to verify this report.");
       return;
+    }
+
+    if (remarkDirty[row.result_id]) {
+      const remarkSaved = await saveGroupRemark(row, true);
+      if (!remarkSaved) {
+        alert("Approval stopped because the report remark could not be saved.");
+        return;
+      }
     }
 
     if (row.is_section_only) {
@@ -2855,13 +2911,54 @@ const ResultVerificationConsole: React.FC = () => {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-100">
-                  {analytes.map((a) => (
-                    <React.Fragment key={a.id}>{renderAnalyteRow(a, row)}</React.Fragment>
+                  {analytes.map((a, index) => (
+                    <React.Fragment key={a.id}>
+                      {a.section_heading && a.section_heading !== analytes[index - 1]?.section_heading && (
+                        <tr className="bg-blue-50">
+                          <td colSpan={6} className="px-4 py-2 text-xs font-bold uppercase tracking-wide text-blue-800">
+                            {a.section_heading}
+                          </td>
+                        </tr>
+                      )}
+                      {renderAnalyteRow(a, row)}
+                    </React.Fragment>
                   ))}
                 </tbody>
 	              </table>
 	            </div>
 	            )}
+
+            <div className="mt-6 rounded-xl border border-amber-200 bg-amber-50/50 p-5 shadow-sm">
+              <div className="mb-2 flex items-center justify-between gap-3">
+                <div>
+                  <h4 className="font-semibold text-amber-900">Report Remarks</h4>
+                  <p className="text-xs text-amber-700">
+                    Printed below this test group in the final report.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  disabled={!remarkDirty[row.result_id] || remarkSaving[row.result_id]}
+                  onClick={() => saveGroupRemark(row)}
+                  className="inline-flex items-center rounded-lg bg-amber-600 px-3 py-2 text-sm font-semibold text-white hover:bg-amber-700 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  {remarkSaving[row.result_id] && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                  Save Remark
+                </button>
+              </div>
+              <textarea
+                value={remarksByResult[row.result_id] || ""}
+                onChange={(event) => {
+                  const value = event.target.value;
+                  setRemarksByResult((current) => ({ ...current, [row.result_id]: value }));
+                  setRemarkDirty((current) => ({ ...current, [row.result_id]: true }));
+                }}
+                rows={3}
+                maxLength={2000}
+                placeholder="Optional report-visible remark"
+                className="w-full resize-y rounded-lg border border-amber-200 bg-white px-3 py-2 text-sm text-gray-800 outline-none focus:border-amber-400 focus:ring-2 focus:ring-amber-100"
+              />
+            </div>
 
             {/* Attachments section */}
             <div className="mt-6 bg-white rounded-xl shadow-sm border border-gray-200">

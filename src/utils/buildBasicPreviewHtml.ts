@@ -329,9 +329,15 @@ export function buildBasicPreviewHtml(params: BuildBasicPreviewParams): string {
   const flagAsterisk = (printOptions.flagAsterisk as boolean) ?? false;
   const flagAsteriskCritical = (printOptions.flagAsteriskCritical as boolean) ?? false;
   const testGroupTitlePosition = (printOptions.testGroupTitlePosition as string) ?? "above_headers_center";
+  const requestedQrPosition = String(printOptions.qrPosition || "");
+  const qrPosition = requestedQrPosition === "top_left" || requestedQrPosition === "top_right"
+    ? requestedQrPosition
+    : "bottom_left";
   const qrHorizontalOffset = Math.max(0, Math.min(80, Number(printOptions.qrHorizontalOffset ?? 0)));
   const signatureMaxHeight = Math.max(30, Math.min(120, Number(printOptions.signatureMaxHeight ?? 70)));
   const signatureMaxWidth = Math.max(80, Math.min(260, Number(printOptions.signatureMaxWidth ?? 180)));
+  const resultTableBackground = printOptions.resultTableBackground === "transparent" ? "transparent" : "#fff";
+  const sectionRowBackground = printOptions.resultTableBackground === "transparent" ? "transparent" : "#f5f5f5";
   // Section field name width percentage for narrative/section-only reports (default 40%)
   const sectionFieldNamePct = Math.max(20, Math.min(70, Number(printOptions.sectionFieldNamePct ?? 40)));
   const colCount = 4;
@@ -390,17 +396,21 @@ export function buildBasicPreviewHtml(params: BuildBasicPreviewParams): string {
 	  padding: 2px 6px; border-radius: 999px; text-transform: uppercase; letter-spacing: 0.04em;
 	}
 	table { border: none !important; border-collapse: collapse !important; }
-td, th { color: #000 !important; font-weight: normal; background-color: #fff !important; vertical-align: top !important; }
+td, th { color: #000 !important; font-weight: normal; background-color: ${resultTableBackground} !important; vertical-align: top !important; }
 td { padding: 2px 4px !important; }
 th { padding: 3px 4px !important; }
+	.report-title-bar {
+	  display: flex; align-items: center;
+	  border-top: 1.5px solid #000; border-bottom: 1.5px solid #000;
+	  padding: 4px 0; margin: 6px 0 10px;
+	}
 	.report-main-title {
 	  text-align: center; font-size: ${basePx + 3}px;
-	  border-top: 1.5px solid #000; border-bottom: 1.5px solid #000;
-	  padding: 5px 0; margin: 6px 0 10px; font-weight: 700; color: #000;
+	  border: none; padding: 0; margin: 0; font-weight: 700; color: #000;
 	}
 		.report-id-line { display: none; }
 		.report-id-line strong { color: #111827; }
-.patient-header-table { width: 100%; table-layout: fixed; margin-bottom: 8px; border: none !important; }
+.patient-header-table { width: 100%; table-layout: fixed; margin-bottom: 0; border: none !important; }
 .patient-header-table th {
   width: 15%; font-weight: 700; text-align: left; color: #000;
   padding: 2px 3px !important; white-space: nowrap; border: none !important;
@@ -413,7 +423,7 @@ th { padding: 3px 4px !important; }
 .patient-test-separator {
   border-top: 1.5px solid #000;
   height: 0;
-  margin: 4px 0 8px;
+  margin: 2px 0 6px;
 }
 .tbl-results {
   width: 100%; table-layout: fixed; border-collapse: collapse;
@@ -450,7 +460,7 @@ th { padding: 3px 4px !important; }
 		.same-row-sibling-ref { display: inline; color: #666; font-size: ${smallPx + 1}px; line-height: 1.15; text-align: left; }
 		.sub-section-col-header td {
 		  border-bottom: 1px solid #999 !important;
-		  background-color: #fafafa !important;
+		  background-color: ${resultTableBackground} !important;
 		  color: #333 !important;
 		}
 	.tbl-results td, .tbl-results th { border: none !important; padding: 2px 4px !important; line-height: 1.28; font-size: ${basePx}px !important; }
@@ -479,9 +489,17 @@ th { padding: 3px 4px !important; }
   padding-bottom: 3px !important; text-transform: uppercase !important;
   font-size: ${sectionHeaderInline ? basePx - 1 : smallPx + 1}px !important;
   border: none !important; color: #000 !important;
-  ${sectionHeaderInline ? "border-bottom: 0.5px solid #ccc !important; background-color: #f5f5f5 !important;" : ""}
+  ${sectionHeaderInline ? `border-bottom: 0.5px solid #ccc !important; background-color: ${sectionRowBackground} !important;` : ""}
 }
 .descriptive-row td { border-bottom: 0.5px dotted #e5e5e5 !important; color: #111 !important; }
+.tbl-results .qualitative-wide-value {
+  width: ${formatBasicWidth(standardColumnWidths.slice(1).reduce((sum, width) => sum + width, 0))} !important;
+  text-align: left !important;
+  white-space: normal !important;
+  overflow: visible !important;
+  overflow-wrap: anywhere !important;
+  word-break: break-word !important;
+}
 .calculated-note { font-size: ${smallPx}px; color: #444; margin: 3px 0 6px; font-style: italic; }
 .group-interpretation-block {
   margin-top: 10px;
@@ -592,6 +610,8 @@ th { padding: 3px 4px !important; }
 		.test-results { display: flex; flex-direction: column; flex: 1 1 auto; }
 		.report-footer { margin-top: auto; padding-top: 30px; display: flex; justify-content: space-between; align-items: flex-end; page-break-inside: avoid; break-inside: avoid; }
 	.report-footer .qr-verify { margin-left: ${qrHorizontalOffset}px; }
+	.qr-top-left-slot .qr-verify { margin-left: ${qrHorizontalOffset}px; }
+	.qr-top-right-slot .qr-verify { margin-right: ${qrHorizontalOffset}px; }
 	.qr-verify img { width: 46px; height: 46px; display: block; }
 	.qr-verify p { margin: 2px 0 0; font-size: ${smallPx}px; color: #6b7280; }
 	.auth-text { font-size: ${smallPx}px; color: #444; font-style: italic; }
@@ -600,7 +620,7 @@ th { padding: 3px 4px !important; }
 	.signatory-name { font-weight: 700; font-size: ${basePx + 1}px; }
 	.signatory-role { font-size: ${basePx - 1}px; margin-top: 2px; color: #333; }
 		.compact-page .report-main-title { font-size: ${basePx + 3}px; padding: 5px 0; margin-bottom: 10px; }
-		.compact-page .patient-header-table { margin-bottom: 5px; }
+		.compact-page .patient-header-table { margin-bottom: 0; }
 		.compact-page .patient-header-table th,
 		.compact-page .patient-header-table td,
 		.compact-page .tbl-results td,
@@ -623,9 +643,13 @@ th { padding: 3px 4px !important; }
 	      <span>${orderId ? `Order ID: <strong>${escapeHtml(orderId)}</strong>` : ""}</span>
 	      <span class="preview-mode-badge">${isCompact ? "Compact Preview" : "Basic Preview"}</span>
 	    </div>
-	    <h2 class="report-main-title">TEST REPORT</h2>
+	    <div class="report-title-bar">
+	      <div class="qr-top-left-slot" style="width:110px;flex-shrink:0;"></div>
+	      <h2 class="report-main-title" style="flex:1;">TEST REPORT</h2>
+	      <div class="qr-top-right-slot" style="width:110px;flex-shrink:0;text-align:right;"></div>
+	    </div>
 	  </div>
-  <figure style="margin: 0 0 10px;">
+  <figure style="margin:0;">
     <table class="patient-header-table">
       <tbody>
         <tr>
@@ -668,7 +692,22 @@ th { padding: 3px 4px !important; }
         </div>`
       : "";
 
-    const authBlock = `<div>${qrBlock}<div class="auth-text">Authenticated Electronic Report</div></div>`;
+    const topQrBlock = qrPosition === "top_left" ? qrBlock : "";
+    const topRightQrBlock = qrPosition === "top_right" ? qrBlock : "";
+    const footerQrBlock = qrPosition === "bottom_left" ? qrBlock : "";
+    let patientHtmlWithQr = topQrBlock
+      ? patientHtml.replace(
+          '<div class="qr-top-left-slot" style="width:110px;flex-shrink:0;"></div>',
+          `<div class="qr-top-left-slot" style="width:110px;flex-shrink:0;">${topQrBlock}</div>`,
+        )
+      : patientHtml;
+    if (topRightQrBlock) {
+      patientHtmlWithQr = patientHtmlWithQr.replace(
+        '<div class="qr-top-right-slot" style="width:110px;flex-shrink:0;text-align:right;"></div>',
+        `<div class="qr-top-right-slot" style="width:110px;flex-shrink:0;text-align:right;">${topRightQrBlock}</div>`,
+      );
+    }
+    const authBlock = `<div>${footerQrBlock}<div class="auth-text">Authenticated Electronic Report</div></div>`;
 
     const signatoryBlock = (signatoryName || signatoryDesignation || signatoryImageUrl)
       ? `<div class="signatory-box">
@@ -700,7 +739,7 @@ th { padding: 3px 4px !important; }
 	      if (pageNumber !== currentCompactPage) {
 		        if (currentCompactPage > 0) testResultsHtml += `</div>${footerHtml}</div>`;
 	        currentCompactPage = pageNumber;
-	        testResultsHtml += `<div class="preview-page compact-page">${patientHtml}<div class="test-results">`;
+	        testResultsHtml += `<div class="preview-page compact-page">${patientHtmlWithQr}<div class="test-results">`;
 	      }
 	    }
 	    if (!isCompact) {
@@ -708,7 +747,7 @@ th { padding: 3px 4px !important; }
 	      standardPageFooterHtml = !sectionsHtml && standardRenderedGroupIndex === standardGroupCount
 	        ? footerHtml
 	        : "";
-	      testResultsHtml += `<div class="preview-page standard-page">${patientHtml}<div class="test-results">`;
+	      testResultsHtml += `<div class="preview-page standard-page">${patientHtmlWithQr}<div class="test-results">`;
 	    }
 
     if (isNarrativeGroup(group.analytes)) {
@@ -871,12 +910,16 @@ th { padding: 3px 4px !important; }
         const unitText = unit.trim().toLowerCase();
         const refText = refRange.trim();
         const hasNumericRef = /\d/.test(refText);
+        const valueTypeRaw = String(analyte.value_type || "").toLowerCase();
+        const isQualitativeWithoutMetadata =
+          valueTypeRaw === "qualitative" && !unitText && !refText;
         const isDescriptive =
-          unitText === "n/a" ||
+          valueTypeRaw !== "qualitative" &&
+          (unitText === "n/a" ||
           unitText === "na" ||
           unitText === "-" ||
           unitText === "none" ||
-          (!unitText && refText && !hasNumericRef);
+          (!unitText && refText && !hasNumericRef));
 
         // *cal / *cal(text) suffix
         const calcSuffix = isCalc
@@ -956,24 +999,28 @@ th { padding: 3px 4px !important; }
 	        } else if (hasSameRowSibling && !rowSectionHasSiblings) {
 	          // 4-column wide layout (with colspan) for non-sibling sections in a table that has siblings elsewhere
 	          testResultsHtml += `
-	          <tr>
+	          <tr class="${isQualitativeWithoutMetadata ? "qualitative-wide-row" : ""}">
 	            <td class="test-name-cell" style="width:${formatBasicWidth(standardColumnWidths[0])};">
 	              <div class="test-name">${analyte.parameter}${calcSuffix}</div>
 	            </td>
-	            <td class="${valClass}" style="width:${formatBasicWidth(standardColumnWidths[1])}; text-align:right;">${displayValue}</td>
+	            ${isQualitativeWithoutMetadata
+	              ? `<td class="${valClass} qualitative-wide-value" colspan="5">${displayValue}</td>`
+	              : `<td class="${valClass}" style="width:${formatBasicWidth(standardColumnWidths[1])}; text-align:right;">${displayValue}</td>
 	            <td style="width:${formatBasicWidth(standardColumnWidths[2])}; text-align:left; vertical-align:top; font-size:${basePx}px; color:#444;">${unit}</td>
-	            <td style="width:${formatBasicWidth(standardColumnWidths[3])}; text-align:left; vertical-align:top; font-size:${smallPx + 1}px; color:#666;" colspan="3">${refRange}</td>
+	            <td style="width:${formatBasicWidth(standardColumnWidths[3])}; text-align:left; vertical-align:top; font-size:${smallPx + 1}px; color:#666;" colspan="3">${refRange}</td>`}
 	          </tr>`;
         } else {
           // Standard 4-column layout (no siblings in entire table)
           testResultsHtml += `
-          <tr>
+          <tr class="${isQualitativeWithoutMetadata ? "qualitative-wide-row" : ""}">
             <td class="test-name-cell">
               <div class="test-name">${analyte.parameter}${calcSuffix}</div>
             </td>
-            <td class="${valClass}">${displayValue}</td>
+            ${isQualitativeWithoutMetadata
+              ? `<td class="${valClass} qualitative-wide-value" colspan="3">${displayValue}</td>`
+              : `<td class="${valClass}">${displayValue}</td>
             <td style="text-align:left; vertical-align:top; font-size:${basePx}px; color:#444;">${unit}</td>
-            <td style="text-align:left; vertical-align:top; font-size:${smallPx + 1}px; color:#666;">${refRange}</td>
+            <td style="text-align:left; vertical-align:top; font-size:${smallPx + 1}px; color:#666;">${refRange}</td>`}
           </tr>`;
         }
       }

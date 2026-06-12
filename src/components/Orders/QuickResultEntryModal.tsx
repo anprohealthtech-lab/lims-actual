@@ -9,6 +9,7 @@ import { X, Save, CheckCircle, ChevronDown, Loader2, RefreshCw, EyeOff } from "l
 import { supabase, database } from "../../utils/supabase";
 import { useAuth } from "../../contexts/AuthContext";
 import { calculateFlag, calculateFlagsForResults } from "../../utils/flagCalculation";
+import { selectPreferredCalculatedDependencies } from "../../utils/calculatedDependencies";
 import SectionEditor, { SectionEditorRef } from "../Results/SectionEditor";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -164,9 +165,11 @@ const toVariableSlug = (name: string): string => {
     .replace(/\bpow\s*\(/g, 'Math.pow(')
     .replace(/\^/g, '**');
 
-  const analyteSliceDeps = deps.filter(d =>
-    (labAnalyteId && d.calculated_lab_analyte_id === labAnalyteId) ||
-    (!d.calculated_lab_analyte_id && d.calculated_analyte_id === analyteId)
+  const analyteSliceDeps = selectPreferredCalculatedDependencies(
+    deps,
+    analyteId,
+    labAnalyteId,
+    new Set(valueLookup.keys()),
   );
 
   // Phase 1: replace variables listed in formula_variables.
@@ -238,6 +241,8 @@ const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, on
   const [saving, setSaving] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [message, setMessage] = useState<{ text: string; type: "success" | "error" } | null>(null);
+  const [groupRemarks, setGroupRemarks] = useState<Record<string, string>>({});
+  const [initialGroupRemarks, setInitialGroupRemarks] = useState<Record<string, string>>({});
   // result row IDs per test_group_id — needed to render SectionEditor
   const [resultIds, setResultIds] = useState<Map<string, string>>(new Map());
 
@@ -297,7 +302,7 @@ const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, on
             )
           ),
           results(
-            id, order_test_group_id, order_test_id, test_group_id,
+            id, order_test_group_id, order_test_id, test_group_id, notes,
 		            result_values(analyte_id, lab_analyte_id, analyte_name, parameter, value, unit, reference_range, flag, verify_note, verify_status, is_hidden_from_report, hidden_reason)
           )
         `)
@@ -408,6 +413,18 @@ const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, on
 	      }
 
       setTestGroups(merged);
+      const loadedRemarks = Object.fromEntries(
+        merged.map((tg) => {
+          const resultRow = (data.results || []).find((r: any) =>
+            (tg.order_test_group_id && r.order_test_group_id === tg.order_test_group_id) ||
+            (tg.order_test_id && r.order_test_id === tg.order_test_id) ||
+            r.test_group_id === tg.test_group_id
+          );
+          return [tg.test_group_id, resultRow?.notes || ""];
+        })
+      );
+      setGroupRemarks(loadedRemarks);
+      setInitialGroupRemarks(loadedRemarks);
 
       // Build result ID map from existing result rows
       const resultIdMap = new Map<string, string>();
@@ -540,13 +557,7 @@ const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, on
           .select("calculated_analyte_id, calculated_lab_analyte_id, source_analyte_id, source_lab_analyte_id, variable_name, lab_id")
           .in("calculated_analyte_id", calcIds)
           .or(`lab_id.eq.${data.lab_id},lab_id.is.null`);
-        // Deduplicate: prefer lab-specific over global for same (calculated_analyte_id, variable_name)
-        const seen = new Set<string>();
-        const sorted = [...(depsData || [])].sort((a: any, b: any) => (a.lab_id ? -1 : 1) - (b.lab_id ? -1 : 1));
-        for (const row of sorted as any[]) {
-          const key = `${row.calculated_analyte_id}:${row.variable_name}`;
-          if (!seen.has(key)) { seen.add(key); loadedDeps.push(row as DepRow); }
-        }
+        loadedDeps = (depsData || []) as DepRow[];
         setCalcDeps(loadedDeps);
       }
 
@@ -767,9 +778,11 @@ const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, on
       }
     }
 
-    const deps = calcDeps.filter(d =>
-      (row.lab_analyte_id && d.calculated_lab_analyte_id === row.lab_analyte_id) ||
-      (!d.calculated_lab_analyte_id && d.calculated_analyte_id === row.analyte_id)
+    const deps = selectPreferredCalculatedDependencies(
+      calcDeps,
+      row.analyte_id,
+      row.lab_analyte_id,
+      new Set(lookup.keys()),
     );
     const allAnalytes = testGroups.flatMap(tg => tg.analytes);
 
@@ -911,7 +924,12 @@ const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, on
   const handleSubmit = async () => {
     const valid = rows.filter(r => !r.is_calculated && (r.value.trim() || r.is_hidden_from_report));
     const hasSections = sectionEditorRefs.current.size > 0;
-    if (!valid.length && !hasSections) { setMessage({ text: "Enter at least one value before submitting.", type: "error" }); return; }
+    const hasRemarks = Object.values(groupRemarks).some((remark) => remark.trim());
+    const remarksChanged = testGroups.some((tg) =>
+      (groupRemarks[tg.test_group_id] || "").trim() !==
+      (initialGroupRemarks[tg.test_group_id] || "").trim()
+    );
+    if (!valid.length && !hasSections && !hasRemarks && !remarksChanged) { setMessage({ text: "Enter at least one value or report remark before submitting.", type: "error" }); return; }
 
     setSubmitting(true);
     setMessage({ text: "Saving results...", type: "success" });
@@ -924,34 +942,9 @@ const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, on
 	      const currentLabId = safeUuid(userLabId);
 	      if (!currentLabId) throw new Error("No valid lab ID found for current user");
 
-      // Prefetch existing result rows for key-based dedup
-      const { data: existingRows } = await supabase
-        .from("results")
-        .select("id, test_group_id, order_test_group_id, order_test_id, status, verification_status")
-        .eq("order_id", order.id);
-
       const existingByKey = new Map<string, string>();
-      const existingStatusByKey = new Map<string, string>();
-      const savedResultIds = new Set<string>();
       const verifiedAt = new Date().toISOString();
-      const isLockedStatus = (status: string | null, verificationStatus: string | null) =>
-        ['Approved', 'Reviewed', 'Reported', 'approved', 'verified'].includes(status || '') ||
-        ['verified'].includes(verificationStatus || '');
-      for (const row of existingRows || []) {
-        const locked = isLockedStatus(row.status, row.verification_status) ? 'LOCKED' : row.status;
-        if (row.order_test_group_id) {
-          existingByKey.set(`otg:${row.order_test_group_id}`, row.id);
-          existingStatusByKey.set(`otg:${row.order_test_group_id}`, locked);
-        }
-        if (row.order_test_id) {
-          existingByKey.set(`ot:${row.order_test_id}`, row.id);
-          existingStatusByKey.set(`ot:${row.order_test_id}`, locked);
-        }
-        if (row.test_group_id) {
-          existingByKey.set(`tg:${row.test_group_id}`, row.id);
-          existingStatusByKey.set(`tg:${row.test_group_id}`, locked);
-        }
-      }
+      const bulkGroups: any[] = [];
 
       // Use pre-loaded analyte_dependencies (loaded at initial data fetch)
       const deps = calcDeps;
@@ -992,6 +985,9 @@ const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, on
       }
 
       for (const tg of testGroups) {
+        const groupRemark = groupRemarks[tg.test_group_id]?.trim() || "";
+        const groupRemarkChanged =
+          groupRemark !== (initialGroupRemarks[tg.test_group_id] || "").trim();
         // Build value lookup map for formula evaluation
         const valueLookup = new Map<string, number>();
         for (const a of tg.analytes) {
@@ -1049,139 +1045,9 @@ const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, on
 	          return acc;
 	        }, []);
 
-        if (toPersist.length === 0) continue;
+        if (toPersist.length === 0 && !groupRemark && !groupRemarkChanged) continue;
 
-        // Upsert results row
-        const groupKey = getGroupKey(tg);
-        let resultRowId = existingByKey.get(groupKey) || null;
-
-
-        if (!resultRowId) {
-          const { data: saved, error: re } = await supabase
-            .from("results")
-            .upsert({
-              order_id: order.id,
-              patient_id: safeUuid(order.patient_id),
-              patient_name: order.patient_name,
-              test_name: tg.test_group_name,
-              entered_by: currentUser?.email || "Unknown",
-              entered_date: new Date().toISOString().split("T")[0],
-              test_group_id: tg.test_group_id,
-	              lab_id: currentLabId,
-              extracted_by_ai: false,
-              status: autoVerifyOnSubmit ? "Reviewed" : "pending_verification",
-              verification_status: autoVerifyOnSubmit ? "verified" : "pending_verification",
-              ...(autoVerifyOnSubmit && { verified_at: verifiedAt, verified_by: safeUuid(currentUser?.id) }),
-              ...uuidProp("order_test_group_id", tg.order_test_group_id),
-              ...uuidProp("order_test_id", tg.order_test_id),
-            }, { onConflict: "order_id,test_name", ignoreDuplicates: false })
-            .select("id, status, verification_status")
-            .single();
-          if (re) throw re;
-          resultRowId = saved.id;
-          existingByKey.set(groupKey, resultRowId);
-          const savedLocked = isLockedStatus(saved.status, saved.verification_status) ? 'LOCKED' : saved.status;
-          existingStatusByKey.set(groupKey, savedLocked);
-        }
-        if (resultRowId) savedResultIds.add(resultRowId);
-
-        // For locked results (already approved/verified/reported), only insert truly
-        // missing analytes — do not delete/overwrite existing result_values.
-        const existingStatus = existingStatusByKey.get(groupKey);
-        const isGroupLocked = existingStatus === 'LOCKED';
-
-        if (isGroupLocked) {
-          // Fetch which analyte_ids already have values in this result row
-          const analyteIdsToCheck = toPersist.map(r => r.analyte_id).filter(Boolean) as string[];
-          if (analyteIdsToCheck.length === 0) continue;
-
-          const { data: alreadySaved } = await supabase
-            .from("result_values")
-            .select("analyte_id")
-            .eq("result_id", resultRowId!)
-            .in("analyte_id", analyteIdsToCheck);
-
-          const alreadySavedIds = new Set((alreadySaved || []).map((rv: any) => rv.analyte_id));
-          const trulyMissing = toPersist.filter(r => r.analyte_id && !alreadySavedIds.has(r.analyte_id));
-          if (trulyMissing.length === 0) continue;
-
-          // Insert only the missing analyte values; unlock the result row so a fresh PDF can be generated
-          const missingValueRows = trulyMissing.map(r => {
-            const rawVal = r.value.replace(/,/g, '');
-            const autoFlag = r.flag || calculateFlag(rawVal, r.reference, order.patient?.gender ?? undefined, undefined, undefined, undefined, undefined, undefined, r.value_type);
-            return {
-              result_id: resultRowId!,
-              analyte_id: r.analyte_id || null,
-              lab_analyte_id: r.lab_analyte_id || null,
-              analyte_name: r.parameter,
-              parameter: r.parameter,
-              value: rawVal || null,
-              unit: r.unit || "",
-              reference_range: r.reference || "",
-	              flag: autoFlag || null,
-	              flag_source: r.flag ? "manual" : (autoFlag ? "auto_numeric" : undefined),
-	              is_auto_calculated: r.is_calculated,
-              verify_status: (r.is_hidden_from_report || autoVerifyOnSubmit) ? "approved" : "pending",
-              verified: r.is_hidden_from_report || autoVerifyOnSubmit,
-	              verified_by: (r.is_hidden_from_report || autoVerifyOnSubmit) ? safeUuid(currentUser?.id) : null,
-              verified_at: (r.is_hidden_from_report || autoVerifyOnSubmit) ? verifiedAt : null,
-              verify_note: r.is_hidden_from_report ? (r.hidden_reason || "Hidden from report") : (autoVerifyOnSubmit ? "Auto-verified during result entry." : null),
-              is_hidden_from_report: !!r.is_hidden_from_report,
-              hidden_reason: r.is_hidden_from_report ? (r.hidden_reason || "Hidden from report") : null,
-	              order_id: order.id,
-              test_group_id: tg.test_group_id,
-	              lab_id: currentLabId,
-	              ...uuidProp("order_test_group_id", tg.order_test_group_id),
-	              ...uuidProp("order_test_id", tg.order_test_id),
-            };
-          });
-          const { error: mve } = await supabase.from("result_values").insert(missingValueRows);
-          if (mve) throw mve;
-
-          // Unlock the result row so a fresh report can be generated with complete data
-          await supabase
-            .from("results")
-            .update({
-              is_locked: false,
-              locked_reason: null,
-              ...(autoVerifyOnSubmit && {
-                status: "Reviewed",
-                verification_status: "verified",
-                verified_at: verifiedAt,
-	                verified_by: safeUuid(currentUser?.id),
-              }),
-            })
-            .eq("id", resultRowId!);
-
-          continue;
-        }
-
-        const calculatedAnalyteIdsForGroup = tg.analytes
-          .filter(a => !!a.is_calculated && !!a.id)
-          .map(a => a.id);
-        if (calculatedAnalyteIdsForGroup.length > 0) {
-          const { error: cleanupNullCalcError } = await supabase
-            .from("result_values")
-            .delete()
-            .eq("result_id", resultRowId!)
-            .in("analyte_id", calculatedAnalyteIdsForGroup)
-            .is("value", null);
-          if (cleanupNullCalcError) throw cleanupNullCalcError;
-        }
-
-        // Delete + re-insert result_values for these analytes
-        // Use analyte_id (UUID) for the filter — analyte names may contain characters like "(%)"
-        // that break PostgREST's in() URL parser, causing silent 400 errors.
-        const analyteIdsToDelete = toPersist.map(r => r.analyte_id).filter(Boolean) as string[];
-        if (analyteIdsToDelete.length > 0) {
-          const { error: deleteError } = await supabase
-            .from("result_values")
-            .delete()
-            .eq("result_id", resultRowId!)
-            .in("analyte_id", analyteIdsToDelete);
-          if (deleteError) throw deleteError;
-        }
-
+        // The bulk RPC preserves locked rows and inserts only missing analytes.
         const valueRows = toPersist.map(r => {
           const rawVal = r.value.replace(/,/g, '');
           const autoFlag = r.flag || calculateFlag(
@@ -1196,7 +1062,6 @@ const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, on
             r.value_type,
           );
           return {
-          result_id: resultRowId!,
           analyte_id: r.analyte_id || null,
           lab_analyte_id: r.lab_analyte_id || null,
           analyte_name: r.parameter,
@@ -1214,20 +1079,43 @@ const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, on
           verify_note: r.is_hidden_from_report ? (r.hidden_reason || "Hidden from report") : (autoVerifyOnSubmit ? "Auto-verified during result entry." : null),
           is_hidden_from_report: !!r.is_hidden_from_report,
           hidden_reason: r.is_hidden_from_report ? (r.hidden_reason || "Hidden from report") : null,
-	          order_id: order.id,
-          test_group_id: tg.test_group_id,
-	          lab_id: currentLabId,
-	          ...uuidProp("order_test_group_id", tg.order_test_group_id),
-	          ...uuidProp("order_test_id", tg.order_test_id),
           };
         });
 
-        const { error: ve } = await supabase.from("result_values").insert(valueRows);
-        if (ve) throw ve;
+        bulkGroups.push({
+          test_group_id: tg.test_group_id,
+          order_test_group_id: safeUuid(tg.order_test_group_id),
+          order_test_id: safeUuid(tg.order_test_id),
+          test_name: tg.test_group_name,
+          locked_mode: "insert_missing",
+          extracted_by_ai: false,
+          notes: groupRemark || null,
+          values: valueRows,
+        });
+      }
 
-        // Non-blocking: inventory auto-consume
-	        database.inventory.triggerAutoConsume({ labId: currentLabId, orderId: order.id, resultId: resultRowId || undefined, testGroupId: tg.test_group_id })
-          .catch(e => console.warn("Inventory auto-consume skipped:", e));
+      const { data: bulkSave, error: bulkSaveError } = await supabase.rpc("save_result_entry_bulk", {
+        p_order_id: order.id,
+        p_patient_id: safeUuid(order.patient_id),
+        p_patient_name: order.patient_name,
+        p_lab_id: currentLabId,
+        p_entered_by: currentUser?.email || "Unknown",
+        p_auto_verify: autoVerifyOnSubmit,
+        p_groups: bulkGroups,
+      });
+      if (bulkSaveError) throw bulkSaveError;
+
+      for (const saved of (bulkSave as any)?.result_ids || []) {
+        const testGroup = testGroups.find(tg => tg.test_group_id === saved.test_group_id);
+        if (!testGroup || !saved.result_id) continue;
+        existingByKey.set(getGroupKey(testGroup), saved.result_id);
+        if (saved.locked) continue;
+        database.inventory.triggerAutoConsume({
+          labId: currentLabId,
+          orderId: order.id,
+          resultId: saved.result_id,
+          testGroupId: testGroup.test_group_id,
+        }).catch(e => console.warn("Inventory auto-consume skipped:", e));
       }
 
       // Non-blocking: AI flag analysis
@@ -1248,21 +1136,6 @@ const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, on
       const sectionSaves = Array.from(sectionEditorRefs.current.values())
         .map(r => r.current?.save());
       await Promise.all(sectionSaves);
-
-      if (autoVerifyOnSubmit && savedResultIds.size > 0) {
-        const { error: resultVerifyError } = await supabase
-          .from("results")
-          .update({
-            status: "Reviewed",
-            verification_status: "verified",
-            verified_at: verifiedAt,
-	            verified_by: safeUuid(currentUser?.id),
-          })
-          .in("id", Array.from(savedResultIds));
-        if (resultVerifyError) throw resultVerifyError;
-      }
-
-      await database.orders.checkAndUpdateStatus(order.id);
 
       setMessage({ text: autoVerifyOnSubmit ? "Results saved and auto-verified!" : "Results saved!", type: "success" });
       onSubmitted();
@@ -1581,6 +1454,26 @@ const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, on
                     })}
                   </tbody>
                 </table>
+
+                <div className="border-t border-amber-100 bg-amber-50/40 px-4 py-3">
+                  <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-amber-800">
+                    Report Remarks
+                  </label>
+                  <textarea
+                    value={groupRemarks[tg.test_group_id] || ""}
+                    onChange={(event) => setGroupRemarks((current) => ({
+                      ...current,
+                      [tg.test_group_id]: event.target.value,
+                    }))}
+                    rows={2}
+                    maxLength={2000}
+                    placeholder="Optional remark printed below this test group in the final report"
+                    className="w-full resize-y rounded-lg border border-amber-200 bg-white px-3 py-2 text-sm text-gray-800 outline-none focus:border-amber-400 focus:ring-2 focus:ring-amber-100"
+                  />
+                  <p className="mt-1 text-xs text-amber-700">
+                    This is report-visible and is separate from analyte and verification notes.
+                  </p>
+                </div>
 
                 {/* Report Sections (technician-editable) */}
                 {resultIds.get(tg.test_group_id) && (

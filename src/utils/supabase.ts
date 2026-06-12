@@ -8645,8 +8645,19 @@ export const database = {
         return { data: [], error: null };
       }
 
+      const uniqueDependencies = Array.from(
+        dependencies.reduce((preferred, dependency) => {
+          const key = dependency.variable_name.trim().toUpperCase();
+          const current = preferred.get(key);
+          if (!current || (!current.source_lab_analyte_id && dependency.source_lab_analyte_id)) {
+            preferred.set(key, dependency);
+          }
+          return preferred;
+        }, new Map<string, (typeof dependencies)[number]>()).values(),
+      );
+
       // Check for cycles before inserting
-        for (const dep of dependencies) {
+        for (const dep of uniqueDependencies) {
           const hasCycle = await database.analyteDependencies.checkCircular(
             calculatedAnalyteId,
             dep.source_analyte_id,
@@ -8664,7 +8675,7 @@ export const database = {
       }
 
       // Insert new lab-specific dependencies
-        const insertData = dependencies.map((dep) => ({
+        const insertData = uniqueDependencies.map((dep) => ({
           calculated_analyte_id: calculatedAnalyteId,
           source_analyte_id: dep.source_analyte_id,
           variable_name: dep.variable_name,

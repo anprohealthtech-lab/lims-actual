@@ -1269,6 +1269,52 @@ function renderTemplate(html: string, context: Record<string, any>): string {
   return stripBrokenPdfImages(result);
 }
 
+function buildGroupRemarkHtml(remark: unknown): string {
+  const value = String(remark || "").trim();
+  if (!value) return "";
+
+  const escaped = value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;")
+    .replace(/\r\n?|\n/g, "<br>");
+
+  return `
+    <div class="lims-group-remark" style="margin-top:10px;padding:7px 10px;border-top:1px solid #d1d5db;font-size:11px;line-height:1.45;page-break-inside:avoid;">
+      <strong>Remarks:</strong> ${escaped}
+    </div>
+  `;
+}
+
+function injectGroupRemark(
+  html: string,
+  remark: unknown,
+  templateContainsPlaceholder = false,
+): string {
+  const remarkHtml = buildGroupRemarkHtml(remark);
+  if (!html || !remarkHtml || templateContainsPlaceholder || html.includes('class="lims-group-remark"')) {
+    return html;
+  }
+
+  const signatureMarkers = [
+    /<div[^>]*class="[^"]*\breport-footer\b[^"]*"[^>]*>/i,
+    /<div[^>]*class="[^"]*\bsignatures\b[^"]*"[^>]*>/i,
+  ];
+  for (const marker of signatureMarkers) {
+    const match = marker.exec(html);
+    if (match?.index !== undefined) {
+      return `${html.slice(0, match.index)}${remarkHtml}${html.slice(match.index)}`;
+    }
+  }
+
+  const bodyClose = html.search(/<\/body>/i);
+  return bodyClose >= 0
+    ? `${html.slice(0, bodyClose)}${remarkHtml}${html.slice(bodyClose)}`
+    : `${html}${remarkHtml}`;
+}
+
 function formatSignatureNameForPdf(value: unknown): string {
   if (value === undefined || value === null) return "";
 
@@ -1417,6 +1463,12 @@ function injectQrCode(html: string, verifyUrl: string): string {
   `.trim();
 
   console.log(`  ðŸ” Looking for signature block to add QR code`);
+
+  const topSlotPattern = /(<div[^>]*class="[^"]*qr-top-(?:left|right)-slot[^"]*"[^>]*>)/i;
+  if (topSlotPattern.test(html)) {
+    console.log("  âœ… Found top QR slot");
+    return html.replace(topSlotPattern, `$1${qrBlockHtml}`);
+  }
 
   // 1. PRIORITY: Look for .signatures block - wrap content in flex container
   const signaturesPattern =
@@ -2748,9 +2800,15 @@ function generateBasicDefaultTemplateHtml(
   const boldAllValues = (printOptions?.boldAllValues as boolean) ?? false;
   const boldAbnormal = (printOptions?.boldAbnormalValues as boolean) ?? true;
   const sectionHeaderInline = (printOptions?.sectionHeaderInline as boolean) ?? true;
+  const resultTableBackground = printOptions?.resultTableBackground === "transparent" ? "transparent" : "#fff";
+  const sectionRowBackground = printOptions?.resultTableBackground === "transparent" ? "transparent" : "#f5f5f5";
   const flagSymbol = (printOptions?.flagSymbol as string) ?? "none";
   const showFlagLegend = (printOptions?.showFlagLegend as boolean) ?? false;
   const testGroupTitlePosition = (printOptions?.testGroupTitlePosition as string) ?? "above_headers_center";
+  const requestedQrPosition = String(printOptions?.qrPosition || "");
+  const qrPosition = requestedQrPosition === "top_left" || requestedQrPosition === "top_right"
+    ? requestedQrPosition
+    : "bottom_left";
   const qrHorizontalOffset = Math.max(0, Math.min(80, Number(printOptions?.qrHorizontalOffset ?? 0)));
   // Section field name width percentage for narrative/section-only reports (default 40%)
   const sectionFieldNamePct = Math.max(20, Math.min(70, Number(printOptions?.sectionFieldNamePct ?? 40)));
@@ -2786,7 +2844,7 @@ function generateBasicDefaultTemplateHtml(
 .basic-report-template th {
   color: #000 !important;
   font-weight: normal;
-  background-color: #fff !important;
+  background-color: ${resultTableBackground} !important;
   vertical-align: top !important;
 }
 
@@ -2896,6 +2954,36 @@ function generateBasicDefaultTemplateHtml(
   flex-shrink: 0 !important;
 }
 
+.basic-report-template .qr-top-left-slot {
+  width: 110px !important;
+  flex-shrink: 0 !important;
+  text-align: left !important;
+}
+
+.basic-report-template .qr-top-left-slot .qr-verify img {
+  width: 46px !important;
+  height: 46px !important;
+  display: block !important;
+}
+
+.basic-report-template .qr-top-right-slot {
+  width: 108px !important;
+  flex-shrink: 0 !important;
+  text-align: right !important;
+  margin-right: 8px !important;
+}
+
+.basic-report-template .qr-top-right-slot .qr-verify {
+  display: inline-block !important;
+  text-align: left !important;
+}
+
+.basic-report-template .qr-top-right-slot .qr-verify img {
+  width: 46px !important;
+  height: 46px !important;
+  display: block !important;
+}
+
 .basic-report-template .report-title-barcode {
   width: 108px !important;
   flex-shrink: 0 !important;
@@ -2915,7 +3003,7 @@ function generateBasicDefaultTemplateHtml(
 .basic-report-template .patient-header-table {
   width: 100% !important;
   table-layout: fixed !important;
-  margin-bottom: 8px !important;
+  margin-bottom: 0 !important;
   border: none !important;
 }
 
@@ -2945,7 +3033,7 @@ function generateBasicDefaultTemplateHtml(
 .basic-report-template .patient-test-separator {
   border-top: 1.5px solid #000 !important;
   height: 0 !important;
-  margin: 4px 0 8px !important;
+  margin: 2px 0 6px !important;
 }
 
 .basic-report-template .tbl-results {
@@ -3061,6 +3149,15 @@ function generateBasicDefaultTemplateHtml(
   white-space: nowrap !important;
 }
 
+.basic-report-template .tbl-results .qualitative-wide-value {
+  width: ${formatBasicWidth(standardColumnWidths.slice(1).reduce((sum, width) => sum + width, 0))} !important;
+  text-align: left !important;
+  white-space: normal !important;
+  overflow: visible !important;
+  overflow-wrap: anywhere !important;
+  word-break: break-word !important;
+}
+
 .basic-report-template .val.high,
 .basic-report-template .val.critical_high,
 .basic-report-template .val.critical_h,
@@ -3119,12 +3216,12 @@ function generateBasicDefaultTemplateHtml(
   letter-spacing: ${sectionHeaderInline ? 0 : 0.25}px !important;
   border: none !important;
   color: #000 !important;
-  ${sectionHeaderInline ? `border-bottom: 0.5px solid #ccc !important; background-color: #f5f5f5 !important;` : ""}
+  ${sectionHeaderInline ? `border-bottom: 0.5px solid #ccc !important; background-color: ${sectionRowBackground} !important;` : ""}
 }
 
 .basic-report-template .sub-section-col-header td {
   border-bottom: 1px solid #999 !important;
-  background-color: #fafafa !important;
+  background-color: ${resultTableBackground} !important;
   color: #333 !important;
 }
 
@@ -3232,6 +3329,14 @@ function generateBasicDefaultTemplateHtml(
   margin-left: ${qrHorizontalOffset}px !important;
 }
 
+.basic-report-template .qr-top-left-slot .qr-verify {
+  margin-left: ${qrHorizontalOffset}px !important;
+}
+
+.basic-report-template .qr-top-right-slot .qr-verify {
+  margin-right: ${qrHorizontalOffset}px !important;
+}
+
 .basic-report-template .auth-text {
   font-size: ${smallPx}px !important;
   color: #444 !important;
@@ -3273,9 +3378,9 @@ function generateBasicDefaultTemplateHtml(
 
   const reportTitleBarHtml = `
     <div class="report-title-bar">
-      <div class="report-title-spacer"></div>
+      <div class="${qrPosition === "top_left" ? "qr-top-left-slot" : "report-title-spacer"}"></div>
       <h2 class="report-main-title">TEST REPORT</h2>
-      <div class="report-title-barcode">
+      <div class="${qrPosition === "top_right" ? "qr-top-right-slot" : "report-title-barcode"}">
         {{barcode_image}}
       </div>
     </div>
@@ -3316,7 +3421,7 @@ function generateBasicDefaultTemplateHtml(
         </tr>`);
       }
       return `
-      <figure class="table" style="margin: 0 0 10px;">
+      <figure class="table" style="margin:0;">
         <table class="patient-header-table">
           <tbody>${rows.join('')}</tbody>
         </table>
@@ -3325,7 +3430,7 @@ function generateBasicDefaultTemplateHtml(
 
     // Default fallback when no config
     return `
-    <figure class="table" style="margin: 0 0 10px;">
+    <figure class="table" style="margin:0;">
       <table class="patient-header-table">
         <tbody>
           <tr>
@@ -3606,6 +3711,8 @@ function generateBasicDefaultTemplateHtml(
         const refText = String(refRange || "").trim();
         const hasNumericRef = /\d/.test(refText);
         const valueTypeRaw = String(analyte.value_type || "").toLowerCase();
+        const isQualitativeWithoutMetadata =
+          valueTypeRaw === "qualitative" && !unitText && !refText;
         const isDescriptive =
           valueTypeRaw !== "qualitative" &&
           (unitText === "n/a" || unitText === "na" || unitText === "-" ||
@@ -3722,7 +3829,7 @@ function generateBasicDefaultTemplateHtml(
 	        } else {
 	          // 4-column layout for non-sibling sections
 	          testResultsHtml += `
-	              <tr>
+	              <tr class="${isQualitativeWithoutMetadata ? "qualitative-wide-row" : ""}">
                 <td class="test-name-cell">
                   <div class="test-name" style="font-size:${basePx}px; font-weight:${testNameWeight};">
                     ${parameterName}${calcSuffix}
@@ -3731,9 +3838,11 @@ function generateBasicDefaultTemplateHtml(
                     ? `<div class="test-method">${analyte.method}</div>`
                     : ""}
 	                </td>
-	                <td class="${valClass}" style="text-align:right;">${displayValue}</td>
+	                ${isQualitativeWithoutMetadata
+	                  ? `<td class="${valClass} qualitative-wide-value" colspan="3">${displayValue}</td>`
+	                  : `<td class="${valClass}" style="text-align:right;">${displayValue}</td>
 		                <td style="text-align:left; vertical-align:top; font-size:${basePx}px; color:#444;">${unit}</td>
-		                <td style="text-align:left; vertical-align:top; font-size:${smallPx + 1}px; color:#666;">${refRange}</td>
+		                <td style="text-align:left; vertical-align:top; font-size:${smallPx + 1}px; color:#666;">${refRange}</td>`}
 		              </tr>
 		        `;
 	        }
@@ -4482,6 +4591,8 @@ function buildPdfBodyDocumentV2(
   // needs its own padding. Fall back to 20px if the lab left margins.left/right at 0.
   const bodySidePaddingLeft = letterheadBackgroundUrl ? Math.max(leftPadding, 20) : leftPadding;
   const bodySidePaddingRight = letterheadBackgroundUrl ? Math.max(rightPadding, 20) : rightPadding;
+  const useTransparentBasicBackground =
+    pdfSettings?.printOptions?.resultTableBackground === "transparent";
 
   // QR code is now placed in signature area (bottom) - not at top
   // The QR will be injected where signature exists, on the opposite side
@@ -4592,6 +4703,19 @@ function buildPdfBodyDocumentV2(
     .tbl-interpretation {
       background: #ffffff !important;
     }
+
+    ${useTransparentBasicBackground ? `
+    /* Basic template can print directly over the uploaded full-page letterhead. */
+    .basic-report-template .tbl-results,
+    .basic-report-template .patient-header-table,
+    .basic-report-template .tbl-results td,
+    .basic-report-template .tbl-results th,
+    .basic-report-template .patient-header-table td,
+    .basic-report-template .patient-header-table th {
+      background: transparent !important;
+      background-color: transparent !important;
+    }
+    ` : ""}
 
     /* Safe content area - spacing handled by HTML TABLE spacers now */
 	    .limsv2-report-body--pdf {
@@ -7227,6 +7351,22 @@ serve(async (req) => {
         };
       }
 
+      const { data: resultRemarkRows, error: resultRemarkError } = await supabaseClient
+        .from("results")
+        .select("id, test_group_id, notes")
+        .eq("order_id", orderId);
+      if (resultRemarkError) {
+        console.warn("Failed to load test-group report remarks:", resultRemarkError.message);
+      }
+      const groupRemarks = new Map<string, string>();
+      for (const row of resultRemarkRows || []) {
+        const remark = String(row.notes || "").trim();
+        if (row.test_group_id && remark) {
+          groupRemarks.set(row.test_group_id, remark);
+        }
+      }
+      context.groupRemarks = Object.fromEntries(groupRemarks);
+
       const rawSampleCollectedBy =
         orderContextResult.data?.sample_collected_by || "";
       if (orderContextResult.error) {
@@ -8913,6 +9053,7 @@ serve(async (req) => {
             baseContext.order?.approvedAtFormatted ||
             baseContext.order?.approved_at || baseContext.meta?.approvedAt ||
             "",
+          groupRemark: buildGroupRemarkHtml(baseContext.groupRemark),
 
           // Signatory aliases
           signatoryName: sigName,
@@ -9015,8 +9156,10 @@ serve(async (req) => {
       if (effectiveGroupCount <= 1) {
         // Single Group Logic
         template = selectTemplate(context);
-        fullContext = prepareFullContext(context);
         const singleGroupId = context.testGroupIds?.[0];
+        const singleGroupRemark = singleGroupId ? groupRemarks.get(singleGroupId) || "" : "";
+        context.groupRemark = singleGroupRemark;
+        fullContext = prepareFullContext(context);
         const singlePrintOptions = mergePrintOptions(pdfSettings, singleGroupId ? testGroupPrintOptions.get(singleGroupId) : undefined);
         if (singlePrintOptions && (singlePrintOptions as any).showSampleType && singleGroupId) {
           const _st = testGroupSampleTypes.get(singleGroupId);
@@ -9054,6 +9197,7 @@ serve(async (req) => {
             (fullContext as any)?.sectionLabels,
           );
           renderedHtml = renderTemplate(renderedHtml, fullContext); // Process placeholders
+          renderedHtml = injectGroupRemark(renderedHtml, singleGroupRemark);
 
           // Inject QR code for verification (next to signature area)
           const defaultVerifyUrl = fullContext.verifyUrl ||
@@ -9069,6 +9213,11 @@ serve(async (req) => {
         } else {
           console.log("âœ… Using single template:", template.template_name);
           renderedHtml = renderTemplate(template.gjs_html, fullContext);
+          renderedHtml = injectGroupRemark(
+            renderedHtml,
+            singleGroupRemark,
+            /\{\{\s*groupRemark\s*\}\}/.test(template.gjs_html),
+          );
 
           // Inject signature image if template doesn't have one (unless showSignature is false)
           if (signatoryInfo.signatoryImageUrl && (singlePrintOptions as any)?.showSignature !== false) {
@@ -9236,6 +9385,7 @@ serve(async (req) => {
             ...context,
             analytes: groupAnalytes,
             testGroupIds: [testGroupId],
+            groupRemark: groupRemarks.get(testGroupId) || "",
           };
 
           // Find specific template for this group
@@ -9436,6 +9586,12 @@ serve(async (req) => {
             histHtml += '</div></div>';
             bodyContent += histHtml;
           }
+
+          bodyContent = injectGroupRemark(
+            bodyContent,
+            groupRemarks.get(testGroupId) || "",
+            !!groupTemplate?.gjs_html && /\{\{\s*groupRemark\s*\}\}/.test(groupTemplate.gjs_html),
+          );
 
           const sectionHtml = `
           <div class="test-group-section" data-test-group-id="${testGroupId}" ${
@@ -9752,6 +9908,7 @@ serve(async (req) => {
                 (fullContext as any)?.sectionLabels,
               );
               groupHtml = renderTemplate(groupHtml, compactPrintContext);
+              groupHtml = injectGroupRemark(groupHtml, groupRemarks.get(groupId) || "");
               if (isLastOnPage) {
                 groupHtml = injectQrCode(groupHtml, printVerifyUrl);
               }
@@ -9850,6 +10007,12 @@ serve(async (req) => {
               template.gjs_html,
               printTemplateContext,
             );
+            const printGroupId = context.testGroupIds?.[0];
+            printRenderedHtml = injectGroupRemark(
+              printRenderedHtml,
+              printGroupId ? groupRemarks.get(printGroupId) || "" : "",
+              /\{\{\s*groupRemark\s*\}\}/.test(template.gjs_html),
+            );
 
             // Inject signature image if template doesn't have one (Critical for print version, unless showSignature is false)
             if (signatoryInfo.signatoryImageUrl && (mergedPrintOptions as any)?.showSignature !== false) {
@@ -9898,6 +10061,10 @@ serve(async (req) => {
             printRenderedHtml = renderTemplate(
               printRenderedHtml,
               printTemplateContext,
+            );
+            printRenderedHtml = injectGroupRemark(
+              printRenderedHtml,
+              printSingleGroupId ? groupRemarks.get(printSingleGroupId) || "" : "",
             );
 
             // Inject QR code for verification (next to signature area)

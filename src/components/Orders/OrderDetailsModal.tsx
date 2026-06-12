@@ -44,6 +44,8 @@ import {
 } from "lucide-react";
 import QRCodeLib from "qrcode";
 import { database, attachments as attachmentsAPI, supabase, uploadFile } from "../../utils/supabase";
+import { selectPreferredCalculatedDependencies } from "../../utils/calculatedDependencies";
+import { applyAnalyteDisplayOrder } from "../../utils/analyteDisplayOrder";
 import { useAuth } from "../../contexts/AuthContext";
 import { useOrderStatusCentral } from "../../hooks/useOrderStatusCentral";
 import QuickStatusButtons from "../Orders/QuickStatusButtons";
@@ -677,12 +679,14 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
     deps: { calculated_analyte_id: string; calculated_lab_analyte_id?: string | null; source_analyte_id: string; source_lab_analyte_id?: string | null; variable_name: string }[],
     analyteId?: string | null,
     labAnalyteId?: string | null,
+    availableSourceIds?: ReadonlySet<string>,
   ) => {
-    const exact = labAnalyteId
-      ? deps.filter((d) => d.calculated_lab_analyte_id === labAnalyteId)
-      : [];
-    if (exact.length > 0) return exact;
-    return deps.filter((d) => !d.calculated_lab_analyte_id && d.calculated_analyte_id === analyteId);
+    return selectPreferredCalculatedDependencies(
+      deps,
+      analyteId,
+      labAnalyteId,
+      availableSourceIds,
+    );
   }, []);
 
   // =========================================================
@@ -899,6 +903,7 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
                 lab_analyte_id,
                 sort_order,
                 display_order,
+                section_heading,
                 analytes(
                   id,
                   name,
@@ -957,6 +962,7 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
                 lab_analyte_id,
                 sort_order,
                 display_order,
+                section_heading,
                 analytes(
                   id,
                   name,
@@ -1051,6 +1057,9 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
               const la = tga.lab_analyte_id ? tga.lab_analytes : null;
               return {
                 ...a,
+                sort_order: tga.sort_order,
+                display_order: tga.display_order,
+                section_heading: tga.section_heading || null,
                 lab_analyte_id: tga.lab_analyte_id || la?.id || null,
                 name: la?.name || a.name,
                 unit: la?.unit || a.unit,
@@ -1118,6 +1127,9 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
                 const la = tga.lab_analyte_id ? tga.lab_analytes : null;
                 return {
                   ...a,
+                  sort_order: tga.sort_order,
+                  display_order: tga.display_order,
+                  section_heading: tga.section_heading || null,
                   lab_analyte_id: tga.lab_analyte_id || la?.id || null,
                   name: la?.name || a.name,
                   unit: la?.unit || a.unit,
@@ -1514,7 +1526,7 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
         .select(
           `
           id, order_id, test_group_id, order_test_group_id, order_test_id, test_name, created_at, status,
-          result_values ( id, analyte_name, value, unit, reference_range, flag )
+          result_values ( id, analyte_id, analyte_name, value, unit, reference_range, flag )
         `
         )
         .eq("order_id", order.id)
@@ -2930,7 +2942,12 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
 
       const analyteRef = testGroups.flatMap(tg => tg.analytes).find(a => a.id === v.analyte_id || a.name === v.parameter);
       const vars = parseVars(analyteRef?.formula_variables ?? null);
-      const analyteSliceDeps = getPreferredDepsForCalculated(calcDeps, v.analyte_id, v.lab_analyte_id);
+      const analyteSliceDeps = getPreferredDepsForCalculated(
+        calcDeps,
+        v.analyte_id,
+        v.lab_analyte_id,
+        new Set(lookup.keys()),
+      );
 
       // Phase 1: replace formula_variables — don't return early on miss.
       for (const variable of vars) {
@@ -3045,7 +3062,12 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
       }
     }
 
-    const deps = getPreferredDepsForCalculated(calcDeps, value.analyte_id, value.lab_analyte_id);
+    const deps = getPreferredDepsForCalculated(
+      calcDeps,
+      value.analyte_id,
+      value.lab_analyte_id,
+      new Set(lookup.keys()),
+    );
     const dependencies = deps.map((dep) => {
       const sourceAnalyte = testGroups
         .flatMap(tg => tg.analytes)
@@ -3437,39 +3459,6 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
         console.log('[SAVE] Order-level image - saving to all matching test groups');
       }
 
-      const getGroupKey = (tg: Pick<TestGroupResult, "test_group_id" | "order_test_group_id" | "order_test_id">) => {
-        if (tg.order_test_group_id) return `otg:${tg.order_test_group_id}`;
-        if (tg.order_test_id) return `ot:${tg.order_test_id}`;
-        return `tg:${tg.test_group_id}`;
-      };
-
-      // Prefetch existing rows once to avoid one query per test group.
-      const existingResultRowByGroupKey = new Map<string, string>();
-      const existingResultStatusByGroupKey = new Map<string, string>();
-      const isLockedResult = (status: string | null, verificationStatus: string | null) =>
-        ['Approved', 'Reviewed', 'Reported', 'approved', 'verified'].includes(status || '') ||
-        ['verified'].includes(verificationStatus || '');
-      const { data: existingRows, error: existingRowsError } = await supabase
-        .from("results")
-        .select("id, test_group_id, order_test_group_id, order_test_id, status, verification_status")
-        .eq("order_id", order.id);
-      if (existingRowsError) throw existingRowsError;
-      for (const row of existingRows || []) {
-        const locked = isLockedResult(row.status, row.verification_status) ? 'LOCKED' : row.status;
-        if (row.order_test_group_id) {
-          existingResultRowByGroupKey.set(`otg:${row.order_test_group_id}`, row.id);
-          existingResultStatusByGroupKey.set(`otg:${row.order_test_group_id}`, locked);
-        }
-        if (row.order_test_id) {
-          existingResultRowByGroupKey.set(`ot:${row.order_test_id}`, row.id);
-          existingResultStatusByGroupKey.set(`ot:${row.order_test_id}`, locked);
-        }
-        if (row.test_group_id) {
-          existingResultRowByGroupKey.set(`tg:${row.test_group_id}`, row.id);
-          existingResultStatusByGroupKey.set(`tg:${row.test_group_id}`, locked);
-        }
-      }
-
       // Prefetch outsourced status once to avoid one query per test group.
       const targetTestGroupIds = Array.from(new Set(
         targetTestGroupsForSave
@@ -3490,6 +3479,8 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
       }
 
       const submittedRowsForUx: ExtractedValue[] = [];
+      const submittedRowsByTestGroup = new Map<string, ExtractedValue[]>();
+      const bulkGroups: any[] = [];
 
       const toNumber = (raw: string | number | null | undefined): number | null => {
         if (raw === null || raw === undefined) return null;
@@ -3658,7 +3649,12 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
           .map((a) => {
             const manual = manualValues.find((v) => v.analyte_id === a.id) || manualValues.find((v) => v.parameter === a.name);
             // Pass only deps for this specific calculated analyte
-            const analyteDepSlice = getPreferredDepsForCalculated(allDeps, a.id, (a as any).lab_analyte_id || null);
+            const analyteDepSlice = getPreferredDepsForCalculated(
+              allDeps,
+              a.id,
+              (a as any).lab_analyte_id || null,
+              new Set(valueLookup.keys()),
+            );
             const calculatedValue = evaluateCalculatedValue(a, valueLookup, analyteDepSlice);
             return {
               analyte_id: a.id,
@@ -3682,71 +3678,6 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
         }, []);
         if (rowsToPersist.length === 0) continue;
 
-        // Duplicate-safe: reuse results row if it already exists for this panel.
-        const groupKey = getGroupKey(testGroup);
-        let resultRowId = existingResultRowByGroupKey.get(groupKey) || null;
-
-        if (!resultRowId) {
-          const resultData = {
-            order_id: order.id,
-            patient_id: order.patient_id,
-            patient_name: order.patient_name,
-            test_name: testGroup.test_group_name,
-            status: "pending_verification",
-            entered_by: currentUser.data.user?.email || "Unknown User",
-            entered_date: new Date().toISOString().split("T")[0],
-            test_group_id: testGroup.test_group_id,
-            lab_id: userLabId,
-            extracted_by_ai: !!attachmentId,
-            ai_confidence: ocrResults?.metadata?.ocrConfidence || null,
-            attachment_id: attachmentId || null,
-            ...(testGroup.order_test_group_id && { order_test_group_id: testGroup.order_test_group_id }),
-            ...(testGroup.order_test_id && { order_test_id: testGroup.order_test_id }),
-          };
-
-          const { data: savedResult, error: resultError } = await supabase
-            .from("results")
-            .upsert(resultData, { onConflict: "order_id,test_name", ignoreDuplicates: false })
-            .select("id, status, verification_status")
-            .single();
-          if (resultError) throw resultError;
-          resultRowId = savedResult.id;
-          existingResultRowByGroupKey.set(groupKey, resultRowId);
-          const savedLocked = isLockedResult(savedResult.status, savedResult.verification_status) ? 'LOCKED' : savedResult.status;
-          existingResultStatusByGroupKey.set(groupKey, savedLocked);
-        }
-
-        // Skip groups whose result is already approved/verified — do not overwrite locked results
-        if (existingResultStatusByGroupKey.get(groupKey) === 'LOCKED') continue;
-
-        const calculatedAnalyteIdsForGroup = testGroup.analytes
-          .filter((a) => !!a.is_calculated && !!a.id)
-          .map((a) => a.id);
-        if (calculatedAnalyteIdsForGroup.length > 0) {
-          const { error: cleanupNullCalcError } = await supabase
-            .from("result_values")
-            .delete()
-            .eq("result_id", resultRowId)
-            .in("analyte_id", calculatedAnalyteIdsForGroup)
-            .is("value", null);
-          if (cleanupNullCalcError) throw cleanupNullCalcError;
-        }
-
-        // Upsert result_values for only the analytes we are saving now:
-        // Use analyte_id (UUID) for the delete filter — analyte names may contain characters like "(%)"
-        // that break PostgREST's in() URL parser, causing silent 400 errors and leaving stale records.
-        const analyteIdsToDelete = rowsToPersist
-          .map((r) => r.analyte_id || testGroup.analytes.find((a) => a.name === r.parameter)?.id)
-          .filter(Boolean) as string[];
-        if (analyteIdsToDelete.length > 0) {
-          const { error: deleteError } = await supabase
-            .from("result_values")
-            .delete()
-            .eq("result_id", resultRowId)
-            .in("analyte_id", analyteIdsToDelete);
-          if (deleteError) throw deleteError;
-        }
-
         const resultValuesData = rowsToPersist.map((r) => {
           const analyte = testGroup.analytes.find((a) => a.name === r.parameter)
             || testGroup.analytes.find((a) => a.name?.trim().toLowerCase() === r.parameter?.trim().toLowerCase())
@@ -3755,7 +3686,6 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
           const hasUserFlag = !!r.flag;
           const autoFlag = r.flag || calculateFlag(r.value, r.reference || '');
           return {
-            result_id: resultRowId!,
             analyte_id: analyte?.id || r.analyte_id || undefined,
             lab_analyte_id: analyte?.lab_analyte_id || null,
             analyte_name: r.parameter,
@@ -3769,29 +3699,44 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
 	            verify_status: r.is_hidden_from_report ? 'approved' : 'pending',
 	            is_hidden_from_report: !!r.is_hidden_from_report,
 	            hidden_reason: r.is_hidden_from_report ? (r.hidden_reason || "Hidden from report") : null,
-	            order_id: order.id,
-            test_group_id: testGroup.test_group_id,
-            lab_id: userLabId,
-            ...(testGroup.order_test_group_id && { order_test_group_id: testGroup.order_test_group_id }),
-            ...(testGroup.order_test_id && { order_test_id: testGroup.order_test_id }),
           };
         });
 
-        const { error: valuesError } = await supabase.from("result_values").insert(resultValuesData);
-        if (valuesError) throw valuesError;
+        bulkGroups.push({
+          test_group_id: testGroup.test_group_id,
+          order_test_group_id: testGroup.order_test_group_id || null,
+          order_test_id: testGroup.order_test_id || null,
+          test_name: testGroup.test_group_name,
+          locked_mode: "skip",
+          extracted_by_ai: !!attachmentId,
+          ai_confidence: ocrResults?.metadata?.ocrConfidence || null,
+          attachment_id: attachmentId || null,
+          values: resultValuesData,
+        });
+        submittedRowsByTestGroup.set(testGroup.test_group_id, rowsToPersist);
+      }
 
-        submittedRowsForUx.push(...rowsToPersist);
+      const { data: bulkSave, error: bulkSaveError } = await supabase.rpc("save_result_entry_bulk", {
+        p_order_id: order.id,
+        p_patient_id: order.patient_id,
+        p_patient_name: order.patient_name,
+        p_lab_id: userLabId,
+        p_entered_by: currentUser.data.user?.email || "Unknown User",
+        p_auto_verify: false,
+        p_groups: bulkGroups,
+      });
+      if (bulkSaveError) throw bulkSaveError;
 
-        // Auto-consume inventory for non-outsourced tests (non-blocking)
-        const isOutsourcedTestGroup = testGroup.test_group_id
-          ? outsourcedTestGroupIds.has(testGroup.test_group_id)
-          : false;
-        if (!isOutsourcedTestGroup) {
+      for (const saved of (bulkSave as any)?.result_ids || []) {
+        if (!saved.test_group_id || saved.locked) continue;
+        submittedRowsForUx.push(...(submittedRowsByTestGroup.get(saved.test_group_id) || []));
+
+        if (!outsourcedTestGroupIds.has(saved.test_group_id)) {
           database.inventory.triggerAutoConsume({
             labId: userLabId,
             orderId: order.id,
-            resultId: resultRowId || undefined,
-            testGroupId: testGroup.test_group_id,
+            resultId: saved.result_id || undefined,
+            testGroupId: saved.test_group_id,
           }).catch(err => console.warn('Inventory auto-consume failed (non-blocking):', err));
         }
       }
@@ -5044,7 +4989,15 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
                   <div className="space-y-4">
                     {testGroups.map((tg) => {
                       const key = tg.test_group_id || tg.order_test_group_id || tg.order_test_id;
-                      const rows = readonlyByTG[key as string] || [];
+                      const rows = applyAnalyteDisplayOrder(
+                        readonlyByTG[key as string] || [],
+                        (tg.analytes || []).map((analyte: any) => ({
+                          analyte_id: analyte.id,
+                          sort_order: analyte.sort_order,
+                          display_order: analyte.display_order,
+                          section_heading: analyte.section_heading,
+                        }))
+                      );
 	                      if (!rows.length && !tg.is_section_only && !resultIdByTG[key]) return null;
 	                      return (
 	                        <div key={key} className="border rounded-lg">
@@ -5061,16 +5014,25 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
                                 </tr>
                               </thead>
 	                              <tbody className="bg-white divide-y divide-gray-100">
-	                                {rows.map((rv: any) => (
-	                                  <tr key={rv.id}>
-                                    <td className="px-4 py-2 text-sm">{rv.analyte_name}</td>
-                                    <td className="px-4 py-2 text-sm">{rv.value}</td>
-                                    <td className="px-4 py-2 text-sm">{rv.unit}</td>
-                                    <td className="px-4 py-2 text-sm">{rv.reference_range}</td>
-                                    <td className="px-4 py-2 text-sm">
-                                      <span className={`px-1.5 py-0.5 rounded ${getFlagColor(rv.flag)}`}>{rv.flag || ""}</span>
-                                    </td>
-                                  </tr>
+	                                {rows.map((rv: any, index: number) => (
+                                    <React.Fragment key={rv.id}>
+                                      {rv.section_heading && rv.section_heading !== rows[index - 1]?.section_heading && (
+                                        <tr className="bg-blue-50">
+                                          <td colSpan={5} className="px-4 py-2 text-xs font-bold uppercase tracking-wide text-blue-800">
+                                            {rv.section_heading}
+                                          </td>
+                                        </tr>
+                                      )}
+	                                    <tr>
+                                        <td className="px-4 py-2 text-sm">{rv.analyte_name}</td>
+                                        <td className="px-4 py-2 text-sm">{rv.value}</td>
+                                        <td className="px-4 py-2 text-sm">{rv.unit}</td>
+                                        <td className="px-4 py-2 text-sm">{rv.reference_range}</td>
+                                        <td className="px-4 py-2 text-sm">
+                                          <span className={`px-1.5 py-0.5 rounded ${getFlagColor(rv.flag)}`}>{rv.flag || ""}</span>
+                                        </td>
+                                      </tr>
+                                    </React.Fragment>
 	                                ))}
 	                                {rows.length === 0 && (
 	                                  <tr>

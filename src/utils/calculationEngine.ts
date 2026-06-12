@@ -13,6 +13,7 @@
 
 import { evaluate, round } from 'mathjs';
 import { supabase } from './supabase';
+import { selectPreferredCalculatedDependencies } from './calculatedDependencies';
 
 // ============================================
 // TYPES
@@ -211,7 +212,17 @@ export const calculationEngine = {
     // 3. Pre-fetch dependencies for all calculated analytes and build a dependency graph
     const depsMap = new Map<string, AnalyteDependency[]>();
     for (const analyte of calculatedAnalytes) {
-      const deps = await this.getDependencies(analyte.id, labId, analyte.lab_analyte_id);
+      const loadedDeps = await this.getDependencies(analyte.id, labId, analyte.lab_analyte_id);
+      const deps = selectPreferredCalculatedDependencies(
+        loadedDeps.map((dependency) => ({
+          ...dependency,
+          calculated_analyte_id: analyte.id,
+          calculated_lab_analyte_id: analyte.lab_analyte_id,
+        })),
+        analyte.id,
+        analyte.lab_analyte_id,
+        new Set(Object.keys(valueMap)),
+      );
       depsMap.set(analyte.id, deps);
     }
 

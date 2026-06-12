@@ -108,6 +108,12 @@ interface TestGroup {
   print_options?: Record<string, unknown> | null;
   report_priority?: number | null;
   analytes?: string[];
+  analyteDisplay?: Array<{
+    analyte_id: string;
+    sort_order?: number | null;
+    display_order?: number | null;
+    section_heading?: string | null;
+  }>;
   ref_range_ai_config?: any;
   required_patient_inputs?: string[];
   is_outsourced?: boolean;
@@ -582,7 +588,8 @@ const Tests: React.FC = () => {
 		            global_test_catalog_id: group.global_test_catalog_id || null,
 		            analyzer_connection_id: group.analyzer_connection_id || null,
 		            is_section_only: group.is_section_only || false,
-	            analytes: group.test_group_analytes ? group.test_group_analytes.map((tga: any) => tga.analyte_id) : []
+	            analytes: group.test_group_analytes ? group.test_group_analytes.map((tga: any) => tga.analyte_id) : [],
+              analyteDisplay: group.test_group_analytes || []
 	          }));
           setTestGroups(transformedTestGroups);
         }
@@ -1478,7 +1485,8 @@ const Tests: React.FC = () => {
 	          group_interpretation: group.group_interpretation || null,
 	          global_test_catalog_id: group.global_test_catalog_id || null,
 	          analyzer_connection_id: group.analyzer_connection_id || null,
-	          analytes: group.test_group_analytes ? group.test_group_analytes.map((tga: any) => tga.analyte_id) : []
+	          analytes: group.test_group_analytes ? group.test_group_analytes.map((tga: any) => tga.analyte_id) : [],
+            analyteDisplay: group.test_group_analytes || []
         }));
         setTestGroups(transformedTestGroups);
       }
@@ -1616,7 +1624,8 @@ const Tests: React.FC = () => {
           print_options: group.print_options ?? null,
 	          global_test_catalog_id: group.global_test_catalog_id || null,
 	          analyzer_connection_id: group.analyzer_connection_id || null,
-	          analytes: group.test_group_analytes ? group.test_group_analytes.map((tga: any) => tga.analyte_id) : []
+	          analytes: group.test_group_analytes ? group.test_group_analytes.map((tga: any) => tga.analyte_id) : [],
+            analyteDisplay: group.test_group_analytes || []
         }));
         setTestGroups(transformedTestGroups);
       }

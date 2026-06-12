@@ -877,6 +877,7 @@ const AccountOrdersView: React.FC<AccountOrdersViewProps> = ({ initialAccountId,
                     />
                   </th>
                   <th className="text-left px-3 py-2.5 text-xs font-medium text-gray-600">Order #</th>
+                  <th className="text-left px-3 py-2.5 text-xs font-medium text-gray-600">Sample ID</th>
                   <th className="text-left px-3 py-2.5 text-xs font-medium text-gray-600">Patient</th>
                   <th className="text-left px-3 py-2.5 text-xs font-medium text-gray-600">Date</th>
                   <th className="text-left px-3 py-2.5 text-xs font-medium text-gray-600">Status</th>
@@ -898,6 +899,9 @@ const AccountOrdersView: React.FC<AccountOrdersViewProps> = ({ initialAccountId,
                     </td>
                     <td className="px-3 py-2.5 font-mono text-xs text-gray-600">
                       {order.order_display || order.id.slice(-6)}
+                    </td>
+                    <td className="px-3 py-2.5 whitespace-nowrap font-mono text-xs text-gray-700">
+                      {order.sample_id || 'N/A'}
                     </td>
                     <td className="px-3 py-2.5 font-medium">{order.patient_name}</td>
                     <td className="px-3 py-2.5 text-gray-500 text-xs">

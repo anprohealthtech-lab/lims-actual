@@ -161,9 +161,11 @@ interface LabSettings {
 	    showFlagLegend?: boolean;
 	    testGroupTitlePosition?: 'below_headers' | 'above_headers_center' | 'above_headers_left';
 	    qrHorizontalOffset?: number;
+	    qrPosition?: 'bottom_left' | 'top_left' | 'top_right';
 	    signatureMaxHeight?: number;
 	    signatureMaxWidth?: number;
 	    sectionFieldNamePct?: number;
+	    resultTableBackground?: 'white' | 'transparent';
 	  } | null;
   _pdf_layout_settings_raw?: Record<string, unknown> | null;
   barcode_printer_name?: string | null;
@@ -1093,8 +1095,8 @@ const Settings: React.FC = () => {
   }
 
   return (
-    <div className="flex flex-col h-screen w-full bg-gray-50">
-      {/* Header and Tabs - Fixed at top */}
+    <div className="flex w-full flex-col bg-gray-50">
+      {/* Header and Tabs */}
       <div className="flex-none p-4 sm:p-6 pb-0 space-y-4 sm:space-y-6">
         <div className="flex items-center justify-between">
           <div>
@@ -1154,8 +1156,8 @@ const Settings: React.FC = () => {
         </div>
       </div>
 
-      {/* Content Area - Scrollable */}
-      <div className="flex-1 overflow-y-auto p-4 sm:p-6 pt-4">
+      {/* Content Area - scrolls with the main application page */}
+      <div className="flex-1 p-4 sm:p-6 pt-4">
 
         {/* Team Management Tab */}
         {activeTab === 'team' && (

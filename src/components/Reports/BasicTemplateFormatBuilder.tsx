@@ -14,10 +14,12 @@ export interface BasicPrintOptions {
   showFlagLegend?: boolean;        // show H=High, L=Low legend below each group table
   resultColors?: { high?: string; low?: string; enabled?: boolean }; // custom flag colors (matches edge fn)
   testGroupTitlePosition?: 'below_headers' | 'above_headers_center' | 'above_headers_left';
+  qrPosition?: 'bottom_left' | 'top_left' | 'top_right';
   qrHorizontalOffset?: number;
   signatureMaxHeight?: number;    // Signature image max height px (30-120, default 70)
   signatureMaxWidth?: number;     // Signature image max width px (80-260, default 180)
   sectionFieldNamePct?: number;    // Section field name width % for narrative/section-only reports (20-70, default 40)
+  resultTableBackground?: 'white' | 'transparent';
   basicColumnWidths?: {
     standard?: number[];
     sibling?: number[];
@@ -144,9 +146,12 @@ function buildBasicHtml(
   const flagSymbol = printOptions.flagSymbol ?? 'none';
   const showFlagLegend = printOptions.showFlagLegend ?? false;
   const testGroupTitlePosition = printOptions.testGroupTitlePosition ?? 'above_headers_center';
+  const qrPosition = printOptions.qrPosition ?? 'bottom_left';
   const qrHorizontalOffset = Math.max(0, Math.min(80, printOptions.qrHorizontalOffset ?? 0));
   const signatureMaxHeight = Math.max(30, Math.min(120, Number(printOptions.signatureMaxHeight ?? 70)));
   const signatureMaxWidth = Math.max(80, Math.min(260, Number(printOptions.signatureMaxWidth ?? 180)));
+  const resultTableBackground = printOptions.resultTableBackground === 'transparent' ? 'transparent' : '#fff';
+  const sectionRowBackground = printOptions.resultTableBackground === 'transparent' ? 'transparent' : '#f5f5f5';
   const colCount = 4;
   const standardColumnWidths = normalizeBasicColumnWidths(printOptions.basicColumnWidths?.standard, DEFAULT_BASIC_STANDARD_WIDTHS, 4);
   const highColor = printOptions.resultColors?.enabled ? (printOptions.resultColors?.high ?? '#dc2626') : '#dc2626';
@@ -170,7 +175,7 @@ function buildBasicHtml(
 .basic-report-template th {
   color: #000 !important;
   font-weight: normal;
-  background-color: #fff !important;
+  background-color: ${resultTableBackground} !important;
   vertical-align: top !important;
 }
 
@@ -203,13 +208,21 @@ function buildBasicHtml(
   font-weight: normal;
 }
 
+.basic-report-template .report-title-bar {
+  display: flex !important;
+  align-items: center !important;
+  border-top: 1.5px solid #000 !important;
+  border-bottom: 1.5px solid #000 !important;
+  padding: 4px 0 !important;
+  margin: 6px 0 10px !important;
+}
+
 .basic-report-template .report-main-title {
   text-align: center !important;
   font-size: ${titlePx + 1}px !important;
-  border-top: 1.5px solid #000 !important;
-  border-bottom: 1.5px solid #000 !important;
-  padding: 5px 0 !important;
-  margin: 6px 0 10px !important;
+  border: none !important;
+  padding: 0 !important;
+  margin: 0 !important;
   font-weight: 700 !important;
   color: #000 !important;
   line-height: 1.2 !important;
@@ -218,7 +231,7 @@ function buildBasicHtml(
 .basic-report-template .patient-header-table {
   width: 100% !important;
   table-layout: fixed !important;
-  margin-bottom: 8px !important;
+  margin-bottom: 0 !important;
   border: none !important;
 }
 
@@ -364,12 +377,21 @@ function buildBasicHtml(
   letter-spacing: ${sectionHeaderInline ? 0 : 0.25}px !important;
   border: none !important;
   color: #000 !important;
-  ${sectionHeaderInline ? `border-bottom: 0.5px solid #ccc !important; background-color: #f5f5f5 !important;` : ''}
+  ${sectionHeaderInline ? `border-bottom: 0.5px solid #ccc !important; background-color: ${sectionRowBackground} !important;` : ''}
 }
 
 .basic-report-template .descriptive-row td {
   border-bottom: 0.5px dotted #e5e5e5 !important;
   color: #111 !important;
+}
+
+.basic-report-template .tbl-results .qualitative-wide-value {
+  width: ${formatBasicWidth(standardColumnWidths.slice(1).reduce((sum, width) => sum + width, 0))} !important;
+  text-align: left !important;
+  white-space: normal !important;
+  overflow: visible !important;
+  overflow-wrap: anywhere !important;
+  word-break: break-word !important;
 }
 
 .basic-report-template .interpretation-row td {
@@ -489,6 +511,14 @@ function buildBasicHtml(
   margin-left: ${qrHorizontalOffset}px !important;
 }
 
+.basic-report-template .qr-top-left-slot .qr-verify {
+  margin-left: ${qrHorizontalOffset}px !important;
+}
+
+.basic-report-template .qr-top-right-slot .qr-verify {
+  margin-right: ${qrHorizontalOffset}px !important;
+}
+
 .basic-report-template .auth-text {
   font-size: ${smallPx}px !important;
   color: #444 !important;
@@ -514,10 +544,30 @@ function buildBasicHtml(
 </style>`;
 
   const patientInfoHtml = `
-    <div class="report-header-top">
-      <h2 class="report-main-title">TEST REPORT</h2>
+    <div class="report-title-bar">
+      <div class="qr-top-left-slot" style="width:110px;flex-shrink:0;">
+        ${qrPosition === 'top_left' ? `
+          <div class="qr-verify" style="text-align:left;">
+            <div style="width:46px;height:46px;border:1px solid #9ca3af;background:
+              linear-gradient(90deg,#111 10%,transparent 10%,transparent 20%,#111 20%,#111 30%,transparent 30%,transparent 40%,#111 40%,#111 50%,transparent 50%,transparent 60%,#111 60%,#111 70%,transparent 70%,transparent 80%,#111 80%,#111 90%,transparent 90%),
+              linear-gradient(#111 10%,transparent 10%,transparent 20%,#111 20%,#111 30%,transparent 30%,transparent 40%,#111 40%,#111 50%,transparent 50%,transparent 60%,#111 60%,#111 70%,transparent 70%,transparent 80%,#111 80%,#111 90%,transparent 90%);
+              background-size:10px 10px;background-color:#fff;"></div>
+            <p style="margin:2px 0 0;font-size:9px;color:#6b7280;">Scan to verify</p>
+          </div>` : ''}
+      </div>
+      <h2 class="report-main-title" style="flex:1;">TEST REPORT</h2>
+      <div class="qr-top-right-slot" style="width:110px;flex-shrink:0;text-align:right;">
+        ${qrPosition === 'top_right' ? `
+          <div class="qr-verify" style="display:inline-block;text-align:left;">
+            <div style="width:46px;height:46px;border:1px solid #9ca3af;background:
+              linear-gradient(90deg,#111 10%,transparent 10%,transparent 20%,#111 20%,#111 30%,transparent 30%,transparent 40%,#111 40%,#111 50%,transparent 50%,transparent 60%,#111 60%,#111 70%,transparent 70%,transparent 80%,#111 80%,#111 90%,transparent 90%),
+              linear-gradient(#111 10%,transparent 10%,transparent 20%,#111 20%,#111 30%,transparent 30%,transparent 40%,#111 40%,#111 50%,transparent 50%,transparent 60%,#111 60%,#111 70%,transparent 70%,transparent 80%,#111 80%,#111 90%,transparent 90%);
+              background-size:10px 10px;background-color:#fff;"></div>
+            <p style="margin:2px 0 0;font-size:9px;color:#6b7280;">Scan to verify</p>
+          </div>` : ''}
+      </div>
     </div>
-    <figure class="table" style="margin: 0 0 10px;">
+    <figure class="table" style="margin:0;">
       <table class="patient-header-table">
         <tbody>
           <tr>
@@ -603,10 +653,14 @@ function buildBasicHtml(
         const unitText      = String(unit || '').trim().toLowerCase();
         const refText       = String(refRange || '').trim();
         const hasNumericRef = /\d/.test(refText);
+        const valueTypeRaw = String(analyte.value_type || '').toLowerCase();
+        const isQualitativeWithoutMetadata =
+          valueTypeRaw === 'qualitative' && !unitText && !refText;
         const isDescriptive =
-          unitText === 'n/a' || unitText === 'na' || unitText === '-' ||
+          valueTypeRaw !== 'qualitative' &&
+          (unitText === 'n/a' || unitText === 'na' || unitText === '-' ||
           unitText === 'none' || unitText === 'not applicable' ||
-          (!unitText && refText && !hasNumericRef);
+          (!unitText && refText && !hasNumericRef));
 
         const isNumericHigh = canonicalFlag === 'high' || canonicalFlag === 'critical_high';
         const isNumericLow  = canonicalFlag === 'low'  || canonicalFlag === 'critical_low';
@@ -654,16 +708,18 @@ function buildBasicHtml(
           : '';
 
         testResultsHtml += `
-              <tr>
+              <tr class="${isQualitativeWithoutMetadata ? 'qualitative-wide-row' : ''}">
                 <td class="test-name-cell">
                   <div class="test-name" style="font-size:${basePx}px; font-weight:${testNameWeight};">
                     ${parameterName}${calcSuffix}
                   </div>
                   ${showMethodology && analyte.method ? `<div class="test-method" style="font-size:${smallPx}px;">${analyte.method}</div>` : ''}
                 </td>
-                <td class="${valClass}" style="font-size:${basePx}px;">${displayValue}</td>
+                ${isQualitativeWithoutMetadata
+                  ? `<td class="${valClass} qualitative-wide-value" colspan="3" style="font-size:${basePx}px;">${displayValue}</td>`
+                  : `<td class="${valClass}" style="font-size:${basePx}px;">${displayValue}</td>
                 <td style="text-align:left; vertical-align:top; font-size:${basePx}px; color:#444;">${unit}</td>
-                <td style="text-align:right; vertical-align:top; font-size:${smallPx + 1}px; color:#666;">${refRange}</td>
+                <td style="text-align:right; vertical-align:top; font-size:${smallPx + 1}px; color:#666;">${refRange}</td>`}
               </tr>
         `;
 
@@ -703,13 +759,13 @@ function buildBasicHtml(
 
   const signatoryHtml = `
     <div class="report-footer">
-      <div class="qr-verify" style="text-align:left;">
+      ${qrPosition === 'bottom_left' ? `<div class="qr-verify" style="text-align:left;">
         <div style="width:60px;height:60px;border:1px solid #9ca3af;background:
           linear-gradient(90deg,#111 10%,transparent 10%,transparent 20%,#111 20%,#111 30%,transparent 30%,transparent 40%,#111 40%,#111 50%,transparent 50%,transparent 60%,#111 60%,#111 70%,transparent 70%,transparent 80%,#111 80%,#111 90%,transparent 90%),
           linear-gradient(#111 10%,transparent 10%,transparent 20%,#111 20%,#111 30%,transparent 30%,transparent 40%,#111 40%,#111 50%,transparent 50%,transparent 60%,#111 60%,#111 70%,transparent 70%,transparent 80%,#111 80%,#111 90%,transparent 90%);
           background-size:12px 12px;background-color:#fff;"></div>
         <p style="margin:2px 0 0 0;font-size:9px;color:#6b7280;">Scan to verify</p>
-      </div>
+      </div>` : '<div></div>'}
       <div class="auth-text">Authenticated Electronic Report</div>
       <div class="signature-box">
         <svg class="signature-sample" viewBox="0 0 220 80" xmlns="http://www.w3.org/2000/svg" aria-label="Sample signature">
@@ -821,6 +877,16 @@ export default function BasicTemplateFormatBuilder({ printOptions, showMethodolo
           <Row label="Show Interpretation" hint="Italic text below flagged rows">
             <Toggle checked={showInterpretation} onChange={(v) => onChange({ showInterpretation: v })} />
           </Row>
+          <Row label="Report Background" hint="Transparent prints directly over the uploaded letterhead watermark">
+            <select
+              value={printOptions.resultTableBackground ?? 'white'}
+              onChange={(e) => setPO({ resultTableBackground: e.target.value as BasicPrintOptions['resultTableBackground'] })}
+              className="text-sm border border-gray-300 rounded px-2 py-1 bg-white"
+            >
+              <option value="white">White rows</option>
+              <option value="transparent">Transparent</option>
+            </select>
+          </Row>
           <Row label="Test Name Bold" hint="Bold test names (off = normal weight)">
             <Toggle checked={printOptions.testNameBold ?? false} onChange={(v) => setPO({ testNameBold: v })} />
           </Row>
@@ -873,7 +939,23 @@ export default function BasicTemplateFormatBuilder({ printOptions, showMethodolo
               <option value="above_headers_left">Above headers left</option>
             </select>
           </Row>
-          <Row label="QR Shift Right" hint="Move verification QR slightly right from left edge">
+          <Row label="QR Position" hint="Place verification QR in the report title or footer">
+            <select
+              value={printOptions.qrPosition ?? 'bottom_left'}
+              onChange={(e) => setPO({ qrPosition: e.target.value as BasicPrintOptions['qrPosition'] })}
+              className="text-sm border border-gray-300 rounded px-2 py-1 bg-white"
+            >
+              <option value="bottom_left">Bottom left</option>
+              <option value="top_left">Top left</option>
+              <option value="top_right">Top right</option>
+            </select>
+          </Row>
+          <Row
+            label="QR Horizontal Shift"
+            hint={printOptions.qrPosition === 'top_right'
+              ? 'Move the top-right QR left from the right edge'
+              : 'Move the QR right from the left edge'}
+          >
             <div className="flex items-center gap-2">
               <input
                 type="range" min={0} max={80} step={2}

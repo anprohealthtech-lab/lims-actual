@@ -183,6 +183,7 @@ Deno.serve(async (req: Request) => {
 		            sectionHeaderInline: true,
 		            testGroupTitlePosition: 'above_headers_center',
 		            qrHorizontalOffset: 0,
+		            qrPosition: 'bottom_left',
 		            basicColumnWidths: {
 		              standard: [36, 24, 12, 28],
 		              sibling: [30, 14, 8, 16, 16, 16],

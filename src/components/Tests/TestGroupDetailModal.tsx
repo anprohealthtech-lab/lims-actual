@@ -10,6 +10,12 @@ interface TestGroup {
   clinicalPurpose: string;
   methodology?: string;
   analytes: string[];
+  analyteDisplay?: Array<{
+    analyte_id: string;
+    sort_order?: number | null;
+    display_order?: number | null;
+    section_heading?: string | null;
+  }>;
   price: number;
   turnaroundTime: string;
   sampleType: string;
@@ -47,9 +53,23 @@ const TestGroupDetailModal: React.FC<TestGroupDetailModalProps> = ({ testGroup, 
     return colors[category as keyof typeof colors] || 'bg-gray-100 text-gray-800';
   };
 
-  const includedAnalytes = analytes.filter(analyte =>
-    testGroup.analytes && Array.isArray(testGroup.analytes) && testGroup.analytes.includes(analyte.id)
+  const displayByAnalyteId = new Map(
+    (testGroup.analyteDisplay || []).map((item) => [item.analyte_id, item])
   );
+  const includedAnalytes = analytes
+    .filter(analyte =>
+      testGroup.analytes && Array.isArray(testGroup.analytes) && testGroup.analytes.includes(analyte.id)
+    )
+    .map((analyte, originalIndex) => ({
+      ...analyte,
+      sectionHeading: displayByAnalyteId.get(analyte.id)?.section_heading || null,
+      displayOrder:
+        displayByAnalyteId.get(analyte.id)?.sort_order ??
+        displayByAnalyteId.get(analyte.id)?.display_order ??
+        Number.MAX_SAFE_INTEGER,
+      originalIndex,
+    }))
+    .sort((a, b) => a.displayOrder - b.displayOrder || a.originalIndex - b.originalIndex);
 
   return (
     <div className="fixed inset-0 bg-gray-600 bg-opacity-75 flex items-center justify-center z-50 p-4">
@@ -167,23 +187,33 @@ const TestGroupDetailModal: React.FC<TestGroupDetailModalProps> = ({ testGroup, 
                     </tr>
                   </thead>
                   <tbody className="bg-white divide-y divide-gray-200">
-                    {includedAnalytes.map((analyte) => (
-                      <tr key={analyte.id} className="hover:bg-gray-50">
-                        <td className="px-4 py-3 text-sm font-medium text-gray-900">
-                          {analyte.name}
-                        </td>
-                        <td className="px-4 py-3 text-sm text-gray-600">
-                          {analyte.unit}
-                        </td>
-                        <td className="px-4 py-3 text-sm text-gray-600">
-                          {analyte.referenceRange}
-                        </td>
-                        <td className="px-4 py-3 text-sm">
-                          <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${getCategoryColor(analyte.category)}`}>
-                            {analyte.category}
-                          </span>
-                        </td>
-                      </tr>
+                    {includedAnalytes.map((analyte, index) => (
+                      <React.Fragment key={analyte.id}>
+                        {analyte.sectionHeading &&
+                          analyte.sectionHeading !== includedAnalytes[index - 1]?.sectionHeading && (
+                            <tr className="bg-blue-50">
+                              <td colSpan={4} className="px-4 py-2 text-xs font-bold uppercase tracking-wide text-blue-800">
+                                {analyte.sectionHeading}
+                              </td>
+                            </tr>
+                          )}
+                        <tr className="hover:bg-gray-50">
+                          <td className="px-4 py-3 text-sm font-medium text-gray-900">
+                            {analyte.name}
+                          </td>
+                          <td className="px-4 py-3 text-sm text-gray-600">
+                            {analyte.unit}
+                          </td>
+                          <td className="px-4 py-3 text-sm text-gray-600">
+                            {analyte.referenceRange}
+                          </td>
+                          <td className="px-4 py-3 text-sm">
+                            <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${getCategoryColor(analyte.category)}`}>
+                              {analyte.category}
+                            </span>
+                          </td>
+                        </tr>
+                      </React.Fragment>
                     ))}
                   </tbody>
                 </table>

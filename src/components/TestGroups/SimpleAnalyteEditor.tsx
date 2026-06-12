@@ -1,6 +1,10 @@
 import React, { useState, useMemo, useRef, useEffect } from 'react';
 import { X, Save, AlertCircle, Flag, Calculator, Link2, Search, Plus, Trash2, ChevronDown, Activity } from 'lucide-react';
 import { database, supabase } from '../../utils/supabase';
+import {
+  dedupeDependenciesForSave,
+  selectPreferredCalculatedDependencies,
+} from '../../utils/calculatedDependencies';
 
 interface SourceAnalyte {
   id: string;
@@ -279,7 +283,19 @@ export const SimpleAnalyteEditor: React.FC<SimpleAnalyteEditorProps> = ({
         });
 
         if (!depsError && existingDeps && existingDeps.length > 0) {
-          const sources = existingDeps.map((dep: any) => {
+          const availableSourceIds = new Set<string>(testGroupAnalyteIds);
+          for (const source of availableAnalytes) {
+            if (testGroupAnalyteIds.includes(source.id) && source.lab_analyte_id) {
+              availableSourceIds.add(source.lab_analyte_id);
+            }
+          }
+          const preferredDeps = selectPreferredCalculatedDependencies(
+            existingDeps as any[],
+            analyte.id,
+            analyte.lab_analyte_id,
+            availableSourceIds,
+          );
+          const sources = preferredDeps.map((dep: any) => {
             const sourceLabAnalyte = dep.source_lab_analyte;
             const sourceAnalyte = dep.source_analyte;
             return {
@@ -556,9 +572,11 @@ export const SimpleAnalyteEditor: React.FC<SimpleAnalyteEditorProps> = ({
       // When no picker sources are selected, this intentionally clears old rows so
       // recalculation falls back to the newly saved formula_variables instead.
       if (formulaData.is_calculated || analyte.is_calculated) {
-        const deps = selectedSources
-          .filter(s => !s.id.startsWith('_manual_')) // skip manual-only entries
-          .map(s => ({ source_analyte_id: s.id, source_lab_analyte_id: s.lab_analyte_id || null, variable_name: s.variableName }));
+        const deps = dedupeDependenciesForSave(
+          selectedSources
+            .filter(s => !s.id.startsWith('_manual_')) // skip manual-only entries
+            .map(s => ({ source_analyte_id: s.id, source_lab_analyte_id: s.lab_analyte_id || null, variable_name: s.variableName })),
+        );
 
         console.info('[Calculated Analyte Save] Saving formula/dependencies', {
           analyte_id: formData.id,
