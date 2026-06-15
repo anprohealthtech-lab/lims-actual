@@ -1607,10 +1607,14 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
 
           // ✅ FIX: Fetch the actual order_tests to get their IDs for proper invoice linking
           // This prevents duplicate billing when CreateInvoiceModal is opened later
-          const { data: orderTestsData } = await supabase
-            .from('order_tests')
-            .select('id, test_name, test_group_id, price, outsourced_lab_id')
-            .eq('order_id', orderId);
+          let orderTestsData = result?.order_tests;
+          if (!orderTestsData?.length) {
+            const orderTestsResult = await supabase
+              .from('order_tests')
+              .select('id, test_name, test_group_id, price, outsourced_lab_id')
+              .eq('order_id', orderId);
+            orderTestsData = orderTestsResult.data;
+          }
 
           // Create a map of test_group_id/test_name to order_test record for matching
           const orderTestsMap = new Map<string, any>();

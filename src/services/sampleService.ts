@@ -2,13 +2,16 @@
 // Core sample management service for LIMS
 
 import { database, supabase } from '../utils/supabase';
-import { 
+import {
   generateSampleIdAndBarcode,
-  getLabCode, 
-  getContainerType, 
-  getStandardTubeColor 
+  generateNumericBarcode,
+  getContainerType,
+  getLabCode,
+  getSampleTypeCode,
+  getStandardTubeColor,
 } from '../utils/sampleIdGenerator';
 import { SampleQRData } from '../utils/qrCodeGenerator';
+import { format } from 'date-fns';
 
 /**
  * Sample entity type
@@ -55,6 +58,121 @@ export interface OrderTestGroupWithInfo {
  * Groups tests by sample type and creates one sample per unique type
  */
 export async function createSamplesForOrder(
+  orderId: string,
+  orderTestGroups: OrderTestGroupWithInfo[],
+  labId: string,
+  patientId: string
+): Promise<Sample[]> {
+  const labCode = await getLabCode(labId);
+  const sampleTypeGroups = new Map<string, OrderTestGroupWithInfo[]>();
+
+  for (const orderTest of orderTestGroups) {
+    const sampleType = orderTest.test_group?.sample_type || 'Blood';
+    const groupedTests = sampleTypeGroups.get(sampleType) || [];
+    groupedTests.push(orderTest);
+    sampleTypeGroups.set(sampleType, groupedTests);
+  }
+
+  if (sampleTypeGroups.size === 0) return [];
+
+  const now = new Date();
+  const dateStr = format(now, 'yyyyMMdd');
+  const shortDate = format(now, 'yyMMdd');
+  const [{ data: latestIds }, { data: latestBarcodes }] = await Promise.all([
+    supabase
+      .from('samples')
+      .select('id')
+      .like('id', `${labCode}-${dateStr}-%`)
+      .order('created_at', { ascending: false })
+      .limit(1),
+    supabase
+      .from('samples')
+      .select('barcode')
+      .like('barcode', `${shortDate}%`)
+      .order('created_at', { ascending: false })
+      .limit(1),
+  ]);
+
+  const lastIdParts = String(latestIds?.[0]?.id || '').split('-');
+  let idSequence = Math.max(1, (parseInt(lastIdParts[2] || '0', 10) || 0) + 1);
+  const lastBarcode = String(latestBarcodes?.[0]?.barcode || '');
+  let barcodeSequence = Math.max(
+    1,
+    (parseInt(lastBarcode.length >= 10 ? lastBarcode.substring(6) : '0', 10) || 0) + 1,
+  );
+
+  const samplePlans = Array.from(sampleTypeGroups.entries()).map(([sampleType, testGroups]) => {
+    const sampleId = `${labCode}-${dateStr}-${idSequence.toString().padStart(4, '0')}-${getSampleTypeCode(sampleType)}`;
+    const barcode = generateNumericBarcode(now, barcodeSequence);
+    idSequence += 1;
+    barcodeSequence += 1;
+
+    const qrCodeData: SampleQRData = {
+      sampleId,
+      sampleType,
+      patientId,
+      orderId,
+      labCode,
+      collectionDate: now.toISOString(),
+      barcode,
+    };
+
+    return {
+      testGroups,
+      row: {
+        id: sampleId,
+        order_id: orderId,
+        sample_type: sampleType,
+        barcode,
+        qr_code_data: qrCodeData,
+        container_type: getContainerType(sampleType),
+        lab_id: labId,
+        status: 'created',
+      },
+    };
+  });
+
+  const { data: insertedSamples, error: sampleError } = await supabase
+    .from('samples')
+    .insert(samplePlans.map((plan) => plan.row))
+    .select();
+
+  if (sampleError) throw sampleError;
+
+  await Promise.all(samplePlans.map(async (plan) => {
+    const orderTestIds = plan.testGroups.map((testGroup) => testGroup.id);
+    const { error: linkError } = await supabase
+      .from('order_tests')
+      .update({ sample_id: plan.row.id })
+      .in('id', orderTestIds);
+
+    if (linkError) {
+      const { error: fallbackError } = await supabase
+        .from('order_test_groups')
+        .update({ sample_id: plan.row.id })
+        .in('id', orderTestIds);
+      if (fallbackError) console.error('Error linking generated sample:', fallbackError);
+    }
+  }));
+
+  const { error: eventError } = await supabase.from('sample_events').insert(
+    samplePlans.map((plan) => ({
+      sample_id: plan.row.id,
+      event_type: 'created',
+      metadata: {
+        test_groups: plan.testGroups.map((testGroup) => ({
+          id: testGroup.id,
+          test_name: testGroup.test_name,
+        })),
+      },
+    })),
+  );
+
+  if (eventError) console.error('Error creating initial sample events:', eventError);
+  return (insertedSamples || []) as Sample[];
+}
+
+async function createSamplesForOrderLegacy(
   orderId: string,
   orderTestGroups: OrderTestGroupWithInfo[],
   labId: string,

@@ -418,47 +418,78 @@ id, patient_id, patient_name, status, priority, order_date, expected_date, total
       byOrder.set((r as any).order_id, arr);
     });
 
-    // 3) Fetch ALL invoices and payments for each order (supports multiple invoices when tests are added)
-    const invoicePromises = orderIds.map(async (orderId) => {
-      const { data: invoices } = await database.invoices.getAllByOrderId(orderId);
-      if (!invoices || invoices.length === 0) {
-        return { orderId, invoices: [], primaryInvoice: null, totalInvoiced: 0, totalSubtotal: 0, totalRefunded: 0, paidAmount: 0, deliveryStatus: {} };
-      }
+    // 3) Fetch billing data in two batched requests. The previous per-order,
+    // per-invoice fan-out produced dozens of duplicate requests on every refresh.
+    const { data: allInvoices, error: invoicesError } = await supabase
+      .from("invoices")
+      .select(`
+        id, order_id, invoice_date, subtotal, total, total_after_discount,
+        total_refunded_amount, whatsapp_sent_at, whatsapp_sent_via,
+        email_sent_at, email_sent_via, payment_reminder_count, last_reminder_at
+      `)
+      .in("order_id", orderIds)
+      .order("invoice_date", { ascending: false });
 
-      // Aggregate totals across all invoices
-      let totalInvoiced = 0;
-      let totalSubtotal = 0; // pre-discount, used to check billing coverage
-      let totalPaid = 0;
-      let totalRefunded = 0;
+    if (invoicesError) console.error("invoice batch load error", invoicesError);
 
-      for (const inv of invoices) {
-        totalInvoiced += Number(inv.total_after_discount || inv.total || inv.subtotal || 0);
-        totalSubtotal += Number(inv.subtotal || inv.total || 0);
-        totalRefunded += Number(inv.total_refunded_amount || 0);
-        
-        // Get payments for each invoice
-        const { data: payments } = await database.payments.getByInvoiceId(inv.id);
-        totalPaid += (payments || []).reduce((sum: number, p: any) => sum + (p.amount || 0), 0);
-      }
+    const invoiceIds = (allInvoices || []).map((invoice: any) => invoice.id);
+    const { data: allPayments, error: paymentsError } = invoiceIds.length > 0
+      ? await supabase
+        .from("payments")
+        .select("invoice_id, amount")
+        .in("invoice_id", invoiceIds)
+      : { data: [], error: null };
 
-      // Use the most recent invoice for delivery status tracking
-      const primaryInvoice = invoices[0];
-      const { data: deliveryStatus } = await database.invoices.getDeliveryStatus(primaryInvoice.id);
+    if (paymentsError) console.error("payment batch load error", paymentsError);
 
-      return {
+    const paidByInvoice = new Map<string, number>();
+    (allPayments || []).forEach((payment: any) => {
+      paidByInvoice.set(
+        payment.invoice_id,
+        (paidByInvoice.get(payment.invoice_id) || 0) + Number(payment.amount || 0),
+      );
+    });
+
+    const invoicesByOrder = new Map<string, any[]>();
+    (allInvoices || []).forEach((invoice: any) => {
+      const orderInvoices = invoicesByOrder.get(invoice.order_id) || [];
+      orderInvoices.push(invoice);
+      invoicesByOrder.set(invoice.order_id, orderInvoices);
+    });
+
+    const invoiceMap = new Map(orderIds.map((orderId) => {
+      const invoices = invoicesByOrder.get(orderId) || [];
+      const primaryInvoice = invoices[0] || null;
+      return [orderId, {
         orderId,
         invoices,
         primaryInvoice,
-        totalInvoiced,
-        totalSubtotal,
-        totalRefunded,
-        paidAmount: totalPaid,
-        deliveryStatus: deliveryStatus || {}
-      };
-    });
-
-    const invoiceData = await Promise.all(invoicePromises);
-    const invoiceMap = new Map(invoiceData.map((d) => [d.orderId, d]));
+        totalInvoiced: invoices.reduce(
+          (sum, invoice) => sum + Number(invoice.total_after_discount || invoice.total || invoice.subtotal || 0),
+          0,
+        ),
+        totalSubtotal: invoices.reduce(
+          (sum, invoice) => sum + Number(invoice.subtotal || invoice.total || 0),
+          0,
+        ),
+        totalRefunded: invoices.reduce(
+          (sum, invoice) => sum + Number(invoice.total_refunded_amount || 0),
+          0,
+        ),
+        paidAmount: invoices.reduce(
+          (sum, invoice) => sum + (paidByInvoice.get(invoice.id) || 0),
+          0,
+        ),
+        deliveryStatus: primaryInvoice ? {
+          whatsapp_sent_at: primaryInvoice.whatsapp_sent_at,
+          whatsapp_sent_via: primaryInvoice.whatsapp_sent_via,
+          email_sent_at: primaryInvoice.email_sent_at,
+          email_sent_via: primaryInvoice.email_sent_via,
+          payment_reminder_count: primaryInvoice.payment_reminder_count,
+          last_reminder_at: primaryInvoice.last_reminder_at,
+        } : {},
+      }];
+    }));
 
     // 3.6) Fetch uninvoiced extra charges (order_billing_items) per order
     // These are charges added via the order modal but not yet on any invoice.
@@ -770,18 +801,24 @@ id, patient_id, patient_name, status, priority, order_date, expected_date, total
       try {
         const { createSamplesForOrder } = await import("../services/sampleService");
 
-        const { data: orderTests, error: otError } = await supabase
-          .from("order_tests")
-          .select(
-            `
+        let orderTests = order.order_tests;
+        let otError: any = null;
+        if (!orderTests?.length) {
+          const orderTestsResult = await supabase
+            .from("order_tests")
+            .select(
+              `
 id,
   order_id,
   test_group_id,
   test_name,
   test_groups: test_group_id(sample_type, sample_color)
     `
-          )
-          .eq("order_id", order.id);
+            )
+            .eq("order_id", order.id);
+          orderTests = orderTestsResult.data;
+          otError = orderTestsResult.error;
+        }
 
         if (otError) {
           console.error("Error fetching order tests for sample creation:", otError);
@@ -823,9 +860,8 @@ id,
         }
       }
 
-      await fetchOrders();
-      // Don't close immediately - wait for OrderForm to handle invoice creation
-      // setShowOrderForm(false); 
+      // OrderForm may still be creating invoice and payment rows. Its final
+      // onClose callback performs the single dashboard refresh.
       console.log("✅ Order created successfully!");
 
       // Return order for invoice/payment creation in OrderForm
@@ -2167,8 +2203,18 @@ id,
 
                               <div className="flex flex-col items-end">
                                 <span className="text-base font-bold text-gray-900">₹{Number(o.total_amount || 0).toLocaleString()}</span>
-                                {o.payment_status !== "paid" && (o.due_amount || 0) > 0 && !o.account_name && (
-                                  <span className="text-xs font-semibold text-red-600">Due: ₹{Number(o.due_amount || 0).toLocaleString()}</span>
+                                {!o.account_name && ((o.paid_amount || 0) > 0 || (o.due_amount || 0) > 0) && (
+                                  <span className="text-xs font-semibold">
+                                    {(o.paid_amount || 0) > 0 && (
+                                      <span className="text-green-600">Paid: ₹{Number(o.paid_amount || 0).toLocaleString()}</span>
+                                    )}
+                                    {(o.paid_amount || 0) > 0 && (o.due_amount || 0) > 0 && (
+                                      <span className="text-gray-400"> · </span>
+                                    )}
+                                    {(o.due_amount || 0) > 0 && (
+                                      <span className="text-red-600">Due: ₹{Number(o.due_amount || 0).toLocaleString()}</span>
+                                    )}
+                                  </span>
                                 )}
                               </div>
 
@@ -2334,11 +2380,16 @@ id,
                                   <div className="text-2xl font-bold text-gray-900">₹{Number(o.final_amount ?? o.total_amount ?? 0).toLocaleString()}</div>
                                   {getBillingBadge(o)}
                                 </div>
-                                {(o.due_amount || 0) > 0 ? (
-                                  <span className="text-xs font-semibold text-red-600 mt-1">Due: ₹{Number(o.due_amount || 0).toLocaleString()}</span>
-                                ) : (
-                                  <span className="text-xs font-semibold text-green-600 mt-1">Due: ₹0</span>
-                                )}
+                                <div className="flex items-center justify-end gap-3 mt-1 text-xs">
+                                  {(o.paid_amount || 0) > 0 && (
+                                    <span className="font-semibold text-green-600">Paid: ₹{Number(o.paid_amount || 0).toLocaleString()}</span>
+                                  )}
+                                  {(o.due_amount || 0) > 0 ? (
+                                    <span className="font-semibold text-red-600">Due: ₹{Number(o.due_amount || 0).toLocaleString()}</span>
+                                  ) : (
+                                    <span className="font-semibold text-green-600">Due: ₹0</span>
+                                  )}
+                                </div>
                               </div>
                             </div>
 
@@ -2857,11 +2908,8 @@ id,
             onSubmit={handleAddOrder}
             onOrderCreated={autoOpenCollectModal ? (orderId) => {
               console.debug('[AutoCollect] onOrderCreated fired, orderId:', orderId, '| autoOpenCollectModal:', autoOpenCollectModal);
-              setShowOrderForm(false);
-              setProcessingBooking(null);
               setPendingAutoCollectOrderId(orderId);
-              console.debug('[AutoCollect] pending collection order set, dashboard modal will open after refresh');
-              fetchOrders();
+              console.debug('[AutoCollect] pending collection order set; final form close will refresh dashboard');
             } : undefined}
           />
         )

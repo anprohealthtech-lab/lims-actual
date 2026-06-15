@@ -3451,6 +3451,7 @@ export const database = {
 
       let order: any = null;
       let lastInsertError: any = null;
+      const orderId = orderDetails?.id || crypto.randomUUID();
 
       for (let attempt = 0; attempt < 10; attempt += 1) {
         const sampleId = generateOrderSampleId(
@@ -3459,11 +3460,22 @@ export const database = {
           labCode,
         );
         const { color_code, color_name } = getOrderAssignedColor(dailySequence);
+        const qrCodeData = generateOrderQRCodeData({
+          id: orderId,
+          patientId: orderData.patient_id,
+          sampleId,
+          orderDate,
+          colorCode: color_code,
+          colorName: color_name,
+          patientName: orderData.patient_name,
+        });
         const orderWithSample = {
           ...orderDetails,
+          id: orderId,
           sample_id: sampleId,
           color_code,
           color_name,
+          qr_code_data: qrCodeData,
           lab_id,
           created_by: orderDetails?.created_by ?? authUserId,
           status: orderData.status || "Order Created", // Default status
@@ -3499,29 +3511,8 @@ export const database = {
         };
       }
 
-      // Generate QR code data with the created order ID
-      const qrCodeData = generateOrderQRCodeData({
-        id: order.id,
-        patientId: order.patient_id,
-        sampleId: order.sample_id,
-        orderDate: order.order_date,
-        colorCode: order.color_code,
-        colorName: order.color_name,
-        patientName: order.patient_name,
-      });
-
-      // Update order with QR code data
-      const { data: updatedOrder, error: updateError } = await supabase
-        .from("orders")
-        .update({ qr_code_data: qrCodeData })
-        .eq("id", order.id)
-        .select()
-        .single();
-
-      if (updateError) {
-        console.error("Error updating order with QR code:", updateError);
-        return { data: order, error: updateError };
-      }
+      const updatedOrder = order;
+      let createdOrderTests: any[] = [];
 
       // Then create the associated tests only if there are tests to create
       if (updatedOrder && tests && Array.isArray(tests) && tests.length > 0) {
@@ -3649,14 +3640,20 @@ export const database = {
             orderTestsData,
           );
 
-          const { error: orderTestsError } = await supabase
+          const { data: insertedOrderTests, error: orderTestsError } = await supabase
             .from("order_tests")
-            .insert(orderTestsData);
+            .insert(orderTestsData)
+            .select(`
+              id, order_id, test_group_id, test_name, package_id, price,
+              outsourced_lab_id, sample_id,
+              test_groups: test_group_id(sample_type, sample_color)
+            `);
 
           if (orderTestsError) {
             console.error("Error creating order tests:", orderTestsError);
             return { data: updatedOrder, error: orderTestsError };
           }
+          createdOrderTests = insertedOrderTests || [];
 
           console.log(
             `✅ Created ${orderTestsData.length} order test records with proper test_group_ids`,
@@ -3750,7 +3747,11 @@ export const database = {
         }
       }
 
-      const finalData = { ...updatedOrder, tests: tests || [] };
+      const finalData = {
+        ...updatedOrder,
+        tests: tests || [],
+        order_tests: createdOrderTests,
+      };
 
       // Trigger order registration notification (async, don't block response)
       notificationTriggerService.triggerOrderRegistered(updatedOrder.id, lab_id)
