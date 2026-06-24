@@ -96,6 +96,7 @@ interface SimpleAnalyteEditorProps {
     formula?: string;
     formula_variables?: string[];
     formula_description?: string;
+    calculation_result_type?: 'numeric' | 'text';
     // Lab-level display name override (highest priority in PDF reports)
     display_name?: string | null;
     // lab_analytes PK — used to load/save lab_analyte_interface_config
@@ -136,7 +137,8 @@ export const SimpleAnalyteEditor: React.FC<SimpleAnalyteEditorProps> = ({
     is_calculated: analyte.is_calculated || false,
     formula: analyte.formula || '',
     formula_variables: analyte.formula_variables || [] as string[],
-    formula_description: analyte.formula_description || ''
+    formula_description: analyte.formula_description || '',
+    calculation_result_type: analyte.calculation_result_type || 'numeric'
   });
   const [formulaVariablesText, setFormulaVariablesText] = useState(
     (analyte.formula_variables || []).join(', ')
@@ -165,7 +167,8 @@ export const SimpleAnalyteEditor: React.FC<SimpleAnalyteEditorProps> = ({
       is_calculated: analyte.is_calculated || false,
       formula: analyte.formula || '',
       formula_variables: analyte.formula_variables || [],
-      formula_description: analyte.formula_description || ''
+      formula_description: analyte.formula_description || '',
+      calculation_result_type: analyte.calculation_result_type || 'numeric'
     });
     setFormulaVariablesText((analyte.formula_variables || []).join(', '));
     setExpectedValueFlagMap(analyte.expected_value_flag_map || {});
@@ -188,6 +191,9 @@ export const SimpleAnalyteEditor: React.FC<SimpleAnalyteEditorProps> = ({
     dilution_factor: '1',
     dilution_mode: 'auto',
     auto_verify: false,
+    apply_to_ai_result_entry: false,
+    apply_to_manual_result_entry: false,
+    apply_to_quick_result_entry: false,
     notes: '',
   });
 
@@ -214,7 +220,7 @@ export const SimpleAnalyteEditor: React.FC<SimpleAnalyteEditorProps> = ({
       try {
         const { data } = await supabase
           .from('lab_analyte_interface_config')
-          .select('id, instrument_unit, lims_unit, multiply_by, add_offset, dilution_factor, dilution_mode, auto_verify, notes')
+          .select('id, instrument_unit, lims_unit, multiply_by, add_offset, dilution_factor, dilution_mode, auto_verify, apply_to_ai_result_entry, apply_to_manual_result_entry, apply_to_quick_result_entry, notes')
           .eq('lab_analyte_id', labAnalyteId)
           .maybeSingle();
         if (data) {
@@ -227,6 +233,9 @@ export const SimpleAnalyteEditor: React.FC<SimpleAnalyteEditorProps> = ({
             dilution_factor: String(data.dilution_factor ?? 1),
             dilution_mode: data.dilution_mode || 'auto',
             auto_verify: data.auto_verify ?? false,
+            apply_to_ai_result_entry: data.apply_to_ai_result_entry ?? false,
+            apply_to_manual_result_entry: data.apply_to_manual_result_entry ?? false,
+            apply_to_quick_result_entry: data.apply_to_quick_result_entry ?? false,
             notes: data.notes || '',
           });
         }
@@ -523,6 +532,7 @@ export const SimpleAnalyteEditor: React.FC<SimpleAnalyteEditorProps> = ({
           formula: formulaData.formula || null,
           formula_variables: parsedVars.length > 0 ? parsedVars : [],
           formula_description: formulaData.formula_description || null,
+          calculation_result_type: formulaData.calculation_result_type || 'numeric',
         };
 
       const { data, error: updateError } = formData.lab_analyte_id
@@ -550,6 +560,9 @@ export const SimpleAnalyteEditor: React.FC<SimpleAnalyteEditorProps> = ({
           dilution_factor: Math.max(1, parseFloat(interfaceConfig.dilution_factor) || 1),
           dilution_mode: interfaceConfig.dilution_mode || 'auto',
           auto_verify: interfaceConfig.auto_verify,
+          apply_to_ai_result_entry: interfaceConfig.apply_to_ai_result_entry,
+          apply_to_manual_result_entry: interfaceConfig.apply_to_manual_result_entry,
+          apply_to_quick_result_entry: interfaceConfig.apply_to_quick_result_entry,
           notes: interfaceConfig.notes || null,
           updated_at: new Date().toISOString(),
         };
@@ -583,6 +596,7 @@ export const SimpleAnalyteEditor: React.FC<SimpleAnalyteEditorProps> = ({
           lab_analyte_id: resolvedLabAnalyteId,
           formula: formulaData.formula || null,
           formula_variables: parsedVars,
+          calculation_result_type: formulaData.calculation_result_type || 'numeric',
           dependencies: deps,
         });
 
@@ -602,6 +616,7 @@ export const SimpleAnalyteEditor: React.FC<SimpleAnalyteEditorProps> = ({
         expected_value_codes: Object.keys(expected_value_codes).length > 0 ? expected_value_codes : null,
         ...formulaData,
         formula_variables: parsedVars.length > 0 ? parsedVars : [],
+        calculation_result_type: formulaData.calculation_result_type || 'numeric',
       });
     } catch (error) {
       console.error('Failed to update analyte:', error);
@@ -1379,7 +1394,22 @@ export const SimpleAnalyteEditor: React.FC<SimpleAnalyteEditorProps> = ({
                   {/* Step 2: Build Formula */}
                   <div>
                     <label className="block text-sm font-medium text-gray-700 mb-1">
-                      Step 2: Build Formula *
+                      Result Type
+                    </label>
+                    <select
+                      value={formulaData.calculation_result_type || 'numeric'}
+                      onChange={(e) => setFormulaData(prev => ({
+                        ...prev,
+                        calculation_result_type: e.target.value as 'numeric' | 'text',
+                      }))}
+                      className="w-full px-3 py-2 mb-3 border border-amber-300 rounded-md focus:ring-2 focus:ring-amber-500 focus:border-transparent bg-white"
+                    >
+                      <option value="numeric">Numeric formula</option>
+                      <option value="text">Text rules</option>
+                    </select>
+
+                    <label className="block text-sm font-medium text-gray-700 mb-1">
+                      Step 2: Build {formulaData.calculation_result_type === 'text' ? 'Text Rules' : 'Formula'} *
                     </label>
 
                     {/* Quick-insert buttons */}
@@ -1406,10 +1436,14 @@ export const SimpleAnalyteEditor: React.FC<SimpleAnalyteEditorProps> = ({
                       value={formulaData.formula}
                       onChange={(e) => setFormulaData(prev => ({ ...prev, formula: e.target.value }))}
                       className="w-full px-3 py-2 border border-amber-300 rounded-md focus:ring-2 focus:ring-amber-500 focus:border-transparent font-mono bg-amber-50"
-                      placeholder="e.g., (HGB / RBC) * 10"
+                      placeholder={formulaData.calculation_result_type === 'text'
+                        ? '[{"when":"PLT >= 150000 && PLT <= 450000","value":"Platelets are seen adequate on smear."}]'
+                        : 'e.g., (HGB / RBC) * 10'}
                     />
                     <p className="text-xs text-gray-500 mt-1">
-                      Operators: + - * / ( ) | Functions: sqrt(), pow(), abs(), round()
+                      {formulaData.calculation_result_type === 'text'
+                        ? 'Use JSON rules with when/value. Conditions can use <, <=, >, >=, ==, &&, ||.'
+                        : 'Operators: + - * / ( ) | Functions: sqrt(), pow(), abs(), round()'}
                     </p>
                   </div>
 
@@ -1585,6 +1619,42 @@ export const SimpleAnalyteEditor: React.FC<SimpleAnalyteEditorProps> = ({
                     Skip manual verification for this analyte when received from analyzer (use only for low-risk parameters).
                   </p>
                 </div>
+              </div>
+
+              <div className="mt-4">
+                <p className="text-sm font-medium text-gray-700 mb-2">Apply conversion in result entry</p>
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                  <label className="flex items-start gap-2 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={interfaceConfig.apply_to_ai_result_entry}
+                      onChange={(e) => setInterfaceConfig(prev => ({ ...prev, apply_to_ai_result_entry: e.target.checked }))}
+                      className="mt-1 rounded border-gray-300 text-teal-600 focus:ring-teal-500"
+                    />
+                    <span className="text-sm text-gray-700">AI-extracted values</span>
+                  </label>
+                  <label className="flex items-start gap-2 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={interfaceConfig.apply_to_manual_result_entry}
+                      onChange={(e) => setInterfaceConfig(prev => ({ ...prev, apply_to_manual_result_entry: e.target.checked }))}
+                      className="mt-1 rounded border-gray-300 text-teal-600 focus:ring-teal-500"
+                    />
+                    <span className="text-sm text-gray-700">AI Result Entry manual input</span>
+                  </label>
+                  <label className="flex items-start gap-2 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={interfaceConfig.apply_to_quick_result_entry}
+                      onChange={(e) => setInterfaceConfig(prev => ({ ...prev, apply_to_quick_result_entry: e.target.checked }))}
+                      className="mt-1 rounded border-gray-300 text-teal-600 focus:ring-teal-500"
+                    />
+                    <span className="text-sm text-gray-700">Quick Result Entry</span>
+                  </label>
+                </div>
+                <p className="text-xs text-gray-500 mt-2">
+                  Enabled numeric values use (entered value x multiply by) + add offset.
+                </p>
               </div>
 
               <div className="mt-4">

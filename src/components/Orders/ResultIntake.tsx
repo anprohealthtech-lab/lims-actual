@@ -14,7 +14,7 @@ import SectionEditor, { type SectionEditorRef } from '../Results/SectionEditor'
 // ───────────────────────────────────────────────────────────────────────────────
 // BLOCK 1: Types
 
-type FlagCode = '' | 'H' | 'L' | 'C'
+type FlagCode = '' | 'H' | 'L' | 'C' | 'A' | string
 
 interface Analyte {
   id: string
@@ -106,10 +106,11 @@ const isCompleted = (a: Analyte) => {
   )
 }
 
-const flagOptions: { value: FlagCode; label: string }[] = [
+const DEFAULT_FLAG_OPTIONS: { value: FlagCode; label: string }[] = [
   { value: '', label: 'Normal' },
   { value: 'H', label: 'High' },
   { value: 'L', label: 'Low' },
+  { value: 'A', label: 'Abnormal' },
   { value: 'C', label: 'Critical' },
 ]
 
@@ -127,6 +128,9 @@ export function ResultIntake({ order, onResultProcessed, showAutoVerifyOption = 
   const [autoVerifyOnSubmit, setAutoVerifyOnSubmit] = useState(false)
   const [groupResultIds, setGroupResultIds] = useState<Record<string, string>>({})
   const sectionEditorRefs = useRef<Record<string, SectionEditorRef | null>>({})
+
+  // Lab flag options - loaded from lab settings
+  const [flagOptions, setFlagOptions] = useState<{ value: FlagCode; label: string }[]>(DEFAULT_FLAG_OPTIONS)
 
   // Editable entries keyed by analyte_id (only for NOT completed analytes)
   const [entries, setEntries] = useState<Record<string, Entry>>({})
@@ -169,6 +173,20 @@ export function ResultIntake({ order, onResultProcessed, showAutoVerifyOption = 
     })
     setGroupResultIds(next)
   }, [order])
+
+  // Load lab flag options
+  useEffect(() => {
+    if (!order.lab_id) return
+    const loadFlagOptions = async () => {
+      try {
+        const { data } = await supabase.from('labs').select('flag_options').eq('id', order.lab_id).single()
+        if (data?.flag_options && Array.isArray(data.flag_options) && data.flag_options.length > 0) {
+          setFlagOptions(data.flag_options as { value: FlagCode; label: string }[])
+        }
+      } catch { /* keep defaults */ }
+    }
+    loadFlagOptions()
+  }, [order.lab_id])
 
   // Fetch analyte_dependencies for all calculated analytes in this order
   useEffect(() => {

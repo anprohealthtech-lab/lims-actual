@@ -14,6 +14,7 @@
 import { evaluate, round } from 'mathjs';
 import { supabase } from './supabase';
 import { selectPreferredCalculatedDependencies } from './calculatedDependencies';
+import { evaluateTextCalculation, normalizeCalculationResultType } from './calculationRules';
 
 // ============================================
 // TYPES
@@ -25,6 +26,8 @@ export interface CalculatedAnalyte {
   formula: string;
   formula_variables: string[];
   formula_description?: string;
+  calculation_result_type?: 'numeric' | 'text';
+  value_type?: string;
   unit?: string;
   reference_range?: string;
   category?: string;
@@ -93,6 +96,8 @@ export const calculationEngine = {
           formula,
           formula_variables,
           formula_description,
+          calculation_result_type,
+          value_type,
           unit,
           reference_range,
           category,
@@ -102,6 +107,8 @@ export const calculationEngine = {
           id,
           formula,
           formula_variables,
+          calculation_result_type,
+          value_type,
           unit,
           reference_range,
           lab_specific_reference_range,
@@ -122,6 +129,8 @@ export const calculationEngine = {
         formula: la?.formula ?? a.formula,
         formula_variables: la?.formula_variables ?? a.formula_variables ?? [],
         formula_description: a.formula_description,
+        calculation_result_type: normalizeCalculationResultType(la?.calculation_result_type ?? a.calculation_result_type),
+        value_type: la?.value_type ?? a.value_type,
         unit: la?.unit ?? a.unit,
         reference_range: la?.lab_specific_reference_range ?? la?.reference_range ?? a.reference_range,
         category: a.category
@@ -311,6 +320,42 @@ export const calculationEngine = {
 
       // 6. Evaluate formula using mathjs
       try {
+        if (normalizeCalculationResultType(analyte.calculation_result_type) === 'text') {
+          const textResult = evaluateTextCalculation(analyte.formula, scope);
+          if (!textResult.success) {
+            results.push({
+              analyte_id: analyte.id,
+              lab_analyte_id: analyte.lab_analyte_id || null,
+              parameter: analyte.name,
+              value: '',
+              unit: analyte.unit,
+              reference_range: analyte.reference_range,
+              is_auto_calculated: true,
+              calculation_inputs: scope,
+              calculated_at: new Date().toISOString(),
+              formula_used: analyte.formula,
+              success: false,
+              error: textResult.error || 'Text calculation failed'
+            });
+            continue;
+          }
+
+          results.push({
+            analyte_id: analyte.id,
+            lab_analyte_id: analyte.lab_analyte_id || null,
+            parameter: analyte.name,
+            value: textResult.value,
+            unit: analyte.unit,
+            reference_range: analyte.reference_range,
+            is_auto_calculated: true,
+            calculation_inputs: scope,
+            calculated_at: new Date().toISOString(),
+            formula_used: analyte.formula,
+            success: true
+          });
+          continue;
+        }
+
         // Normalize formula: replace x^y with pow(x,y) to avoid
         // mathjs operator precedence issues with negative/fractional exponents.
         // e.g. (x/0.9)^(-1.2) can mis-parse as (x/0.9)^1.2 * -1

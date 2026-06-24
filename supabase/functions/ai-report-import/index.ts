@@ -163,94 +163,120 @@ function buildHaikuPrompt(
   existingTga: ExistingTGA[],
   currentTestGroup: { methodology: string; sample_type: string }
 ): string {
-  const tgaMap = Object.fromEntries(
-    existingTga.map(t => [t.lab_analyte_id || `legacy:${t.analyte_id}`, t])
+  // Build compact catalog: only essential fields for matching
+  const compactCatalog = existingAnalytes.map(a => ({
+    i: a.lab_analyte_id, // lab_analyte_id
+    a: a.id,             // analyte_id
+    n: a.name,           // name
+    c: a.code || '',     // code
+    u: a.unit || '',     // unit
+  }))
+
+  // Build attached map with minimal keys
+  const attachedIds = new Set(
+    existingTga
+      .filter(t => t.lab_analyte_id)
+      .map(t => t.lab_analyte_id as string)
   )
 
-  return `You are a laboratory informatics specialist. Match extracted lab report data to existing DB analytes and generate precise CRUD update payloads.
+  // Compact extracted analytes
+  const compactExtracted = (extracted.analytes ?? []).map(a => ({
+    n: a.extracted_name,
+    u: a.unit || '',
+    r: a.reference_range || '',
+    rm: a.reference_range_male || '',
+    rf: a.reference_range_female || '',
+    s: a.section_header || '',
+    p: a.position,
+  }))
 
-## Current Test Group Values
-${JSON.stringify(currentTestGroup)}
+  return `Match extracted lab report analytes to DB catalog. Return COMPACT JSON.
 
-## Extracted From Report (Stage 1 output)
-${JSON.stringify(extracted)}
+CATALOG (i=lab_analyte_id, a=analyte_id, n=name, c=code, u=unit):
+${JSON.stringify(compactCatalog)}
 
-## Lab Analyte Catalog (lab_analyte_id is the primary identity; use only these IDs)
-${JSON.stringify(existingAnalytes)}
+ATTACHED IDS: ${JSON.stringify([...attachedIds])}
 
-## Analytes Currently Attached To This Test Group
-Keys are lab_analyte_id. Legacy rows without one use "legacy:<analyte_id>".
-${JSON.stringify(tgaMap)}
+EXTRACTED (n=name, u=unit, r=ref_range, rm=male, rf=female, s=section, p=position):
+${JSON.stringify(compactExtracted)}
 
-## Instructions
+TASK: For each extracted analyte, find best match from catalog by name/code similarity.
+Handle common variants: Haemoglobin↔Hemoglobin, TLC↔WBC, Platelet Count↔PLT, etc.
 
-**1. Test Group Fields**
-Compare extracted methodology and sample_type to current values.
-Only include in test_group_updates if extracted value is non-null and meaningfully different.
-
-**2. Analyte Matching**
-For each extracted analyte find the best match using name/code/unit similarity across the full lab analyte catalog.
-Handle common variants: Haemoglobin↔Hemoglobin, TLC/Total Leucocyte Count↔WBC,
-Platelet Count↔PLT, Haematocrit↔Hematocrit, MCHC, MCV, MCH, RBC, etc.
-- match_confidence: 0.0–1.0. Use ≥0.75 as valid-match threshold.
-- Below 0.75 → put in unmatched_analytes.
-
-**3. CRUD Payloads**
-- lab_analyte_updates: Only fields where extracted value DIFFERS from current DB value (unit, reference_range, reference_range_male, reference_range_female). Omit unchanged fields.
-- Check attachment by lab_analyte_id first. analyte_id is compatibility data and must not be used as lab_analyte_id.
-- needs_attachment: true if the analyte exists in the lab catalog but is NOT currently attached to this test group.
-- tga_updates: for attached analytes, include section_heading if different and sort_order if different. For unattached analytes, include the extracted section_heading and sort_order so a new test_group_analytes row can be created correctly.
-- has_lab_analyte_changes: true only if lab_analyte_updates has ≥1 key
-- has_tga_changes: true only if tga_updates has ≥1 key OR needs_attachment is true
-- current_values: Always fill from DB (not extracted) — used by diff UI.
-- is_currently_attached: true if found in existing test_group_analytes config, else false.
-- Include every valid matched extracted analyte, even when it has no changes. The server will calculate the final diff and use the complete match list to detect attached analytes missing from the report.
-
-Return ONLY this JSON structure (no extra text or markdown):
+Return JSON (no markdown):
 {
-  "test_group_updates": { "methodology": "...", "sample_type": "..." },
-  "has_test_group_changes": true,
-  "analyte_changes": [
+  "m": [
     {
-      "extracted_name": "Haemoglobin",
-      "analyte_id": "<uuid from DB>",
-      "lab_analyte_id": "<uuid from DB>",
-      "matched_name": "Hemoglobin",
-      "matched_code": "HB",
-      "match_confidence": 0.97,
-      "is_currently_attached": true,
-      "needs_attachment": false,
-      "lab_analyte_updates": {
-        "reference_range_male": "13.0-17.0",
-        "reference_range_female": "11.0-15.0"
-      },
-      "tga_updates": { "section_heading": "Red Blood Cell Parameters", "sort_order": 1 },
-      "current_values": {
-        "unit": "g/dL",
-        "reference_range": "12-16",
-        "reference_range_male": "13-17",
-        "reference_range_female": "11-15",
-        "section_heading": "",
-        "sort_order": 0
-      },
-      "has_lab_analyte_changes": true,
-      "has_tga_changes": true
+      "e": "Haemoglobin",
+      "i": "<lab_analyte_id>",
+      "c": 0.97
     }
   ],
-  "unmatched_analytes": [
-    {
-      "extracted_name": "MPV",
-      "unit": "fL",
-      "reference_range": "7.5-12.5",
-      "reference_range_male": null,
-      "reference_range_female": null,
-      "reference_range_pediatric": null,
-      "section_header": "Platelet Parameters",
-      "position": 9
+  "u": ["MPV", "PDW"]
+}
+
+Where:
+- m = matches array (e=extracted_name, i=lab_analyte_id, c=confidence 0-1)
+- u = unmatched extracted names (confidence < 0.75)
+
+Only include matches with confidence >= 0.75. Be concise.`
+}
+
+/**
+ * Attempt to repair truncated JSON from LLM output.
+ * Handles cases where the response was cut off mid-array or mid-object.
+ */
+function repairTruncatedJson(text: string): string {
+  let json = text.trim()
+
+  // Remove trailing incomplete elements (partial strings, numbers, etc.)
+  // Find the last complete element by looking for }, ], or complete value
+  const lastCompletePattern = /,\s*(?:"[^"]*"?\s*:?\s*)?[^,\]\}]*$/
+  json = json.replace(lastCompletePattern, '')
+
+  // Count unclosed brackets and braces
+  let braceCount = 0
+  let bracketCount = 0
+  let inString = false
+  let escaped = false
+
+  for (const char of json) {
+    if (escaped) {
+      escaped = false
+      continue
     }
-  ],
-  "extraction_notes": "Optional notes about ambiguous matches"
-}`
+    if (char === '\\') {
+      escaped = true
+      continue
+    }
+    if (char === '"') {
+      inString = !inString
+      continue
+    }
+    if (inString) continue
+
+    if (char === '{') braceCount++
+    else if (char === '}') braceCount--
+    else if (char === '[') bracketCount++
+    else if (char === ']') bracketCount--
+  }
+
+  // If we're inside a string, close it
+  if (inString) {
+    json += '"'
+  }
+
+  // Close unclosed brackets and braces
+  while (bracketCount > 0) {
+    json += ']'
+    bracketCount--
+  }
+  while (braceCount > 0) {
+    json += '}'
+    braceCount--
+  }
+
+  return json
 }
 
 async function callClaudeHaiku(
@@ -266,7 +292,7 @@ async function callClaudeHaiku(
     },
     body: JSON.stringify({
       model: CLAUDE_HAIKU_MODEL,
-      max_tokens: 8192,
+      max_tokens: 16384,
       messages: [{ role: 'user', content: prompt }],
     }),
   })
@@ -278,21 +304,42 @@ async function callClaudeHaiku(
 
   const data = await resp.json()
   const text: string = data?.content?.[0]?.text?.trim() ?? ''
+  const stopReason: string = data?.stop_reason ?? ''
 
   if (!text) throw new Error('Claude Haiku returned empty response')
 
+  // Check if output was truncated due to token limit
+  const wasTruncated = stopReason === 'max_tokens' || stopReason === 'end_turn' && !text.endsWith('}')
+  if (wasTruncated) {
+    console.warn('[ai-report-import] Claude response may be truncated (stop_reason:', stopReason, ')')
+  }
+
   const cleaned = text.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '')
-  const objMatch = cleaned.match(/\{[\s\S]*\}/)
+  const objMatch = cleaned.match(/\{[\s\S]*\}?/)
   if (!objMatch) {
     console.error('[ai-report-import] Claude Haiku raw response (no JSON found):', text.slice(0, 500))
     throw new Error('Could not extract JSON from Claude Haiku response')
   }
 
+  let jsonText = objMatch[0]
+
+  // First try direct parse
   try {
-    return JSON.parse(objMatch[0])
-  } catch (e) {
-    console.error('[ai-report-import] Claude Haiku JSON parse error. Raw (first 1000 chars):', objMatch[0].slice(0, 1000))
-    throw new Error(`Claude Haiku response JSON parse failed: ${e instanceof Error ? e.message : String(e)}`)
+    return JSON.parse(jsonText)
+  } catch (_firstError) {
+    // Try to repair truncated JSON
+    console.warn('[ai-report-import] Initial JSON parse failed, attempting repair...')
+    const repaired = repairTruncatedJson(jsonText)
+
+    try {
+      const result = JSON.parse(repaired)
+      console.log('[ai-report-import] JSON repair successful')
+      return result
+    } catch (e) {
+      console.error('[ai-report-import] Claude Haiku JSON parse error after repair. Raw (first 1500 chars):', jsonText.slice(0, 1500))
+      console.error('[ai-report-import] Repaired attempt (last 500 chars):', repaired.slice(-500))
+      throw new Error(`Claude Haiku response JSON parse failed: ${e instanceof Error ? e.message : String(e)}`)
+    }
   }
 }
 
@@ -300,6 +347,44 @@ async function callClaudeHaiku(
 
 function comparable(value: unknown): string {
   return String(value ?? '').trim().replace(/\s+/g, ' ').toLowerCase()
+}
+
+/**
+ * Normalize AI response to handle both compact (m/u) and legacy (analyte_changes) formats
+ */
+function normalizeAiResponse(rawResult: Record<string, unknown>): {
+  matches: Array<{ extracted_name: string; lab_analyte_id: string; match_confidence: number }>
+  unmatchedNames: string[]
+} {
+  // Handle compact format: { m: [...], u: [...] }
+  if (Array.isArray(rawResult.m)) {
+    const matches = (rawResult.m as Array<Record<string, unknown>>).map(item => ({
+      extracted_name: String(item.e ?? ''),
+      lab_analyte_id: String(item.i ?? ''),
+      match_confidence: Number(item.c ?? 0),
+    }))
+    const unmatchedNames = Array.isArray(rawResult.u)
+      ? (rawResult.u as string[]).map(String)
+      : []
+    return { matches, unmatchedNames }
+  }
+
+  // Handle legacy format: { analyte_changes: [...] }
+  if (Array.isArray(rawResult.analyte_changes)) {
+    const matches = (rawResult.analyte_changes as Array<Record<string, unknown>>).map(item => ({
+      extracted_name: String(item.extracted_name ?? ''),
+      lab_analyte_id: String(item.lab_analyte_id ?? ''),
+      match_confidence: Number(item.match_confidence ?? 0),
+    }))
+    const unmatchedNames = Array.isArray(rawResult.unmatched_analytes)
+      ? (rawResult.unmatched_analytes as Array<Record<string, unknown>>).map(
+          item => String(item.extracted_name ?? '')
+        )
+      : []
+    return { matches, unmatchedNames }
+  }
+
+  return { matches: [], unmatchedNames: [] }
 }
 
 function buildDeterministicResult(
@@ -321,13 +406,14 @@ function buildDeterministicResult(
   const matchedExtractedNames = new Set<string>()
   const analyteChanges: Record<string, unknown>[] = []
 
-  for (const raw of (Array.isArray(rawResult.analyte_changes) ? rawResult.analyte_changes : [])) {
-    const match = raw as Record<string, unknown>
-    const labAnalyteId = String(match.lab_analyte_id ?? '')
+  const { matches } = normalizeAiResponse(rawResult)
+
+  for (const match of matches) {
+    const labAnalyteId = match.lab_analyte_id
     const catalog = catalogByLabId.get(labAnalyteId)
     const extractedName = comparable(match.extracted_name)
     const item = extractedByName.get(extractedName)
-    const confidence = Number(match.match_confidence ?? 0)
+    const confidence = match.match_confidence
     if (!catalog || !item || confidence < 0.75) continue
 
     const attached = attachedByLabId.get(labAnalyteId) || legacyAttachedByAnalyteId.get(catalog.id)
@@ -418,7 +504,7 @@ function buildDeterministicResult(
     analyte_changes: analyteChanges,
     unmatched_analytes: unmatched,
     missing_attached_analytes: missingAttached,
-    extraction_notes: rawResult.extraction_notes,
+    extraction_notes: rawResult.extraction_notes ?? rawResult.notes,
   }
 }
 
@@ -484,7 +570,9 @@ Deno.serve(async (req: Request) => {
       existing_tga ?? [],
       currentTestGroup
     )
+    console.log(`[ai-report-import] Prompt size: ${prompt.length} chars, catalog: ${(existing_analytes ?? []).length} analytes`)
     const aiResult = await callClaudeHaiku(prompt, anthropicApiKey) as Record<string, unknown>
+    console.log(`[ai-report-import] AI returned ${Array.isArray(aiResult.m) ? aiResult.m.length : (Array.isArray(aiResult.analyte_changes) ? aiResult.analyte_changes.length : 0)} matches`)
     const result = buildDeterministicResult(
       aiResult,
       extracted,

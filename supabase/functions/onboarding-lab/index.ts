@@ -212,7 +212,7 @@ serve(async (req) => {
           if (m.custom_expected_value_codes != null && m.custom_expected_value_codes !== '{}') entry.expected_value_flag_map = m.custom_expected_value_codes;
           return entry;
         });
-        await supabaseClient.from('lab_analytes').upsert(labAnalytePayload, { onConflict: 'lab_id,analyte_id', ignoreDuplicates: true });
+        await supabaseClient.from('lab_analytes').upsert(labAnalytePayload, { onConflict: 'lab_id,analyte_id,sample_type_key', ignoreDuplicates: true });
         analytesHydrated = toAdd.length;
       }
 
@@ -326,7 +326,7 @@ serve(async (req) => {
           if (missingSourceIds.length > 0) {
             const sourcePayload = await buildHydratedLabAnalytePayload(missingSourceIds);
             if (sourcePayload.length > 0) {
-              const { error: srcErr } = await supabaseClient.from('lab_analytes').upsert(sourcePayload, { onConflict: 'lab_id,analyte_id' });
+              const { error: srcErr } = await supabaseClient.from('lab_analytes').upsert(sourcePayload, { onConflict: 'lab_id,analyte_id,sample_type_key' });
               if (srcErr) console.error('Error creating source lab_analytes:', srcErr);
               else console.log(`   📋 Created ${sourcePayload.length} missing source lab_analytes for dependency resolution`);
             }
@@ -774,7 +774,7 @@ serve(async (req) => {
         for (let i = 0; i < catalogLabPayload.length; i += 500) {
           const { error: cErr } = await supabaseClient
             .from('lab_analytes')
-            .upsert(catalogLabPayload.slice(i, i + 500), { onConflict: 'lab_id,analyte_id', ignoreDuplicates: true });
+            .upsert(catalogLabPayload.slice(i, i + 500), { onConflict: 'lab_id,analyte_id,sample_type_key', ignoreDuplicates: true });
           if (cErr) console.error(`Error hydrating catalog analytes (chunk ${i}):`, cErr);
         }
         console.log(`   ✅ Ensured ${allValidIds.length} catalog analytes in lab_analytes`);
@@ -789,7 +789,7 @@ serve(async (req) => {
           for (let i = 0; i < customFieldsPayload.length; i += 500) {
             const { error: cfErr } = await supabaseClient
               .from('lab_analytes')
-              .upsert(customFieldsPayload.slice(i, i + 500), { onConflict: 'lab_id,analyte_id' });
+              .upsert(customFieldsPayload.slice(i, i + 500), { onConflict: 'lab_id,analyte_id,sample_type_key' });
             if (cfErr) console.error(`Error applying catalog custom fields (chunk ${i}):`, cfErr);
           }
           console.log(`   📝 Applied catalog custom fields to ${customFieldsPayload.length} analytes`);
@@ -858,7 +858,7 @@ serve(async (req) => {
             if (missingBulkSourceIds.length > 0) {
               const sourcePayload = await buildHydratedLabAnalytePayload(missingBulkSourceIds);
               if (sourcePayload.length > 0) {
-                const { error: srcErr } = await supabaseClient.from('lab_analytes').upsert(sourcePayload, { onConflict: 'lab_id,analyte_id' });
+                const { error: srcErr } = await supabaseClient.from('lab_analytes').upsert(sourcePayload, { onConflict: 'lab_id,analyte_id,sample_type_key' });
                 if (srcErr) console.error('Error creating source lab_analytes:', srcErr);
                 else console.log(`   📋 Created ${sourcePayload.length} missing source lab_analytes for dependency resolution`);
               }

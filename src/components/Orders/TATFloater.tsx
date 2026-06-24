@@ -43,20 +43,16 @@ export const TATFloater: React.FC<TATFloaterProps> = ({ className = '' }) => {
         .from('v_order_test_progress_enhanced')
         .select(`
           order_id,
+          order_number,
+          patient_name,
           test_group_name,
           hours_until_tat_breach,
           is_tat_breached,
           tat_hours,
-          sample_received_at,
-          orders!inner(
-            order_number,
-            lab_id,
-            status,
-            patients!inner(name)
-          )
+          sample_received_at
         `)
-        .eq('orders.lab_id', lab_id)
-        .in('orders.status', ['Order Created', 'Sample Collection', 'In Progress', 'Pending Approval'])
+        .eq('lab_id', lab_id)
+        .in('order_status', ['Order Created', 'Sample Collection', 'In Progress', 'Pending Approval'])
         .or('is_tat_breached.eq.true,hours_until_tat_breach.lt.2')
         .not('hours_until_tat_breach', 'is', null)
         .order('hours_until_tat_breach', { ascending: true })
@@ -69,8 +65,8 @@ export const TATFloater: React.FC<TATFloaterProps> = ({ className = '' }) => {
 
       const formatted: TATAlertOrder[] = (data || []).map((row: any) => ({
         order_id: row.order_id,
-        order_number: row.orders?.order_number,
-        patient_name: row.orders?.patients?.name || 'Unknown',
+        order_number: row.order_number,
+        patient_name: row.patient_name || 'Unknown',
         test_group_name: row.test_group_name || 'Unknown Test',
         hours_until_tat_breach: row.hours_until_tat_breach,
         is_tat_breached: row.is_tat_breached,

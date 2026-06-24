@@ -40,13 +40,18 @@ type ProgressRow = {
   total_values: number;
   has_results: boolean;
   is_verified: boolean;
-  panel_status: "Not started" | "In progress" | "Partial" | "Complete" | "Verified";
+  panel_status: "Not started" | "In progress" | "Partial" | "Complete" | "Verified" | "not_started" | "in_progress" | "completed" | "pending_approval" | "verified";
   sample_type?: string;
   sample_color?: string;
   hours_until_tat_breach?: number | null;
   is_tat_breached?: boolean;
   tat_hours?: number;
   tat_start_time?: string | null;
+  // Section-only fields
+  is_section_only?: boolean;
+  has_section_content?: boolean;
+  section_verification_status?: string | null;
+  section_verified_at?: string | null;
 };
 
 
@@ -65,6 +70,10 @@ type Panel = {
   hours_until_tat_breach?: number | null;
   is_tat_breached?: boolean;
   tat_hours?: number | null;
+  // Section-only fields
+  is_section_only?: boolean;
+  has_section_content?: boolean;
+  section_verification_status?: string | null;
 };
 
 type CardOrder = {
@@ -132,7 +141,8 @@ const hasMeaningfulProgressRows = (rows: ProgressRow[] | undefined) =>
     Number(row.expected_analytes || 0) > 0 ||
     Number(row.entered_analytes || 0) > 0 ||
     Number(row.total_values || 0) > 0 ||
-    !!row.has_results
+    !!row.has_results ||
+    row.is_section_only // Section-only tests always have meaningful progress
   );
 
 const getOrderBucket = (o: CardOrder): OrderBucketStatus => {
@@ -725,6 +735,10 @@ const Orders: React.FC = () => {
           hours_until_tat_breach: r.hours_until_tat_breach,
           is_tat_breached: r.is_tat_breached,
           tat_hours: r.tat_hours,
+          // Section-only fields
+          is_section_only: r.is_section_only,
+          has_section_content: r.has_section_content,
+          section_verification_status: r.section_verification_status,
         };
       });
 
@@ -1073,7 +1087,10 @@ const Orders: React.FC = () => {
             order.id,
             testGroupsWithInfo,
             order.lab_id,
-            order.patient_id
+            order.patient_id,
+            {
+              preBarcodedBarcode: orderData.__preBarcoded ? orderData.__preBarcodedBarcode : null,
+            }
           );
 
           console.log(`✅ Created ${samples.length} sample(s) for order ${order.id}: `, samples);
@@ -1184,10 +1201,13 @@ const Orders: React.FC = () => {
       }
 
       // Close the form
-      setShowOrderForm(false);
+      if (!orderData.__createAndNew) {
+        setShowOrderForm(false);
 
       // Show success message
       alert('✅ Order created successfully!');
+
+      }
 
       // Return the order so OrderForm can use it for invoice/payment creation
       return order;
@@ -1634,11 +1654,20 @@ const Orders: React.FC = () => {
                               <div className="flex flex-wrap gap-3">
                                 {o.panels.length > 0
                                   ? visiblePanels.map((p, i) => {
-                                    const progress = p.expected > 0 ? (p.entered / p.expected) * 100 : 0;
+                                    // For section-only: 100% if content saved, 0% otherwise
+                                    const progress = p.is_section_only
+                                      ? (p.has_section_content ? 100 : 0)
+                                      : (p.expected > 0 ? (p.entered / p.expected) * 100 : 0);
 
                                     // Modern minimalistic colors based on progress
-                                    const getMinimalColor = (percent: number, isOutsourced?: boolean) => {
+                                    const getMinimalColor = (percent: number, isOutsourced?: boolean, isSectionOnly?: boolean, isVerified?: boolean) => {
                                       if (isOutsourced) return "bg-purple-50 border-purple-200 text-purple-800";
+                                      // Section-only special colors
+                                      if (isSectionOnly) {
+                                        if (isVerified) return "bg-green-50 border-green-200 text-green-800";
+                                        if (percent === 100) return "bg-amber-50 border-amber-200 text-amber-800"; // Saved but not verified
+                                        return "bg-gray-100 border-gray-300 text-gray-700"; // Not started
+                                      }
                                       if (percent === 0) return "bg-gray-100 border-gray-300 text-gray-700";
                                       if (percent < 40) return "bg-red-50 border-red-200 text-red-800";
                                       if (percent < 70) return "bg-orange-50 border-orange-200 text-orange-800";
@@ -1646,7 +1675,7 @@ const Orders: React.FC = () => {
                                       return "bg-green-50 border-green-200 text-green-800";
                                     };
 
-                                    const colorClass = getMinimalColor(progress, p.isOutsourced);
+                                    const colorClass = getMinimalColor(progress, p.isOutsourced, p.is_section_only, p.section_verification_status === 'verified');
 
                                     return (
                                       <div
@@ -1678,6 +1707,19 @@ const Orders: React.FC = () => {
                                               <span className="font-medium">Outsourced</span>
                                               <span className="text-xs opacity-75 truncate max-w-[80px]" title={p.outsourcedLab}>
                                                 {p.outsourcedLab || 'External Lab'}
+                                              </span>
+                                            </>
+                                          ) : p.is_section_only ? (
+                                            <>
+                                              <span className="font-medium">
+                                                {p.has_section_content ? '✓ Section Saved' : 'Section Pending'}
+                                              </span>
+                                              <span className="text-xs opacity-75">
+                                                {p.section_verification_status === 'verified'
+                                                  ? '✅ Verified'
+                                                  : p.has_section_content
+                                                    ? 'Pending Approval'
+                                                    : 'Not Started'}
                                               </span>
                                             </>
                                           ) : (

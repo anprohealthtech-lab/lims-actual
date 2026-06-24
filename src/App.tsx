@@ -4,6 +4,7 @@ import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-d
 import { AuthProvider, useAuth } from './contexts/AuthContext';
 import { ThemeProvider } from './contexts/ThemeContext';
 import { QZTrayProvider } from './contexts/QZTrayContext';
+import { SampleTypeColorsProvider } from './contexts/SampleTypeColorsContext';
 import ProtectedRoute from './components/Auth/ProtectedRoute';
 import Login from './components/Auth/Login';
 import Signup from './components/Auth/Signup';
@@ -67,6 +68,7 @@ import Analytics from './pages/Analytics';
 import QualityControl from './pages/QualityControl';
 import Inventory from './pages/Inventory';
 import CorporateBulkRegistration from './pages/CorporateBulkRegistration';
+import Accession from './pages/Accession';
 
 // ⬇️ B2B Portal
 import B2BLogin from './pages/B2BLogin';
@@ -248,6 +250,7 @@ const AppRoutes: React.FC = () => {
                 <Route path="/workflows" element={<WorkflowManagement />} />
                 <Route path="/quality-control" element={<QualityControl />} />
                 <Route path="/inventory" element={<Inventory />} />
+                <Route path="/accession" element={<Accession />} />
                 {/* DEPRECATED: Use /workflows instead */}
                 {/* <Route path="/workflow-demo" element={<WorkflowDemo />} /> */}
                 <Route path="/workflow-configurator" element={<WorkflowConfiguratorPage />} />
@@ -287,13 +290,15 @@ function App() {
   return (
     <AuthProvider>
       <ThemeProvider>
-        <QZTrayProvider>
-          <Router>
-            <AppRoutes />
-            {/* Global WhatsApp Failed Notification Toast - shows realtime alerts */}
-            <FailedNotificationToast />
-          </Router>
-        </QZTrayProvider>
+        <SampleTypeColorsProvider>
+          <QZTrayProvider>
+            <Router>
+              <AppRoutes />
+              {/* Global WhatsApp Failed Notification Toast - shows realtime alerts */}
+              <FailedNotificationToast />
+            </Router>
+          </QZTrayProvider>
+        </SampleTypeColorsProvider>
       </ThemeProvider>
     </AuthProvider>
   );

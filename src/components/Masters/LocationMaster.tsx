@@ -20,6 +20,7 @@ interface LocationFormData {
   upi_id: string;
   barcode_printer_name: string;
   report_printer_name: string;
+  barcode_browser_print_enabled: boolean | null;
   auto_print_barcode_on_order: boolean | null;
   auto_print_report_on_approval: boolean | null;
 }
@@ -39,6 +40,7 @@ const initialFormData: LocationFormData = {
   upi_id: '',
   barcode_printer_name: '',
   report_printer_name: '',
+  barcode_browser_print_enabled: null,
   auto_print_barcode_on_order: null,
   auto_print_report_on_approval: null,
 };
@@ -128,6 +130,7 @@ const LocationMaster: React.FC = () => {
       upi_id: (location as any).upi_id || '',
       barcode_printer_name: (location as any).barcode_printer_name || '',
       report_printer_name: (location as any).report_printer_name || '',
+      barcode_browser_print_enabled: (location as any).barcode_browser_print_enabled ?? null,
       auto_print_barcode_on_order: (location as any).auto_print_barcode_on_order ?? null,
       auto_print_report_on_approval: (location as any).auto_print_report_on_approval ?? null,
     });
@@ -605,6 +608,21 @@ const LocationMaster: React.FC = () => {
                       <option value="inherit">Inherit from lab</option>
                       <option value="yes">Enabled for this center</option>
                       <option value="no">Disabled for this center</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-xs font-medium text-gray-600 mb-1">Barcode print mode</label>
+                    <select
+                      value={formData.barcode_browser_print_enabled === null ? 'inherit' : formData.barcode_browser_print_enabled ? 'browser' : 'utility'}
+                      onChange={(e) => setFormData({
+                        ...formData,
+                        barcode_browser_print_enabled: e.target.value === 'inherit' ? null : e.target.value === 'browser'
+                      })}
+                      className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent text-sm"
+                    >
+                      <option value="inherit">Inherit from lab</option>
+                      <option value="browser">Use browser print dialog</option>
+                      <option value="utility">Use LIMS Utility queue</option>
                     </select>
                   </div>
                   <div>

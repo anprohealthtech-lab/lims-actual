@@ -2465,20 +2465,20 @@ const injectSectionContent = async (
     for (const [key, content] of Object.entries(sectionContent)) {
       if (!content) continue;
 
-      // Preserve basic formatting: convert newlines to proper HTML paragraphs/breaks
-      // Content comes from doctor input (CKEditor), preserve formatting
-      const formattedContent = content
-        .trim()
-        .split(/\n\n+/) // Split on double newlines (paragraph breaks)
-        .map((para) => {
-          const cleanPara = para.trim();
-          if (!cleanPara) return "";
-          // Convert single newlines to <br/> within paragraphs
-          const withBreaks = cleanPara.replace(/\n/g, "<br/>");
-          return `<p>${withBreaks}</p>`;
-        })
-        .filter(Boolean)
-        .join("");
+      const trimmedContent = content.trim();
+      const formattedContent = /<[a-z][\s\S]*>/i.test(trimmedContent)
+        ? trimmedContent
+        : trimmedContent
+            .split(/\n\n+/) // Split on double newlines (paragraph breaks)
+            .map((para) => {
+              const cleanPara = para.trim();
+              if (!cleanPara) return "";
+              // Convert single newlines to <br/> within paragraphs
+              const withBreaks = cleanPara.replace(/\n/g, "<br/>");
+              return `<p>${withBreaks}</p>`;
+            })
+            .filter(Boolean)
+            .join("");
 
       // Replace {{section:key}} pattern
       const sectionPlaceholder = `{{section:${key}}}`;

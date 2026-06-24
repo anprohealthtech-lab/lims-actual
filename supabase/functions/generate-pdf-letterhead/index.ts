@@ -2395,6 +2395,7 @@ function generateClassicDefaultTemplateHtml(
       <div class="test-group-section" style="margin-bottom: 16px;">
         <h4 style="font-size: 16px; font-weight: 600; color: #1e40af; padding: 6px 0; margin: 0;">${groupName}</h4>
         ${(printOptions as any)?._sampleType ? `<div style="font-size:11px;color:#6b7280;font-style:italic;margin:-4px 0 4px 0;">Specimen: ${(printOptions as any)._sampleType}</div>` : ''}
+        ${(printOptions as any)?._sampleCondition ? `<div style="font-size:11px;color:#6b7280;font-style:italic;margin:-4px 0 4px 0;">Condition: ${(printOptions as any)._sampleCondition}</div>` : ''}
         <table class="report-table" style="width: 100%; border-collapse: collapse; font-size: 12px;">
           <thead>
             <tr style="background: #f1f5f9;">
@@ -3506,6 +3507,9 @@ function generateBasicDefaultTemplateHtml(
       : (analytes[0]?.specimen
         ? `<div class="center-subtitle">Specimen: ${analytes[0].specimen}</div>`
         : "");
+    const conditionText = (printOptions as any)?._sampleCondition
+      ? `<div class="center-subtitle">Condition: ${(printOptions as any)._sampleCondition}</div>`
+      : "";
 
 	    const groupTitleBelowHeaders = testGroupTitlePosition === "below_headers";
 	    const groupTitleClass = testGroupTitlePosition === "above_headers_left" ? "center-title left" : "center-title";
@@ -3579,6 +3583,7 @@ function generateBasicDefaultTemplateHtml(
         <section class="narrative-panel">
           <div class="${groupTitleClass}">${groupName}</div>
           ${specimenText}
+          ${conditionText}
           <div class="narrative-body">${rowsHtml}</div>
           ${narrativeGroupInterpretation ? `<div class="limsv2-report group-interpretation" style="margin-top:8px;padding:6px 0;border-top:1px solid #ddd;font-size:inherit;">${narrativeGroupInterpretation}</div>` : ""}
         </section>
@@ -3608,6 +3613,7 @@ function generateBasicDefaultTemplateHtml(
 	            <td colspan="4">
 	              <div class="${groupTitleClass}">${groupName}</div>
 	              ${specimenText}
+	              ${conditionText}
 	            </td>
 	          </tr>
 	        </tbody>` : ""}
@@ -3620,6 +3626,7 @@ function generateBasicDefaultTemplateHtml(
 	        ${!groupTitleBelowHeaders ? `
 	          <div class="${groupTitleClass}">${groupName}</div>
 	          ${specimenText}
+	          ${conditionText}
 	        ` : ""}
 	        ${groupColumnHeaderHtml}
 	    `;
@@ -3742,10 +3749,13 @@ function generateBasicDefaultTemplateHtml(
           return "";
         })();
 
+        // Use a flex container to keep flag and value properly aligned in one line
+        // Flag gets fixed width on left, value fills remaining space and aligns right
+        const flagWidth = basePx * 1.5;
         const displayValue = flagSymbol === "before" && flagSymbolText
-          ? `<span style="display:inline-block;min-width:${basePx * 1.15}px;text-align:center;font-weight:700;margin-right:4px;">${flagSymbolText}</span>${value + asteriskSuffix}`
+          ? `<span style="display:inline-flex;align-items:baseline;width:100%;"><span style="flex:0 0 ${flagWidth}px;text-align:left;font-weight:700;">${flagSymbolText}</span><span style="flex:1;text-align:right;">${value + asteriskSuffix}</span></span>`
           : flagSymbol === "after" && flagSymbolText
-          ? `${value + asteriskSuffix} <span style="font-weight:700;">${flagSymbolText}</span>`
+          ? `<span style="display:inline-flex;align-items:baseline;width:100%;justify-content:flex-end;"><span style="text-align:right;">${value + asteriskSuffix}</span><span style="flex:0 0 ${flagWidth}px;text-align:right;font-weight:700;margin-left:4px;">${flagSymbolText}</span></span>`
           : value + asteriskSuffix;
 
         if (isDescriptive) {
@@ -4262,6 +4272,7 @@ function generateDefaultTemplateHtml(
         <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 10px; padding-bottom: 6px; border-bottom: 2px solid ${THEME.accent};">
           <h3 style="font-size: 18px; font-weight: 600; color: ${THEME.accent}; margin: 0;">${groupName}</h3>
           ${(printOptions as any)?._sampleType ? `<span style="font-size:11px;color:#6b7280;font-style:italic;">Â· Specimen: ${(printOptions as any)._sampleType}</span>` : ''}
+          ${(printOptions as any)?._sampleCondition ? `<span style="font-size:11px;color:#6b7280;font-style:italic;">Â· Condition: ${(printOptions as any)._sampleCondition}</span>` : ''}
         </div>
     `;
 
@@ -8004,7 +8015,7 @@ serve(async (req) => {
       }
 
       // Helper to apply ImageKit transformations for signatures
-      // Adds focus:auto and e-removebg for clean signature rendering
+      // Adds non-AI ImageKit transforms for sizing/focus only.
       const applySignatureTransformations = (url: string): string => {
         if (!url) return "";
         // If it's an ImageKit URL, add transformations
@@ -8020,7 +8031,7 @@ serve(async (req) => {
               const insertIndex = pathParts.findIndex((p: string) =>
                 p && !p.includes(".")
               ) + 1;
-              pathParts.splice(insertIndex, 0, "tr:fo-auto,e-removebg,t-true");
+              pathParts.splice(insertIndex, 0, "tr:fo-auto,t-true");
               urlObj.pathname = pathParts.join("/");
               return urlObj.toString();
             }
@@ -8614,6 +8625,7 @@ serve(async (req) => {
       const testGroupInterpretations = new Map<string, string>(); // groupId â†’ group_interpretation HTML
       const testGroupCodes = new Map<string, string>(); // groupId â†’ test_groups.code
       const testGroupSampleTypes = new Map<string, string>(); // groupId â†’ sample_type
+      const testGroupSampleConditions = new Map<string, string>();
       const testGroupIdsToFetch = [
         ...new Set(
           [...contextTestGroupIds, ...analytesByGroup.keys()].filter((id) =>
@@ -8634,6 +8646,21 @@ serve(async (req) => {
           for (const ot of orderTestsData) {
             if (ot.test_group_id && ot.test_name) {
               testGroupNames.set(ot.test_group_id, ot.test_name);
+            }
+          }
+        }
+
+        const { data: orderTestGroupConditionRows } = await supabaseClient
+          .from("order_test_groups")
+          .select("test_group_id, sample_condition")
+          .eq("order_id", orderId)
+          .in("test_group_id", testGroupIdsToFetch);
+
+        if (orderTestGroupConditionRows) {
+          for (const row of orderTestGroupConditionRows) {
+            const condition = String(row.sample_condition || "").trim();
+            if (row.test_group_id && condition && !testGroupSampleConditions.has(row.test_group_id)) {
+              testGroupSampleConditions.set(row.test_group_id, condition);
             }
           }
         }
@@ -9165,6 +9192,14 @@ serve(async (req) => {
           const _st = testGroupSampleTypes.get(singleGroupId);
           if (_st) (singlePrintOptions as any)._sampleType = _st;
         }
+        if (singlePrintOptions && (singlePrintOptions as any).showSampleCondition && singleGroupId) {
+          const _sc = testGroupSampleConditions.get(singleGroupId);
+          if (_sc) {
+            (singlePrintOptions as any)._sampleCondition = _sc;
+            fullContext.sampleCondition = _sc;
+            fullContext.sampleConditionLabel = `Condition: ${_sc}`;
+          }
+        }
         mergedPrintOptions = singlePrintOptions; // lift to outer scope for print version
         const dynamicCss = generateDynamicCss(pdfSettings, singlePrintOptions ?? undefined);
         const singleInterpretationTemplates = getInterpretationTemplatesForGroup(
@@ -9419,6 +9454,11 @@ serve(async (req) => {
           }
 
           const groupFullContext = prepareFullContext(groupContext);
+          const groupSampleCondition = testGroupSampleConditions.get(testGroupId);
+          if (groupSampleCondition) {
+            groupFullContext.sampleCondition = groupSampleCondition;
+            groupFullContext.sampleConditionLabel = `Condition: ${groupSampleCondition}`;
+          }
           let renderedHtml = "";
           let bodyContent = "";
 
@@ -9503,6 +9543,10 @@ serve(async (req) => {
             if ((_mergedGroupOpts as any).showSampleType) {
               const _gst = testGroupSampleTypes.get(testGroupId);
               if (_gst) (_mergedGroupOpts as any)._sampleType = _gst;
+            }
+            if ((_mergedGroupOpts as any).showSampleCondition) {
+              const _gsc = testGroupSampleConditions.get(testGroupId);
+              if (_gsc) (_mergedGroupOpts as any)._sampleCondition = _gsc;
             }
             const _groupPrintOptions = _suppressMinHeight
               ? { ..._mergedGroupOpts, _isCompact: true, _suppressPatientHeader: _isSamePageAsPrev, _suppressSignature: _isSamePageAsNext }

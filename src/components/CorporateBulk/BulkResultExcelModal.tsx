@@ -64,6 +64,7 @@ interface MatrixConfig {
   rows?: string[];
   columns?: string[];
   cellOptions?: string[];
+  reportStyle?: 'color' | 'bold' | 'plain';
 }
 
 interface ColumnInfo {
@@ -141,8 +142,12 @@ function buildMatrixHtml(config: MatrixConfig | undefined, selections: Record<st
   if (rows.length === 0 || columns.length === 0) return customText.trim();
 
   const cellOptions = config?.cellOptions || [];
+  const reportStyle = config?.reportStyle || 'color';
   const cellOptionColor = (value: string) => {
     if (!cellOptions.length) return '';
+    if (reportStyle === 'plain') return '';
+    if (reportStyle === 'bold') return 'font-weight:700;';
+
     const idx = cellOptions.findIndex(option => option.trim().toUpperCase() === value.trim().toUpperCase());
     if (idx === -1) return '';
     if (cellOptions.length === 1 || idx === 0) return 'background:#d1fae5;color:#065f46;font-weight:600;';

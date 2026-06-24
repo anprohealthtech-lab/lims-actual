@@ -236,9 +236,9 @@ class SecureGeminiAIService {
    * Transform response to handle legacy format from Gemini
    */
   private transformResponse(response: any): TestConfigurationResponse {
-    // If response already has the correct format, return as-is
+    // Normalize current responses too, not only the legacy response shape.
     if (response.test_group) {
-      return response as TestConfigurationResponse;
+      return this.normalizeConfiguration(response as TestConfigurationResponse);
     }
 
     // Handle legacy format: testGroup -> test_group
@@ -265,7 +265,7 @@ class SecureGeminiAIService {
           return {
           name: analyte.name || '',
           unit: analyte.unit || '',
-          reference_range: this.formatReferenceRange(analyte.reference_min, analyte.reference_max),
+          reference_range: analyte.reference_range ?? this.formatReferenceRange(analyte.reference_min, analyte.reference_max),
           optimal_range: analyte.optimal_range || null,
           low_critical: analyte.critical_min?.toString() || null,
           high_critical: analyte.critical_max?.toString() || null,
@@ -294,7 +294,7 @@ class SecureGeminiAIService {
         reasoning: response.reasoning || 'Generated based on standard medical laboratory practices'
       };
 
-      return transformed;
+      return this.normalizeConfiguration(transformed);
     }
 
     // Fallback: return response as-is and hope for the best
@@ -327,7 +327,43 @@ class SecureGeminiAIService {
     if (min !== null) {
       return `> ${min}`;
     }
-    return 'See lab reference';
+    return '';
+  }
+
+  private normalizeConfiguration(response: TestConfigurationResponse): TestConfigurationResponse {
+    return {
+      ...response,
+      analytes: (response.analytes || []).map((analyte) => {
+        const expectedNormalValues = Array.isArray(analyte.expected_normal_values)
+          ? analyte.expected_normal_values.map(String).map(value => value.trim()).filter(Boolean)
+          : [];
+        const valueType = normalizeAnalyteValueType(
+          analyte.value_type,
+          expectedNormalValues,
+          analyte.unit,
+        );
+
+        if (valueType !== 'qualitative') {
+          return {
+            ...analyte,
+            value_type: valueType || analyte.value_type,
+            expected_normal_values: expectedNormalValues,
+          };
+        }
+
+        const referenceRange = String(analyte.reference_range ?? '');
+        const isLabReferencePlaceholder =
+          /^\s*(see|refer to|use)\s+(the\s+)?lab(oratory)?\s+(ref(erence)?|range|reference range)\.?\s*$/i
+            .test(referenceRange);
+
+        return {
+          ...analyte,
+          value_type: 'qualitative',
+          reference_range: !referenceRange.trim() || isLabReferencePlaceholder ? ' ' : referenceRange,
+          expected_normal_values: expectedNormalValues,
+        };
+      }),
+    };
   }
 }
 

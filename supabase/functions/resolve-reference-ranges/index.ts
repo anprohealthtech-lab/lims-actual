@@ -39,6 +39,15 @@ serve(async (req) => {
   }
 
   try {
+    const startedAt = Date.now()
+    const mark = (label: string, extra: Record<string, unknown> = {}) => {
+      console.log('[resolve-reference-ranges:timing]', JSON.stringify({
+        label,
+        elapsed_ms: Date.now() - startedAt,
+        ...extra,
+      }))
+    }
+
     const supabaseUrl = Deno.env.get('SUPABASE_URL')!
     const serviceRoleKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')
     const supabase = createClient(supabaseUrl, serviceRoleKey!)
@@ -70,6 +79,7 @@ serve(async (req) => {
     const { orderId, testGroupId, analytes }: ResolveRequest = await req.json()
 
     console.log(`Resolving ranges for Order: ${orderId}, TestGroup: ${testGroupId}`);
+    mark('request_parsed', { analyte_count: analytes?.length || 0 })
 
     // 1. Fetch order with patient context (Fallback to patient record if context missing)
     // 1. Fetch order with patient context (Fallback to patient record if context missing)
@@ -80,6 +90,7 @@ serve(async (req) => {
       .single()
 
     if (!order) throw new Error('Order not found');
+    mark('order_loaded')
 
     let patientContext = order.patient_context;
 
@@ -116,6 +127,7 @@ serve(async (req) => {
           };
        }
     }
+    mark('patient_context_ready')
 
     // 2. Fetch test group AI config
     const { data: testGroup } = await supabase
@@ -123,6 +135,7 @@ serve(async (req) => {
       .select('ref_range_ai_config')
       .eq('id', testGroupId)
       .single()
+    mark('test_group_loaded')
 
     // 3. Fetch analyte knowledge bases
     const analyteIds = [...new Set(analytes.map(a => a.id))]
@@ -130,6 +143,7 @@ serve(async (req) => {
       .from('analytes')
       .select('id, name, ref_range_knowledge, reference_range, unit')
       .in('id', analyteIds)
+    mark('global_analytes_loaded', { row_count: analyteData?.length || 0 })
 
     // 3b. Fetch exact lab-specific rows when the caller supplies lab_analyte_id.
     // Fall back to lab_id + analyte_id only for legacy/manual callers.
@@ -169,6 +183,10 @@ serve(async (req) => {
         }
       }
     }
+    mark('lab_analytes_loaded', {
+      exact_rows_found: exactLabAnalytesMap.size,
+      fallback_rows_found: fallbackLabAnalytesMap.size,
+    })
 
     const globalAnalytesMap = new Map((analyteData || []).map((a: any) => [a.id, a]))
     const mergedAnalyteKnowledge = analytes.map((requested) => {
@@ -221,6 +239,7 @@ serve(async (req) => {
     if (!anthropicKey) throw new Error('ANTHROPIC_API_KEY not set');
 
     console.log('Calling Anthropic Claude 3.5 Haiku...');
+    const aiStartedAt = Date.now()
     const aiResponse = await fetch('https://api.anthropic.com/v1/messages', {
         method: 'POST',
         headers: {
@@ -230,10 +249,14 @@ serve(async (req) => {
         },
         body: JSON.stringify({
             model: 'claude-haiku-4-5-20251001',
-            max_tokens: 15000,
+            max_tokens: Math.min(6000, Math.max(1200, analytes.length * 320)),
             messages: [{ role: 'user', content: prompt }]
         })
     });
+    mark('anthropic_response_received', {
+      status: aiResponse.status,
+      ai_elapsed_ms: Date.now() - aiStartedAt,
+    })
 
     if (!aiResponse.ok) {
         const errText = await aiResponse.text();
@@ -258,6 +281,7 @@ serve(async (req) => {
 
     const responseText = aiData.content[0].text;
     const results: ReferenceRangeResult[] = JSON.parse(cleanJson(responseText));
+    mark('ai_json_parsed', { result_count: results.length })
 
     // 6. Log AI decision for audit
     await supabase.from('ai_usage_logs').insert({
@@ -266,6 +290,7 @@ serve(async (req) => {
       confidence: results[0]?.confidence || 0,
       created_at: new Date().toISOString()
     })
+    mark('audit_logged')
 
     return new Response(
       JSON.stringify({ success: true, results }),
@@ -351,7 +376,7 @@ Return JSON array with this structure:
   "used_reference_range": "string (e.g. '10-20' or '< 50')",
   "flag": "N" | "L" | "H" | "LL" | "HH" | null,
   "applied_rule": "string (e.g., 'Pregnant Trimester 2', 'Adult Female', 'Pediatric 5y')",
-  "reasoning": "string (brief clinical reasoning)",
+  "reasoning": "string (maximum 12 words)",
   "confidence": number (0-1)
 }]`;
 }

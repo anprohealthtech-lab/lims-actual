@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
+import * as XLSX from 'xlsx';
 import { supabase } from '../../utils/supabase';
-import { Plus, Edit2, Trash2, Wifi, Server, HardDrive, ChevronDown, ChevronUp, Copy, CheckCircle, Layers, Link2, Unlink } from 'lucide-react';
+import { Plus, Edit2, Trash2, Wifi, Server, HardDrive, Copy, CheckCircle, Layers, Link2, Unlink, Download, Upload, Loader2, FileSpreadsheet } from 'lucide-react';
 
 const CATEGORIES = [
   'Hematology',
@@ -41,6 +42,21 @@ interface AnalyzerConnection {
   analyzer_profiles?: AnalyzerProfile | null;
 }
 
+interface AnalyzerMappingExportRow {
+  testGroupId: string;
+  testGroupName: string;
+  analyteId: string;
+  labAnalyteId: string;
+  analyteName: string;
+  limsCode: string;
+  unit: string;
+  mappingId?: string;
+  analyzerCode: string;
+  analyzerDisplay: string;
+  direction: 'inbound' | 'outbound' | 'bidirectional';
+  verified: boolean;
+}
+
 const EMPTY_FORM = {
   name: '',
   profile_id: '',
@@ -60,6 +76,50 @@ const EMPTY_FORM = {
   status: 'active' as 'active' | 'inactive',
 };
 
+function displayAnalyteName(row: any): string {
+  const la = Array.isArray(row.lab_analytes) ? row.lab_analytes[0] : row.lab_analytes;
+  const a = Array.isArray(row.analytes) ? row.analytes[0] : row.analytes;
+  return la?.display_name || la?.name || row.analyte_name || a?.name || la?.code || a?.code || row.lab_analyte_id || 'Unnamed analyte';
+}
+
+function limsCode(row: any): string {
+  const la = Array.isArray(row.lab_analytes) ? row.lab_analytes[0] : row.lab_analytes;
+  const a = Array.isArray(row.analytes) ? row.analytes[0] : row.analytes;
+  return la?.code || a?.code || displayAnalyteName(row);
+}
+
+function analyteUnit(row: any): string {
+  const la = Array.isArray(row.lab_analytes) ? row.lab_analytes[0] : row.lab_analytes;
+  const a = Array.isArray(row.analytes) ? row.analytes[0] : row.analytes;
+  return la?.lab_specific_unit || la?.unit || a?.unit || '';
+}
+
+function normalizeHeader(value: string): string {
+  return value.toLowerCase().replace(/[^a-z0-9]+/g, '');
+}
+
+function readCell(row: Record<string, any>, labels: string[]): string {
+  const wanted = new Set(labels.map(normalizeHeader));
+  const found = Object.entries(row).find(([key]) => wanted.has(normalizeHeader(key)));
+  return String(found?.[1] ?? '').trim();
+}
+
+function normalizeDirection(value: string): AnalyzerMappingExportRow['direction'] {
+  const normalized = value.toLowerCase();
+  if (normalized === 'outbound' || normalized === 'bidirectional') return normalized;
+  return 'inbound';
+}
+
+function normalizeBoolean(value: string, fallback = true): boolean {
+  const normalized = value.toLowerCase();
+  if (!normalized) return fallback;
+  return ['yes', 'true', '1', 'y', 'verified'].includes(normalized);
+}
+
+function safeFilePart(value: string): string {
+  return value.replace(/[^a-z0-9]+/gi, '_').replace(/^_+|_+$/g, '').slice(0, 60) || 'analyzer';
+}
+
 export default function AnalyzerConnectionsManager({ labId }: { labId: string }) {
   const [connections, setConnections] = useState<AnalyzerConnection[]>([]);
   const [profiles, setProfiles] = useState<AnalyzerProfile[]>([]);
@@ -77,6 +137,8 @@ export default function AnalyzerConnectionsManager({ labId }: { labId: string })
   const [bulkPreviewCount, setBulkPreviewCount] = useState<number | null>(null);
   const [bulkAssigning, setBulkAssigning] = useState(false);
   const [bulkResult, setBulkResult] = useState<string | null>(null);
+  const [mappingBusyId, setMappingBusyId] = useState<string | null>(null);
+  const [mappingResult, setMappingResult] = useState<Record<string, string>>({});
 
   useEffect(() => {
     fetchAll();
@@ -239,6 +301,215 @@ export default function AnalyzerConnectionsManager({ labId }: { labId: string })
         ? 'unlinked'
         : connections.find(c => c.id === bulkAnalyzerId)?.name ?? 'assigned';
       setBulkResult(`${data} test group${data === 1 ? '' : 's'} ${unlink ? 'unlinked' : `linked to ${analyzerName}`}.`);
+    }
+  }
+
+  async function getConnectionMappingRows(conn: AnalyzerConnection): Promise<AnalyzerMappingExportRow[]> {
+    const { data: testGroups, error: groupError } = await supabase
+      .from('test_groups')
+      .select('id, name, code')
+      .eq('lab_id', labId)
+      .eq('is_active', true)
+      .eq('analyzer_connection_id', conn.id)
+      .order('name');
+
+    if (groupError) throw groupError;
+    const groupRows = (testGroups || []) as any[];
+    const groupIds = groupRows.map(g => g.id);
+    if (groupIds.length === 0) return [];
+
+    const groupById = new Map(groupRows.map(g => [g.id, g]));
+    const { data: analyteRows, error: analyteError } = await supabase
+      .from('test_group_analytes')
+      .select('id, test_group_id, analyte_id, lab_analyte_id, analyte_name, sort_order, display_order, analytes(id, name, code, unit), lab_analytes(id, analyte_id, name, display_name, code, unit, lab_specific_unit)')
+      .eq('lab_id', labId)
+      .in('test_group_id', groupIds)
+      .not('lab_analyte_id', 'is', null)
+      .order('test_group_id')
+      .order('sort_order');
+
+    if (analyteError) throw analyteError;
+    const rows = (analyteRows || []) as any[];
+    if (rows.length === 0) return [];
+
+    const labAnalyteIds = [...new Set(rows.map(row => row.lab_analyte_id).filter(Boolean))];
+    const { data: mappingRows, error: mappingError } = await supabase
+      .from('test_mappings')
+      .select('id, lab_analyte_id, test_group_id, lims_code, analyzer_code, analyzer_display, direction, verified, analyzer_connection_id')
+      .eq('lab_id', labId)
+      .eq('mapping_type', 'result_analyte')
+      .in('direction', ['inbound', 'bidirectional'])
+      .in('lab_analyte_id', labAnalyteIds)
+      .or(`analyzer_connection_id.eq.${conn.id},analyzer_connection_id.is.null`);
+
+    if (mappingError) throw mappingError;
+
+    const mappingByKey = new Map<string, any>();
+    for (const mapping of (mappingRows || []) as any[]) {
+      const key = `${mapping.test_group_id || ''}:${mapping.lab_analyte_id}`;
+      const genericKey = `:${mapping.lab_analyte_id}`;
+      const isSpecific = mapping.analyzer_connection_id === conn.id;
+      const preferredKey = mapping.test_group_id ? key : genericKey;
+      const existing = mappingByKey.get(preferredKey);
+      if (existing?.analyzer_connection_id === conn.id && !isSpecific) continue;
+      mappingByKey.set(preferredKey, mapping);
+    }
+
+    return rows.map(row => {
+      const group = groupById.get(row.test_group_id);
+      const specific = mappingByKey.get(`${row.test_group_id}:${row.lab_analyte_id}`);
+      const generic = mappingByKey.get(`:${row.lab_analyte_id}`);
+      const mapping = specific || generic;
+      const name = displayAnalyteName(row);
+      return {
+        testGroupId: row.test_group_id,
+        testGroupName: group?.name || group?.code || '',
+        analyteId: row.analyte_id,
+        labAnalyteId: row.lab_analyte_id,
+        analyteName: name,
+        limsCode: mapping?.lims_code || limsCode(row),
+        unit: analyteUnit(row),
+        mappingId: mapping?.analyzer_connection_id === conn.id ? mapping.id : undefined,
+        analyzerCode: mapping?.analyzer_code || '',
+        analyzerDisplay: mapping?.analyzer_display || name,
+        direction: normalizeDirection(mapping?.direction || 'inbound'),
+        verified: mapping?.verified ?? true,
+      };
+    });
+  }
+
+  async function downloadMappingExcel(conn: AnalyzerConnection) {
+    setMappingBusyId(conn.id);
+    setMappingResult(prev => ({ ...prev, [conn.id]: '' }));
+    try {
+      const rows = await getConnectionMappingRows(conn);
+      if (rows.length === 0) {
+        setMappingResult(prev => ({ ...prev, [conn.id]: 'No assigned test group analytes found for this analyzer.' }));
+        return;
+      }
+
+      const workbook = XLSX.utils.book_new();
+      const sheetRows = rows.map((row, index) => ({
+        'S.No': index + 1,
+        'Instrument': conn.name,
+        'Test Group': row.testGroupName,
+        'Test Group ID': row.testGroupId,
+        'Lab Analyte ID': row.labAnalyteId,
+        'Analyte ID': row.analyteId,
+        'Mapping ID': row.mappingId || '',
+        'LIMS Analyte': row.analyteName,
+        'LIMS Code': row.limsCode,
+        'Unit': row.unit,
+        'Analyzer Code': row.analyzerCode,
+        'Analyzer Display': row.analyzerDisplay,
+        'Direction': row.direction,
+        'Verified': row.verified ? 'Yes' : 'No',
+      }));
+      const worksheet = XLSX.utils.json_to_sheet(sheetRows);
+      worksheet['!cols'] = [
+        { wch: 7 }, { wch: 24 }, { wch: 28 }, { wch: 38 }, { wch: 38 }, { wch: 38 },
+        { wch: 38 }, { wch: 30 }, { wch: 18 }, { wch: 12 }, { wch: 18 }, { wch: 28 },
+        { wch: 16 }, { wch: 10 },
+      ];
+      XLSX.utils.book_append_sheet(workbook, worksheet, 'Mappings');
+
+      const instructions = XLSX.utils.aoa_to_sheet([
+        ['How to use'],
+        ['Fill Analyzer Code and optionally Analyzer Display, Direction, Verified.'],
+        ['Do not edit Test Group ID, Lab Analyte ID, Analyte ID, or Mapping ID. Upload uses these IDs to save the exact analyzer mapping.'],
+        ['Rows with blank Analyzer Code are skipped.'],
+      ]);
+      instructions['!cols'] = [{ wch: 125 }];
+      XLSX.utils.book_append_sheet(workbook, instructions, 'Instructions');
+
+      XLSX.writeFile(workbook, `analyzer_mapping_${safeFilePart(conn.name)}_${new Date().toISOString().slice(0, 10)}.xlsx`);
+      setMappingResult(prev => ({ ...prev, [conn.id]: `Downloaded ${rows.length} analyte row${rows.length === 1 ? '' : 's'}.` }));
+    } catch (err: any) {
+      setMappingResult(prev => ({ ...prev, [conn.id]: err?.message || 'Could not download mapping Excel.' }));
+    } finally {
+      setMappingBusyId(null);
+    }
+  }
+
+  async function uploadMappingExcel(conn: AnalyzerConnection, file: File) {
+    setMappingBusyId(conn.id);
+    setMappingResult(prev => ({ ...prev, [conn.id]: '' }));
+    try {
+      const assignedRows = await getConnectionMappingRows(conn);
+      const assignedByExactKey = new Map(assignedRows.map(row => [`${row.testGroupId}:${row.labAnalyteId}`, row]));
+      const assignedByLabAnalyte = new Map(assignedRows.map(row => [row.labAnalyteId, row]));
+      if (assignedRows.length === 0) throw new Error('No assigned test group analytes found for this analyzer.');
+
+      const buffer = await file.arrayBuffer();
+      const workbook = XLSX.read(new Uint8Array(buffer), { type: 'array' });
+      const sheetName = workbook.SheetNames.includes('Mappings') ? 'Mappings' : workbook.SheetNames[0];
+      const sheet = workbook.Sheets[sheetName];
+      const importedRows = XLSX.utils.sheet_to_json<Record<string, any>>(sheet, { defval: '' });
+      if (importedRows.length === 0) throw new Error('The uploaded mapping sheet is empty.');
+
+      let saved = 0;
+      let skipped = 0;
+      let failed = 0;
+
+      for (const imported of importedRows) {
+        const labAnalyteId = readCell(imported, ['Lab Analyte ID', 'lab_analyte_id']);
+        const importedTestGroupId = readCell(imported, ['Test Group ID', 'test_group_id']);
+        const analyzerCode = readCell(imported, ['Analyzer Code', 'analyzer_code']);
+        if (!labAnalyteId || !analyzerCode) {
+          skipped += 1;
+          continue;
+        }
+
+        const assigned = (importedTestGroupId ? assignedByExactKey.get(`${importedTestGroupId}:${labAnalyteId}`) : null)
+          || assignedByLabAnalyte.get(labAnalyteId);
+        if (!assigned) {
+          skipped += 1;
+          continue;
+        }
+
+        const mappingId = readCell(imported, ['Mapping ID', 'mapping_id']) || assigned.mappingId || '';
+        const payload = {
+          lab_id: labId,
+          analyzer_id: conn.profile_id || conn.id,
+          analyzer_profile_id: conn.profile_id || null,
+          analyzer_connection_id: conn.id,
+          analyte_id: assigned.analyteId,
+          lab_analyte_id: assigned.labAnalyteId,
+          test_group_id: importedTestGroupId || assigned.testGroupId,
+          lims_code: readCell(imported, ['LIMS Code', 'lims_code']) || assigned.limsCode,
+          analyzer_code: analyzerCode,
+          analyzer_display: readCell(imported, ['Analyzer Display', 'analyzer_display']) || assigned.analyzerDisplay || assigned.analyteName,
+          analyzer_code_system: 'LOCAL',
+          test_name: assigned.analyteName,
+          mapping_type: 'result_analyte',
+          direction: normalizeDirection(readCell(imported, ['Direction', 'direction']) || assigned.direction),
+          supports_order_send: false,
+          supports_result_receive: true,
+          verified: normalizeBoolean(readCell(imported, ['Verified', 'verified']), assigned.verified),
+          metadata: {
+            source: 'settings_excel_analyzer_mapping_import',
+            analyzer_name: conn.name,
+            test_group_name: assigned.testGroupName,
+          },
+          updated_at: new Date().toISOString(),
+        };
+
+        const result = mappingId
+          ? await supabase.from('test_mappings').update(payload).eq('id', mappingId).eq('lab_id', labId).select('id').single()
+          : await supabase.from('test_mappings').insert(payload).select('id').single();
+
+        if (result.error) failed += 1;
+        else saved += 1;
+      }
+
+      setMappingResult(prev => ({
+        ...prev,
+        [conn.id]: `Imported ${saved} mapping${saved === 1 ? '' : 's'}${skipped ? `, skipped ${skipped}` : ''}${failed ? `, failed ${failed}` : ''}.`,
+      }));
+    } catch (err: any) {
+      setMappingResult(prev => ({ ...prev, [conn.id]: err?.message || 'Could not import mapping Excel.' }));
+    } finally {
+      setMappingBusyId(null);
     }
   }
 
@@ -503,7 +774,7 @@ export default function AnalyzerConnectionsManager({ labId }: { labId: string })
           {connections.map(conn => (
             <div
               key={conn.id}
-              className="bg-white border border-gray-200 rounded-xl px-4 py-3 flex items-start justify-between gap-4"
+              className="bg-white border border-gray-200 rounded-xl px-4 py-3 flex flex-wrap items-start justify-between gap-4"
             >
               <div className="flex items-start gap-3 min-w-0">
                 <div className={`mt-0.5 p-1.5 rounded-lg ${conn.status === 'active' ? 'bg-green-50 text-green-600' : 'bg-gray-100 text-gray-400'}`}>
@@ -548,7 +819,34 @@ export default function AnalyzerConnectionsManager({ labId }: { labId: string })
                 </div>
               </div>
 
-              <div className="flex items-center gap-1 flex-shrink-0">
+              <div className="flex flex-wrap items-center justify-end gap-1 flex-shrink-0">
+                <button
+                  onClick={() => downloadMappingExcel(conn)}
+                  disabled={mappingBusyId === conn.id}
+                  className="flex items-center gap-1 rounded-lg border border-emerald-200 px-2 py-1.5 text-xs font-medium text-emerald-700 hover:bg-emerald-50 disabled:opacity-50"
+                  title="Download Excel mapping template for test groups assigned to this analyzer"
+                >
+                  {mappingBusyId === conn.id ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Download className="h-3.5 w-3.5" />}
+                  Excel
+                </button>
+                <label
+                  className={`flex cursor-pointer items-center gap-1 rounded-lg border border-emerald-200 px-2 py-1.5 text-xs font-medium text-emerald-700 hover:bg-emerald-50 ${mappingBusyId === conn.id ? 'pointer-events-none opacity-50' : ''}`}
+                  title="Upload completed Excel mapping for this analyzer"
+                >
+                  <Upload className="h-3.5 w-3.5" />
+                  Upload
+                  <input
+                    type="file"
+                    accept=".xlsx,.xls,.csv"
+                    className="hidden"
+                    disabled={mappingBusyId === conn.id}
+                    onChange={(event) => {
+                      const file = event.target.files?.[0];
+                      if (file) uploadMappingExcel(conn, file);
+                      event.target.value = '';
+                    }}
+                  />
+                </label>
                 <button
                   onClick={() => openEdit(conn)}
                   className="p-1.5 text-gray-400 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition-colors"
@@ -564,6 +862,12 @@ export default function AnalyzerConnectionsManager({ labId }: { labId: string })
                   <Trash2 className="h-4 w-4" />
                 </button>
               </div>
+              {mappingResult[conn.id] && (
+                <div className="basis-full pl-10 text-xs text-emerald-700">
+                  <FileSpreadsheet className="mr-1 inline h-3.5 w-3.5" />
+                  {mappingResult[conn.id]}
+                </div>
+              )}
             </div>
           ))}
         </div>
@@ -653,7 +957,7 @@ export default function AnalyzerConnectionsManager({ labId }: { labId: string })
       )}
 
       <p className="text-xs text-gray-400 pt-1">
-        After creating a connection, use Bulk Assign above or edit individual test groups under <strong>Tests → Edit Test Group → Analyzer Interface</strong>.
+        After creating a connection, use Bulk Assign above or edit individual test groups under <strong>Tests → Edit Test Group → Analyzer Interface</strong>. Excel mapping download/upload is available inside that Analyzer Interface panel.
       </p>
     </div>
   );

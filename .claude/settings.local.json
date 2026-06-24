@@ -34,7 +34,28 @@
       "Bash(curl -s -I -X OPTIONS \"https://api.limsapp.in/functions/v1/create-auth-user\" -H \"Origin: https://limsapp.in\" -H \"Access-Control-Request-Method: POST\" -H \"Access-Control-Request-Headers: Content-Type, Authorization\")",
       "Bash(node -e \"require\\('fs'\\).readFileSync\\('supabase/functions/dispatch-order-to-analyzer/index.ts', 'utf8'\\)\")",
       "Bash(node -e \"require\\('fs'\\).readFileSync\\('supabase/functions/auto-dispatch-analyzer/index.ts', 'utf8'\\)\")",
-      "Bash(node -e \"require\\('fs'\\).readFileSync\\('supabase/functions/process-analyzer-result/index.ts', 'utf8'\\)\")"
+      "Bash(node -e \"require\\('fs'\\).readFileSync\\('supabase/functions/process-analyzer-result/index.ts', 'utf8'\\)\")",
+      "Bash(npx supabase *)",
+      "Bash(deno check *)",
+      "Bash(xxd \"d:/LIMS version 2/project/supabase/functions/generate-pdf-letterhead/index.ts\")",
+      "Bash(xxd)",
+      "Bash(curl -s -o /dev/null -w \"%{http_code}\" \"https://api.limsapp.in/rest/v1/\" -H \"apikey: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InNjcWh6YmtrcmFkZmx5d2FyaWVtIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTIyNTQ2MDgsImV4cCI6MjA2NzgzMDYwOH0.qGCOrrAdN-UAq-EagwCr-DHOxmTUrI9S6DT6Y5QvriE\")",
+      "Bash(curl -s -o /dev/null -w \"%{http_code}\" \"https://scqhzbkkradflywariemi.supabase.co/rest/v1/\" -H \"apikey: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InNjcWh6YmtrcmFkZmx5d2FyaWVtIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTIyNTQ2MDgsImV4cCI6MjA2NzgzMDYwOH0.qGCOrrAdN-UAq-EagwCr-DHOxmTUrI9S6DT6Y5QvriE\")",
+      "Bash(curl -v \"https://api.limsapp.in/rest/v1/\" -H \"apikey: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InNjcWh6YmtrcmFkZmx5d2FyaWVtIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTIyNTQ2MDgsImV4cCI6MjA2NzgzMDYwOH0.qGCOrrAdN-UAq-EagwCr-DHOxmTUrI9S6DT6Y5QvriE\")",
+      "Bash(curl -v \"https://scqhzbkkradflywariemi.supabase.co/rest/v1/\" -H \"apikey: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InNjcWh6YmtrcmFkZmx5d2FyaWVtIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTIyNTQ2MDgsImV4cCI6MjA2NzgzMDYwOH0.qGCOrrAdN-UAq-EagwCr-DHOxmTUrI9S6DT6Y5QvriE\")",
+      "Bash(curl -s -w \"\\\\nHTTP_CODE:%{http_code}\" \"https://scqhzbkkradflywariemi.supabase.co/rest/v1/\" -H \"apikey: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InNjcWh6YmtrcmFkZmx5d2FyaWVtIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTIyNTQ2MDgsImV4cCI6MjA2NzgzMDYwOH0.qGCOrrAdN-UAq-EagwCr-DHOxmTUrI9S6DT6Y5QvriE\")",
+      "Bash(curl -s -w \"\\\\nHTTP_CODE:%{http_code}\" \"https://scqhzbkkradflywariemi.supabase.co/auth/v1/health\")",
+      "Bash(nslookup scqhzbkkradflywariemi.supabase.co)",
+      "Bash(curl -s -w \"\\\\nHTTP_CODE:%{http_code}\" \"https://supabase.com\")",
+      "Bash(nslookup scqhzbkkradflywariem.supabase.co)",
+      "Bash(curl -s \"https://scqhzbkkradflywariem.supabase.co/auth/v1/health\")",
+      "Bash(npx netlify *)",
+      "Bash(curl -s -w \"\\\\nHTTP_CODE:%{http_code}\" \"https://api.limsapp.in/rest/v1/\" -H \"apikey: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InNjcWh6YmtrcmFkZmx5d2FyaWVtIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTIyNTQ2MDgsImV4cCI6MjA2NzgzMDYwOH0.qGCOrrAdN-UAq-EagwCr-DHOxmTUrI9S6DT6Y5QvriE\")",
+      "Bash(nslookup api.limsapp.in)",
+      "PowerShell(curl -s -o /dev/null -w \"%{http_code}\" -X OPTIONS \"https://scqhzbkkradflywariem.supabase.co/functions/v1/hims-order-create\")",
+      "PowerShell(Invoke-RestMethod -Uri \"https://scqhzbkkradflywariem.supabase.co/functions/v1/hims-order-create\" -Method OPTIONS -ErrorAction SilentlyContinue)",
+      "PowerShell($LASTEXITCODE)",
+      "PowerShell(try { $r = Invoke-RestMethod -Uri \"https://scqhzbkkradflywariem.supabase.co/functions/v1/hims-order-create\" -Method POST -ContentType \"application/json\" -Body '{}' -ErrorAction Stop; $r | ConvertTo-Json } catch { $_.Exception.Response.StatusCode.value__; $_.ErrorDetails.Message })"
     ]
   }
 }

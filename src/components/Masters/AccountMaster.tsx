@@ -23,6 +23,20 @@ interface Account {
     is_active: boolean;
     billing_mode?: 'standard' | 'monthly' | null;
     price_master_id?: string | null;
+    portal_settings?: PortalSettings | null;
+}
+
+interface PortalUpdateSlide {
+    title: string;
+    message: string;
+}
+
+interface PortalSettings {
+    welcome_note: string;
+    updates_enabled: boolean;
+    updates_title: string;
+    update_slides: PortalUpdateSlide[];
+    hide_lims_branding: boolean;
 }
 
 interface PriceMaster {
@@ -65,6 +79,13 @@ const initialFormData: Partial<Account> = {
     is_active: true,
     billing_mode: 'standard',
     price_master_id: null,
+    portal_settings: {
+        welcome_note: '',
+        updates_enabled: true,
+        updates_title: 'Partner Portal Updates',
+        update_slides: [],
+        hide_lims_branding: false,
+    },
 };
 
 const initialPortalData = {
@@ -87,7 +108,26 @@ const buildAccountSavePayload = (data: Partial<Account>) => ({
     is_active: data.is_active ?? true,
     billing_mode: data.billing_mode || 'standard',
     price_master_id: data.price_master_id || null,
+    portal_settings: normalizePortalSettings(data.portal_settings),
 });
+
+const normalizePortalSettings = (raw: Partial<PortalSettings> | null | undefined, keepBlankSlides = false): PortalSettings => {
+    const updateSlides = Array.isArray(raw?.update_slides) ? raw.update_slides : [];
+    const normalizedSlides = updateSlides.map((slide) => ({
+        title: String(slide?.title || '').trim(),
+        message: String(slide?.message || '').trim(),
+    }));
+
+    return {
+        welcome_note: String(raw?.welcome_note || '').trim(),
+        updates_enabled: raw?.updates_enabled !== false,
+        updates_title: String(raw?.updates_title || 'Partner Portal Updates').trim() || 'Partner Portal Updates',
+        update_slides: keepBlankSlides
+            ? normalizedSlides
+            : normalizedSlides.filter((slide) => slide.title || slide.message),
+        hide_lims_branding: raw?.hide_lims_branding === true,
+    };
+};
 
 const AccountMaster: React.FC = () => {
     const [accounts, setAccounts] = useState<Account[]>([]);
@@ -178,7 +218,10 @@ const AccountMaster: React.FC = () => {
 
     const handleEdit = (account: Account) => {
         setEditingAccount(account);
-        setFormData(account);
+        setFormData({
+            ...account,
+            portal_settings: normalizePortalSettings(account.portal_settings, true),
+        });
         setPortalData({
             ...initialPortalData,
             portalEmail: account.billing_email || '',
@@ -309,6 +352,38 @@ const AccountMaster: React.FC = () => {
             console.error('Error deleting:', err);
             setError('Failed to delete account.');
         }
+    };
+
+    const updatePortalSettings = (patch: Partial<PortalSettings>) => {
+        setFormData(prev => ({
+            ...prev,
+            portal_settings: normalizePortalSettings({
+                ...normalizePortalSettings(prev.portal_settings, true),
+                ...patch,
+            }, true),
+        }));
+    };
+
+    const updatePortalSlide = (index: number, patch: Partial<PortalUpdateSlide>) => {
+        const current = normalizePortalSettings(formData.portal_settings, true);
+        const update_slides = current.update_slides.map((slide, slideIndex) =>
+            slideIndex === index ? { ...slide, ...patch } : slide
+        );
+        updatePortalSettings({ update_slides });
+    };
+
+    const addPortalSlide = () => {
+        const current = normalizePortalSettings(formData.portal_settings, true);
+        updatePortalSettings({
+            update_slides: [...current.update_slides, { title: '', message: '' }],
+        });
+    };
+
+    const removePortalSlide = (index: number) => {
+        const current = normalizePortalSettings(formData.portal_settings, true);
+        updatePortalSettings({
+            update_slides: current.update_slides.filter((_, slideIndex) => slideIndex !== index),
+        });
     };
 
     // --- Price Management Logic ---
@@ -494,6 +569,8 @@ const AccountMaster: React.FC = () => {
     const filteredPackages = packages.filter(pkg =>
         !priceSearchTerm || pkg.name.toLowerCase().includes(priceSearchTerm.toLowerCase())
     );
+
+    const portalSettings = normalizePortalSettings(formData.portal_settings, true);
 
     return (
         <div className="p-6 max-w-7xl mx-auto">
@@ -684,6 +761,105 @@ const AccountMaster: React.FC = () => {
                                         </div>
                                         <div className="mt-2 text-xs text-purple-600 bg-purple-50 p-2 rounded">
                                             💡 Monthly billing: No individual invoices or payment reminders. All orders in billing period are included in one consolidated invoice.
+                                        </div>
+                                    </div>
+
+                                    <div className="col-span-2 border-t pt-4 mt-2 space-y-4">
+                                        <div>
+                                            <h3 className="text-sm font-semibold text-gray-900">B2B Portal Content</h3>
+                                            <p className="text-xs text-gray-500 mt-1">
+                                                This welcome note and update slider appear when this account opens the partner portal.
+                                            </p>
+                                        </div>
+
+                                        <div>
+                                            <label className="block text-sm font-medium mb-1 text-gray-700">Welcome Note</label>
+                                            <textarea
+                                                value={portalSettings.welcome_note}
+                                                onChange={e => updatePortalSettings({ welcome_note: e.target.value })}
+                                                className="w-full border rounded p-2 text-sm"
+                                                rows={3}
+                                                placeholder="Welcome to your partner portal. Track orders, download reports, and book new tests here."
+                                            />
+                                        </div>
+
+                                        <div className="grid grid-cols-2 gap-4">
+                                            <label className="flex items-center gap-2 text-sm font-medium text-gray-700">
+                                                <input
+                                                    type="checkbox"
+                                                    checked={portalSettings.updates_enabled}
+                                                    onChange={e => updatePortalSettings({ updates_enabled: e.target.checked })}
+                                                    className="h-4 w-4 rounded text-blue-600"
+                                                />
+                                                Show updates section
+                                            </label>
+                                            <label className="flex items-center gap-2 text-sm font-medium text-gray-700">
+                                                <input
+                                                    type="checkbox"
+                                                    checked={portalSettings.hide_lims_branding}
+                                                    onChange={e => updatePortalSettings({ hide_lims_branding: e.target.checked })}
+                                                    className="h-4 w-4 rounded text-blue-600"
+                                                />
+                                                Hide LIMS branding in portal
+                                            </label>
+                                        </div>
+
+                                        <div>
+                                            <label className="block text-sm font-medium mb-1 text-gray-700">Updates Section Name</label>
+                                            <input
+                                                type="text"
+                                                value={portalSettings.updates_title}
+                                                onChange={e => updatePortalSettings({ updates_title: e.target.value })}
+                                                className="w-full border rounded p-2 text-sm"
+                                                placeholder="Partner Portal Updates"
+                                            />
+                                        </div>
+
+                                        <div className="space-y-3">
+                                            <div className="flex items-center justify-between">
+                                                <label className="block text-sm font-medium text-gray-700">Update Slider</label>
+                                                <button
+                                                    type="button"
+                                                    onClick={addPortalSlide}
+                                                    className="px-3 py-1.5 text-xs font-medium bg-blue-50 text-blue-700 rounded border border-blue-200 hover:bg-blue-100"
+                                                >
+                                                    Add Update
+                                                </button>
+                                            </div>
+                                            {portalSettings.update_slides.length === 0 ? (
+                                                <div className="rounded border border-dashed border-gray-300 p-3 text-xs text-gray-500">
+                                                    No updates added yet.
+                                                </div>
+                                            ) : (
+                                                portalSettings.update_slides.map((slide, index) => (
+                                                    <div key={index} className="rounded border border-gray-200 bg-gray-50 p-3 space-y-2">
+                                                        <div className="flex items-center justify-between">
+                                                            <span className="text-xs font-semibold text-gray-600">Update {index + 1}</span>
+                                                            <button
+                                                                type="button"
+                                                                onClick={() => removePortalSlide(index)}
+                                                                className="text-xs text-red-600 hover:text-red-700"
+                                                            >
+                                                                Remove
+                                                            </button>
+                                                        </div>
+                                                        <input
+                                                            type="text"
+                                                            value={slide.title}
+                                                            onChange={e => updatePortalSlide(index, { title: e.target.value })}
+                                                            className="w-full border rounded p-2 text-sm bg-white"
+                                                            placeholder="Update title"
+                                                        />
+                                                        <textarea
+                                                            value={slide.message}
+                                                            onChange={e => updatePortalSlide(index, { message: e.target.value })}
+                                                            className="w-full border rounded p-2 text-sm bg-white"
+                                                            rows={2}
+                                                            placeholder="Short update message"
+                                                        />
+                                                    </div>
+                                                ))
+                                            )}
                                         </div>
                                     </div>
 

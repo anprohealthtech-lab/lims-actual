@@ -105,6 +105,11 @@ export interface BatchAnalysisResult {
 // AI Service Functions (calls Netlify function - secure)
 // ============================================================================
 
+interface LabFlagOption {
+  value: string;
+  label: string;
+}
+
 /**
  * Call AI service for enhanced flag interpretation
  * This calls the Netlify function which keeps the API key server-side
@@ -123,7 +128,8 @@ async function callAIFlagService(
     current_flag?: string;
   }>,
   patient?: PatientContext,
-  testGroupName?: string
+  testGroupName?: string,
+  labFlagOptions?: LabFlagOption[]
 ): Promise<Array<{
   id: string;
   flag: string | null;
@@ -140,7 +146,8 @@ async function callAIFlagService(
         action: 'analyze_flags',
         result_values: resultValues,
         patient,
-        test_group_name: testGroupName
+        test_group_name: testGroupName,
+        lab_flag_options: labFlagOptions
       })
     });
 
@@ -702,6 +709,15 @@ export async function runAIFlagAnalysis(
         const labId = resultValues.find((rv: any) => rv.lab_id)?.lab_id || (await database.getCurrentUserLabId());
         const labOverridesMap: Record<string, any> = {};
 
+        // Fetch lab flag options for AI context
+        let labFlagOptions: LabFlagOption[] | undefined;
+        if (labId) {
+          const { data: labData } = await supabase.from('labs').select('flag_options').eq('id', labId).single();
+          if (labData?.flag_options && Array.isArray(labData.flag_options) && labData.flag_options.length > 0) {
+            labFlagOptions = labData.flag_options as LabFlagOption[];
+          }
+        }
+
         if (labId && analyteIds.length > 0) {
           const { data: labOverrides } = await database.labAnalytes.getByLabAndAnalyteIds(labId, Array.from(new Set(analyteIds)));
           (labOverrides || []).forEach((la: any) => {
@@ -851,8 +867,8 @@ export async function runAIFlagAnalysis(
             current_flag: rv.flag
           }));
 
-          const aiResults = await callAIFlagService(aiInput, defaultOptions.patientContext);
-          
+          const aiResults = await callAIFlagService(aiInput, defaultOptions.patientContext, undefined, labFlagOptions);
+
           // Merge AI results with rule-based results
           if (aiResults) {
             console.log('[AI Flag] AI service returned results:', aiResults.length);

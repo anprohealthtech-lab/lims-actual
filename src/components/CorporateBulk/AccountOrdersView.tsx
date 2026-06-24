@@ -1,9 +1,10 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { supabase, database } from '../../utils/supabase';
-import { Download, FileDown, RefreshCw, Loader2, CheckCircle2, Clock, AlertCircle, ExternalLink, Filter, ClipboardEdit, Printer, Layers, FileSpreadsheet } from 'lucide-react';
+import { Download, FileDown, RefreshCw, Loader2, CheckCircle2, Clock, AlertCircle, ExternalLink, Filter, ClipboardEdit, Printer, Layers, FileSpreadsheet, Monitor } from 'lucide-react';
 import QuickResultModal from './QuickResultModal';
 import QuickSendReport from '../WhatsApp/QuickSendReport';
 import BulkResultExcelModal from './BulkResultExcelModal';
+import { enqueueBulkPdfMerge, type BulkPdfSortMode as BridgeSortMode } from '../../utils/printBridgeService';
 
 interface Account {
   id: string;
@@ -98,6 +99,8 @@ const AccountOrdersView: React.FC<AccountOrdersViewProps> = ({ initialAccountId,
   const [selectedPackageId, setSelectedPackageId] = useState('');
   const [packageUpdateLoading, setPackageUpdateLoading] = useState(false);
   const [packageUpdateMessage, setPackageUpdateMessage] = useState('');
+  const [bridgeMergeLoading, setBridgeMergeLoading] = useState(false);
+  const [bridgeMergeResult, setBridgeMergeResult] = useState<{ success: boolean; message: string; jobId?: string } | null>(null);
 
   // Load lab_id and accounts on mount
   useEffect(() => {
@@ -655,6 +658,45 @@ const AccountOrdersView: React.FC<AccountOrdersViewProps> = ({ initialAccountId,
     }
   };
 
+  const startBridgeMerge = async () => {
+    const { orderIds, missingCount } = getBulkEligibleOrderIds('print');
+
+    if (orderIds.length === 0) {
+      alert('No orders with generated print reports found. Please generate print reports first.');
+      return;
+    }
+
+    if (missingCount > 0) {
+      const proceed = window.confirm(
+        `${missingCount} selected order${missingCount === 1 ? '' : 's'} do not have a generated print PDF yet and will be skipped.\n\nContinue with ${orderIds.length} order${orderIds.length === 1 ? '' : 's'}?`
+      );
+      if (!proceed) return;
+    }
+
+    setBridgeMergeLoading(true);
+    setBridgeMergeResult(null);
+
+    try {
+      const result = await enqueueBulkPdfMerge({
+        orderIds,
+        sortMode: bulkPdfSortMode as BridgeSortMode,
+      });
+
+      setBridgeMergeResult({
+        success: true,
+        message: `Queued ${result.total_count} PDFs for local merge. The LIMS Bridge will download and merge them to your computer.`,
+        jobId: result.id,
+      });
+    } catch (err) {
+      setBridgeMergeResult({
+        success: false,
+        message: `Failed to queue bridge merge: ${(err as Error).message}`,
+      });
+    } finally {
+      setBridgeMergeLoading(false);
+    }
+  };
+
   const ordersWithReports = orders.filter((o) => !!getGeneratedPrintPdfUrl(o)).length;
   const ordersWithEcopyReports = orders.filter((o) => !!getGeneratedEcopyPdfUrl(o)).length;
   const effectiveSelectedCount = selectedOrderIds.size > 0 ? selectedOrderIds.size : ordersWithReports;
@@ -786,12 +828,21 @@ const AccountOrdersView: React.FC<AccountOrdersViewProps> = ({ initialAccountId,
           </button>
           <button
             onClick={startMergeDownload}
-            disabled={downloadLoading || ecopyDownloadLoading || mergeLoading || orders.length === 0 || ordersWithReports === 0}
+            disabled={downloadLoading || ecopyDownloadLoading || mergeLoading || bridgeMergeLoading || orders.length === 0 || ordersWithReports === 0}
             className="flex items-center gap-1.5 px-4 py-2 text-sm bg-purple-600 text-white rounded-lg hover:bg-purple-700 disabled:opacity-50"
-            title="Merge all PDFs into one file for easy printing"
+            title="Merge all PDFs into one file (cloud processing)"
           >
             {mergeLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Layers className="w-4 h-4" />}
-            Download & Merge
+            Cloud Merge
+          </button>
+          <button
+            onClick={startBridgeMerge}
+            disabled={downloadLoading || ecopyDownloadLoading || mergeLoading || bridgeMergeLoading || orders.length === 0 || ordersWithReports === 0}
+            className="flex items-center gap-1.5 px-4 py-2 text-sm bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 disabled:opacity-50"
+            title="Queue for local merge via LIMS Bridge (faster for large batches)"
+          >
+            {bridgeMergeLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Monitor className="w-4 h-4" />}
+            Bridge Merge
           </button>
           <button
             onClick={() => setShowBulkResultModal(true)}
@@ -850,6 +901,29 @@ const AccountOrdersView: React.FC<AccountOrdersViewProps> = ({ initialAccountId,
               {downloadRequest.download_type === 'merged' ? 'Download Merged PDF' : 'Download ZIP'}
             </a>
           )}
+        </div>
+      )}
+
+      {/* Bridge merge result */}
+      {bridgeMergeResult && (
+        <div className={`rounded-lg p-3 flex items-center gap-3 text-sm ${
+          bridgeMergeResult.success ? 'bg-indigo-50 border border-indigo-200' : 'bg-red-50 border border-red-200'
+        }`}>
+          {bridgeMergeResult.success
+            ? <Monitor className="w-4 h-4 text-indigo-600" />
+            : <AlertCircle className="w-4 h-4 text-red-600" />
+          }
+          <div className="flex-1">
+            <span className={bridgeMergeResult.success ? 'text-indigo-700' : 'text-red-700'}>
+              {bridgeMergeResult.message}
+            </span>
+          </div>
+          <button
+            onClick={() => setBridgeMergeResult(null)}
+            className="text-gray-400 hover:text-gray-600"
+          >
+            &times;
+          </button>
         </div>
       )}
 

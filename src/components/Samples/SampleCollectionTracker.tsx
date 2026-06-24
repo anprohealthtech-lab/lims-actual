@@ -19,6 +19,15 @@ interface ChecklistItem {
   checked: boolean;
 }
 
+interface SampleConditionRow {
+  id: string;
+  sample_id: string;
+  test_name: string;
+  sample_condition?: string | null;
+  options: string[];
+  defaultCondition?: string | null;
+}
+
 interface SampleCollectionTrackerProps {
   orderId: string;
   onSampleCollected?: (sample: Sample) => void;
@@ -51,9 +60,14 @@ export const SampleCollectionTracker: React.FC<SampleCollectionTrackerProps> = (
 
   // Per-sample checklist: Map<sampleId, ChecklistItem[]>
   const [sampleChecklists, setSampleChecklists] = useState<Map<string, ChecklistItem[]>>(new Map());
+  const [sampleConditionRows, setSampleConditionRows] = useState<Map<string, SampleConditionRow[]>>(new Map());
+  const [sampleConditions, setSampleConditions] = useState<Map<string, string>>(new Map());
 
-  // Patient name for barcode label
+  // Patient info for barcode label
   const [patientName, setPatientName] = useState('');
+  const [patientGender, setPatientGender] = useState('');
+  const [patientAge, setPatientAge] = useState('');
+  const [referredBy, setReferredBy] = useState('');
 
   const defaultCollectorId = collectedById || user?.id || '';
 
@@ -93,33 +107,84 @@ export const SampleCollectionTracker: React.FC<SampleCollectionTrackerProps> = (
       if (data.length > 0) {
         const { data: otgRows } = await supabase
           .from('order_test_groups')
-          .select('sample_id, test_groups(collection_checklist)')
+          .select('id, sample_id, test_name, sample_condition, test_groups(collection_checklist, sample_condition_options, default_sample_condition)')
           .eq('order_id', orderId);
 
         const checklistMap = new Map<string, ChecklistItem[]>();
+        const conditionRowsMap = new Map<string, SampleConditionRow[]>();
+        const conditionDefaults = new Map<string, string>();
         (otgRows || []).forEach((row: any) => {
           const sid = row.sample_id;
           if (!sid) return;
           const items: string[] = row.test_groups?.collection_checklist || [];
-          if (items.length === 0) return;
-          const existing = checklistMap.get(sid) || [];
-          // Deduplicate items
-          const existingLabels = new Set(existing.map(i => i.label));
-          items.forEach(label => {
-            if (!existingLabels.has(label)) existing.push({ label, checked: false });
-          });
-          checklistMap.set(sid, existing);
+          if (items.length > 0) {
+            const existing = checklistMap.get(sid) || [];
+            // Deduplicate items
+            const existingLabels = new Set(existing.map(i => i.label));
+            items.forEach(label => {
+              if (!existingLabels.has(label)) existing.push({ label, checked: false });
+            });
+            checklistMap.set(sid, existing);
+          }
+
+          const options = Array.isArray(row.test_groups?.sample_condition_options)
+            ? row.test_groups.sample_condition_options.map((value: unknown) => String(value || '').trim()).filter(Boolean)
+            : [];
+          if (options.length > 0) {
+            const defaultCondition = String(row.test_groups?.default_sample_condition || '').trim();
+            const selected = String(row.sample_condition || '').trim()
+              || (options.includes(defaultCondition) ? defaultCondition : options[0]);
+            const rows = conditionRowsMap.get(sid) || [];
+            rows.push({
+              id: row.id,
+              sample_id: sid,
+              test_name: row.test_name || 'Test',
+              sample_condition: row.sample_condition || null,
+              options,
+              defaultCondition: defaultCondition || null,
+            });
+            conditionRowsMap.set(sid, rows);
+            conditionDefaults.set(row.id, selected);
+          }
         });
         setSampleChecklists(checklistMap);
+        setSampleConditionRows(conditionRowsMap);
+        setSampleConditions(prev => {
+          const next = new Map(prev);
+          conditionDefaults.forEach((value, key) => {
+            if (!next.has(key)) next.set(key, value);
+          });
+          return next;
+        });
       }
 
-      // Load patient name
+      // Load patient info for label
       const { data: orderRow } = await supabase
         .from('orders')
-        .select('patient_name')
+        .select('patient_name, patient_context, doctor, patients(name, gender, age)')
         .eq('id', orderId)
         .single();
-      if (orderRow?.patient_name) setPatientName(orderRow.patient_name);
+
+      // Parse patient_context JSON if available
+      let patientContext: { gender?: string; age?: number } = {};
+      if (orderRow?.patient_context) {
+        try {
+          patientContext = typeof orderRow.patient_context === 'string'
+            ? JSON.parse(orderRow.patient_context)
+            : orderRow.patient_context;
+        } catch { /* ignore parse errors */ }
+      }
+
+      // Use order-level fields, patient_context, or joined patient data
+      const pName = orderRow?.patient_name || (orderRow?.patients as any)?.name || '';
+      const pGender = patientContext?.gender || (orderRow?.patients as any)?.gender || '';
+      const pAge = patientContext?.age || (orderRow?.patients as any)?.age || '';
+      const pDoctor = orderRow?.doctor || '';
+
+      if (pName) setPatientName(pName);
+      if (pGender) setPatientGender(pGender);
+      if (pAge) setPatientAge(String(pAge));
+      if (pDoctor && pDoctor !== 'Self') setReferredBy(pDoctor);
     } catch (err) {
       console.error('Error fetching samples:', err);
       setError('Failed to load samples');
@@ -157,6 +222,25 @@ export const SampleCollectionTracker: React.FC<SampleCollectionTrackerProps> = (
     try {
       setCollectingId(sampleId);
       setError(null);
+      const conditionRows = sampleConditionRows.get(sampleId) || [];
+      if (conditionRows.length > 0) {
+        await Promise.all(conditionRows.map(row => {
+          const selected = (sampleConditions.get(row.id) || '').trim();
+          return supabase
+            .from('order_test_groups')
+            .update({ sample_condition: selected || null })
+            .eq('id', row.id);
+        }));
+
+        const selectedValues = conditionRows
+          .map(row => (sampleConditions.get(row.id) || '').trim())
+          .filter(Boolean);
+        const uniqueSelected = Array.from(new Set(selectedValues));
+        await supabase
+          .from('samples')
+          .update({ sample_condition: uniqueSelected.length === 1 ? uniqueSelected[0] : null })
+          .eq('id', sampleId);
+      }
       await collectSample(sampleId, collectorId);
 
       // Save checklist_completed to samples
@@ -174,12 +258,18 @@ export const SampleCollectionTracker: React.FC<SampleCollectionTrackerProps> = (
           barcode: sample.barcode,
           sampleType: sample.sample_type,
           patientName,
+          patientGender,
+          patientAge,
+          referredBy,
         });
         autoPrintBarcode({
           sampleId: sample.barcode || sample.id,
           labelId: sample.id,
           patientName,
           sampleType: sample.sample_type,
+          gender: patientGender,
+          age: patientAge,
+          referredBy: referredBy,
         });
       }
 
@@ -203,6 +293,14 @@ export const SampleCollectionTracker: React.FC<SampleCollectionTrackerProps> = (
       );
       map.set(sampleId, items);
       return map;
+    });
+  };
+
+  const setSampleCondition = (orderTestGroupId: string, value: string) => {
+    setSampleConditions(prev => {
+      const next = new Map(prev);
+      next.set(orderTestGroupId, value);
+      return next;
     });
   };
 
@@ -266,6 +364,7 @@ export const SampleCollectionTracker: React.FC<SampleCollectionTrackerProps> = (
           const allChecked = checklist.every(i => i.checked);
           const isPending = sample.status === 'created';
           const currentCollector = sampleCollectors.get(sample.id) || defaultCollectorId;
+          const conditionRows = sampleConditionRows.get(sample.id) || [];
 
           return (
             <div key={sample.id} className="border border-gray-200 rounded-lg overflow-hidden">
@@ -338,6 +437,30 @@ export const SampleCollectionTracker: React.FC<SampleCollectionTrackerProps> = (
                 </div>
               )}
 
+              {/* Sample condition selector */}
+              {isPending && conditionRows.length > 0 && (
+                <div className="px-3 py-2 bg-blue-50 border-t border-blue-100 space-y-2">
+                  <p className="text-xs font-medium text-blue-800">Sample condition</p>
+                  {conditionRows.map(row => (
+                    <div key={row.id} className="grid grid-cols-1 sm:grid-cols-[minmax(0,1fr)_220px] gap-2 items-center">
+                      <div className="text-xs text-blue-900 truncate">{row.test_name}</div>
+                      <div className="relative">
+                        <select
+                          value={sampleConditions.get(row.id) || ''}
+                          onChange={(e) => setSampleCondition(row.id, e.target.value)}
+                          className="w-full text-xs pl-2 pr-7 py-1.5 border border-blue-200 rounded bg-white focus:outline-none focus:ring-1 focus:ring-blue-400 appearance-none"
+                        >
+                          {row.options.map(option => (
+                            <option key={option} value={option}>{option}</option>
+                          ))}
+                        </select>
+                        <ChevronDown className="h-3 w-3 text-blue-400 absolute right-2 top-2 pointer-events-none" />
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+
               {/* Checklist */}
               {isPending && checklist.length > 0 && (
                 <div className="px-3 py-2 bg-amber-50 border-t border-amber-100 space-y-1.5">
@@ -361,7 +484,13 @@ export const SampleCollectionTracker: React.FC<SampleCollectionTrackerProps> = (
               {/* Label printer expansion */}
               {printingSampleId === sample.id && (
                 <div className="px-3 pb-3 pt-1 bg-gray-50 border-t border-gray-100">
-                  <SampleLabelPrinter sample={sample} patientName={patientName} />
+                  <SampleLabelPrinter
+                    sample={sample}
+                    patientName={patientName}
+                    patientGender={patientGender}
+                    patientAge={patientAge}
+                    referredBy={referredBy}
+                  />
                 </div>
               )}
             </div>

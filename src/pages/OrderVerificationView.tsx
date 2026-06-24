@@ -289,8 +289,8 @@ const OrderVerificationView: React.FC<OrderVerificationViewProps> = ({ onBackToP
   const [quickPreviewLoading, setQuickPreviewLoading] = useState<Record<string, boolean>>({});
   const previewIframeRef = useRef<HTMLIFrameElement>(null);
 
-  // Canonical flag options — always the full 7; never replaced by DB flag_options
-  const labFlagOptions = [
+  // Default flag options - will be merged with lab settings if available
+  const DEFAULT_FLAG_OPTIONS = [
     { value: '', label: 'Normal' },
     { value: 'H', label: 'High' },
     { value: 'L', label: 'Low' },
@@ -299,6 +299,7 @@ const OrderVerificationView: React.FC<OrderVerificationViewProps> = ({ onBackToP
     { value: 'critical_l', label: 'Critical Low' },
     { value: 'A', label: 'Abnormal' },
   ];
+  const [labFlagOptions, setLabFlagOptions] = useState(DEFAULT_FLAG_OPTIONS);
 
   // Maps any raw DB flag variant → one of the 7 labFlagOptions values
   const getNormalizedFlag = (flag: string | null | undefined): string => {
@@ -369,14 +370,13 @@ const OrderVerificationView: React.FC<OrderVerificationViewProps> = ({ onBackToP
     const fetchLabId = async () => {
       const labId = await database.getCurrentUserLabId();
       setCurrentLabId(labId);
-      // Lab flag_options from DB is intentionally ignored — canonical 7-option list is always used
 
-      // Fetch pdf_layout_settings for basic preview printOptions
+      // Fetch pdf_layout_settings and flag_options for basic preview
       if (labId) {
         try {
           const { data: labData } = await supabase
             .from("labs")
-            .select("pdf_layout_settings, default_signatory_name, default_signatory_designation")
+            .select("pdf_layout_settings, default_signatory_name, default_signatory_designation, flag_options")
             .eq("id", labId)
             .single();
           if (labData?.pdf_layout_settings) {
@@ -389,6 +389,17 @@ const OrderVerificationView: React.FC<OrderVerificationViewProps> = ({ onBackToP
             name: labData?.default_signatory_name || "",
             designation: labData?.default_signatory_designation || "",
           });
+          // Merge lab flag options with defaults (lab options take precedence, defaults fill gaps)
+          if (labData?.flag_options && Array.isArray(labData.flag_options) && labData.flag_options.length > 0) {
+            const labFlags = labData.flag_options as { value: string; label: string }[];
+            // Create merged list: lab options first, then any defaults not in lab options
+            const labValues = new Set(labFlags.map(f => f.value));
+            const merged = [
+              ...labFlags,
+              ...DEFAULT_FLAG_OPTIONS.filter(d => !labValues.has(d.value))
+            ];
+            setLabFlagOptions(merged);
+          }
         } catch { /* non-critical, preview will fall back to defaults */ }
       }
     };
@@ -1243,7 +1254,7 @@ const OrderVerificationView: React.FC<OrderVerificationViewProps> = ({ onBackToP
           const urlObj = new URL(url);
           const pathParts = urlObj.pathname.split("/");
           const insertIndex = pathParts.findIndex((part) => part && !part.includes(".")) + 1;
-          pathParts.splice(insertIndex, 0, "tr:fo-auto,e-removebg,t-true");
+          pathParts.splice(insertIndex, 0, "tr:fo-auto,t-true");
           urlObj.pathname = pathParts.join("/");
           return urlObj.toString();
         } catch {

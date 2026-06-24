@@ -1,4 +1,5 @@
 import React from 'react';
+import { useSampleTypeColors } from '../../contexts/SampleTypeColorsContext';
 
 interface SampleTypeIndicatorProps {
     sampleType: string;
@@ -6,27 +7,29 @@ interface SampleTypeIndicatorProps {
     size?: 'sm' | 'md' | 'lg';
     showLabel?: boolean;
     className?: string;
+    labColors?: Record<string, string>;
 }
 
+// Default vacutainer cap colors (industry standard)
+const DEFAULT_VACUTAINER_CAPS: Record<string, { cap: string; label: string; gradient: string }> = {
+    red: { cap: '#DC2626', label: 'Red Top', gradient: 'from-red-600 to-red-700' },
+    purple: { cap: '#9333EA', label: 'Purple Top (EDTA)', gradient: 'from-purple-600 to-purple-700' },
+    lavender: { cap: '#9333EA', label: 'Lavender Top (EDTA)', gradient: 'from-purple-600 to-purple-700' },
+    green: { cap: '#16A34A', label: 'Green Top (Heparin)', gradient: 'from-green-600 to-green-700' },
+    blue: { cap: '#2563EB', label: 'Blue Top (Citrate)', gradient: 'from-blue-600 to-blue-700' },
+    yellow: { cap: '#EAB308', label: 'Yellow Top (SST)', gradient: 'from-yellow-500 to-yellow-600' },
+    gold: { cap: '#F59E0B', label: 'Gold Top (SST)', gradient: 'from-amber-500 to-amber-600' },
+    gray: { cap: '#6B7280', label: 'Gray Top (Fluoride)', gradient: 'from-gray-500 to-gray-600' },
+};
+
 // Map sample types to visual representations (Specimen Types)
-const getSampleConfig = (sampleType: string, orderIndicatorColor?: string) => {
+const getSampleConfig = (sampleType: string, labColors: Record<string, string> = {}) => {
     const type = sampleType?.toLowerCase() || '';
 
-    // Vacutainer tube colors (Standard Specimen Types)
-    const vacutainerCaps: Record<string, { cap: string; label: string; gradient: string }> = {
-        red: { cap: '#DC2626', label: 'Red Top', gradient: 'from-red-600 to-red-700' },
-        purple: { cap: '#9333EA', label: 'Purple Top (EDTA)', gradient: 'from-purple-600 to-purple-700' },
-        lavender: { cap: '#9333EA', label: 'Lavender Top (EDTA)', gradient: 'from-purple-600 to-purple-700' },
-        green: { cap: '#16A34A', label: 'Green Top (Heparin)', gradient: 'from-green-600 to-green-700' },
-        blue: { cap: '#2563EB', label: 'Blue Top (Citrate)', gradient: 'from-blue-600 to-blue-700' },
-        yellow: { cap: '#EAB308', label: 'Yellow Top (SST)', gradient: 'from-yellow-500 to-yellow-600' },
-        gold: { cap: '#F59E0B', label: 'Gold Top (SST)', gradient: 'from-amber-500 to-amber-600' },
-        gray: { cap: '#6B7280', label: 'Gray Top (Fluoride)', gradient: 'from-gray-500 to-gray-600' },
-    };
+    // Check for lab-configured color override first
+    const labColorOverride = findLabColorOverride(type, labColors);
 
-    // Determine CAP COLOR based on industry standard specimen types
-    let capConfig = vacutainerCaps.red; // Fallback
-
+    // Radiology types - not affected by tube colors
     if (type.includes('x ray') || type.includes('x-ray') || type.includes('xray')) {
         return {
             type: 'radiology-xray',
@@ -48,42 +51,69 @@ const getSampleConfig = (sampleType: string, orderIndicatorColor?: string) => {
             label: 'USG',
             gradient: 'from-violet-600 to-violet-700'
         };
-    } else if (type.includes('edta') || type.includes('purple') || type.includes('lavender') || type.includes('hb1ac') || type.includes('cbc') || type.includes('hematology')) {
-        capConfig = vacutainerCaps.purple;
-    } else if (type.includes('serum') || type.includes('sst') || type.includes('gold') || type.includes('yellow') || type.includes('thyroid') || type.includes('t3') || type.includes('t4') || type.includes('tsh') || type.includes('hormone') || type.includes('biochemistry')) {
-        capConfig = vacutainerCaps.gold; // Modern labs use Gold/Yellow for Serum/Thyroid
-    } else if (type.includes('blood') || type.includes('red')) {
-        capConfig = vacutainerCaps.red; // Generic whole blood or red top
-    } else if (type.includes('plasma') || type.includes('green') || type.includes('heparin')) {
-        capConfig = vacutainerCaps.green;
-    } else if (type.includes('citrate') || type.includes('blue') || type.includes('coagulation')) {
-        capConfig = vacutainerCaps.blue;
-    } else if (type.includes('fluoride') || type.includes('gray') || type.includes('glucose') || type.includes('sugar')) {
-        capConfig = vacutainerCaps.gray;
     }
 
-    // Container overrides for non-vacutainers
+    // Container type detection
     let containerType = 'vacutainer';
+    let defaultCapConfig = DEFAULT_VACUTAINER_CAPS.red;
+
     if (type.includes('urine')) {
         containerType = 'urine';
-        capConfig = { cap: '#EAB308', label: 'Urine Cup', gradient: 'from-yellow-500 to-yellow-600' };
+        defaultCapConfig = { cap: '#EAB308', label: 'Urine Cup', gradient: 'from-yellow-500 to-yellow-600' };
     } else if (type.includes('stool')) {
         containerType = 'stool';
-        capConfig = { cap: '#92400E', label: 'Stool Container', gradient: 'from-amber-800 to-amber-900' };
+        defaultCapConfig = { cap: '#92400E', label: 'Stool Container', gradient: 'from-amber-800 to-amber-900' };
     } else if (type.includes('swab')) {
         containerType = 'swab';
-        capConfig = { cap: '#9CA3AF', label: 'Swab', gradient: 'from-gray-400 to-gray-500' };
+        defaultCapConfig = { cap: '#9CA3AF', label: 'Swab', gradient: 'from-gray-400 to-gray-500' };
+    } else if (type.includes('edta') || type.includes('purple') || type.includes('lavender') || type.includes('hb1ac') || type.includes('cbc') || type.includes('hematology')) {
+        defaultCapConfig = DEFAULT_VACUTAINER_CAPS.purple;
+    } else if (type.includes('serum') || type.includes('sst') || type.includes('gold') || type.includes('yellow') || type.includes('thyroid') || type.includes('t3') || type.includes('t4') || type.includes('tsh') || type.includes('hormone') || type.includes('biochemistry')) {
+        defaultCapConfig = DEFAULT_VACUTAINER_CAPS.gold;
+    } else if (type.includes('blood') || type.includes('red')) {
+        defaultCapConfig = DEFAULT_VACUTAINER_CAPS.red;
+    } else if (type.includes('plasma') || type.includes('green') || type.includes('heparin')) {
+        defaultCapConfig = DEFAULT_VACUTAINER_CAPS.green;
+    } else if (type.includes('citrate') || type.includes('blue') || type.includes('coagulation')) {
+        defaultCapConfig = DEFAULT_VACUTAINER_CAPS.blue;
+    } else if (type.includes('fluoride') || type.includes('gray') || type.includes('glucose') || type.includes('sugar')) {
+        defaultCapConfig = DEFAULT_VACUTAINER_CAPS.gray;
     }
 
-    // NOTE: sampleColor is IGNORED - container colors are determined ONLY by sample_type
-    // This ensures Urine containers are always yellow, Blood tubes are always red, etc.
-    // regardless of what color is stored in the database
+    // Apply lab color override if present
+    if (labColorOverride) {
+        return {
+            type: containerType,
+            cap: labColorOverride,
+            label: defaultCapConfig.label,
+            gradient: defaultCapConfig.gradient,
+        };
+    }
 
     return {
         type: containerType,
-        ...capConfig
+        ...defaultCapConfig
     };
 };
+
+// Find matching lab color override for a sample type
+function findLabColorOverride(sampleType: string, labColors: Record<string, string>): string | null {
+    if (!labColors || Object.keys(labColors).length === 0) return null;
+
+    const type = sampleType.toLowerCase();
+
+    // Direct match
+    if (labColors[type]) return labColors[type];
+
+    // Check if any configured key is contained in the sample type
+    for (const [key, color] of Object.entries(labColors)) {
+        if (type.includes(key.toLowerCase())) {
+            return color;
+        }
+    }
+
+    return null;
+}
 
 const VacutainerTube: React.FC<{ config: any; size: string }> = ({ config, size }) => {
     const sizes = {
@@ -353,8 +383,11 @@ export const SampleTypeIndicator: React.FC<SampleTypeIndicatorProps> = ({
     size = 'md',
     showLabel = false,
     className = '',
+    labColors: propLabColors,
 }) => {
-    const config = getSampleConfig(sampleType, sampleColor);
+    const { colors: contextLabColors } = useSampleTypeColors();
+    const labColors = propLabColors ?? contextLabColors;
+    const config = getSampleConfig(sampleType, labColors);
 
     const renderIcon = () => {
         switch (config.type) {
@@ -395,7 +428,8 @@ export const SampleTypeGroup: React.FC<{
     samples: Array<{ sampleType: string; sampleColor?: string; count?: number }>;
     size?: 'sm' | 'md' | 'lg';
     maxDisplay?: number;
-}> = ({ samples, size = 'sm', maxDisplay = 3 }) => {
+    labColors?: Record<string, string>;
+}> = ({ samples, size = 'sm', maxDisplay = 3, labColors }) => {
     const uniqueSamples = Array.from(
         new Map(samples.map(s => [s.sampleType, s])).values()
     ).slice(0, maxDisplay);
@@ -410,6 +444,7 @@ export const SampleTypeGroup: React.FC<{
                         sampleType={sample.sampleType}
                         sampleColor={sample.sampleColor}
                         size={size}
+                        labColors={labColors}
                     />
                     {sample.count && sample.count > 1 && (
                         <span className="absolute -top-1 -right-1 bg-blue-500 text-white text-[10px] rounded-full w-4 h-4 flex items-center justify-center font-bold">

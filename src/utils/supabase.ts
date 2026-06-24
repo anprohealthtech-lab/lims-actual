@@ -20,6 +20,38 @@ if (!supabaseUrl || !supabaseAnonKey) {
 
 export const supabase = createClient(supabaseUrl, supabaseAnonKey);
 
+const normalizeSampleType = (value: unknown): string =>
+  String(value || "").trim().toLowerCase();
+
+const buildSampleAwareLabAnalyteMap = (
+  rows: Array<{ id: string; analyte_id: string; sample_type?: string | null; created_at?: string | null }> | null | undefined,
+  sampleType?: unknown,
+): Record<string, string> => {
+  const wanted = normalizeSampleType(sampleType);
+  const map: Record<string, string> = {};
+  const generic: Record<string, string> = {};
+
+  for (const row of rows || []) {
+    const rowSampleType = normalizeSampleType(row.sample_type);
+    if (wanted && rowSampleType === wanted && !map[row.analyte_id]) {
+      map[row.analyte_id] = row.id;
+      continue;
+    }
+
+    if (!rowSampleType && !generic[row.analyte_id]) {
+      generic[row.analyte_id] = row.id;
+    }
+  }
+
+  if (!wanted) {
+    for (const [analyteId, labAnalyteId] of Object.entries(generic)) {
+      if (!map[analyteId]) map[analyteId] = labAnalyteId;
+    }
+  }
+
+  return map;
+};
+
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const isUuid = (value: unknown): value is string =>
   typeof value === "string" && UUID_RE.test(value);
@@ -3443,7 +3475,7 @@ export const database = {
 
       // Create the order with sample tracking data and lab_id
       // Strip frontend-only fields that don't exist as DB columns
-      const { tests, trfAttachmentId, ...orderDetails } = orderData;
+      const { tests, trfAttachmentId, __createAndNew, __preBarcoded, __preBarcodedBarcode, ...orderDetails } = orderData;
       let dailySequence = Math.max(
         dailyOrders?.length || 0,
         ...(dailyOrders || []).map(getDailySequenceFromOrder),
@@ -6036,6 +6068,7 @@ export const database = {
         .from("lab_analytes")
         .select(`
           id,
+          sample_type,
           is_active,
           visible,
           category,
@@ -6060,6 +6093,7 @@ export const database = {
           formula,
           formula_variables,
           formula_description,
+          calculation_result_type,
           is_critical,
           normal_range_min,
           normal_range_max,
@@ -6164,6 +6198,7 @@ export const database = {
               formula: item.formula ?? analyteObj.formula ?? null,
               formula_variables: item.formula_variables ?? analyteObj.formula_variables ?? [],
               formula_description: item.formula_description ?? analyteObj.formula_description ?? null,
+              calculation_result_type: item.calculation_result_type ?? analyteObj.calculation_result_type ?? "numeric",
               // Prioritize lab-specific critical/range fields
               is_critical: item.is_critical ?? analyteObj.is_critical ?? null,
               normal_range_min: item.normal_range_min ?? analyteObj.normal_range_min ?? null,
@@ -6176,6 +6211,7 @@ export const database = {
               display_name: item.display_name ?? analyteObj.display_name ?? null,
               // Lab-level default value for result entry pre-fill
               default_value: item.default_value ?? null,
+              sample_type: item.sample_type ?? analyteObj.sample_type ?? null,
             };
           }
           return null;
@@ -6208,6 +6244,7 @@ export const database = {
       interpretation_normal?: string;
       interpretation_high?: string;
       category?: string;
+      sample_type?: string | null;
       is_global?: boolean;
       is_active?: boolean;
       ai_processing_type?: string;
@@ -6219,6 +6256,7 @@ export const database = {
       formula?: string | null;
       formula_variables?: string[];
       formula_description?: string | null;
+      calculation_result_type?: "numeric" | "text";
       // Flag determination fields
       value_type?:
         | "numeric"
@@ -6246,6 +6284,7 @@ export const database = {
           interpretation_normal: analyteData.interpretation_normal,
           interpretation_high: analyteData.interpretation_high,
           category: analyteData.category || "General", // Ensure category is never null
+          sample_type: analyteData.sample_type || null,
           is_global: analyteData.is_global || false,
           is_active: analyteData.is_active !== false, // Default to true
           ai_processing_type: analyteData.ai_processing_type,
@@ -6257,6 +6296,7 @@ export const database = {
           formula: analyteData.formula || null,
           formula_variables: analyteData.formula_variables || [],
           formula_description: analyteData.formula_description || null,
+          calculation_result_type: analyteData.calculation_result_type || "numeric",
           // Flag determination fields
           value_type: analyteData.value_type || "numeric",
           expected_normal_values: analyteData.expected_normal_values || [],
@@ -6286,6 +6326,7 @@ export const database = {
 	            name: data.name,
 	            unit: data.unit,
 	            category: data.category,
+	            sample_type: data.sample_type || null,
 	            reference_range: data.reference_range,
 	            reference_range_male: data.reference_range_male,
 	            reference_range_female: data.reference_range_female,
@@ -6304,6 +6345,7 @@ export const database = {
             formula: data.formula || null,
             formula_variables: data.formula_variables || [],
             formula_description: data.formula_description || null,
+            calculation_result_type: data.calculation_result_type || "numeric",
             value_type: data.value_type || "numeric",
             expected_normal_values: data.expected_normal_values || [],
             expected_value_flag_map: data.expected_value_flag_map || {},
@@ -6365,6 +6407,7 @@ export const database = {
       formula?: string | null;
       formula_variables?: string[];
       formula_description?: string | null;
+      calculation_result_type?: "numeric" | "text";
       // Flag determination fields
       value_type?:
         | "numeric"
@@ -6398,6 +6441,7 @@ export const database = {
           formula: updates.formula,
           formula_variables: updates.formula_variables,
           formula_description: updates.formula_description,
+          calculation_result_type: updates.calculation_result_type,
           // Flag determination fields
           value_type: updates.value_type,
           expected_normal_values: updates.expected_normal_values,
@@ -6783,8 +6827,8 @@ export const database = {
     },
 
     // Get lab-specific analyte configuration
-    getByLabAndAnalyte: async (labId: string, analyteId: string) => {
-      const { data, error } = await supabase
+    getByLabAndAnalyte: async (labId: string, analyteId: string, sampleType?: string | null) => {
+      const query = supabase
         .from("lab_analytes")
         .select(`
           *,
@@ -6792,8 +6836,18 @@ export const database = {
         `)
         .eq("lab_id", labId)
         .eq("analyte_id", analyteId)
-        .single();
-      return { data, error };
+        .order("created_at", { ascending: true });
+
+      const { data, error } = await query.limit(10);
+      if (error) return { data: null, error };
+
+      const rows = data || [];
+      const wanted = normalizeSampleType(sampleType);
+      const exact = wanted
+        ? rows.find((row: any) => normalizeSampleType(row.sample_type) === wanted)
+        : null;
+      const generic = rows.find((row: any) => !normalizeSampleType(row.sample_type));
+      return { data: exact || generic || rows[0] || null, error: null };
     },
 
     // Get multiple lab-specific analytes by analyte IDs
@@ -6817,6 +6871,7 @@ export const database = {
     updateLabSpecific: async (labId: string, analyteId: string, updates: {
       is_active?: boolean;
       visible?: boolean;
+      sample_type?: string | null;
       name?: string;
       unit?: string;
       method?: string;
@@ -6861,6 +6916,7 @@ export const database = {
       formula?: string | null;
       formula_variables?: string[];
       formula_description?: string | null;
+      calculation_result_type?: "numeric" | "text";
     }) => {
       const { data, error } = await supabase
         .from("lab_analytes")
@@ -7074,6 +7130,8 @@ export const database = {
             turnaround_time,
             tat_hours,
             sample_type,
+            sample_condition_options,
+            default_sample_condition,
             requires_fasting,
             is_active,
             created_at,
@@ -7130,6 +7188,7 @@ export const database = {
               lab_analytes(
                 id,
                 name,
+                sample_type,
                 unit,
                 reference_range,
                 lab_specific_reference_range,
@@ -7144,6 +7203,7 @@ export const database = {
                 is_calculated,
                 formula,
                 formula_variables,
+                calculation_result_type,
                 ai_processing_type,
                 ai_prompt_override,
                 group_ai_mode,
@@ -7183,6 +7243,8 @@ export const database = {
             turnaround_time,
             tat_hours,
             sample_type,
+            sample_condition_options,
+            default_sample_condition,
             requires_fasting,
             is_active,
             created_at,
@@ -7239,6 +7301,7 @@ export const database = {
               lab_analytes(
                 id,
                 name,
+                sample_type,
                 unit,
                 reference_range,
                 lab_specific_reference_range,
@@ -7253,6 +7316,7 @@ export const database = {
                 is_calculated,
                 formula,
                 formula_variables,
+                calculation_result_type,
                 ai_processing_type,
                 ai_prompt_override,
                 group_ai_mode,
@@ -7291,6 +7355,8 @@ export const database = {
             turnaround_time,
             tat_hours,
             sample_type,
+            sample_condition_options,
+            default_sample_condition,
             requires_fasting,
             is_active,
             created_at,
@@ -7341,6 +7407,7 @@ export const database = {
               lab_analytes(
                 id,
                 name,
+                sample_type,
                 unit,
                 reference_range,
                 lab_specific_reference_range,
@@ -7355,6 +7422,7 @@ export const database = {
                 is_calculated,
                 formula,
                 formula_variables,
+                calculation_result_type,
                 ai_processing_type,
                 ai_prompt_override,
                 group_ai_mode,
@@ -7381,6 +7449,10 @@ export const database = {
           turnaround_time: testGroupData.turnaroundTime || "24 hours",
           tat_hours: testGroupData.tat_hours || 3, // TAT in hours for breach calculation
           sample_type: testGroupData.sampleType || "Serum",
+          sample_condition_options: Array.isArray(testGroupData.sampleConditionOptions)
+            ? testGroupData.sampleConditionOptions
+            : [],
+          default_sample_condition: testGroupData.defaultSampleCondition || null,
           requires_fasting: testGroupData.requiresFasting || false,
           is_active: testGroupData.isActive !== false,
           default_ai_processing_type:
@@ -7448,19 +7520,17 @@ export const database = {
 	        if (testGroupData.analytes && testGroupData.analytes.length > 0) {
           const labId = testGroup.lab_id || testGroupData.lab_id || null;
 
-          // Resolve lab_analyte_id for each analyte (direct FK, avoids duplicate-join risk)
+          // Resolve lab_analyte_id for each analyte. Prefer the row scoped to
+          // this test group's sample type, then fall back to generic.
           let labAnalyteMap: Record<string, string> = {};
           if (labId) {
             const { data: laRows } = await supabase
               .from("lab_analytes")
-              .select("id, analyte_id")
+              .select("id, analyte_id, sample_type, created_at")
               .eq("lab_id", labId)
               .in("analyte_id", testGroupData.analytes)
               .order("created_at", { ascending: true });
-            // Keep only the first encountered per analyte_id (earliest = canonical)
-            for (const la of (laRows || [])) {
-              if (!labAnalyteMap[la.analyte_id]) labAnalyteMap[la.analyte_id] = la.id;
-            }
+            labAnalyteMap = buildSampleAwareLabAnalyteMap(laRows, testGroup.sample_type || testGroupData.sampleType);
           }
 
 	          const analyteMetadata: Record<string, { sort_order?: number; section_heading?: string; is_visible?: boolean; report_display_options?: Record<string, unknown> }> =
@@ -7610,6 +7680,10 @@ export const database = {
             turnaround_time: updates.turnaroundTime,
             tat_hours: updates.tat_hours, // TAT in hours for breach calculation
             sample_type: updates.sampleType,
+            sample_condition_options: Array.isArray(updates.sampleConditionOptions)
+              ? updates.sampleConditionOptions
+              : [],
+            default_sample_condition: updates.defaultSampleCondition || null,
             requires_fasting: updates.requiresFasting,
             is_active: updates.isActive,
             default_ai_processing_type: updates.default_ai_processing_type,
@@ -7675,19 +7749,18 @@ export const database = {
 	          const analyteMetadata: Record<string, { sort_order?: number; section_heading?: string; is_visible?: boolean; report_display_options?: Record<string, unknown> }> =
 	            updates.analyteMetadata || {};
 
-          // Resolve lab_analyte_id for each analyte_id (use the test group's lab_id)
+          // Resolve lab_analyte_id for each analyte_id. Prefer the row scoped
+          // to this test group's sample type, then fall back to generic.
           let labAnalyteMap: Record<string, string> = {};
           const labId = data?.lab_id || null;
           if (labId && newAnalyteIds.length > 0) {
             const { data: laRows } = await supabase
               .from("lab_analytes")
-              .select("id, analyte_id")
+              .select("id, analyte_id, sample_type, created_at")
               .eq("lab_id", labId)
               .in("analyte_id", newAnalyteIds)
               .order("created_at", { ascending: true });
-            for (const la of (laRows || [])) {
-              if (!labAnalyteMap[la.analyte_id]) labAnalyteMap[la.analyte_id] = la.id;
-            }
+            labAnalyteMap = buildSampleAwareLabAnalyteMap(laRows, data?.sample_type || updates.sampleType);
           }
 
           // Insert new analytes first (keeps count > 0, preventing the orphan
@@ -8325,7 +8398,9 @@ export const database = {
           : "";
         const formattedText = trimmedContent
           ? `<div class="section-content">${
-            trimmedContent.replace(/\r\n/g, "\n").replace(/\n/g, "<br/>")
+            /<[a-z][\s\S]*>/i.test(trimmedContent)
+              ? trimmedContent
+              : trimmedContent.replace(/\r\n/g, "\n").replace(/\n/g, "<br/>")
           }</div>`
           : "";
 

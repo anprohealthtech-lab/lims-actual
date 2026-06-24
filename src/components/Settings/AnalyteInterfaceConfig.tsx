@@ -21,6 +21,9 @@ interface InterfaceConfig {
   multiply_by: string;
   add_offset: string;
   auto_verify: boolean;
+  apply_to_ai_result_entry: boolean;
+  apply_to_manual_result_entry: boolean;
+  apply_to_quick_result_entry: boolean;
   notes: string;
   dirty: boolean;
   saving: boolean;
@@ -34,6 +37,7 @@ export default function AnalyteInterfaceConfig({ labId }: { labId: string }) {
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
   const [showOnlyConfigured, setShowOnlyConfigured] = useState(false);
+  const [expandedAnalytes, setExpandedAnalytes] = useState<Set<string>>(new Set());
 
   const fetchAll = useCallback(async () => {
     setLoading(true);
@@ -46,7 +50,7 @@ export default function AnalyteInterfaceConfig({ labId }: { labId: string }) {
         .order('name'),
       supabase
         .from('lab_analyte_interface_config')
-        .select('id, lab_analyte_id, instrument_unit, lims_unit, multiply_by, add_offset, auto_verify, notes')
+        .select('id, lab_analyte_id, instrument_unit, lims_unit, multiply_by, add_offset, auto_verify, apply_to_ai_result_entry, apply_to_manual_result_entry, apply_to_quick_result_entry, notes')
         .eq('lab_id', labId),
     ]);
 
@@ -63,6 +67,9 @@ export default function AnalyteInterfaceConfig({ labId }: { labId: string }) {
           multiply_by: String(c.multiply_by ?? '1'),
           add_offset: String(c.add_offset ?? '0'),
           auto_verify: c.auto_verify ?? false,
+          apply_to_ai_result_entry: c.apply_to_ai_result_entry ?? false,
+          apply_to_manual_result_entry: c.apply_to_manual_result_entry ?? false,
+          apply_to_quick_result_entry: c.apply_to_quick_result_entry ?? false,
           notes: c.notes ?? '',
           dirty: false,
           saving: false,
@@ -85,6 +92,9 @@ export default function AnalyteInterfaceConfig({ labId }: { labId: string }) {
       multiply_by: '1',
       add_offset: '0',
       auto_verify: false,
+      apply_to_ai_result_entry: false,
+      apply_to_manual_result_entry: false,
+      apply_to_quick_result_entry: false,
       notes: '',
       dirty: false,
       saving: false,
@@ -121,6 +131,9 @@ export default function AnalyteInterfaceConfig({ labId }: { labId: string }) {
       multiply_by:     multiplyNum,
       add_offset:      isNaN(offsetNum) ? 0 : offsetNum,
       auto_verify:     cfg.auto_verify,
+      apply_to_ai_result_entry: cfg.apply_to_ai_result_entry,
+      apply_to_manual_result_entry: cfg.apply_to_manual_result_entry,
+      apply_to_quick_result_entry: cfg.apply_to_quick_result_entry,
       notes:           cfg.notes.trim() || null,
     };
 
@@ -172,6 +185,23 @@ export default function AnalyteInterfaceConfig({ labId }: { labId: string }) {
 
   const configuredCount = analytes.filter(a => configs.has(a.id)).length;
 
+  const toggleExpanded = (labAnalyteId: string) => {
+    setExpandedAnalytes(prev => {
+      const next = new Set(prev);
+      if (next.has(labAnalyteId)) next.delete(labAnalyteId);
+      else next.add(labAnalyteId);
+      return next;
+    });
+  };
+
+  const expandAllFiltered = () => {
+    setExpandedAnalytes(new Set(filtered.map(a => a.id)));
+  };
+
+  const collapseAll = () => {
+    setExpandedAnalytes(new Set());
+  };
+
   return (
     <div className="space-y-4">
       <div className="flex items-start justify-between">
@@ -185,7 +215,7 @@ export default function AnalyteInterfaceConfig({ labId }: { labId: string }) {
       </div>
 
       {/* Filters */}
-      <div className="flex gap-3">
+      <div className="flex flex-wrap gap-3">
         <div className="relative flex-1">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-400" />
           <input
@@ -202,6 +232,20 @@ export default function AnalyteInterfaceConfig({ labId }: { labId: string }) {
         >
           Configured only
         </button>
+        <button
+          onClick={expandAllFiltered}
+          disabled={filtered.length === 0}
+          className="px-3 py-2 text-sm rounded-lg border border-gray-300 text-gray-600 hover:bg-gray-50 disabled:opacity-40"
+        >
+          Expand all
+        </button>
+        <button
+          onClick={collapseAll}
+          disabled={expandedAnalytes.size === 0}
+          className="px-3 py-2 text-sm rounded-lg border border-gray-300 text-gray-600 hover:bg-gray-50 disabled:opacity-40"
+        >
+          Collapse all
+        </button>
       </div>
 
       {loading ? (
@@ -213,17 +257,43 @@ export default function AnalyteInterfaceConfig({ labId }: { labId: string }) {
           {filtered.map(a => {
             const cfg = getConfig(a.id);
             const isConfigured = configs.has(a.id);
-            const isDefault = cfg.multiply_by === '1' && cfg.add_offset === '0' && !cfg.auto_verify && !cfg.instrument_unit && !cfg.lims_unit;
+            const isExpanded = expandedAnalytes.has(a.id);
+            const isDefault =
+              cfg.multiply_by === '1' &&
+              cfg.add_offset === '0' &&
+              !cfg.auto_verify &&
+              !cfg.apply_to_ai_result_entry &&
+              !cfg.apply_to_manual_result_entry &&
+              !cfg.apply_to_quick_result_entry &&
+              !cfg.instrument_unit &&
+              !cfg.lims_unit;
 
             return (
               <div key={a.id} className={`bg-white border rounded-xl p-4 space-y-3 ${isConfigured && !isDefault ? 'border-blue-200' : 'border-gray-200'}`}>
                 {/* Header row */}
                 <div className="flex items-center justify-between">
-                  <div>
-                    <span className="text-sm font-semibold text-gray-800">{displayName(a)}</span>
-                    {a.category && <span className="ml-2 text-xs text-gray-400">{a.category}</span>}
-                    {unit(a) && <span className="ml-2 text-xs text-gray-500 bg-gray-100 px-1.5 py-0.5 rounded">{unit(a)}</span>}
-                  </div>
+                  <button
+                    type="button"
+                    onClick={() => toggleExpanded(a.id)}
+                    className="min-w-0 flex-1 text-left"
+                    aria-expanded={isExpanded}
+                  >
+                    <div className="flex min-w-0 items-center gap-2">
+                      {isExpanded ? <ChevronUp className="h-4 w-4 shrink-0 text-gray-400" /> : <ChevronDown className="h-4 w-4 shrink-0 text-gray-400" />}
+                      <span className="truncate text-sm font-semibold text-gray-800">{displayName(a)}</span>
+                      {a.category && <span className="shrink-0 text-xs text-gray-400">{a.category}</span>}
+                      {unit(a) && <span className="shrink-0 text-xs text-gray-500 bg-gray-100 px-1.5 py-0.5 rounded">{unit(a)}</span>}
+                      {isConfigured && !isDefault && (
+                        <span className="shrink-0 rounded-full bg-blue-50 px-2 py-0.5 text-xs font-medium text-blue-700">Configured</span>
+                      )}
+                    </div>
+                    {!isExpanded && (
+                      <div className="mt-1 truncate pl-6 text-xs text-gray-500">
+                        Instrument: {cfg.instrument_unit || '-'} · LIMS: {cfg.lims_unit || '-'} · Multiply {cfg.multiply_by || '1'} · Offset {cfg.add_offset || '0'}
+                        {cfg.auto_verify ? ' · Auto-verify' : ''}
+                      </div>
+                    )}
+                  </button>
                   <div className="flex items-center gap-2">
                     {cfg.saved && <span className="flex items-center gap-1 text-xs text-green-600"><CheckCircle className="h-3.5 w-3.5" />Saved</span>}
                     {cfg.error && <span className="flex items-center gap-1 text-xs text-red-500"><AlertCircle className="h-3.5 w-3.5" />{cfg.error}</span>}
@@ -240,6 +310,8 @@ export default function AnalyteInterfaceConfig({ labId }: { labId: string }) {
                   </div>
                 </div>
 
+                {isExpanded && (
+                  <>
                 {/* Config fields */}
                 <div className="grid grid-cols-2 gap-x-4 gap-y-3 sm:grid-cols-4">
                   <div>
@@ -305,11 +377,46 @@ export default function AnalyteInterfaceConfig({ labId }: { labId: string }) {
                   </div>
                 </div>
 
+                <div>
+                  <p className="text-xs font-medium text-gray-500 mb-2">Apply conversion in result entry</p>
+                  <div className="flex flex-wrap items-center gap-x-6 gap-y-2">
+                    <label className="flex items-center gap-2 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={cfg.apply_to_ai_result_entry}
+                        onChange={e => updateConfig(a.id, { apply_to_ai_result_entry: e.target.checked })}
+                        className="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                      />
+                      <span className="text-sm text-gray-700">AI-extracted values</span>
+                    </label>
+                    <label className="flex items-center gap-2 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={cfg.apply_to_manual_result_entry}
+                        onChange={e => updateConfig(a.id, { apply_to_manual_result_entry: e.target.checked })}
+                        className="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                      />
+                      <span className="text-sm text-gray-700">AI Result Entry manual input</span>
+                    </label>
+                    <label className="flex items-center gap-2 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={cfg.apply_to_quick_result_entry}
+                        onChange={e => updateConfig(a.id, { apply_to_quick_result_entry: e.target.checked })}
+                        className="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                      />
+                      <span className="text-sm text-gray-700">Quick Result Entry</span>
+                    </label>
+                  </div>
+                </div>
+
                 {/* Formula preview */}
                 {(cfg.multiply_by !== '1' || cfg.add_offset !== '0') && (
                   <p className="text-xs text-blue-600 bg-blue-50 rounded px-2.5 py-1.5 font-mono">
                     lims_value = (instrument_value × {cfg.multiply_by || '1'}) + {cfg.add_offset || '0'}
                   </p>
+                )}
+                  </>
                 )}
               </div>
             );

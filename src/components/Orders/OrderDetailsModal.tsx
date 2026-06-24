@@ -41,10 +41,12 @@ import {
   Unlock,
   Crop,
   Mic,
+  Link2,
 } from "lucide-react";
 import QRCodeLib from "qrcode";
 import { database, attachments as attachmentsAPI, supabase, uploadFile } from "../../utils/supabase";
 import { selectPreferredCalculatedDependencies } from "../../utils/calculatedDependencies";
+import { evaluateTextCalculation, normalizeCalculationResultType } from "../../utils/calculationRules";
 import { applyAnalyteDisplayOrder } from "../../utils/analyteDisplayOrder";
 import { useAuth } from "../../contexts/AuthContext";
 import { useOrderStatusCentral } from "../../hooks/useOrderStatusCentral";
@@ -60,6 +62,13 @@ import { capturePhoto, isNative } from "../../utils/androidFileUpload";
 import { calculateFlagsForResults, calculateFlag } from "../../utils/flagCalculation";
 import SectionEditor from "../Results/SectionEditor";
 import VoiceRecorder from "../Voice/VoiceRecorder";
+import InlineDependencyEditor from "../Results/InlineDependencyEditor";
+import {
+  applyAnalyteInterfaceConversion,
+  getAnalyteInterfaceConfig,
+  isAnalyteInterfaceConversionEnabled,
+  type AnalyteInterfaceConversionConfig,
+} from "../../utils/analyteInterfaceConversion";
 
 interface WorkflowStep {
   name: string;
@@ -104,11 +113,14 @@ interface ExtractedValue {
   default_value?: string;
   formula?: string | null;
   formula_variables?: string[] | string | null;
+  calculation_result_type?: string | null;
   verify_note?: string; // Re-run request note from verifier
   is_rerun?: boolean; // Indicates this is a re-run request
 	  ai_color_observation?: string; // Color strip: observed pad color + reason for selected value
 	  is_hidden_from_report?: boolean;
 	  hidden_reason?: string;
+  interface_config?: AnalyteInterfaceConversionConfig | null;
+  interface_conversion_pending?: boolean;
 }
 
 interface Order {
@@ -164,6 +176,7 @@ interface TestGroupResult {
     is_calculated?: boolean;
     formula?: string | null;
     formula_variables?: string[] | string | null;
+    calculation_result_type?: string | null;
 	      existing_result?: {
 	        id: string;
 	        value: string;
@@ -389,6 +402,18 @@ const getAvailableStatusActions = (
       return [{ status: "Delivered", label: "Mark as Delivered", primary: true }];
     default:
       return [];
+  }
+};
+
+// Parse formula variables from string or array format
+const parseFormulaVariables = (formulaVariables: string[] | string | null | undefined): string[] => {
+  if (!formulaVariables) return [];
+  if (Array.isArray(formulaVariables)) return formulaVariables.filter(Boolean);
+  try {
+    const parsed = JSON.parse(formulaVariables);
+    return Array.isArray(parsed) ? parsed.filter(Boolean) : [];
+  } catch {
+    return [];
   }
 };
 
@@ -689,6 +714,12 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
     );
   }, []);
 
+  // Inline dependency editor state
+  const [editingDependency, setEditingDependency] = useState<{
+    value: ExtractedValue;
+    missingVariables: string[];
+  } | null>(null);
+
   // =========================================================
   // #endregion State
   // =========================================================
@@ -780,6 +811,8 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
 	            is_rerun: isRerun,
 	            is_hidden_from_report: !!existingResult?.is_hidden_from_report,
 	            hidden_reason: existingResult?.hidden_reason || "",
+              interface_config: analyte.interface_config || null,
+              interface_conversion_pending: false,
 	          };
         });
       console.log('📋 Seeded manualValues:', seed);
@@ -916,7 +949,8 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
                   expected_value_flag_map,
                   is_calculated,
                   formula,
-                  formula_variables
+                  formula_variables,
+                  calculation_result_type
                 ),
                 lab_analytes(
                   id,
@@ -936,7 +970,16 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
                   is_calculated,
                   formula,
                   formula_variables,
-                  formula_description
+                  formula_description,
+                  calculation_result_type,
+                  lab_analyte_interface_config(
+                    multiply_by,
+                    add_offset,
+                    lims_unit,
+                    apply_to_ai_result_entry,
+                    apply_to_manual_result_entry,
+                    apply_to_quick_result_entry
+                  )
                 )
               )
             )
@@ -975,7 +1018,8 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
                   expected_value_flag_map,
                   is_calculated,
                   formula,
-                  formula_variables
+                  formula_variables,
+                  calculation_result_type
                 ),
                 lab_analytes(
                   id,
@@ -995,7 +1039,16 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
                   is_calculated,
                   formula,
                   formula_variables,
-                  formula_description
+                  formula_description,
+                  calculation_result_type,
+                  lab_analyte_interface_config(
+                    multiply_by,
+                    add_offset,
+                    lims_unit,
+                    apply_to_ai_result_entry,
+                    apply_to_manual_result_entry,
+                    apply_to_quick_result_entry
+                  )
                 )
               )
             )
@@ -1076,6 +1129,8 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
                 formula: la?.formula ?? a.formula,
                 formula_variables: la?.formula_variables ?? a.formula_variables,
                 formula_description: la?.formula_description ?? undefined,
+                calculation_result_type: la?.calculation_result_type ?? a.calculation_result_type ?? 'numeric',
+                interface_config: getAnalyteInterfaceConfig(la?.lab_analyte_interface_config),
                 code: a.code || otg.test_groups.code,
                 units: la?.unit || a.unit,
                 existing_result: (() => {
@@ -1146,6 +1201,8 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
                   formula: la?.formula ?? a.formula,
                   formula_variables: la?.formula_variables ?? a.formula_variables,
                   formula_description: la?.formula_description ?? undefined,
+                  calculation_result_type: la?.calculation_result_type ?? a.calculation_result_type ?? 'numeric',
+                  interface_config: getAnalyteInterfaceConfig(la?.lab_analyte_interface_config),
                   code: a.code || ot.test_groups.code,
                   units: la?.unit || a.unit,
                   existing_result: (() => {
@@ -1268,7 +1325,7 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
             reference_range_male, reference_range_female,
             expected_normal_values, expected_value_flag_map,
             expected_value_codes, value_type, default_value,
-            is_calculated, formula, formula_variables, formula_description
+            is_calculated, formula, formula_variables, formula_description, calculation_result_type
           `)
           .eq('lab_id', data.lab_id)
           .in('analyte_id', analyteIds)
@@ -1299,6 +1356,7 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
             if (la.formula)               updates.formula              = la.formula;
             if (la.formula_variables)     updates.formula_variables    = la.formula_variables;
             if (la.formula_description)   updates.formula_description  = la.formula_description;
+            if (la.calculation_result_type) updates.calculation_result_type = la.calculation_result_type;
 
             // Dropdown options
             if (la.expected_normal_values) {
@@ -2138,13 +2196,27 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
           if (idx !== -1 && !updated[idx].is_calculated) {
             // Recalculate flag client-side instead of trusting AI-returned flag
             // AI can return wrong flags (e.g. "Low" for a value above range)
+            const convertedValue = applyAnalyteInterfaceConversion(
+              ep.value,
+              updated[idx].interface_config,
+              "ai",
+            );
             const recalculatedFlag = calculateFlag(
-              String(ep.value),
+              convertedValue,
               updated[idx].reference || ep.reference || ''
             );
             const finalFlag = recalculatedFlag || ep.flag || undefined;
             console.log(`  ✅ Voice Matched: ${ep.parameter} (${ep.value}) → ${updated[idx].parameter} | AI flag: ${ep.flag} → Recalculated: ${recalculatedFlag || 'Normal'}`);
-            updated[idx] = { ...updated[idx], value: ep.value, flag: finalFlag };
+            updated[idx] = {
+              ...updated[idx],
+              value: convertedValue,
+              unit: updated[idx].interface_config &&
+                isAnalyteInterfaceConversionEnabled(updated[idx].interface_config, "ai")
+                ? updated[idx].interface_config.lims_unit || updated[idx].unit
+                : updated[idx].unit,
+              flag: finalFlag,
+              interface_conversion_pending: false,
+            };
             matchedCount++;
           } else {
             console.log(`  ⚠️ Voice Unmatched: ${ep.parameter} (${ep.value})`);
@@ -2475,7 +2547,20 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
                 (typeof rawValue === 'string' ? rawValue.trim() !== '' : true);
 
               if (idx !== -1 && isValidValue && !updated[idx].is_calculated) {
-                updated[idx] = { ...updated[idx], value: rawValue };
+                const convertedValue = applyAnalyteInterfaceConversion(
+                  rawValue,
+                  updated[idx].interface_config,
+                  "ai",
+                );
+                updated[idx] = {
+                  ...updated[idx],
+                  value: convertedValue,
+                  unit: updated[idx].interface_config &&
+                    isAnalyteInterfaceConversionEnabled(updated[idx].interface_config, "ai")
+                    ? updated[idx].interface_config.lims_unit || updated[idx].unit
+                    : updated[idx].unit,
+                  interface_conversion_pending: false,
+                };
               }
             });
             // Recompute calculated parameters after AI fills in values
@@ -2607,6 +2692,11 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
                     resolvedValue = caseInsensitive ?? ep.value;
                   }
                 }
+                resolvedValue = applyAnalyteInterfaceConversion(
+                  resolvedValue,
+                  updated[idx].interface_config,
+                  "ai",
+                );
                 // Recalculate flag client-side instead of trusting AI-returned flag
                 const recalculatedFlag = calculateFlag(
                   String(resolvedValue),
@@ -2614,7 +2704,17 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
                 );
                 const finalFlag = recalculatedFlag || ep.flag || undefined;
                 console.log(`  ✅ Matched: ${ep.parameter} (${resolvedValue}) → ${updated[idx].parameter} | AI flag: ${ep.flag} → Recalculated: ${recalculatedFlag || 'Normal'}`);
-                updated[idx] = { ...updated[idx], value: resolvedValue, flag: finalFlag, ai_color_observation: rawEp.color_observation || undefined };
+                updated[idx] = {
+                  ...updated[idx],
+                  value: resolvedValue,
+                  unit: updated[idx].interface_config &&
+                    isAnalyteInterfaceConversionEnabled(updated[idx].interface_config, "ai")
+                    ? updated[idx].interface_config.lims_unit || updated[idx].unit
+                    : updated[idx].unit,
+                  flag: finalFlag,
+                  ai_color_observation: rawEp.color_observation || undefined,
+                  interface_conversion_pending: false,
+                };
                 currentMatchedCount++;
               } else if (idx === -1) {
                 const normalizedEpName = ep.parameter?.toLowerCase().trim();
@@ -2948,6 +3048,7 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
         v.lab_analyte_id,
         new Set(lookup.keys()),
       );
+      const scope: Record<string, number> = {};
 
       // Phase 1: replace formula_variables — don't return early on miss.
       for (const variable of vars) {
@@ -2974,8 +3075,16 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
         }
 
         if (val !== undefined) {
+          scope[variable] = val;
+          scope[variable.toUpperCase()] = val;
+          scope[variable.toLowerCase()] = val;
           formula = formula.replace(new RegExp(`\\b${variable}\\b`, "g"), String(val));
         }
+      }
+
+      if (normalizeCalculationResultType(v.calculation_result_type) === 'text') {
+        const textResult = evaluateTextCalculation(v.formula, scope);
+        return textResult.success ? { ...v, value: textResult.value, flag: '' } : v;
       }
 
       // Phase 2: resolve remaining alphabetic tokens (handles code/alias mismatches).
@@ -2988,6 +3097,9 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
         if (val === undefined && dep) val = lookup.get(dep.source_analyte_id);
         if (val === undefined) val = lookup.get(tokenKey);
         if (val === undefined) return v; // keep old value
+        scope[token] = val;
+        scope[token.toUpperCase()] = val;
+        scope[token.toLowerCase()] = val;
         formula = formula.replace(new RegExp(`\\b${token}\\b`, "g"), String(val));
       }
 
@@ -3106,13 +3218,41 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
       const updated = prev.map((item, i) => {
         if (i !== index) return item;
         if (item.is_calculated && field === "value") return item;
-        return { ...item, [field]: value };
+        return {
+          ...item,
+          [field]: value,
+          ...(field === "value" ? { interface_conversion_pending: true } : {}),
+        };
       });
       // Recompute calculated analytes whenever a numeric value changes
       if (field === "value") return recomputeCalculatedValues(updated);
       return updated;
     });
 	  }, [recomputeCalculatedValues]);
+
+  const handleManualValueBlur = React.useCallback((index: number, rawValue: string) => {
+    setManualValues((prev) => {
+      const updated = prev.map((item, i) => {
+        if (i !== index || item.is_calculated || !item.interface_conversion_pending) return item;
+        const convertedValue = applyAnalyteInterfaceConversion(
+          rawValue,
+          item.interface_config,
+          "manual",
+        );
+        return {
+          ...item,
+          value: convertedValue,
+          unit: item.interface_config &&
+            isAnalyteInterfaceConversionEnabled(item.interface_config, "manual")
+            ? item.interface_config.lims_unit || item.unit
+            : item.unit,
+          flag: calculateFlag(convertedValue, item.reference || '') || item.flag,
+          interface_conversion_pending: false,
+        };
+      });
+      return recomputeCalculatedValues(updated);
+    });
+  }, [recomputeCalculatedValues]);
 
 	  const toggleManualValueHidden = React.useCallback((index: number) => {
 	    setManualValues((prev) =>
@@ -3196,7 +3336,31 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
         })
       );
     } else {
-      handleManualValueChange(index, fieldName, value);
+      if (fieldName === "value") {
+        setManualValues((prev) => {
+          const updated = prev.map((item, i) => {
+            if (i !== index || item.is_calculated) return item;
+            const convertedValue = applyAnalyteInterfaceConversion(
+              value,
+              item.interface_config,
+              "manual",
+            );
+            return {
+              ...item,
+              value: convertedValue,
+              unit: item.interface_config &&
+                isAnalyteInterfaceConversionEnabled(item.interface_config, "manual")
+                ? item.interface_config.lims_unit || item.unit
+                : item.unit,
+              flag: calculateFlag(convertedValue, item.reference || '') || item.flag,
+              interface_conversion_pending: false,
+            };
+          });
+          return recomputeCalculatedValues(updated);
+        });
+      } else {
+        handleManualValueChange(index, fieldName, value);
+      }
     }
     setPopoutInput(null);
   };
@@ -3572,6 +3736,7 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
             (analyte.lab_analyte_id && d.calculated_lab_analyte_id === analyte.lab_analyte_id) ||
             (!d.calculated_lab_analyte_id && d.calculated_analyte_id === analyte.id)
         );
+        const scope: Record<string, number> = {};
 
         // Phase 1: replace variables from formula_variables — don't return early on miss.
         for (const variable of variables) {
@@ -3598,9 +3763,16 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
           }
 
           if (variableValue !== undefined) {
+            scope[String(variable)] = variableValue;
+            scope[String(variable).toUpperCase()] = variableValue;
+            scope[String(variable).toLowerCase()] = variableValue;
             const escapedVar = String(variable).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
             resolved = resolved.replace(new RegExp(`\\b${escapedVar}\\b`, "g"), String(variableValue));
           }
+        }
+
+        if (normalizeCalculationResultType((analyte as any).calculation_result_type) === 'text') {
+          return evaluateTextCalculation(formula, scope).value;
         }
 
         // Phase 2: resolve remaining alphabetic tokens (handles code/alias mismatches).
@@ -3613,6 +3785,9 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
           if (val === undefined && dep) val = valueLookup.get(dep.source_analyte_id);
           if (val === undefined) val = valueLookup.get(tokenKey);
           if (val === undefined) return "";
+          scope[token] = val;
+          scope[token.toUpperCase()] = val;
+          scope[token.toLowerCase()] = val;
           resolved = resolved.replace(new RegExp(`\\b${token}\\b`, "g"), String(val));
         }
 
@@ -4242,10 +4417,24 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
                               f: {debugInfo.formula}
                             </div>
                             {debugInfo.hasDependencies && debugInfo.missing.length > 0 && (
-                              <div className="text-red-700 font-medium">Missing: {debugInfo.missing.join(", ")}</div>
+                              <button
+                                type="button"
+                                onClick={() => setEditingDependency({ value, missingVariables: debugInfo.missing })}
+                                className="text-red-700 hover:text-red-900 hover:underline flex items-center gap-1 cursor-pointer font-medium"
+                              >
+                                <Link2 className="h-3 w-3" />
+                                Missing: {debugInfo.missing.join(", ")}
+                              </button>
                             )}
                             {!debugInfo.hasDependencies ? (
-                              <div className="text-amber-600 font-medium">No dependencies saved — open Dependency Manager</div>
+                              <button
+                                type="button"
+                                onClick={() => setEditingDependency({ value, missingVariables: debugInfo.missing })}
+                                className="text-amber-600 hover:text-amber-800 hover:underline flex items-center gap-1 cursor-pointer font-medium"
+                              >
+                                <Link2 className="h-3 w-3" />
+                                No dependencies saved — open Dependency Manager
+                              </button>
                             ) : (
                               debugInfo.dependencies.map(dep => {
                                 const hasValue = dep.value !== undefined;
@@ -4332,6 +4521,7 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
                           type="text"
                           value={value.value || ''}
                           onChange={(e) => handleManualValueChange(globalIndex, 'value', e.target.value)}
+                          onBlur={(e) => handleManualValueBlur(globalIndex, e.target.value)}
                           onKeyDown={(e) => { if (e.key === 'Enter') e.preventDefault(); }}
                           autoComplete="off"
                           placeholder="Enter value..."
@@ -5777,6 +5967,36 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
         title={popoutInput?.title || ''}
         suggestions={popoutInput?.suggestions}
       />
+
+      {/* Inline Dependency Editor */}
+      {editingDependency && (
+        <InlineDependencyEditor
+          analyte={{
+            id: editingDependency.value.analyte_id || '',
+            lab_analyte_id: editingDependency.value.lab_analyte_id,
+            name: editingDependency.value.parameter,
+            formula: editingDependency.value.formula || '',
+            formulaVariables: parseFormulaVariables(editingDependency.value.formula_variables),
+          }}
+          missingVariables={editingDependency.missingVariables}
+          availableAnalytes={orderAnalytes
+            .filter(a => !a.is_calculated && a.id !== editingDependency.value.analyte_id)
+            .map(a => ({
+              id: a.id,
+              lab_analyte_id: a.lab_analyte_id,
+              name: a.name,
+              unit: a.unit,
+              code: a.code,
+            }))
+          }
+          onClose={() => setEditingDependency(null)}
+          onSaved={() => {
+            setEditingDependency(null);
+            // Reload data and recalculate
+            fetchOrderAnalytes();
+          }}
+        />
+      )}
 
     </div >,
     document.body

@@ -194,7 +194,7 @@ OUTPUT ONLY valid JSON:
             // Save to mappings cache for future use
             const { error: insertError } = await supabase
               .from('test_mappings')
-              .upsert({
+              .insert({
                 lab_id: labId,
                 analyzer_id: analyzerId,
                 lims_code: mapping.lims_code,
@@ -203,8 +203,6 @@ OUTPUT ONLY valid JSON:
                 ai_confidence: mapping.confidence || 0.8,
                 verified: false,
                 updated_at: new Date().toISOString()
-              }, {
-                onConflict: 'lab_id,analyzer_id,lims_code'
               })
 
             if (insertError) {

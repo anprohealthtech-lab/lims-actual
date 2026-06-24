@@ -19,6 +19,11 @@ export interface Lab {
   pincode?: string;
   phone?: string;
   email?: string;
+  barcode_printer_name?: string | null;
+  report_printer_name?: string | null;
+  barcode_browser_print_enabled?: boolean;
+  auto_print_barcode_on_order?: boolean;
+  auto_print_report_on_approval?: boolean;
   license_number?: string;
   is_active: boolean;
   created_at: string;
@@ -124,6 +129,11 @@ export interface Location {
     bank_name?: string;
     upi_id?: string;
   };
+  barcode_printer_name?: string | null;
+  report_printer_name?: string | null;
+  barcode_browser_print_enabled?: boolean | null;
+  auto_print_barcode_on_order?: boolean | null;
+  auto_print_report_on_approval?: boolean | null;
   created_at: string;
   updated_at: string;
 }

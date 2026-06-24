@@ -17,6 +17,8 @@ import PatientFormSettings from '../components/Settings/PatientFormSettings';
 import LabBillingItemSettings from '../components/Settings/LabBillingItemSettings';
 import PriceMasterSettings from '../components/Settings/PriceMasterSettings';
 import PaymentGatewaySettings from '../components/Settings/PaymentGatewaySettings';
+import SampleTypeColorsConfig from '../components/Settings/SampleTypeColorsConfig';
+import { useSampleTypeColors } from '../contexts/SampleTypeColorsContext';
 import {
   Users,
   Shield,
@@ -49,7 +51,8 @@ import {
   Smartphone,
   Tag,
   Printer,
-  CreditCard
+  CreditCard,
+  Droplet
 } from 'lucide-react';
 import { LANGUAGE_DISPLAY_NAMES, type SupportedLanguage } from '../hooks/useAIResultIntelligence';
 import { COUNTRY_CODE_OPTIONS } from '../utils/phoneFormatter';
@@ -151,6 +154,7 @@ interface LabSettings {
 	    alternateRows?: boolean;
 	    baseFontSize?: number;
 	    showSampleType?: boolean;
+	    showSampleCondition?: boolean;
 	    testNameBold?: boolean;
 	    testNameAlignment?: 'left' | 'center' | 'right';
 	    boldAllValues?: boolean;
@@ -161,7 +165,9 @@ interface LabSettings {
 	    showFlagLegend?: boolean;
 	    testGroupTitlePosition?: 'below_headers' | 'above_headers_center' | 'above_headers_left';
 	    qrHorizontalOffset?: number;
-	    qrPosition?: 'bottom_left' | 'top_left' | 'top_right';
+	    qrPosition?: 'bottom_left' | 'top_left' | 'top_right' | 'header_right';
+	    headerQrTop?: number;
+	    headerQrRight?: number;
 	    signatureMaxHeight?: number;
 	    signatureMaxWidth?: number;
 	    sectionFieldNamePct?: number;
@@ -170,10 +176,12 @@ interface LabSettings {
   _pdf_layout_settings_raw?: Record<string, unknown> | null;
   barcode_printer_name?: string | null;
   report_printer_name?: string | null;
+  barcode_browser_print_enabled?: boolean;
   auto_collect_on_registration?: boolean;
   auto_open_collection_modal?: boolean;
   auto_print_barcode_on_order?: boolean;
   auto_print_report_on_approval?: boolean;
+  sample_type_colors?: Record<string, string>;
 }
 
 // Define UserForm component outside of Settings
@@ -542,6 +550,7 @@ const Settings: React.FC = () => {
   const { user: authUser } = useAuth();
   const { loading: permissionsLoading, hasPermission } = usePermissions();
   const { status: qzStatus, connect: qzConnect, disconnect: qzDisconnect } = useQZTray();
+  const { refresh: refreshSampleTypeColors } = useSampleTypeColors();
   const [activeTab, setActiveTab] = useState<'team' | 'permissions' | 'usage' | 'lab' | 'notifications' | 'invoices' | 'analyzer' | 'patient_portal' | 'billing_items' | 'price_masters' | 'patient_form' | 'payment_gateway'>('team');
   const [showUserForm, setShowUserForm] = useState(false);
   const [showEditUserModal, setShowEditUserModal] = useState(false);
@@ -578,6 +587,35 @@ const Settings: React.FC = () => {
     apiCalls: 0,
     apiLimit: 100000,
   });
+
+  // Flag usage tracking for validation when deleting
+  const [flagUsageCounts, setFlagUsageCounts] = useState<Record<string, number>>({});
+  const [checkingFlagUsage, setCheckingFlagUsage] = useState(false);
+
+  // Check flag usage when lab settings are loaded
+  const checkFlagUsage = async (currentLabId: string) => {
+    setCheckingFlagUsage(true);
+    try {
+      const { data, error } = await supabase
+        .from('result_values')
+        .select('flag')
+        .eq('lab_id', currentLabId)
+        .not('flag', 'is', null)
+        .not('flag', 'eq', '');
+
+      if (!error && data) {
+        const counts: Record<string, number> = {};
+        data.forEach((row: { flag: string }) => {
+          const flag = row.flag?.trim();
+          if (flag) {
+            counts[flag] = (counts[flag] || 0) + 1;
+          }
+        });
+        setFlagUsageCounts(counts);
+      }
+    } catch { /* non-critical */ }
+    setCheckingFlagUsage(false);
+  };
 
   // Load data from database
   useEffect(() => {
@@ -655,16 +693,21 @@ const Settings: React.FC = () => {
             _pdf_layout_settings_raw: (labData as any).pdf_layout_settings ?? null,
             barcode_printer_name: (labData as any).barcode_printer_name ?? null,
             report_printer_name: (labData as any).report_printer_name ?? null,
+            barcode_browser_print_enabled: (labData as any).barcode_browser_print_enabled ?? false,
             auto_collect_on_registration: (labData as any).auto_collect_on_registration ?? false,
             auto_open_collection_modal: (labData as any).auto_open_collection_modal ?? false,
             auto_print_barcode_on_order: (labData as any).auto_print_barcode_on_order ?? false,
             auto_print_report_on_approval: (labData as any).auto_print_report_on_approval ?? false,
+            sample_type_colors: (labData as any).sample_type_colors ?? {},
           });
         }
 
         // Load custom patient field configs
         const { data: fieldConfigs } = await database.labPatientFieldConfigs.getAll();
         if (fieldConfigs) setCustomPatientFields(fieldConfigs);
+
+        // Load flag usage counts for validation
+        checkFlagUsage(currentLabId);
 
         // Load ALL users for WhatsApp sender dropdown (use user.id as whatsapp_user_id)
         const { data: allLabUsers, error: allUsersError } = await supabase
@@ -978,10 +1021,12 @@ const Settings: React.FC = () => {
         report_patient_info_config: labSettings.report_patient_info_config ?? null,
         barcode_printer_name: labSettings.barcode_printer_name || null,
         report_printer_name: labSettings.report_printer_name || null,
+        barcode_browser_print_enabled: labSettings.barcode_browser_print_enabled ?? false,
         auto_collect_on_registration: labSettings.auto_collect_on_registration ?? false,
         auto_open_collection_modal: labSettings.auto_open_collection_modal ?? false,
         auto_print_barcode_on_order: labSettings.auto_print_barcode_on_order ?? false,
         auto_print_report_on_approval: labSettings.auto_print_report_on_approval ?? false,
+        sample_type_colors: labSettings.sample_type_colors || {},
         pdf_layout_settings: {
           ...(labSettings._pdf_layout_settings_raw || {}),
           printOptions: labSettings.print_options ?? undefined,
@@ -990,6 +1035,9 @@ const Settings: React.FC = () => {
       } as any);
 
       if (updateError) throw updateError;
+
+      // Refresh sample type colors context so UI updates immediately
+      await refreshSampleTypeColors();
 
       setSaveSuccess(true);
       setTimeout(() => setSaveSuccess(false), 3000);
@@ -2127,6 +2175,19 @@ const Settings: React.FC = () => {
                             <p className="text-xs text-gray-400">Display the specimen/sample type (e.g. Blood, Urine) next to each test group title on all template styles.</p>
                           </div>
                         </label>
+                        {/* Show Sample Condition */}
+                        <label className="flex items-center gap-2 cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={!!labSettings.print_options?.showSampleCondition}
+                            onChange={(e) => setLabSettings(prev => prev ? { ...prev, print_options: { ...(prev.print_options || {}), showSampleCondition: e.target.checked } } : prev)}
+                            className="h-4 w-4 text-indigo-600 border-gray-300 rounded"
+                          />
+                          <div>
+                            <span className="text-sm font-medium text-gray-700">Show Sample Condition on Report</span>
+                            <p className="text-xs text-gray-400">Display selected condition such as Morning, Fasting, or Random under each test group title.</p>
+                          </div>
+                        </label>
                         {/* Header Background */}
                         <div className="flex items-center gap-2">
                           <input
@@ -2612,19 +2673,39 @@ const Settings: React.FC = () => {
                             placeholder="Code (e.g. H)"
                             className="w-28 px-3 py-2 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
                           />
+                          {/* Show usage count if this flag is used */}
+                          {opt.value && flagUsageCounts[opt.value] > 0 && (
+                            <span className="text-xs text-amber-600 bg-amber-50 px-2 py-1 rounded" title="Results using this flag">
+                              {flagUsageCounts[opt.value]} results
+                            </span>
+                          )}
                           <button
                             type="button"
                             onClick={() => {
+                              const usageCount = opt.value ? (flagUsageCounts[opt.value] || 0) : 0;
+                              if (usageCount > 0) {
+                                const confirmed = window.confirm(
+                                  `Warning: This flag "${opt.label}" (${opt.value}) is used in ${usageCount} result${usageCount > 1 ? 's' : ''}.\n\n` +
+                                  `Removing it will:\n` +
+                                  `• Hide this option from dropdowns for new results\n` +
+                                  `• NOT affect existing results (they keep their flag)\n\n` +
+                                  `Are you sure you want to remove this flag option?`
+                                );
+                                if (!confirmed) return;
+                              }
                               const updated = (labSettings.flag_options || []).filter((_, i) => i !== idx);
                               setLabSettings(prev => prev ? { ...prev, flag_options: updated } : prev);
                             }}
-                            className="p-2 text-red-500 hover:bg-red-50 rounded"
-                            title="Remove"
+                            className={`p-2 rounded ${opt.value && flagUsageCounts[opt.value] > 0 ? 'text-amber-500 hover:bg-amber-50' : 'text-red-500 hover:bg-red-50'}`}
+                            title={opt.value && flagUsageCounts[opt.value] > 0 ? `Used in ${flagUsageCounts[opt.value]} results - click to remove with warning` : 'Remove'}
                           >
                             <XCircle className="h-4 w-4" />
                           </button>
                         </div>
                       ))}
+                      {checkingFlagUsage && (
+                        <p className="text-xs text-gray-400 italic">Checking flag usage...</p>
+                      )}
                       <button
                         type="button"
                         onClick={() => {
@@ -2827,6 +2908,18 @@ const Settings: React.FC = () => {
                             onChange={(e) => setLabSettings(prev => prev ? { ...prev, barcode_printer_name: e.target.value || null } : prev)}
                             className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm focus:ring-blue-500 focus:border-blue-500"
                           />
+                          <label className="flex items-start cursor-pointer gap-3 mt-3">
+                            <input
+                              type="checkbox"
+                              checked={labSettings.barcode_browser_print_enabled ?? false}
+                              onChange={(e) => setLabSettings(prev => prev ? { ...prev, barcode_browser_print_enabled: e.target.checked } : prev)}
+                              className="mt-0.5 h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded"
+                            />
+                            <div>
+                              <span className="text-sm font-medium text-gray-800">Use browser print dialog for barcode labels</span>
+                              <p className="text-xs text-gray-400 mt-0.5">Opens label printing in the browser instead of sending barcode labels to the LIMS Utility queue.</p>
+                            </div>
+                          </label>
                         </div>
                         <div>
                           <label className="block text-sm font-medium text-gray-700 mb-1">Report Printer</label>
@@ -2874,6 +2967,22 @@ const Settings: React.FC = () => {
                           </div>
                         </label>
                       </div>
+                    </div>
+
+                    {/* Sample Type Colors */}
+                    <div className="border-t border-gray-100 pt-5">
+                      <h4 className="text-sm font-semibold text-gray-700 mb-1 flex items-center gap-2">
+                        <Droplet className="h-4 w-4 text-blue-500" />
+                        Sample Type / Tube Colors
+                      </h4>
+                      <p className="text-xs text-gray-500 mb-3">
+                        Customize tube cap colors displayed for each sample type across the lab.
+                        Overrides default industry-standard colors when set.
+                      </p>
+                      <SampleTypeColorsConfig
+                        value={labSettings.sample_type_colors || {}}
+                        onChange={(colors) => setLabSettings(prev => prev ? { ...prev, sample_type_colors: colors } : prev)}
+                      />
                     </div>
 
                     {/* LIMS Utility Auto-Print */}

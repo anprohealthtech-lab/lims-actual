@@ -1395,41 +1395,190 @@ async function sendHtmlToPdfCo(
 // SECTION: Section Content Injection (PBS/Radiology findings, impressions)
 // ============================================================
 
+// ── Matrix HTML Builder (mirrors SectionEditor.tsx buildMatrixHtml) ──────────
+
+const MATRIX_CELL_PREFIX = "matrix:"
+const MATRIX_COL_LABEL_PREFIX = "col_label:"
+const MATRIX_COL_ORDER_KEY = "matrix_col_order"
+
+function matrixCellKey(row: string, column: string): string {
+  return `${MATRIX_CELL_PREFIX}${row}::${column}`
+}
+
+function matrixColLabelKey(column: string): string {
+  return `${MATRIX_COL_LABEL_PREFIX}${column}`
+}
+
+function escapeHtmlForMatrix(value: string): string {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;")
+}
+
+function parseMaybeJsonObject(value: unknown): Record<string, any> {
+  if (!value) return {}
+  if (typeof value === "string") {
+    try {
+      const parsed = JSON.parse(value)
+      return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {}
+    } catch {
+      return {}
+    }
+  }
+  return typeof value === "object" && !Array.isArray(value) ? (value as Record<string, any>) : {}
+}
+
+function getMatrixCellValue(
+  selections: Record<string, unknown> | undefined,
+  row: string,
+  column: string
+): string {
+  const raw = selections?.[matrixCellKey(row, column)]
+  if (Array.isArray(raw)) return String(raw[0] || "")
+  return typeof raw === "string" ? raw : ""
+}
+
+function getColLabel(
+  selections: Record<string, unknown> | undefined,
+  column: string
+): string {
+  const raw = selections?.[matrixColLabelKey(column)]
+  return typeof raw === "string" && raw.trim() ? raw.trim() : column
+}
+
+function getActiveColumns(
+  selections: Record<string, unknown> | undefined,
+  templateColumns: string[]
+): string[] {
+  const raw = selections?.[MATRIX_COL_ORDER_KEY]
+  if (Array.isArray(raw) && raw.length > 0) return raw as string[]
+  return templateColumns
+}
+
+function cellOptionStyle(
+  value: string,
+  cellOptions: string[],
+  reportStyle: "color" | "bold" | "plain" = "color"
+): string {
+  if (!cellOptions.length) return ""
+  if (reportStyle === "plain") return ""
+  if (reportStyle === "bold") return "font-weight:700 !important;"
+
+  const idx = cellOptions.findIndex(
+    (o) => o.trim().toUpperCase() === value.trim().toUpperCase()
+  )
+  if (idx === -1) return ""
+  // Use !important to override .basic-report-template td { background-color: #fff !important; }
+  if (cellOptions.length === 1) return "background:#d1fae5 !important;color:#065f46 !important;font-weight:600 !important;"
+  if (idx === 0) return "background:#d1fae5 !important;color:#065f46 !important;font-weight:600 !important;"
+  if (idx === cellOptions.length - 1) return "background:#fee2e2 !important;color:#991b1b !important;font-weight:600 !important;"
+  return "background:#fff3cd !important;color:#92400e !important;font-weight:600 !important;"
+}
+
+function buildMatrixHtmlFromConfig(
+  sectionConfig: unknown,
+  selections: unknown,
+  customText?: string
+): string {
+  const config = parseMaybeJsonObject(sectionConfig)
+  if (config?.mode !== "matrix" || !config?.matrix) {
+    return ""
+  }
+
+  const matrix = config.matrix
+  const selectionMap = parseMaybeJsonObject(selections) as Record<string, unknown>
+
+  const rows = (matrix?.rows || []).map((row: string) => String(row).trim()).filter(Boolean)
+  const templateCols = (matrix?.columns || []).map((c: string) => String(c).trim()).filter(Boolean)
+  const columns = getActiveColumns(selectionMap, templateCols)
+
+  if (rows.length === 0 || columns.length === 0) {
+    return (customText || "").trim()
+  }
+
+  const cellOptions: string[] = Array.isArray(matrix?.cellOptions) ? matrix.cellOptions : []
+  const reportStyle: "color" | "bold" | "plain" = matrix?.reportStyle || "color"
+
+  const headerHtml = columns
+    .map((column: string) =>
+      `<th style="border:1px solid #9ca3af;padding:8px;text-align:left;background:#f8fafc;">${escapeHtmlForMatrix(getColLabel(selectionMap, column))}</th>`
+    )
+    .join("")
+
+  const bodyHtml = rows
+    .map((row: string) => {
+      const cells = columns
+        .map((column: string) => {
+          const val = getMatrixCellValue(selectionMap, row, column)
+          const colorStyle = val ? cellOptionStyle(val, cellOptions, reportStyle) : ""
+          return `<td style="border:1px solid #9ca3af;padding:8px;min-width:80px;text-align:center;${colorStyle}">${escapeHtmlForMatrix(val)}</td>`
+        })
+        .join("")
+      return `<tr><th style="border:1px solid #9ca3af;padding:8px;text-align:left;background:#f8fafc;">${escapeHtmlForMatrix(row)}</th>${cells}</tr>`
+    })
+    .join("")
+
+  const noteTrimmed = (customText || "").trim()
+  const notesHtml = noteTrimmed
+    ? `<div style="margin-top:12px;white-space:pre-wrap;">${escapeHtmlForMatrix(noteTrimmed).replace(/\n/g, "<br/>")}</div>`
+    : ""
+
+  return `<table style="width:100%;border-collapse:collapse;font-size:13px;"><thead><tr><th style="border:1px solid #9ca3af;padding:8px;background:#f8fafc;"></th>${headerHtml}</tr></thead><tbody>${bodyHtml}</tbody></table>${notesHtml}`
+}
+
 /**
  * Fetch section content for a result and return as a map of placeholder_key -> final_content
+ * For matrix sections, rebuilds HTML with color/bold/plain styling from config
  */
 async function fetchSectionContent(
   supabaseClient: any,
   resultIds: string[]
 ): Promise<Record<string, string>> {
   if (!resultIds || resultIds.length === 0) return {}
-  
+
   try {
     const { data, error } = await supabaseClient
       .from('result_section_content')
       .select(`
         final_content,
+        custom_text,
+        cascading_selections,
         lab_template_sections!inner(
-          placeholder_key
+          placeholder_key,
+          section_config
         )
       `)
       .in('result_id', resultIds)
       .not('lab_template_sections.placeholder_key', 'is', null)
-    
+
     if (error || !data) {
       console.warn('Failed to fetch section content:', error?.message)
       return {}
     }
-    
+
     // Build map of placeholder_key -> final_content
     const sectionMap: Record<string, string> = {}
     for (const item of data) {
       const key = item.lab_template_sections?.placeholder_key
-      if (key && item.final_content) {
-        sectionMap[key] = item.final_content
+      if (!key) continue
+
+      // For matrix sections, rebuild HTML with styling from config
+      const sectionCfg = item.lab_template_sections?.section_config
+      const rebuiltMatrixContent = buildMatrixHtmlFromConfig(
+        sectionCfg,
+        item.cascading_selections,
+        item.custom_text || ""
+      )
+
+      const content = rebuiltMatrixContent || item.final_content
+      if (content) {
+        sectionMap[key] = content
       }
     }
-    
+
     return sectionMap
   } catch (err) {
     console.warn('Error fetching section content:', err)
@@ -1466,20 +1615,20 @@ function injectSectionContent(html: string, sectionContent: Record<string, strin
     const simplePlaceholder = `{{${rawKey}}}`
     const originalPlaceholder = originalKey.startsWith('section:') ? `{{${originalKey}}}` : null
     
-    // Preserve basic formatting: convert newlines to proper HTML paragraphs/breaks
-    // Content comes from doctor input (CKEditor), preserve formatting
-    const formattedContent = content
-      .trim()
-      .split(/\n\n+/)  // Split on double newlines (paragraph breaks)
-      .map(para => {
-        const cleanPara = para.trim()
-        if (!cleanPara) return ''
-        // Convert single newlines to <br/> within paragraphs
-        const withBreaks = cleanPara.replace(/\n/g, '<br/>')
-        return `<p>${withBreaks}</p>`
-      })
-      .filter(Boolean)
-      .join('')
+    const trimmedContent = content.trim()
+    const formattedContent = /<[a-z][\s\S]*>/i.test(trimmedContent)
+      ? trimmedContent
+      : trimmedContent
+          .split(/\n\n+/)  // Split on double newlines (paragraph breaks)
+          .map(para => {
+            const cleanPara = para.trim()
+            if (!cleanPara) return ''
+            // Convert single newlines to <br/> within paragraphs
+            const withBreaks = cleanPara.replace(/\n/g, '<br/>')
+            return `<p>${withBreaks}</p>`
+          })
+          .filter(Boolean)
+          .join('')
     
     const wrappedContent = `<div class="section-content">${formattedContent}</div>`
     
@@ -2398,7 +2547,7 @@ serve(async (req) => {
     }
     
     // Helper to apply ImageKit transformations for signatures
-    // Adds focus:auto and e-removebg for clean signature rendering
+    // Adds non-AI ImageKit transforms for sizing/focus only.
     const applySignatureTransformations = (url: string): string => {
       if (!url) return ''
       // If it's an ImageKit URL, add transformations
@@ -2412,7 +2561,7 @@ serve(async (req) => {
             const pathParts = urlObj.pathname.split('/')
             // Insert transformations after the imagekit path identifier
             const insertIndex = pathParts.findIndex((p: string) => p && !p.includes('.')) + 1
-            pathParts.splice(insertIndex, 0, 'tr:fo-auto,e-removebg,t-true')
+            pathParts.splice(insertIndex, 0, 'tr:fo-auto,t-true')
             urlObj.pathname = pathParts.join('/')
             return urlObj.toString()
           }

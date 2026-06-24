@@ -2345,7 +2345,7 @@ serve(async (req) => {
     }
     
     // Helper to apply ImageKit transformations for signatures
-    // Adds focus:auto and e-removebg for clean signature rendering
+    // Adds non-AI ImageKit transforms for sizing/focus only.
     const applySignatureTransformations = (url: string): string => {
       if (!url) return ''
       // If it's an ImageKit URL, add transformations
@@ -2359,7 +2359,7 @@ serve(async (req) => {
             const pathParts = urlObj.pathname.split('/')
             // Insert transformations after the imagekit path identifier
             const insertIndex = pathParts.findIndex((p: string) => p && !p.includes('.')) + 1
-            pathParts.splice(insertIndex, 0, 'tr:fo-auto,e-removebg,t-true')
+            pathParts.splice(insertIndex, 0, 'tr:fo-auto,t-true')
             urlObj.pathname = pathParts.join('/')
             return urlObj.toString()
           }

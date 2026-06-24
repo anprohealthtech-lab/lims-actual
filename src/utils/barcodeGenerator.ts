@@ -113,6 +113,217 @@ export function isValidBarcodeData(data: string): boolean {
   return true;
 }
 
+function escapeHtml(value: unknown): string {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+interface BarcodeLabelMetadata {
+  sampleType?: string;
+  patientName?: string;
+  collectionDate?: string;
+  collectionTime?: string;
+  gender?: string;
+  age?: string | number;
+  referredBy?: string;
+}
+
+export interface PrintableBarcodeLabel {
+  sampleId: string;
+  barcodeDataUrl: string;
+  metadata?: BarcodeLabelMetadata;
+}
+
+function generateBarcodeLabelMarkup(label: PrintableBarcodeLabel): string {
+  const metadata = label.metadata || {};
+  const genderAgeStr = [metadata.gender, metadata.age ? `${metadata.age} Y` : ''].filter(Boolean).join(' ');
+  const dateTimeStr = [metadata.collectionDate, metadata.collectionTime].filter(Boolean).join(' ');
+
+  return `
+    <section class="barcode-label">
+      ${metadata.sampleType ? `<div class="sample-type">${escapeHtml(metadata.sampleType)}.</div>` : ''}
+      <div class="patient-row">
+        <span class="patient-name">${escapeHtml(metadata.patientName || 'Patient')}</span>
+        ${genderAgeStr ? `<span class="gender-age">${escapeHtml(genderAgeStr)}</span>` : ''}
+      </div>
+      <div class="barcode">
+        <img src="${label.barcodeDataUrl}" alt="Barcode" />
+      </div>
+      <div class="info-row">
+        <span class="sample-id">${escapeHtml(label.sampleId)}</span>
+        <span class="datetime">${escapeHtml(dateTimeStr)}</span>
+      </div>
+      ${metadata.referredBy ? `<div class="referred-by">${escapeHtml(metadata.referredBy)}</div>` : ''}
+    </section>
+  `;
+}
+
+export function generateBarcodeLabelsHTML(
+  labels: PrintableBarcodeLabel[],
+  options?: {
+    title?: string;
+    preferredPrinterName?: string | null;
+  }
+): string {
+  const title = options?.title || '';
+  const preferredPrinterName = options?.preferredPrinterName?.trim();
+
+  return `
+    <!doctype html>
+    <html>
+      <head>
+        <meta charset="utf-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1" />
+        <title>${escapeHtml(title)}</title>
+        <style>
+          * {
+            box-sizing: border-box;
+          }
+          @page {
+            size: 50.8mm 30mm;
+            margin: 0;
+          }
+          html,
+          body {
+            margin: 0;
+            padding: 0;
+            color: #000;
+            background: #fff;
+          }
+          body {
+            font-family: 'Arial', 'Helvetica', sans-serif;
+          }
+          .print-note {
+            display: none;
+          }
+          .barcode-label {
+            width: 50.8mm;
+            height: 30mm;
+            padding: 1.5mm 2mm;
+            margin: 0;
+            overflow: hidden;
+            color: #000;
+            background: #fff;
+            page-break-after: always;
+            break-after: page;
+          }
+          .barcode-label:last-child {
+            page-break-after: auto;
+            break-after: auto;
+          }
+          .sample-type {
+            font-size: 9px;
+            font-weight: bold;
+            color: #000;
+            margin-bottom: 1px;
+          }
+          .patient-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: baseline;
+            margin-bottom: 2px;
+          }
+          .patient-name {
+            font-size: 10px;
+            font-weight: bold;
+            color: #000;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+          }
+          .gender-age {
+            font-size: 10px;
+            font-weight: bold;
+            color: #000;
+            margin-left: 2mm;
+            white-space: nowrap;
+          }
+          .barcode {
+            margin: 2px 0;
+            height: 11mm;
+            overflow: hidden;
+            text-align: center;
+          }
+          .barcode img {
+            max-width: 100%;
+            height: 11mm;
+            object-fit: contain;
+          }
+          .info-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: baseline;
+            font-size: 9px;
+            font-weight: bold;
+            color: #000;
+            margin-top: 1px;
+          }
+          .sample-id {
+            font-weight: bold;
+          }
+          .datetime {
+            font-size: 9px;
+            font-weight: bold;
+          }
+          .referred-by {
+            font-size: 9px;
+            font-weight: bold;
+            color: #000;
+            margin-top: 1px;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+          }
+          @media screen {
+            body {
+              padding: 12px;
+              background: #f3f4f6;
+            }
+            .print-note {
+              display: block;
+              max-width: 50.8mm;
+              margin: 0 0 8px;
+              padding: 8px;
+              font-size: 11px;
+              color: #111827;
+              background: #fff;
+              border: 1px solid #d1d5db;
+            }
+            .barcode-label {
+              margin-bottom: 10px;
+              box-shadow: 0 1px 4px rgba(0, 0, 0, 0.12);
+            }
+          }
+          @media print {
+            * {
+              -webkit-print-color-adjust: exact;
+              print-color-adjust: exact;
+            }
+            html,
+            body {
+              width: 50.8mm !important;
+              margin: 0 !important;
+              padding: 0 !important;
+              background: #fff !important;
+            }
+            .print-note {
+              display: none !important;
+            }
+          }
+        </style>
+      </head>
+      <body>
+        ${preferredPrinterName ? `<div class="print-note">Select printer: <strong>${escapeHtml(preferredPrinterName)}</strong></div>` : ''}
+        ${labels.map(generateBarcodeLabelMarkup).join('\n')}
+      </body>
+    </html>
+  `;
+}
+
 /**
  * Generate printable barcode label HTML
  * Can be used with window.print() or react-to-print
@@ -120,62 +331,7 @@ export function isValidBarcodeData(data: string): boolean {
 export function generateBarcodeLabelHTML(
   sampleId: string,
   barcodeDataUrl: string,
-  metadata?: {
-    sampleType?: string;
-    patientName?: string;
-    collectionDate?: string;
-  }
+  metadata?: BarcodeLabelMetadata
 ): string {
-  return `
-    <html>
-      <head>
-        <title>Sample Label - ${sampleId}</title>
-        <style>
-          @page { 
-            size: 3in 2in; 
-            margin: 0; 
-          }
-          body { 
-            font-family: 'Courier New', monospace; 
-            text-align: center; 
-            padding: 8px;
-            margin: 0;
-          }
-          .sample-id { 
-            font-size: 14px; 
-            font-weight: bold; 
-            margin-bottom: 4px;
-            letter-spacing: 1px;
-          }
-          .barcode { 
-            margin: 6px 0; 
-          }
-          .barcode img {
-            max-width: 100%;
-            height: auto;
-          }
-          .metadata { 
-            font-size: 9px; 
-            color: #333; 
-            margin-top: 4px;
-            line-height: 1.3;
-          }
-          .timestamp {
-            font-size: 7px;
-            color: #666;
-            margin-top: 2px;
-          }
-        </style>
-      </head>
-      <body>
-        <div class="sample-id">${sampleId}</div>
-        <div class="barcode">
-          <img src="${barcodeDataUrl}" alt="Barcode" />
-        </div>
-        ${metadata?.sampleType ? `<div class="metadata">Type: ${metadata.sampleType}</div>` : ''}
-        ${metadata?.patientName ? `<div class="metadata">Patient: ${metadata.patientName}</div>` : ''}
-        ${metadata?.collectionDate ? `<div class="timestamp">Collected: ${metadata.collectionDate}</div>` : ''}
-      </body>
-    </html>
-  `;
+  return generateBarcodeLabelsHTML([{ sampleId, barcodeDataUrl, metadata }]);
 }

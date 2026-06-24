@@ -76,13 +76,18 @@ type ProgressRow = {
   total_values: number;
   has_results: boolean;
   is_verified: boolean;
-  panel_status: "Not started" | "In progress" | "Partial" | "Complete" | "Verified";
+  panel_status: "Not started" | "In progress" | "Partial" | "Complete" | "Verified" | "not_started" | "in_progress" | "completed" | "pending_approval" | "verified";
   sample_type?: string;
   sample_color?: string;
   color_code?: string;
   color_name?: string;
   tat_hours?: number | null;
   tat_start_time?: string | null;
+  // Section-only fields
+  is_section_only?: boolean;
+  has_section_content?: boolean;
+  section_verification_status?: string | null;
+  section_verified_at?: string | null;
 };
 
 type OrderRow = {
@@ -135,6 +140,10 @@ type Panel = {
   sample_type?: string;
   sample_color?: string;
   order_color?: string;
+  // Section-only fields
+  is_section_only?: boolean;
+  has_section_content?: boolean;
+  section_verification_status?: string | null;
 };
 
 // Update CardOrder type
@@ -232,6 +241,23 @@ type CardOrder = {
   tatStarted?: boolean;
 };
 
+type DashboardPortalUpdate = {
+  accountName: string;
+  sectionTitle: string;
+  title: string;
+  message: string;
+};
+
+const normalizePortalUpdateSlides = (raw: any): Array<{ title: string; message: string }> => {
+  if (raw?.updates_enabled === false || !Array.isArray(raw?.update_slides)) return [];
+  return raw.update_slides
+    .map((slide: any) => ({
+      title: String(slide?.title || "").trim(),
+      message: String(slide?.message || "").trim(),
+    }))
+    .filter((slide: { title: string; message: string }) => slide.title || slide.message);
+};
+
 const formatOrderCreationError = (error: any) => {
   const message = String(error?.message || error || "Failed to create order");
   if (message.includes("unique_sample_id_per_lab")) {
@@ -304,11 +330,45 @@ const Dashboard: React.FC = () => {
   const [collectionOrder, setCollectionOrder] = useState<CardOrder | null>(null);
   const [selectedPhlebotomistId, setSelectedPhlebotomistId] = useState<string>("");
   const [selectedPhlebotomistName, setSelectedPhlebotomistName] = useState<string>("");
+  const [portalUpdates, setPortalUpdates] = useState<DashboardPortalUpdate[]>([]);
 
   useEffect(() => {
     fetchOrders();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [dateFrom, dateTo, allDates]);
+
+  useEffect(() => {
+    const loadPortalUpdates = async () => {
+      const currentLabId = await database.getCurrentUserLabId();
+      if (!currentLabId) return;
+
+      const { data, error } = await supabase
+        .from("accounts")
+        .select("name, portal_settings")
+        .eq("lab_id", currentLabId)
+        .eq("is_active", true);
+
+      if (error) {
+        console.warn("Failed to load portal updates:", error);
+        return;
+      }
+
+      const updates = (data || []).flatMap((account: any) => {
+        const settings = account.portal_settings || {};
+        const sectionTitle = String(settings.updates_title || "Partner Portal Updates").trim() || "Partner Portal Updates";
+        return normalizePortalUpdateSlides(settings).map((slide) => ({
+          accountName: account.name || "Account",
+          sectionTitle,
+          title: slide.title,
+          message: slide.message,
+        }));
+      });
+
+      setPortalUpdates(updates.slice(0, 6));
+    };
+
+    loadPortalUpdates();
+  }, []);
 
   // Load auto_open_collection_modal setting once
   // eslint-disable-next-line no-console
@@ -573,6 +633,10 @@ id, patient_id, patient_name, status, priority, order_date, expected_date, total
         sample_type: r.sample_type,
         sample_color: r.sample_color,
         order_color: r.color_code,
+        // Section-only fields
+        is_section_only: r.is_section_only,
+        has_section_content: r.has_section_content,
+        section_verification_status: r.section_verification_status,
       }));
 
       const expectedTotal = panels.reduce((sum, p) => sum + p.expected, 0);
@@ -839,7 +903,9 @@ id,
             };
           });
 
-          await createSamplesForOrder(order.id, testGroupsWithInfo, labId || order.lab_id, orderData.patient_id);
+          await createSamplesForOrder(order.id, testGroupsWithInfo, labId || order.lab_id, orderData.patient_id, {
+            preBarcodedBarcode: orderData.__preBarcoded ? orderData.__preBarcodedBarcode : null,
+          });
         }
       } catch (sampleCheckErr) {
         console.error("Error auto-creating samples from Dashboard:", sampleCheckErr);
@@ -1817,7 +1883,34 @@ id,
           </div>
         )}
 
-        {/* Booking Queue — only in Patient Visits tab */}
+        {portalUpdates.length > 0 && (
+          <div className="bg-white rounded-lg border border-gray-200 shadow-sm overflow-hidden">
+            <div className="px-5 py-3 border-b border-gray-100 flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <MessageCircle className="h-4 w-4 text-indigo-600" />
+                <div>
+                  <h2 className="font-semibold text-gray-900">Partner Portal Updates</h2>
+                  <p className="text-xs text-gray-500">Updates configured in Account Master</p>
+                </div>
+              </div>
+              <span className="text-xs font-medium text-gray-500">{portalUpdates.length} live</span>
+            </div>
+            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3 p-4">
+              {portalUpdates.map((update, index) => (
+                <div key={`${update.accountName}-${index}`} className="rounded-lg border border-gray-200 bg-gray-50 p-3">
+                  <div className="text-xs font-medium text-indigo-700 truncate">{update.accountName}</div>
+                  <div className="text-xs text-gray-500 truncate">{update.sectionTitle}</div>
+                  {update.title && <div className="mt-2 text-sm font-semibold text-gray-900">{update.title}</div>}
+                  {update.message && (
+                    <p className="mt-1 text-xs leading-5 text-gray-600 line-clamp-3">{update.message}</p>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Booking Queue - only in Patient Visits tab */}
         {dashboardTab === "patient-visits" && (
           <div className="bg-white rounded-lg border border-gray-200 shadow-sm overflow-hidden mb-2">
             <button
@@ -2230,20 +2323,33 @@ id,
                               <div className="flex flex-wrap gap-1.5 pl-10 pb-0.5">
                                 {o.panels.length > 0
                                   ? o.panels.map((p, i) => {
-                                    const progress = p.expected > 0 ? (p.entered / p.expected) * 100 : 0;
-                                    const chipColor = p.verified
-                                      ? "border-green-200 bg-green-50 text-green-800"
-                                      : p.entered > 0
-                                        ? "border-amber-200 bg-amber-50 text-amber-800"
-                                        : "border-gray-200 bg-gray-50 text-gray-600";
+                                    // Section-only: show section status instead of analyte counts
+                                    const isSectionVerified = p.section_verification_status === 'verified';
+                                    const chipColor = p.is_section_only
+                                      ? (isSectionVerified
+                                          ? "border-green-200 bg-green-50 text-green-800"
+                                          : p.has_section_content
+                                            ? "border-amber-200 bg-amber-50 text-amber-800"
+                                            : "border-gray-200 bg-gray-50 text-gray-600")
+                                      : (p.verified
+                                          ? "border-green-200 bg-green-50 text-green-800"
+                                          : p.entered > 0
+                                            ? "border-amber-200 bg-amber-50 text-amber-800"
+                                            : "border-gray-200 bg-gray-50 text-gray-600");
+                                    const statusText = p.is_section_only
+                                      ? (isSectionVerified ? "✓" : p.has_section_content ? "Saved" : "Pending")
+                                      : `${p.entered}/${p.expected}${p.verified ? " ✓" : ""}`;
+                                    const titleText = p.is_section_only
+                                      ? `${p.name}: ${isSectionVerified ? "Verified" : p.has_section_content ? "Saved, pending approval" : "Section pending"}`
+                                      : `${p.name}: ${p.entered}/${p.expected}`;
                                     return (
                                       <span
                                         key={`chip-${i}`}
                                         className={`inline-flex items-center gap-1 px-2 py-0.5 rounded border text-[10px] font-semibold ${chipColor}`}
-                                        title={`${p.name}: ${p.entered}/${p.expected}`}
+                                        title={titleText}
                                       >
                                         {p.name}
-                                        <span className="opacity-70">{p.entered}/{p.expected}{p.verified ? " ✓" : ""}</span>
+                                        <span className="opacity-70">{statusText}</span>
                                       </span>
                                     );
                                   })
@@ -2467,17 +2573,30 @@ id,
                                           <div className="flex flex-wrap gap-2">
                                             {o.panels.length > 0
                                               ? visiblePanels.map((p, i) => {
-                                                const progress = p.expected > 0 ? (p.entered / p.expected) * 100 : 0;
+                                                // Section-only: check section status instead of analyte progress
+                                                const isSectionVerified = p.section_verification_status === 'verified';
+                                                const progress = p.is_section_only
+                                                  ? (p.has_section_content ? 100 : 0)
+                                                  : (p.expected > 0 ? (p.entered / p.expected) * 100 : 0);
+                                                const panelColor = p.is_section_only
+                                                  ? (isSectionVerified
+                                                      ? "border-green-200 bg-green-50"
+                                                      : p.has_section_content
+                                                        ? "border-amber-200 bg-amber-50"
+                                                        : "border-gray-200 bg-white")
+                                                  : (p.verified
+                                                      ? "border-green-200 bg-green-50"
+                                                      : p.entered > 0
+                                                        ? "border-amber-200 bg-amber-50"
+                                                        : "border-gray-200 bg-white");
+                                                const statusText = p.is_section_only
+                                                  ? (isSectionVerified ? "✓ Verified" : p.has_section_content ? "Saved" : "Pending")
+                                                  : `${p.entered}/${p.expected}${progress === 100 ? " ✓" : ""}`;
 
                                                 return (
                                                   <div
                                                     key={`${p.name}-${i}`}
-                                                    className={`flex items-center gap-2 border rounded-lg px-3 py-1.5 shadow-sm transition-all duration-300 max-w-[170px] ${p.verified
-                                                      ? "border-green-200 bg-green-50"
-                                                      : p.entered > 0
-                                                        ? "border-amber-200 bg-amber-50"
-                                                        : "border-gray-200 bg-white"
-                                                      }`}
+                                                    className={`flex items-center gap-2 border rounded-lg px-3 py-1.5 shadow-sm transition-all duration-300 max-w-[170px] ${panelColor}`}
                                                   >
                                                     <SampleTypeIndicator
                                                       sampleType={p.sample_type || "Blood"}
@@ -2487,7 +2606,7 @@ id,
                                                     <div className="min-w-0">
                                                       <div className="font-bold text-gray-900 text-xs truncate" title={p.name}>{p.name}</div>
                                                       <div className="text-[10px] text-gray-500 font-medium">
-                                                        {p.entered}/{p.expected} {progress === 100 && "✓"}
+                                                        {statusText}
                                                       </div>
                                                     </div>
                                                   </div>

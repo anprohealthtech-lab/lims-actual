@@ -27,6 +27,9 @@ interface Order {
     entered: number;
     status: string;
     verified?: boolean;
+    is_section_only?: boolean;
+    has_section_content?: boolean;
+    section_verification_status?: string | null;
   }[];
   can_add_tests?: boolean;
   hours_until_tat_breach?: number | null;
@@ -90,7 +93,14 @@ const getPendingPanels = (order: Order) => {
   }
 
   return panels
-    .filter(panel => !panel.verified && panel.status !== 'Verified' && panel.entered < panel.expected)
+    .filter(panel => {
+      // Section-only: pending if no content or not verified
+      if (panel.is_section_only) {
+        return !panel.has_section_content || panel.section_verification_status !== 'verified';
+      }
+      // Regular panels: pending if not verified and not all entered
+      return !panel.verified && panel.status !== 'Verified' && panel.entered < panel.expected;
+    })
     .map(panel => panel.name);
 };
 
@@ -197,8 +207,7 @@ const PatientVisitCard: React.FC<PatientVisitCardProps> = ({
 
           <div className="flex items-center space-x-4">
             <div className="text-right">
-              <div className="text-lg font-bold text-gray-900">₹{visit.total_amount.toLocaleString()}</div>
-              <div className="text-sm text-gray-600">{visit.total_orders} orders</div>
+              <div className="text-sm text-gray-600">{visit.total_orders} order{visit.total_orders !== 1 ? 's' : ''}</div>
             </div>
 
             <div className="flex items-center space-x-2">
@@ -305,9 +314,6 @@ const PatientVisitCard: React.FC<PatientVisitCardProps> = ({
                   {/* Center Section: Tests & Details */}
                   <div className="flex-1 md:px-6">
                     <div className="text-left md:text-right">
-                      <div className="text-lg font-bold text-gray-900">
-                        ₹{order.total_amount.toLocaleString()}
-                      </div>
                       <div className="text-sm text-gray-600">
                         {order.tests.length} test{order.tests.length !== 1 ? 's' : ''}
                       </div>
@@ -388,10 +394,7 @@ const PatientVisitCard: React.FC<PatientVisitCardProps> = ({
           </div>
 
           <div className="mt-4 pt-3 border-t border-gray-200">
-            <div className="flex items-center justify-between text-sm">
-              <span className="text-gray-600">
-                Visit Total: <span className="font-medium">₹{visit.total_amount.toLocaleString()}</span>
-              </span>
+            <div className="flex items-center justify-end text-sm">
               <span className="text-gray-600">
                 Last Updated: {new Date().toLocaleTimeString()}
               </span>
@@ -934,12 +937,6 @@ const EnhancedOrdersPage: React.FC<EnhancedOrdersPageProps> = ({
                     : 'bg-gray-100 text-gray-600 border border-gray-200'
                     }`}>
                     {group.visits.length} visit{group.visits.length !== 1 ? 's' : ''}
-                  </span>
-                  <span className={`px-3 py-1 rounded-full ${group.isToday
-                    ? 'bg-blue-100 text-blue-800 border border-blue-200'
-                    : 'bg-gray-100 text-gray-600 border border-gray-200'
-                    }`}>
-                    ₹{group.visits.reduce((sum, visit) => sum + visit.total_amount, 0).toLocaleString()}
                   </span>
                 </div>
               </div>

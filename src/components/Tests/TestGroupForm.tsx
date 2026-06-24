@@ -13,8 +13,10 @@ import {
 import AnalyteForm from './AnalyteForm';
 import { SimpleAnalyteEditor } from '../TestGroups/SimpleAnalyteEditor';
 import ReportImportWizard from './ReportImportWizard';
+import AnalyzerMappingPanel from './AnalyzerMappingPanel';
 import BuiltinTemplatePreview from '../Reports/BuiltinTemplatePreview';
 import BasicTemplateFormatBuilder from '../Reports/BasicTemplateFormatBuilder';
+import { SampleTypeIndicator } from '../Common/SampleTypeIndicator';
 
 interface TestGroupFormProps {
   onClose: () => void;
@@ -36,6 +38,8 @@ interface TestGroup {
   turnaroundTime: string;
   tat_hours?: number;
   sampleType: string;
+  sampleConditionOptions?: string[];
+  defaultSampleCondition?: string | null;
   requiresFasting: boolean;
   isActive: boolean;
   createdDate: string;
@@ -71,6 +75,8 @@ interface TestGroup {
     headerBackground?: string;
     alternateRows?: boolean;
     baseFontSize?: number;
+    showSampleType?: boolean;
+    showSampleCondition?: boolean;
     showSignature?: boolean;
   } | null;
   group_interpretation?: string | null;
@@ -94,6 +100,8 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
     turnaroundTime: testGroup?.turnaroundTime || '',
     tat_hours: testGroup?.tat_hours?.toString() || '3',
     sampleType: testGroup?.sampleType || '',
+    sampleConditionOptions: testGroup?.sampleConditionOptions || [],
+    defaultSampleCondition: testGroup?.defaultSampleCondition || '',
     requiresFasting: testGroup?.requiresFasting ?? false,
     isActive: testGroup?.isActive ?? true,
     default_ai_processing_type: testGroup?.default_ai_processing_type || 'THERMAL_SLIP_OCR',
@@ -169,6 +177,7 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
   const [syncingGlobal, setSyncingGlobal] = useState(false);
   const [syncGlobalResult, setSyncGlobalResult] = useState<string | null>(null);
   const [showReportPreview, setShowReportPreview] = useState(false);
+  const [newSampleCondition, setNewSampleCondition] = useState('');
 
   // Group interpretation CKEditor state
   const [interpEditorInstance, setInterpEditorInstance] = useState<any>(null);
@@ -247,7 +256,7 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
         database.analytes.getAll(),
         supabase.from('outsourced_labs').select('*').eq('is_active', true).order('name') as unknown as Promise<any>,
         labId
-          ? supabase.from('analyzer_connections').select('id, name, status').eq('lab_id', labId).order('name') as unknown as Promise<any>
+          ? supabase.from('analyzer_connections').select('id, name, status, profile_id').eq('lab_id', labId).order('name') as unknown as Promise<any>
           : Promise.resolve({ data: [], error: null }),
       ];
       const reportTemplatesPromise = labId
@@ -302,7 +311,7 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
           const fallbackAnalyteIds = withoutLabAnalyte.map((r: any) => r.analyte_id).filter(Boolean);
 
             const LA_SELECT = `
-              id, analyte_id,
+              id, analyte_id, sample_type,
               name, unit, category, reference_range, method,
               low_critical, high_critical,
               interpretation_low, interpretation_normal, interpretation_high,
@@ -312,11 +321,11 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
             lab_specific_interpretation_high,
             value_type, expected_normal_values, expected_value_flag_map,
             expected_value_codes, default_value,
-            is_calculated, formula, formula_variables, formula_description,
+            is_calculated, formula, formula_variables, formula_description, calculation_result_type,
             is_critical, normal_range_min, normal_range_max,
             ai_processing_type, group_ai_mode, ai_prompt_override,
             ref_range_knowledge, display_name, is_active,
-            analytes!inner(id, name, unit, reference_range, category, is_active, is_global, is_calculated, formula, formula_variables, formula_description)
+            analytes!inner(id, name, unit, reference_range, category, is_active, is_global, is_calculated, formula, formula_variables, formula_description, calculation_result_type)
           `;
 
           // Fetch by lab_analyte_id (exact, no duplicates)
@@ -372,6 +381,7 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
                   // Identity — always from global analytes
                   id: la.analyte_id,
                   lab_analyte_id: la.id,  // preserve lab_analyte PK for interface config lookup
+                  sample_type: la.sample_type ?? global?.sample_type ?? null,
                   category: la.category ?? global?.category ?? '',
                   is_global: global?.is_global ?? false,
                   // All display/entry fields — lab_analytes is source of truth, global is fallback
@@ -397,6 +407,7 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
                   formula:          la.formula          ?? global?.formula          ?? null,
                   formula_variables: laFormulaVars.length > 0 ? laFormulaVars : glbFormulaVars,
                   formula_description: la.formula_description ?? global?.formula_description ?? null,
+                  calculation_result_type: la.calculation_result_type ?? global?.calculation_result_type ?? 'numeric',
                   is_critical:     la.is_critical ?? false,
                   normal_range_min: la.normal_range_min,
                   normal_range_max: la.normal_range_max,
@@ -503,15 +514,43 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
     }
   };
 
-  // Filter analytes based on search query and showSelectedOnly toggle
-  const filteredAnalytes = analytes.filter(analyte => {
-    const matchesSearch =
-      analyte.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      analyte.category.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      analyte.unit.toLowerCase().includes(searchQuery.toLowerCase());
-    const matchesSelected = !showSelectedOnly || formData.selectedAnalytes.includes(analyte.id);
-    return matchesSearch && matchesSelected;
-  });
+  // Filter analytes based on search query, selected state, and test-group sample type.
+  const filteredAnalytes = (() => {
+    const selectedSampleType = String(formData.sampleType || '').trim().toLowerCase();
+    const filtered = analytes.filter(analyte => {
+      const analyteSampleType = String(analyte.sample_type || analyte.sampleType || '').trim().toLowerCase();
+      const matchesSearch =
+        analyte.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
+        analyte.category.toLowerCase().includes(searchQuery.toLowerCase()) ||
+        analyte.unit.toLowerCase().includes(searchQuery.toLowerCase());
+      const matchesSelected = !showSelectedOnly || formData.selectedAnalytes.includes(analyte.id);
+      const matchesSampleType =
+        !selectedSampleType ||
+        !analyteSampleType ||
+        analyteSampleType === selectedSampleType ||
+        formData.selectedAnalytes.includes(analyte.id);
+      return matchesSearch && matchesSelected && matchesSampleType;
+    });
+
+    if (!selectedSampleType) return filtered;
+
+    const bestByAnalyteId = new Map<string, any>();
+    const score = (analyte: any) => {
+      const analyteSampleType = String(analyte.sample_type || analyte.sampleType || '').trim().toLowerCase();
+      if (analyteSampleType === selectedSampleType) return 2;
+      if (!analyteSampleType) return 1;
+      return 0;
+    };
+
+    for (const analyte of filtered) {
+      const existing = bestByAnalyteId.get(analyte.id);
+      if (!existing || score(analyte) > score(existing)) {
+        bestByAnalyteId.set(analyte.id, analyte);
+      }
+    }
+
+    return Array.from(bestByAnalyteId.values());
+  })();
 
   useEffect(() => {
     const loadCalculatedDependencies = async () => {
@@ -558,6 +597,7 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
         interpretation_normal: analyteData.interpretation?.normal,
         interpretation_high: analyteData.interpretation?.high,
         category: analyteData.category,
+        sample_type: formData.sampleType || null,
         is_active: analyteData.isActive ?? true,
         is_global: false,
         ai_processing_type: analyteData.aiProcessingType,
@@ -569,6 +609,7 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
           ? analyteData.formulaVariables
           : [],
         formula_description: analyteData.isCalculated ? (analyteData.formulaDescription || null) : null,
+        calculation_result_type: analyteData.calculation_result_type || analyteData.calculationResultType || 'numeric',
       });
 
       if (error) {
@@ -640,6 +681,9 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
     'EDTA Blood',
     'Serum',
     'Plasma',
+    'Fluoride Plasma',
+    'Citrated Plasma',
+    'Capillary Blood',
     'Urine',
     'Stool',
     'CSF',
@@ -694,9 +738,21 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
 
       // Auto-sync legacy booleans from required_patient_inputs
       const rpi = formData.required_patient_inputs;
+      const sampleConditionOptions = Array.from(
+        new Set(
+          (formData.sampleConditionOptions || [])
+            .map((value: string) => value.trim())
+            .filter(Boolean),
+        ),
+      );
+      const defaultSampleCondition = sampleConditionOptions.includes(formData.defaultSampleCondition)
+        ? formData.defaultSampleCondition
+        : sampleConditionOptions[0] || '';
 
       onSubmit({
         ...formData,
+        sampleConditionOptions,
+        defaultSampleCondition: defaultSampleCondition || null,
         category: formData.category || null,
         analytes: formData.is_section_only ? [] : formData.selectedAnalytes,
         analyteMetadata: formData.is_section_only ? {} : analyteMetadata,
@@ -741,6 +797,31 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
       ...prev,
       [name]: type === 'checkbox' ? (e.target as HTMLInputElement).checked : value
     }));
+  };
+
+  const addSampleConditionOption = () => {
+    const value = newSampleCondition.trim();
+    if (!value) return;
+    setFormData(prev => {
+      const options = Array.from(new Set([...(prev.sampleConditionOptions || []), value]));
+      return {
+        ...prev,
+        sampleConditionOptions: options,
+        defaultSampleCondition: prev.defaultSampleCondition || value,
+      };
+    });
+    setNewSampleCondition('');
+  };
+
+  const removeSampleConditionOption = (value: string) => {
+    setFormData(prev => {
+      const options = (prev.sampleConditionOptions || []).filter((item: string) => item !== value);
+      return {
+        ...prev,
+        sampleConditionOptions: options,
+        defaultSampleCondition: prev.defaultSampleCondition === value ? (options[0] || '') : prev.defaultSampleCondition,
+      };
+    });
   };
 
 	  const handleAnalyteSelection = (analyteId: string) => {
@@ -857,6 +938,10 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
       return oa - ob;
     });
   })();
+
+  const selectedAnalyzerConnection = analyzerConnections.find(
+    (connection: any) => connection.id === formData.analyzer_connection_id
+  ) || null;
 
   const getCalculatedDependencyIssues = (analyte: any) => {
     if (!analyte.is_calculated) return { missing: [] as CalculatedDependency[], duplicateCount: 0 };
@@ -982,6 +1067,76 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
                     <option key={type} value={type}>{type}</option>
                   ))}
                 </select>
+              </div>
+            </div>
+
+            <div className="border border-gray-200 rounded-lg p-3 bg-gray-50">
+              <div className="flex items-start justify-between gap-3 mb-2">
+                <div>
+                  <label className="block text-sm font-medium text-gray-700">
+                    Sample Condition Options
+                  </label>
+                  <p className="text-xs text-gray-500">
+                    Optional per-test dropdown shown during sample collection, e.g. Morning, Fasting, Random.
+                  </p>
+                </div>
+                {formData.sampleConditionOptions.length > 0 && (
+                  <select
+                    value={formData.defaultSampleCondition}
+                    onChange={(e) => setFormData(prev => ({ ...prev, defaultSampleCondition: e.target.value }))}
+                    className="min-w-[180px] px-2 py-1.5 text-xs border border-gray-300 rounded-md bg-white focus:outline-none focus:ring-1 focus:ring-blue-500"
+                    title="Default sample condition"
+                  >
+                    <option value="">No default</option>
+                    {formData.sampleConditionOptions.map((option: string) => (
+                      <option key={option} value={option}>{option}</option>
+                    ))}
+                  </select>
+                )}
+              </div>
+
+              <div className="flex flex-wrap gap-2 mb-2">
+                {formData.sampleConditionOptions.length === 0 ? (
+                  <span className="text-xs text-gray-500">No condition options configured.</span>
+                ) : formData.sampleConditionOptions.map((option: string) => (
+                  <span key={option} className="inline-flex items-center gap-1 px-2 py-1 bg-white border border-gray-200 rounded-full text-xs text-gray-700">
+                    {option}
+                    {formData.defaultSampleCondition === option && (
+                      <span className="text-[10px] text-blue-600 font-medium">default</span>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => removeSampleConditionOption(option)}
+                      className="text-gray-400 hover:text-red-500"
+                      aria-label={`Remove ${option}`}
+                    >
+                      <X className="h-3 w-3" />
+                    </button>
+                  </span>
+                ))}
+              </div>
+
+              <div className="flex gap-2">
+                <input
+                  type="text"
+                  value={newSampleCondition}
+                  onChange={(e) => setNewSampleCondition(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') {
+                      e.preventDefault();
+                      addSampleConditionOption();
+                    }
+                  }}
+                  placeholder="Add condition, e.g. Fasting Sample"
+                  className="flex-1 min-w-[220px] px-3 py-2 text-sm border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent bg-white"
+                />
+                <button
+                  type="button"
+                  onClick={addSampleConditionOption}
+                  className="px-3 py-2 text-sm bg-gray-900 text-white rounded-md hover:bg-gray-800"
+                >
+                  Add
+                </button>
               </div>
             </div>
 
@@ -1513,6 +1668,7 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
                     { key: 'boldAbnormalValues', label: 'Bold Abnormal Values' },
                     { key: 'alternateRows', label: 'Alternate Row Shading' },
                     { key: 'showSampleType', label: 'Show Sample Type on Report' },
+                    { key: 'showSampleCondition', label: 'Show Sample Condition on Report' },
                     { key: 'showSignature', label: 'Show Signature on Report' },
                   ] as { key: string; label: string; disabledWhen?: boolean }[]).map(({ key, label, disabledWhen }) => {
                     const opts = (formData.print_options || {}) as Record<string, unknown>;
@@ -1928,6 +2084,9 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
                     />
                     <div className="ml-3 flex-1">
                       <div className="text-sm font-medium text-gray-900 flex items-center gap-2">
+                        {analyte.sample_type && (
+                          <SampleTypeIndicator sampleType={analyte.sample_type} size="sm" />
+                        )}
                         {analyte.name}
                         {analyte.is_calculated && (
                           <span className="inline-flex items-center gap-1 px-1.5 py-0.5 bg-amber-100 text-amber-700 text-xs font-medium rounded border border-amber-300">
@@ -2240,7 +2399,7 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
               </h3>
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">
-                  Default Analyzer
+                  Connected Analyzer
                 </label>
                 <select
                   value={formData.analyzer_connection_id}
@@ -2256,9 +2415,23 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
                 </select>
                 <p className="text-xs text-gray-500 mt-1">
                   All tests in this group will be auto-dispatched to the selected analyzer after order registration.
-                  Individual analytes can override dilution factor and unit conversion in the analyte editor.
+                  Map each attached analyte's analyzer result code below so inbound results update the correct analyte.
                 </p>
               </div>
+              {formData.analyzer_connection_id && testGroup?.id ? (
+                <AnalyzerMappingPanel
+                  testGroupId={testGroup.id}
+                  testGroupName={formData.name || testGroup.name}
+                  labId={testGroup.lab_id || null}
+                  analyzerConnection={selectedAnalyzerConnection}
+                  analytes={selectedAnalyteDetails}
+                  onReload={loadData}
+                />
+              ) : formData.analyzer_connection_id ? (
+                <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
+                  Save this test group first, then reopen it to map analyzer codes for the connected analyzer.
+                </div>
+              ) : null}
             </div>
           )}
 

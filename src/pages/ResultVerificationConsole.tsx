@@ -55,6 +55,7 @@ import {
   getSectionVerificationPermissionForDepartment,
   getVerificationPermissionForDepartment,
 } from "../utils/resultPermissions";
+import { evaluateTextCalculation, normalizeCalculationResultType } from "../utils/calculationRules";
 
 /* =========================================
    Types
@@ -1542,7 +1543,7 @@ const ResultVerificationConsole: React.FC = () => {
       const [{ data: labFormulas }, { data: rawDeps }, { data: srcAnalytesData }, { data: srcLabAnalytesData }] = await Promise.all([
         // Prefer lab_analytes formula over global analytes formula
         supabase.from('lab_analytes')
-          .select('analyte_id, is_calculated, formula, formula_variables')
+          .select('analyte_id, is_calculated, formula, formula_variables, calculation_result_type')
           .eq('lab_id', labId!)
           .in('analyte_id', calcIds),
         supabase.from('analyte_dependencies')
@@ -1571,11 +1572,16 @@ const ResultVerificationConsole: React.FC = () => {
       const labFormulaMap = new Map((labFormulas || []).map((r: any) => [r.analyte_id, r]));
       const globalFormulasNeeded = calcIds.filter(id => !labFormulaMap.has(id));
       if (globalFormulasNeeded.length > 0) {
-        const { data: globalFormulas } = await supabase.from('analytes').select('id, formula, formula_variables').in('id', globalFormulasNeeded);
+        const { data: globalFormulas } = await supabase.from('analytes').select('id, formula, formula_variables, calculation_result_type').in('id', globalFormulasNeeded);
         (globalFormulas || []).forEach((r: any) => labFormulaMap.set(r.id, { analyte_id: r.id, ...r }));
       }
       // Remap to match shape expected downstream ({ id, formula, formula_variables })
-      const formulas = Array.from(labFormulaMap.values()).map((r: any) => ({ id: r.analyte_id ?? r.id, formula: r.formula, formula_variables: r.formula_variables }));
+      const formulas = Array.from(labFormulaMap.values()).map((r: any) => ({
+        id: r.analyte_id ?? r.id,
+        formula: r.formula,
+        formula_variables: r.formula_variables,
+        calculation_result_type: r.calculation_result_type ?? 'numeric',
+      }));
       // Deduplicate deps: prefer lab-specific over global
       const depSeen = new Set<string>();
       const deps: { calculated_analyte_id: string; calculated_lab_analyte_id?: string | null; source_analyte_id: string; source_lab_analyte_id?: string | null; variable_name: string }[] = [];
@@ -1651,6 +1657,7 @@ const ResultVerificationConsole: React.FC = () => {
         analyte_id: f.id,
         formula: f.formula,
         formula_variables: f.formula_variables,
+        calculation_result_type: f.calculation_result_type,
       })));
       console.info(`${recalcLogPrefix} Dependencies loaded`, deps);
 
@@ -1779,6 +1786,28 @@ const ResultVerificationConsole: React.FC = () => {
             console.warn(`${recalcLogPrefix} Not calculated: missing source values`, {
               ...calcLogBase,
               missing: debugHintsForResult[calcRow.id],
+              scope,
+            });
+            continue;
+          }
+
+          if (normalizeCalculationResultType((fi as any).calculation_result_type) === 'text') {
+            const textResult = evaluateTextCalculation(fi.formula, scope);
+            if (!textResult.success) {
+              debugHintsForResult[calcRow.id] = [textResult.error || "text calculation"];
+              console.warn(`${recalcLogPrefix} Not calculated: text rule evaluation failed`, {
+                ...calcLogBase,
+                formula: fi.formula,
+                scope,
+                error_message: textResult.error,
+              });
+              continue;
+            }
+            updates.push({ id: calcRow.id, value: textResult.value, inputs: { ...scope } });
+            console.info(`${recalcLogPrefix} Text calculation matched`, {
+              ...calcLogBase,
+              value: textResult.value,
+              formula: fi.formula,
               scope,
             });
             continue;

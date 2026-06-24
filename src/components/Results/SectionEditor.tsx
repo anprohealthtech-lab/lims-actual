@@ -43,6 +43,7 @@ interface MatrixConfig {
   rows: string[];
   columns: string[];
   cellOptions?: string[]; // if set, cells render as dropdowns (e.g. ["S","I","R"])
+  reportStyle?: 'color' | 'bold' | 'plain';
 }
 
 interface SectionConfig {
@@ -56,15 +57,51 @@ interface SectionConfig {
 
 function buildCascadeContent(levels: CascadeLevel[], selections: Record<string, string[]>): string {
   const lines: string[] = [];
-  function traverse(levs: CascadeLevel[]) {
-    for (const level of levs) {
-      const selectedIds = selections[level.id] || [];
+
+  // Helper to get child value for a specific parent option
+  const getChildValueForParent = (subLevels: CascadeLevel[], parentOptId: string): string => {
+    const parts: string[] = [];
+    for (const subLevel of subLevels) {
+      // Check for per-parent keyed selection first (e.g., "lvl_colony_count:opt_ecoli")
+      const perParentKey = `${subLevel.id}:${parentOptId}`;
+      const perParentIds = selections[perParentKey] || [];
+      // Fall back to shared selection if no per-parent key
+      const selectedIds = perParentIds.length > 0 ? perParentIds : (selections[subLevel.id] || []);
       if (selectedIds.length === 0) continue;
-      const selectedOpts = level.options.filter(o => selectedIds.includes(o.id));
+      const selectedOpts = subLevel.options.filter(o => selectedIds.includes(o.id));
       const values = selectedOpts.map(o => o.value).join(', ');
-      if (values) lines.push(level.label ? `${level.label}: ${values}` : values);
-      for (const opt of selectedOpts) {
-        if (opt.sub_levels) traverse(opt.sub_levels);
+      if (values) parts.push(values);
+    }
+    return parts.join('; ');
+  };
+
+  function traverse(levs: CascadeLevel[], parentOptId?: string) {
+    for (const level of levs) {
+      // Check for per-parent keyed selection
+      const perParentKey = parentOptId ? `${level.id}:${parentOptId}` : null;
+      const perParentIds = perParentKey ? (selections[perParentKey] || []) : [];
+      const selectedIds = perParentIds.length > 0 ? perParentIds : (selections[level.id] || []);
+      if (selectedIds.length === 0) continue;
+
+      const selectedOpts = level.options.filter(o => selectedIds.includes(o.id));
+
+      // Check if any selected option has sub_levels - if so, inline child values
+      const hasSubLevels = selectedOpts.some(o => o.sub_levels && o.sub_levels.length > 0);
+
+      if (hasSubLevels) {
+        // Inline child values: "E. coli (Moderate), Klebsiella (Heavy)"
+        const valuesWithChildren = selectedOpts.map(o => {
+          const childVal = o.sub_levels ? getChildValueForParent(o.sub_levels, o.id) : '';
+          return childVal ? `${o.value} (${childVal})` : o.value;
+        }).join(', ');
+        if (valuesWithChildren) lines.push(level.label ? `${level.label}: ${valuesWithChildren}` : valuesWithChildren);
+        // Don't traverse sub_levels separately since we already inlined them
+      } else {
+        const values = selectedOpts.map(o => o.value).join(', ');
+        if (values) lines.push(level.label ? `${level.label}: ${values}` : values);
+        for (const opt of selectedOpts) {
+          if (opt.sub_levels) traverse(opt.sub_levels, opt.id);
+        }
       }
     }
   }
@@ -72,15 +109,32 @@ function buildCascadeContent(levels: CascadeLevel[], selections: Record<string, 
   return lines.join('\n');
 }
 
-function getVisibleLevels(levels: CascadeLevel[], selections: Record<string, string[]>): CascadeLevel[] {
-  const visible: CascadeLevel[] = [];
-  function traverse(levs: CascadeLevel[]) {
+interface VisibleLevelWithContext extends CascadeLevel {
+  _parentOptId?: string; // Track which parent option this sub-level belongs to
+  _parentOptValue?: string; // Human-readable parent value for display
+}
+
+function getVisibleLevels(levels: CascadeLevel[], selections: Record<string, string[]>): VisibleLevelWithContext[] {
+  const visible: VisibleLevelWithContext[] = [];
+  function traverse(levs: CascadeLevel[], parentOptId?: string, parentOptValue?: string) {
     for (const level of levs) {
-      visible.push(level);
-      const selectedIds = selections[level.id] || [];
+      // Add context about which parent option this level belongs to
+      const levelWithContext: VisibleLevelWithContext = {
+        ...level,
+        _parentOptId: parentOptId,
+        _parentOptValue: parentOptValue,
+      };
+      visible.push(levelWithContext);
+
+      // Check both shared and per-parent keyed selections
+      const perParentKey = parentOptId ? `${level.id}:${parentOptId}` : null;
+      const perParentIds = perParentKey ? (selections[perParentKey] || []) : [];
+      const sharedIds = selections[level.id] || [];
+      const selectedIds = [...new Set([...perParentIds, ...sharedIds])];
+
       for (const optId of selectedIds) {
         const opt = level.options.find(o => o.id === optId);
-        if (opt?.sub_levels) traverse(opt.sub_levels);
+        if (opt?.sub_levels) traverse(opt.sub_levels, opt.id, opt.value);
       }
     }
   }
@@ -169,15 +223,19 @@ function getActiveColumns(selections: Record<string, unknown> | undefined, templ
   return templateColumns;
 }
 
-function cellOptionColor(value: string, cellOptions: string[]): string {
+function cellOptionStyle(value: string, cellOptions: string[], reportStyle: MatrixConfig['reportStyle'] = 'color'): string {
   if (!cellOptions.length) return '';
+  if (reportStyle === 'plain') return '';
+  if (reportStyle === 'bold') return 'font-weight:700 !important;';
+
   const idx = cellOptions.findIndex(o => o.trim().toUpperCase() === value.trim().toUpperCase());
   if (idx === -1) return '';
   // first option = green (sensitive), last option = red (resistant), middle = orange (intermediate)
-  if (cellOptions.length === 1) return 'background:#d1fae5;color:#065f46;font-weight:600;';
-  if (idx === 0) return 'background:#d1fae5;color:#065f46;font-weight:600;';
-  if (idx === cellOptions.length - 1) return 'background:#fee2e2;color:#991b1b;font-weight:600;';
-  return 'background:#fff3cd;color:#92400e;font-weight:600;';
+  // Use !important to override .basic-report-template td { background-color: #fff !important; }
+  if (cellOptions.length === 1) return 'background:#d1fae5 !important;color:#065f46 !important;font-weight:600 !important;';
+  if (idx === 0) return 'background:#d1fae5 !important;color:#065f46 !important;font-weight:600 !important;';
+  if (idx === cellOptions.length - 1) return 'background:#fee2e2 !important;color:#991b1b !important;font-weight:600 !important;';
+  return 'background:#fff3cd !important;color:#92400e !important;font-weight:600 !important;';
 }
 
 function buildMatrixHtml(config: MatrixConfig | undefined, selections: Record<string, unknown> | undefined, customText: string): string {
@@ -188,6 +246,7 @@ function buildMatrixHtml(config: MatrixConfig | undefined, selections: Record<st
     return customText.trim();
   }
   const cellOptions = config?.cellOptions || [];
+  const reportStyle = config?.reportStyle || 'color';
 
   const headerHtml = columns
     .map((column) => `<th style="border:1px solid #9ca3af;padding:8px;text-align:left;background:#f8fafc;">${escapeHtml(getColLabel(selections, column))}</th>`)
@@ -198,7 +257,7 @@ function buildMatrixHtml(config: MatrixConfig | undefined, selections: Record<st
       const cells = columns
         .map((column) => {
           const val = getMatrixCellValue(selections, row, column);
-          const colorStyle = val ? cellOptionColor(val, cellOptions) : '';
+          const colorStyle = val ? cellOptionStyle(val, cellOptions, reportStyle) : '';
           return `<td style="border:1px solid #9ca3af;padding:8px;min-width:80px;text-align:center;${colorStyle}">${escapeHtml(val)}</td>`;
         })
         .join('');
@@ -234,21 +293,35 @@ const CascadeSelector: React.FC<CascadeSelectorProps> = ({ section, selections, 
 
   const visibleLevels = getVisibleLevels(config.cascade_levels, selections);
 
-  const handleSelect = (levelId: string, optionId: string, multiSelect: boolean) => {
-    const current = selections[levelId] || [];
+  const handleSelect = (levelId: string, optionId: string, multiSelect: boolean, parentOptId?: string) => {
+    // Use per-parent keyed selection if this level has a parent
+    const selectionKey = parentOptId ? `${levelId}:${parentOptId}` : levelId;
+    const current = selections[selectionKey] || [];
     const newSelected = multiSelect
       ? current.includes(optionId)
         ? current.filter(id => id !== optionId)
         : [...current, optionId]
       : current.includes(optionId) ? [] : [optionId];
 
-    const draft = { ...selections, [levelId]: newSelected };
+    const draft = { ...selections, [selectionKey]: newSelected };
 
-    // Prune selections for levels that are no longer visible
-    const nowVisible = new Set(getVisibleLevels(config.cascade_levels, draft).map(l => l.id));
+    // Prune selections for levels/keys that are no longer visible
+    const nowVisibleLevels = getVisibleLevels(config.cascade_levels, draft);
+    const validKeys = new Set<string>();
+    for (const level of nowVisibleLevels) {
+      validKeys.add(level.id);
+      if (level._parentOptId) {
+        validKeys.add(`${level.id}:${level._parentOptId}`);
+      }
+    }
+
     const cleaned: Record<string, string[]> = {};
-    for (const [id, sel] of Object.entries(draft)) {
-      if (nowVisible.has(id)) cleaned[id] = sel;
+    for (const [key, sel] of Object.entries(draft)) {
+      // Keep if it's a valid level ID or per-parent key
+      const baseId = key.split(':')[0];
+      if (validKeys.has(key) || validKeys.has(baseId)) {
+        cleaned[key] = sel as string[];
+      }
     }
 
     onChange(cleaned, buildCascadeContent(config.cascade_levels, cleaned));
@@ -257,12 +330,24 @@ const CascadeSelector: React.FC<CascadeSelectorProps> = ({ section, selections, 
   return (
     <div className="space-y-4">
       {visibleLevels.map((level, idx) => {
-        const selectedIds = selections[level.id] || [];
+        // Use per-parent keyed selection if this level has a parent
+        const selectionKey = level._parentOptId ? `${level.id}:${level._parentOptId}` : level.id;
+        const selectedIds = selections[selectionKey] || selections[level.id] || [];
+
         return (
-          <div key={level.id}>
+          <div key={`${level.id}-${level._parentOptId || 'root'}`}>
             {idx > 0 && <div className="border-t border-gray-100 pt-4" />}
             <label className="block text-sm font-medium text-gray-700 mb-2">
-              {level.label || 'Select an option'}
+              {/* Show parent context for sub-levels */}
+              {level._parentOptValue ? (
+                <span>
+                  <span className="text-blue-600 font-semibold">{level._parentOptValue}</span>
+                  <span className="mx-1.5 text-gray-400">→</span>
+                  {level.label || 'Select an option'}
+                </span>
+              ) : (
+                level.label || 'Select an option'
+              )}
               {level.multi_select && (
                 <span className="ml-1 text-xs font-normal text-gray-400">(select multiple)</span>
               )}
@@ -274,7 +359,7 @@ const CascadeSelector: React.FC<CascadeSelectorProps> = ({ section, selections, 
                   <button
                     key={option.id}
                     type="button"
-                    onClick={() => !disabled && handleSelect(level.id, option.id, level.multi_select)}
+                    onClick={() => !disabled && handleSelect(level.id, option.id, level.multi_select, level._parentOptId)}
                     disabled={disabled}
                     className={`w-full text-left px-3 py-2.5 rounded-lg border text-sm transition-all ${
                       isSelected

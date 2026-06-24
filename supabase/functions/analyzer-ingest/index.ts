@@ -5,11 +5,11 @@
 //   POST /analyzer-ingest
 //     Store raw analyzer message.
 //   GET /analyzer-ingest/pending
-//     Fetch push-style mapped orders. Excludes analyzer-initiated worklist rows.
+//     Fetch due push-style mapped orders and reclaim stale send leases.
 //   GET /analyzer-ingest/worklist?sample_barcode=...
 //     Fetch one ORR^O02 worklist response for analyzer-initiated flows.
 //   POST /analyzer-ingest/ack
-//     Confirm push delivery or NAK.
+//     Confirm push delivery, transport failure, or analyzer NAK.
 
 import { createClient } from 'jsr:@supabase/supabase-js@2'
 
@@ -26,6 +26,38 @@ function errorDetails(error: unknown) {
   if (error instanceof Error) return { message: error.message, name: error.name }
   if (typeof error === 'object' && error !== null) return error
   return { message: String(error) }
+}
+
+const STALE_SENDING_AFTER_MS = 60_000
+const MAX_RETRY_DELAY_SECONDS = 300
+
+function retryDelaySeconds(previousRetryCount: number) {
+  return Math.min(MAX_RETRY_DELAY_SECONDS, 3 * (2 ** Math.min(previousRetryCount, 7)))
+}
+
+function isRetryableTransportError(errorReason: unknown) {
+  const message = String(errorReason ?? '').toLowerCase()
+  if (!message) return false
+
+  return [
+    'no connection found',
+    'not connected',
+    'connection unavailable',
+    'connection closed',
+    'socket closed',
+    'socket hang up',
+    'write failed',
+    'write after end',
+    'timed out',
+    'timeout',
+    'etimedout',
+    'econnrefused',
+    'econnreset',
+    'enotfound',
+    'ehostunreach',
+    'enetunreach',
+    'epipe',
+  ].some((fragment) => message.includes(fragment))
 }
 
 async function validateKey(supabase: any, apiKey: string) {
@@ -160,6 +192,86 @@ Deno.serve(async (req) => {
 
   if (req.method === 'GET' && path.endsWith('/pending')) {
     try {
+      const now = new Date()
+      const nowIso = now.toISOString()
+      const staleBeforeIso = new Date(now.getTime() - STALE_SENDING_AFTER_MS).toISOString()
+
+      const { data: rejectedRows, error: rejectedError } = await supabase
+        .from('analyzer_order_queue')
+        .select('id, last_error')
+        .eq('lab_id', labId)
+        .eq('status', 'rejected')
+        .eq('flow_type', 'lims_push')
+        .is('sent_at', null)
+        .limit(100)
+
+      if (rejectedError) {
+        logIngest('transient_rejection_fetch_failed', {
+          request_id: requestId,
+          lab_id: labId,
+          error: errorDetails(rejectedError),
+        })
+        return json({ error: 'Failed to recover transient analyzer failures' }, 500)
+      }
+
+      const recoverableIds = (rejectedRows ?? [])
+        .filter((row: any) => isRetryableTransportError(row.last_error))
+        .map((row: any) => row.id)
+
+      if (recoverableIds.length > 0) {
+        await supabase
+          .from('analyzer_order_queue')
+          .update({
+            status: 'mapped',
+            next_retry_at: nowIso,
+            sending_started_at: null,
+          })
+          .in('id', recoverableIds)
+          .eq('status', 'rejected')
+
+        logIngest('transient_rejections_recovered', {
+          request_id: requestId,
+          lab_id: labId,
+          queue_ids: recoverableIds,
+        })
+      }
+
+      const { data: staleRows, error: staleError } = await supabase
+        .from('analyzer_order_queue')
+        .select('id, retry_count')
+        .eq('lab_id', labId)
+        .eq('status', 'sending')
+        .eq('flow_type', 'lims_push')
+        .or(`sending_started_at.is.null,sending_started_at.lt.${staleBeforeIso}`)
+
+      if (staleError) {
+        logIngest('stale_sending_fetch_failed', {
+          request_id: requestId,
+          lab_id: labId,
+          error: errorDetails(staleError),
+        })
+        return json({ error: 'Failed to recover stale analyzer orders' }, 500)
+      }
+
+      for (const staleRow of staleRows ?? []) {
+        const previousRetryCount = Number(staleRow.retry_count ?? 0)
+        const nextRetryAt = new Date(
+          now.getTime() + retryDelaySeconds(previousRetryCount) * 1000,
+        ).toISOString()
+
+        await supabase
+          .from('analyzer_order_queue')
+          .update({
+            status: 'mapped',
+            retry_count: previousRetryCount + 1,
+            last_error: 'Bridge send lease expired before delivery was confirmed',
+            next_retry_at: nextRetryAt,
+            sending_started_at: null,
+          })
+          .eq('id', staleRow.id)
+          .eq('status', 'sending')
+      }
+
       const { data: orders, error: fetchError } = await supabase
         .from('analyzer_order_queue')
         .select(`
@@ -184,10 +296,11 @@ Deno.serve(async (req) => {
 	            status
 	          ),
 	          created_at
-	        `)
+        `)
         .eq('lab_id', labId)
         .eq('status', 'mapped')
         .eq('flow_type', 'lims_push')
+        .or(`next_retry_at.is.null,next_retry_at.lte.${nowIso}`)
         .order('priority', { ascending: true })
         .order('created_at', { ascending: true })
         .limit(20)
@@ -201,23 +314,41 @@ Deno.serve(async (req) => {
 	        return json({ error: 'Failed to fetch pending orders' }, 500)
 	      }
 
-	      if (orders && orders.length > 0) {
-	        const ids = orders.map((o: any) => o.id)
-        await supabase
+      const claimedOrders = []
+      for (const order of orders ?? []) {
+        const { data: claimedRows, error: claimError } = await supabase
           .from('analyzer_order_queue')
-	          .update({ status: 'sending', sending_started_at: new Date().toISOString() })
-	          .in('id', ids)
-	      }
+          .update({
+            status: 'sending',
+            sending_started_at: nowIso,
+            next_retry_at: null,
+          })
+          .eq('id', order.id)
+          .eq('status', 'mapped')
+          .select('id')
+
+        if (claimError) {
+          logIngest('pending_claim_failed', {
+            request_id: requestId,
+            lab_id: labId,
+            queue_id: order.id,
+            error: errorDetails(claimError),
+          })
+          continue
+        }
+
+        if (claimedRows?.length) claimedOrders.push(order)
+      }
 
 	      logIngest('pending_poll', {
 	        request_id: requestId,
 	        lab_id: labId,
-	        count: orders?.length ?? 0,
-	        queue_ids: (orders ?? []).map((o: any) => o.id),
-	        analyzer_connection_ids: [...new Set((orders ?? []).map((o: any) => o.analyzer_connection_id).filter(Boolean))],
-	        sample_barcodes: (orders ?? []).map((o: any) => o.sample_barcode),
+	        count: claimedOrders.length,
+	        queue_ids: claimedOrders.map((o: any) => o.id),
+	        analyzer_connection_ids: [...new Set(claimedOrders.map((o: any) => o.analyzer_connection_id).filter(Boolean))],
+	        sample_barcodes: claimedOrders.map((o: any) => o.sample_barcode),
 	      })
-	      return json({ orders: orders ?? [], count: orders?.length ?? 0 })
+	      return json({ orders: claimedOrders, count: claimedOrders.length })
 	    } catch (err) {
 	      logIngest('pending_exception', { request_id: requestId, lab_id: labId, error: errorDetails(err) })
 	      return json({ error: 'Internal server error' }, 500)
@@ -341,7 +472,7 @@ Deno.serve(async (req) => {
   if (req.method === 'POST' && path.endsWith('/ack')) {
     try {
 	      const body = await req.json()
-	      const { queue_id, ack, error_reason } = body
+	      const { queue_id, ack, error_reason, delivery_status, retryable } = body
 
 	      if (!queue_id) {
 	        logIngest('ack_missing_queue_id', { request_id: requestId, lab_id: labId, ack })
@@ -350,7 +481,7 @@ Deno.serve(async (req) => {
 
       const { data: entry, error: entryError } = await supabase
         .from('analyzer_order_queue')
-        .select('id, lab_id, order_id')
+        .select('id, lab_id, order_id, retry_count')
         .eq('id', queue_id)
         .eq('lab_id', labId)
         .single()
@@ -366,22 +497,37 @@ Deno.serve(async (req) => {
 	        return json({ error: 'Queue entry not found or not yours' }, 404)
 	      }
 
-      const newStatus = ack ? 'sent' : 'rejected'
       const now = new Date().toISOString()
+      const transportFailure = !ack && (
+        delivery_status === 'transport_error' ||
+        retryable === true ||
+        isRetryableTransportError(error_reason)
+      )
+      const previousRetryCount = Number(entry.retry_count ?? 0)
+      const newRetryCount = previousRetryCount + (transportFailure ? 1 : 0)
+      const nextRetryAt = transportFailure
+        ? new Date(Date.now() + retryDelaySeconds(previousRetryCount) * 1000).toISOString()
+        : null
+      const newStatus = ack ? 'sent' : transportFailure ? 'mapped' : 'rejected'
 
       await supabase
         .from('analyzer_order_queue')
         .update({
           status: newStatus,
           sent_at: ack ? now : null,
-          ...(error_reason && { last_error: error_reason }),
+          sending_started_at: null,
+          next_retry_at: nextRetryAt,
+          retry_count: newRetryCount,
+          last_error: ack ? null : (error_reason || (transportFailure
+            ? 'Analyzer transport unavailable'
+            : 'Analyzer rejected the message')),
         })
         .eq('id', queue_id)
 
       await supabase.from('analyzer_comm_log').insert({
         lab_id: labId,
         direction: 'SEND',
-        message_type: ack ? 'ACK' : 'NAK',
+        message_type: ack ? 'ACK' : transportFailure ? 'TRANSPORT_ERROR' : 'NAK',
         queue_id,
         order_id: entry.order_id,
         success: ack,
@@ -395,9 +541,18 @@ Deno.serve(async (req) => {
 	        order_id: entry.order_id,
 	        ack: Boolean(ack),
 	        status: newStatus,
+	        transport_failure: transportFailure,
+	        retry_count: newRetryCount,
+	        next_retry_at: nextRetryAt,
 	        error_reason: error_reason || null,
 	      })
-	      return json({ success: true, status: newStatus })
+	      return json({
+	        success: true,
+	        status: newStatus,
+	        retry_scheduled: transportFailure,
+	        retry_count: newRetryCount,
+	        next_retry_at: nextRetryAt,
+	      })
 	    } catch (err) {
 	      logIngest('ack_exception', { request_id: requestId, lab_id: labId, error: errorDetails(err) })
 	      return json({ error: 'Internal server error' }, 500)

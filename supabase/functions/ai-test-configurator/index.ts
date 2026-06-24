@@ -96,6 +96,12 @@ ${typeof requiresFasting === 'boolean' ? `REQUIRES FASTING OVERRIDE (STRICT): ${
 LAB CONTEXT: ${labContext || `User: ${user.email}, Lab: ${userData?.lab_id || 'Default'}`}
 REQUEST MODE: ${insert ? 'INSERT' : 'PREVIEW'}
 
+QUALITATIVE ANALYTE RULES (STRICT):
+- For every analyte with value_type "qualitative", ALWAYS populate expected_normal_values with all valid dropdown options.
+- For a qualitative analyte, use a reference_range only when the user's TEST TO ANALYZE or DESCRIPTION explicitly provides one.
+- If the user did not provide a qualitative reference range, set reference_range to a single space: " ".
+- Never generate placeholders such as "See lab ref", "See lab reference", or "Refer to lab".
+
 Return ONLY valid JSON with no additional text.`
 
     // Call Anthropic API (switched from Gemini)
@@ -168,6 +174,8 @@ Return ONLY valid JSON with no additional text.`
         created_at: new Date().toISOString()
       })
 
+    parsedResponse = normalizeGeneratedConfiguration(parsedResponse)
+
     return new Response(
       JSON.stringify({
         success: true,
@@ -182,11 +190,12 @@ Return ONLY valid JSON with no additional text.`
 
   } catch (error) {
     console.error('Error in AI test configurator:', error)
+    const errorMessage = error instanceof Error ? error.message : String(error)
     
     return new Response(
       JSON.stringify({
         success: false,
-        error: error.message
+        error: errorMessage
       }),
       {
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },
@@ -302,8 +311,9 @@ REQUIREMENTS:
      * Inflammation: ["None", "Mild", "Moderate", "Severe"]
      * Widal titer: ["<1:20", "1:20", "1:40", "1:80", "1:160", "1:320"]
    - descriptive: microscopy comments, morphology, culture remarks. expected_normal_values = []
-13. If value_type is qualitative or semi_quantitative, ALWAYS populate expected_normal_values with the valid choices as shown in examples above.
-14. For qualitative, semi_quantitative, or descriptive analytes, unit should usually be an empty string unless a real measurement unit truly applies.
+13. If value_type is qualitative or semi_quantitative, ALWAYS populate expected_normal_values with the valid choices as shown in examples above. These values are used as Expected Values (Dropdown Options).
+14. For qualitative analytes, use reference_range only when the user explicitly provides it in the test name or description. Otherwise set reference_range to a single space (" "). Never use "See lab ref", "See lab reference", "Refer to lab", or a similar placeholder.
+15. For qualitative, semi_quantitative, or descriptive analytes, unit should usually be an empty string unless a real measurement unit truly applies.
 
 CONTEXT:
 - This is for a clinical laboratory information system
@@ -312,4 +322,35 @@ CONTEXT:
 - Ensure all analytes have proper clinical interpretations
 - For imaging tests (X-Ray, CT, MRI, etc.), use appropriate imaging sample types
 - For procedures (ECG, EEG, etc.), use procedure-specific sample types`
+}
+
+function normalizeGeneratedConfiguration(configuration: any): any {
+  if (!configuration || !Array.isArray(configuration.analytes)) {
+    return configuration
+  }
+
+  configuration.analytes = configuration.analytes.map((analyte: any) => {
+    const valueType = String(analyte?.value_type || '').trim().toLowerCase()
+    if (valueType !== 'qualitative') {
+      return analyte
+    }
+
+    const expectedNormalValues = Array.isArray(analyte.expected_normal_values)
+      ? analyte.expected_normal_values
+          .map((value: unknown) => String(value).trim())
+          .filter(Boolean)
+      : []
+    const referenceRange = String(analyte.reference_range ?? '')
+    const isLabReferencePlaceholder =
+      /^\s*(see|refer to|use)\s+(the\s+)?lab(oratory)?\s+(ref(erence)?|range|reference range)\.?\s*$/i
+        .test(referenceRange)
+
+    return {
+      ...analyte,
+      reference_range: !referenceRange.trim() || isLabReferencePlaceholder ? ' ' : referenceRange,
+      expected_normal_values: expectedNormalValues,
+    }
+  })
+
+  return configuration
 }

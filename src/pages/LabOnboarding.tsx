@@ -541,7 +541,7 @@ const LabOnboarding: React.FC = () => {
 
                             <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 mb-6">
                                 <p className="text-blue-800">
-                                    <strong>5-Day Free Trial Active!</strong><br />
+                                    <strong>7-Day Free Trial Active!</strong><br />
                                     Your lab is ready to use. Explore all features during your trial period.
                                 </p>
                             </div>

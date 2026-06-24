@@ -75,6 +75,50 @@ interface SignatureVariant {
 
 const isPlaceholderId = (value: string) => value.startsWith('temp-');
 
+type ReportSignatureSlotSource = 'fixed_signature' | 'approver_signature' | 'empty';
+
+interface ReportSignatureSlot {
+  source: ReportSignatureSlotSource;
+  signatureId?: string;
+}
+
+interface ReportSignatureSettings {
+  enabled: boolean;
+  maxCount: number;
+  qrPosition: 'footer_left' | 'hidden';
+  duplicatePolicy: 'skip_same_signature' | 'allow_duplicates';
+  slots: ReportSignatureSlot[];
+}
+
+const DEFAULT_REPORT_SIGNATURE_SETTINGS: ReportSignatureSettings = {
+  enabled: true,
+  maxCount: 1,
+  qrPosition: 'footer_left',
+  duplicatePolicy: 'skip_same_signature',
+  slots: [{ source: 'approver_signature' }, { source: 'empty' }, { source: 'empty' }],
+};
+
+const normalizeReportSignatureSettings = (raw: any): ReportSignatureSettings => {
+  const sourceValues: ReportSignatureSlotSource[] = ['fixed_signature', 'approver_signature', 'empty'];
+  const rawSlots = Array.isArray(raw?.slots) ? raw.slots : DEFAULT_REPORT_SIGNATURE_SETTINGS.slots;
+  const maxCount = Math.max(1, Math.min(3, Number(raw?.maxCount ?? DEFAULT_REPORT_SIGNATURE_SETTINGS.maxCount)));
+
+  return {
+    enabled: raw?.enabled !== false,
+    maxCount,
+    qrPosition: raw?.qrPosition === 'hidden' ? 'hidden' : 'footer_left',
+    duplicatePolicy: raw?.duplicatePolicy === 'allow_duplicates' ? 'allow_duplicates' : 'skip_same_signature',
+    slots: Array.from({ length: 3 }, (_, index) => {
+      const slot = rawSlots[index] || {};
+      const source = sourceValues.includes(slot.source) ? slot.source : 'empty';
+      return {
+        source,
+        signatureId: source === 'fixed_signature' ? slot.signatureId || '' : undefined,
+      };
+    }),
+  };
+};
+
 export const BrandingSettings: React.FC = () => {
   const [currentTab, setCurrentTab] = useState<'assets' | 'signatures' | 'watermark' | 'preview' | 'pdf-settings'>('assets');
   const [loading, setLoading] = useState(true);
@@ -158,7 +202,8 @@ export const BrandingSettings: React.FC = () => {
             headerTextColor: 'inherit',
             headerHeight: '90px',
             footerHeight: '80px',
-            margins: { top: '180px', bottom: '150px', left: '20px', right: '20px' }
+            margins: { top: '180px', bottom: '150px', left: '20px', right: '20px' },
+            reportSignatures: DEFAULT_REPORT_SIGNATURE_SETTINGS,
           });
         }
       }
@@ -341,6 +386,25 @@ export const BrandingSettings: React.FC = () => {
     } finally {
       setSavingPdfSettings(false);
     }
+  };
+
+  const reportSignatureSettings = normalizeReportSignatureSettings(pdfSettings?.reportSignatures);
+
+  const updateReportSignatureSettings = (patch: Partial<ReportSignatureSettings>) => {
+    setPdfSettings({
+      ...pdfSettings,
+      reportSignatures: normalizeReportSignatureSettings({
+        ...reportSignatureSettings,
+        ...patch,
+      }),
+    });
+  };
+
+  const updateReportSignatureSlot = (index: number, patch: Partial<ReportSignatureSlot>) => {
+    const slots = reportSignatureSettings.slots.map((slot, slotIndex) =>
+      slotIndex === index ? { ...slot, ...patch } : slot
+    );
+    updateReportSignatureSettings({ slots });
   };
 
   const getProcessingStatusIcon = (status?: string) => {
@@ -955,6 +1019,110 @@ export const BrandingSettings: React.FC = () => {
                     })}
                     className="block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm text-sm"
                   />
+                </div>
+              </div>
+            </div>
+
+            {/* Report Signature Footer */}
+            <div className="border-t border-gray-200 pt-6 mt-6">
+              <h4 className="text-md font-medium text-gray-900 mb-1">Report Footer Signatures</h4>
+              <p className="text-sm text-gray-500 mb-4">
+                Choose up to three signature blocks for generated report PDFs. The QR code shares the same footer row.
+              </p>
+
+              <div className="space-y-4">
+                <div className="flex items-center justify-between p-3 bg-gray-50 rounded">
+                  <div>
+                    <label className="text-sm font-medium text-gray-700">Show Signature Footer</label>
+                    <p className="text-xs text-gray-500 mt-0.5">Applies to built-in report templates and fallback signature injection.</p>
+                  </div>
+                  <label className="relative inline-flex items-center cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={reportSignatureSettings.enabled}
+                      onChange={(e) => updateReportSignatureSettings({ enabled: e.target.checked })}
+                      className="sr-only peer"
+                    />
+                    <div className="w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-blue-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:start-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-blue-600"></div>
+                  </label>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                  <div>
+                    <label className="block text-xs font-medium text-gray-500 mb-1">Number of Signature Slots</label>
+                    <select
+                      value={reportSignatureSettings.maxCount}
+                      onChange={(e) => updateReportSignatureSettings({ maxCount: Number(e.target.value) })}
+                      className="block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm text-sm"
+                    >
+                      <option value={1}>1 signature</option>
+                      <option value={2}>2 signatures</option>
+                      <option value={3}>3 signatures</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-xs font-medium text-gray-500 mb-1">QR Code</label>
+                    <select
+                      value={reportSignatureSettings.qrPosition}
+                      onChange={(e) => updateReportSignatureSettings({ qrPosition: e.target.value as ReportSignatureSettings['qrPosition'] })}
+                      className="block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm text-sm"
+                    >
+                      <option value="footer_left">Footer left</option>
+                      <option value="hidden">Hidden</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-xs font-medium text-gray-500 mb-1">Duplicate Handling</label>
+                    <select
+                      value={reportSignatureSettings.duplicatePolicy}
+                      onChange={(e) => updateReportSignatureSettings({ duplicatePolicy: e.target.value as ReportSignatureSettings['duplicatePolicy'] })}
+                      className="block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm text-sm"
+                    >
+                      <option value="skip_same_signature">Skip same signature</option>
+                      <option value="allow_duplicates">Allow duplicates</option>
+                    </select>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+                  {reportSignatureSettings.slots.map((slot, index) => {
+                    const disabled = index >= reportSignatureSettings.maxCount || !reportSignatureSettings.enabled;
+                    return (
+                      <div key={index} className={`border border-gray-200 rounded-lg p-4 ${disabled ? 'bg-gray-50 opacity-70' : 'bg-white'}`}>
+                        <label className="block text-sm font-medium text-gray-700 mb-2">Slot {index + 1}</label>
+                        <select
+                          value={slot.source}
+                          disabled={disabled}
+                          onChange={(e) => updateReportSignatureSlot(index, {
+                            source: e.target.value as ReportSignatureSlotSource,
+                            signatureId: e.target.value === 'fixed_signature' ? slot.signatureId : undefined,
+                          })}
+                          className="block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm text-sm disabled:bg-gray-100"
+                        >
+                          <option value="approver_signature">Approver / verifier</option>
+                          <option value="fixed_signature">Fixed lab signature</option>
+                          <option value="empty">Empty</option>
+                        </select>
+
+                        {slot.source === 'fixed_signature' && (
+                          <select
+                            value={slot.signatureId || ''}
+                            disabled={disabled}
+                            onChange={(e) => updateReportSignatureSlot(index, { signatureId: e.target.value })}
+                            className="mt-3 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm text-sm disabled:bg-gray-100"
+                          >
+                            <option value="">Select signature</option>
+                            {userSignatures.map((signature) => (
+                              <option key={signature.id} value={signature.id}>
+                                {signature.signature_name}
+                                {signature.users?.name ? ` - ${signature.users.name}` : ''}
+                              </option>
+                            ))}
+                          </select>
+                        )}
+                      </div>
+                    );
+                  })}
                 </div>
               </div>
             </div>

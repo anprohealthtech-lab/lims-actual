@@ -20,7 +20,7 @@ export interface AnalyteWithRange {
 export async function resolveReferenceRanges(
   orderId: string,
   testGroupId: string,
-  analytes: Array<{ id: string; name: string; value: string; unit: string }>
+  analytes: Array<{ id: string; lab_analyte_id?: string | null; name: string; value: string; unit: string }>
 ): Promise<AnalyteWithRange[]> {
   
   console.log('Invoking AI (Anthropic) for TestGroup:', testGroupId);

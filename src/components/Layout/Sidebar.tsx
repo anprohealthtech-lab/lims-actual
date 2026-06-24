@@ -76,6 +76,7 @@ const navigation = [
   { name: 'Outsourced Queue', href: '/outsourced-queue', icon: ListOrdered, category: 'outsourced' },
 
   // Sample Transit (Intra-Lab)
+  { name: 'Accession', href: '/accession', icon: TestTube, category: 'transit' },
   { name: 'Sample Transit', href: '/sample-transit', icon: Truck, category: 'transit' },
 
   // Quality Control - AI-First QC Module

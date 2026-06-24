@@ -54,6 +54,7 @@ interface Analyte {
   formula?: string;
   formulaVariables?: string[];
   formulaDescription?: string;
+  calculation_result_type?: 'numeric' | 'text';
   // Value type and identification
   value_type?: string;
   code?: string;
@@ -102,6 +103,7 @@ const AnalyteForm: React.FC<AnalyteFormProps> = ({ onClose, onSubmit, analyte, a
     formula: analyte?.formula || '',
     formulaVariables: analyte?.formulaVariables?.join(', ') || '',
     formulaDescription: analyte?.formulaDescription || '',
+    calculationResultType: analyte?.calculation_result_type || 'numeric',
     // Value type and identification
     value_type: analyte?.value_type || 'numeric',
     code: analyte?.code || '',
@@ -345,6 +347,7 @@ const AnalyteForm: React.FC<AnalyteFormProps> = ({ onClose, onSubmit, analyte, a
       formula: aiSuggestion.formula ?? prev.formula,
       formulaVariables: aiSuggestion.formula_variables?.join(', ') ?? prev.formulaVariables,
       formulaDescription: aiSuggestion.formula_description ?? prev.formulaDescription,
+      calculationResultType: (aiSuggestion as any).calculation_result_type ?? prev.calculationResultType,
       expectedNormalValues: aiSuggestion.expected_normal_values?.join('\n') || prev.expectedNormalValues,
     }));
     setAiApplied(true);
@@ -381,6 +384,7 @@ const AnalyteForm: React.FC<AnalyteFormProps> = ({ onClose, onSubmit, analyte, a
       ref_range_knowledge: { text_rules: formData.refRangeKnowledgeText },
       // Formula variables from either selection or text input
       formulaVariables,
+      calculation_result_type: formData.calculationResultType,
       // Include source dependencies for immediate creation
       sourceDependencies,
       // Value type and identification
@@ -1009,7 +1013,20 @@ const AnalyteForm: React.FC<AnalyteFormProps> = ({ onClose, onSubmit, analyte, a
                 {/* Step 2: Build Formula */}
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1">
-                    Step 2: Build Formula *
+                    Result Type
+                  </label>
+                  <select
+                    name="calculationResultType"
+                    value={formData.calculationResultType}
+                    onChange={handleChange}
+                    className="w-full px-3 py-2 mb-3 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-amber-500 focus:border-transparent"
+                  >
+                    <option value="numeric">Numeric formula</option>
+                    <option value="text">Text rules</option>
+                  </select>
+
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                    Step 2: Build {formData.calculationResultType === 'text' ? 'Text Rules' : 'Formula'} *
                   </label>
 
                   {/* Quick Insert Buttons */}
@@ -1036,12 +1053,16 @@ const AnalyteForm: React.FC<AnalyteFormProps> = ({ onClose, onSubmit, analyte, a
                     name="formula"
                     value={formData.formula}
                     onChange={handleChange}
-                    placeholder="e.g., TC - HDL - (TG / 5)"
+                    placeholder={formData.calculationResultType === 'text'
+                      ? '[{"when":"PLT < 150000","value":"Platelets are reduced on smear."}]'
+                      : 'e.g., TC - HDL - (TG / 5)'}
                     required={formData.isCalculated}
                     className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-amber-500 focus:border-transparent font-mono"
                   />
                   <p className="text-xs text-gray-500 mt-1">
-                    Operators: + - * / ( ) | Functions: sqrt(), pow(), abs(), round()
+                    {formData.calculationResultType === 'text'
+                      ? 'Use JSON rules: [{"when":"PLT >= 150000 && PLT <= 450000","value":"Platelets are seen adequate on smear."}]'
+                      : 'Operators: + - * / ( ) | Functions: sqrt(), pow(), abs(), round()'}
                   </p>
                 </div>
 

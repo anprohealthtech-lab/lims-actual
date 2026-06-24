@@ -163,9 +163,9 @@ Deno.serve(async (req: Request) => {
         email: email || admin_email,
         gstin: gstin || null,
         is_active: true,
-        plan_status: 'trial', // New labs start with 5-day trial
+        plan_status: 'trial', // New labs start with 7-day trial
         plan_started_at: new Date().toISOString(),
-        active_upto: new Date(Date.now() + 5 * 24 * 60 * 60 * 1000).toISOString(), // 5 days from now
+        active_upto: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(), // 7 days from now
         // Default PDF settings
 	        pdf_layout_settings: {
 	          headerTextColor: 'white',
@@ -390,7 +390,7 @@ Deno.serve(async (req: Request) => {
         id: labId,
         name: lab_name,
         status: 'trial',
-        trial_ends_at: new Date(Date.now() + 5 * 24 * 60 * 60 * 1000).toISOString(),
+        trial_ends_at: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(),
       },
       admin: {
         id: adminUserId,
@@ -398,7 +398,7 @@ Deno.serve(async (req: Request) => {
         name: admin_name,
         temporary_password: admin_password ? undefined : finalPassword,
       },
-      message: "Lab created successfully with a 5-day free trial. Subscribe to continue after trial ends.",
+      message: "Lab created successfully with a 7-day free trial. Subscribe to continue after trial ends.",
     });
 
   } catch (e) {

@@ -35,12 +35,18 @@ interface FlagInterpretationResult {
   suggested_action?: string;
 }
 
+interface LabFlagOption {
+  value: string;
+  label: string;
+}
+
 interface RequestBody {
   action: 'analyze_flags' | 'interpret_single';
   result_values?: ResultValueInput[];
   result_value?: ResultValueInput;
   patient?: PatientContext;
   test_group_name?: string;
+  lab_flag_options?: LabFlagOption[];
 }
 
 const handler: Handler = async (event) => {
@@ -67,7 +73,7 @@ const handler: Handler = async (event) => {
 
   try {
     const body: RequestBody = JSON.parse(event.body || '{}');
-    const { action, result_values, result_value, patient, test_group_name } = body;
+    const { action, result_values, result_value, patient, test_group_name, lab_flag_options } = body;
 
     if (!process.env.ANTHROPIC_API_KEY) {
       return {
@@ -78,7 +84,7 @@ const handler: Handler = async (event) => {
     }
 
     if (action === 'analyze_flags' && result_values?.length) {
-      const results = await analyzeBatchFlags(result_values, patient, test_group_name);
+      const results = await analyzeBatchFlags(result_values, patient, test_group_name, lab_flag_options);
       return {
         statusCode: 200,
         headers,
@@ -116,9 +122,10 @@ const handler: Handler = async (event) => {
 async function analyzeBatchFlags(
   resultValues: ResultValueInput[],
   patient?: PatientContext,
-  testGroupName?: string
+  testGroupName?: string,
+  labFlagOptions?: LabFlagOption[]
 ): Promise<FlagInterpretationResult[]> {
-  const prompt = buildBatchPrompt(resultValues, patient, testGroupName);
+  const prompt = buildBatchPrompt(resultValues, patient, testGroupName, labFlagOptions);
   
   const message = await anthropic.messages.create({
     model: 'claude-haiku-4-5-20251001',
@@ -236,26 +243,39 @@ async function interpretSingleFlag(
 function buildBatchPrompt(
   resultValues: ResultValueInput[],
   patient?: PatientContext,
-  testGroupName?: string
+  testGroupName?: string,
+  labFlagOptions?: LabFlagOption[]
 ): string {
-  const patientInfo = patient 
+  const patientInfo = patient
     ? `Patient: ${patient.gender || 'Unknown'} gender, ${patient.age || 'Unknown'} years old.${patient.clinical_notes ? ` Notes: ${patient.clinical_notes}` : ''}`
     : 'No patient context provided.';
 
-  const results = resultValues.map(rv => 
+  const results = resultValues.map(rv =>
     `- ${rv.parameter}: ${rv.value} ${rv.unit || ''} (Ref: ${rv.reference_range || 'N/A'}${rv.low_critical ? `, Critical Low: ${rv.low_critical}` : ''}${rv.high_critical ? `, Critical High: ${rv.high_critical}` : ''})`
   ).join('\n');
+
+  // Build allowed flag values from lab settings or use defaults
+  const allowedFlags = labFlagOptions && labFlagOptions.length > 0
+    ? labFlagOptions.map(f => f.value || 'normal').filter(v => v !== '').concat(['normal'])
+    : ['normal', 'high', 'low', 'critical_high', 'critical_low', 'abnormal'];
+  const flagList = [...new Set(allowedFlags)].map(f => `"${f}"`).join(', ');
+
+  // Map lab flag codes to canonical names for the prompt
+  const labFlagInfo = labFlagOptions && labFlagOptions.length > 0
+    ? `\nLab-specific flag codes: ${labFlagOptions.map(f => `"${f.value}" = ${f.label}`).join(', ')}`
+    : '';
 
   return `You are a clinical laboratory AI assistant. Analyze these lab results and determine flags.
 
 ${testGroupName ? `Test Panel: ${testGroupName}` : ''}
 ${patientInfo}
+${labFlagInfo}
 
 Results to analyze:
 ${results}
 
 For each result, determine:
-1. flag: "normal", "high", "low", "critical_high", "critical_low", or "abnormal" (for qualitative)
+1. flag: One of: ${flagList}
 2. confidence: 0-1 score
 3. interpretation: A short, NEUTRAL, factual observation about the result value relative to the reference range (1 sentence max)
 4. clinical_significance: "routine", "attention", "urgent", or "critical"
@@ -281,7 +301,8 @@ CRITICAL RULES for interpretation text:
 - Use gender-specific reference ranges when applicable
 - Flag critical values appropriately
 - For qualitative tests (Positive/Negative), use "abnormal" for positive findings
-- Be concise and factual`;
+- Be concise and factual
+- IMPORTANT: Only use flag values from the allowed list above`;
 }
 
 function buildSinglePrompt(resultValue: ResultValueInput, patient?: PatientContext): string {

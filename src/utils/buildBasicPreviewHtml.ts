@@ -491,6 +491,17 @@ th { padding: 3px 4px !important; }
   border: none !important; color: #000 !important;
   ${sectionHeaderInline ? `border-bottom: 0.5px solid #ccc !important; background-color: ${sectionRowBackground} !important;` : ""}
 }
+.tbl-results.has-sibling .sub-section-header .sibling-section-title,
+.tbl-results.has-sibling .sub-section-header .sibling-section-label {
+  width: auto !important;
+}
+.tbl-results.has-sibling .sub-section-header .sibling-section-title {
+  text-align: left !important;
+}
+.tbl-results.has-sibling .sub-section-header .sibling-section-label {
+  text-align: left !important;
+  text-decoration: underline !important;
+}
 .descriptive-row td { border-bottom: 0.5px dotted #e5e5e5 !important; color: #111 !important; }
 .tbl-results .qualitative-wide-value {
   width: ${formatBasicWidth(standardColumnWidths.slice(1).reduce((sum, width) => sum + width, 0))} !important;
@@ -879,8 +890,8 @@ th { padding: 3px 4px !important; }
 	          // Section with siblings: show section name plus the sibling label only.
 		        testResultsHtml += `
 		        <tr class="sub-section-header">
-		          <td colspan="4">${block.heading}</td>
-		          <td colspan="2" style="text-align:center; text-decoration:underline;">${sameRowSiblingLabel}</td>
+		          <td class="sibling-section-title" colspan="4">${block.heading}</td>
+		          <td class="sibling-section-label" colspan="2">${sameRowSiblingLabel}</td>
 		        </tr>`;
 	        } else {
           // Section without siblings: span all columns

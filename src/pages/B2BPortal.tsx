@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { LogOut, Download, Filter, Search, Calendar, RefreshCw, PlusCircle, X, Clock, User, Phone, Trash2, Printer, FileText, Wallet, CreditCard, Receipt, Loader2, CheckCircle, AlertCircle, BarChart3, Building2 } from 'lucide-react';
+import { LogOut, Download, Filter, Search, Calendar, RefreshCw, PlusCircle, X, Clock, User, Phone, Trash2, Printer, FileText, Wallet, CreditCard, Receipt, Loader2, CheckCircle, AlertCircle, BarChart3, Building2, ChevronLeft, ChevronRight, Megaphone } from 'lucide-react';
 import { supabase } from '../utils/supabase';
 import { getCurrentB2BAccount } from '../utils/b2bAuth';
 import AccountInfoCard from '../components/B2B/AccountInfoCard';
@@ -92,6 +92,35 @@ interface ConsolidatedInvoice {
     created_at?: string;
 }
 
+interface PortalUpdateSlide {
+    title: string;
+    message: string;
+}
+
+interface PortalSettings {
+    welcome_note: string;
+    updates_enabled: boolean;
+    updates_title: string;
+    update_slides: PortalUpdateSlide[];
+    hide_lims_branding: boolean;
+}
+
+const normalizePortalSettings = (raw: any): PortalSettings => {
+    const updateSlides = Array.isArray(raw?.update_slides) ? raw.update_slides : [];
+    return {
+        welcome_note: String(raw?.welcome_note || '').trim(),
+        updates_enabled: raw?.updates_enabled !== false,
+        updates_title: String(raw?.updates_title || 'Partner Portal Updates').trim() || 'Partner Portal Updates',
+        update_slides: updateSlides
+            .map((slide: any) => ({
+                title: String(slide?.title || '').trim(),
+                message: String(slide?.message || '').trim(),
+            }))
+            .filter((slide: PortalUpdateSlide) => slide.title || slide.message),
+        hide_lims_branding: raw?.hide_lims_branding === true,
+    };
+};
+
 const B2BPortal: React.FC = () => {
     const navigate = useNavigate();
     const [account, setAccount] = useState<any>(null);
@@ -118,6 +147,7 @@ const B2BPortal: React.FC = () => {
     const [selectedOrderIds, setSelectedOrderIds] = useState<Set<string>>(new Set());
     const [showResultAnalysis, setShowResultAnalysis] = useState(false);
     const [labInfo, setLabInfo] = useState<{ name: string; logo: string | null } | null>(null);
+    const [activeUpdateIndex, setActiveUpdateIndex] = useState(0);
 
     // Load account and orders
     useEffect(() => {
@@ -128,6 +158,15 @@ const B2BPortal: React.FC = () => {
     useEffect(() => {
         applyFilters();
     }, [orders, searchTerm, statusFilter, dateRange, sortMode]);
+
+    const portalSettings = normalizePortalSettings(account?.portal_settings);
+    const activeUpdate = portalSettings.update_slides[activeUpdateIndex] || portalSettings.update_slides[0];
+
+    useEffect(() => {
+        if (activeUpdateIndex >= portalSettings.update_slides.length) {
+            setActiveUpdateIndex(0);
+        }
+    }, [activeUpdateIndex, portalSettings.update_slides.length]);
 
     const loadData = async () => {
         try {
@@ -629,6 +668,68 @@ const B2BPortal: React.FC = () => {
                 {account && (
                     <div className="mb-8">
                         <AccountInfoCard account={account} />
+                    </div>
+                )}
+
+                {(portalSettings.welcome_note || (portalSettings.updates_enabled && activeUpdate)) && (
+                    <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-8">
+                        {portalSettings.welcome_note && (
+                            <div className="lg:col-span-2 rounded-lg border border-blue-100 bg-blue-50 p-5">
+                                <div className="text-xs font-semibold uppercase tracking-wide text-blue-700 mb-2">
+                                    Welcome
+                                </div>
+                                <h1 className="text-xl font-bold text-gray-900 mb-2">
+                                    Hello, {account?.name || 'Partner'}
+                                </h1>
+                                <p className="text-sm leading-6 text-gray-700 whitespace-pre-line">
+                                    {portalSettings.welcome_note}
+                                </p>
+                            </div>
+                        )}
+
+                        {portalSettings.updates_enabled && activeUpdate && (
+                            <div className="rounded-lg border border-amber-200 bg-white p-5 shadow-sm">
+                                <div className="flex items-center justify-between gap-3 mb-4">
+                                    <div className="flex items-center gap-2 min-w-0">
+                                        <div className="h-9 w-9 shrink-0 rounded-lg bg-amber-50 flex items-center justify-center">
+                                            <Megaphone className="h-4 w-4 text-amber-600" />
+                                        </div>
+                                        <div className="min-w-0">
+                                            <h2 className="text-sm font-bold text-gray-900 truncate">{portalSettings.updates_title}</h2>
+                                            <p className="text-xs text-gray-500">
+                                                {activeUpdateIndex + 1} of {portalSettings.update_slides.length}
+                                            </p>
+                                        </div>
+                                    </div>
+                                    {portalSettings.update_slides.length > 1 && (
+                                        <div className="flex items-center gap-1">
+                                            <button
+                                                type="button"
+                                                onClick={() => setActiveUpdateIndex((activeUpdateIndex - 1 + portalSettings.update_slides.length) % portalSettings.update_slides.length)}
+                                                className="p-1.5 rounded border border-gray-200 text-gray-500 hover:bg-gray-50"
+                                                aria-label="Previous update"
+                                            >
+                                                <ChevronLeft className="h-4 w-4" />
+                                            </button>
+                                            <button
+                                                type="button"
+                                                onClick={() => setActiveUpdateIndex((activeUpdateIndex + 1) % portalSettings.update_slides.length)}
+                                                className="p-1.5 rounded border border-gray-200 text-gray-500 hover:bg-gray-50"
+                                                aria-label="Next update"
+                                            >
+                                                <ChevronRight className="h-4 w-4" />
+                                            </button>
+                                        </div>
+                                    )}
+                                </div>
+                                {activeUpdate.title && (
+                                    <h3 className="font-semibold text-gray-900 mb-1">{activeUpdate.title}</h3>
+                                )}
+                                {activeUpdate.message && (
+                                    <p className="text-sm leading-6 text-gray-600 whitespace-pre-line">{activeUpdate.message}</p>
+                                )}
+                            </div>
+                        )}
                     </div>
                 )}
 
@@ -1146,6 +1247,11 @@ const B2BPortal: React.FC = () => {
                     orderIds={Array.from(selectedOrderIds)}
                     onClose={() => setShowResultAnalysis(false)}
                 />
+            )}
+            {!portalSettings.hide_lims_branding && (
+                <div className="pb-6 text-center text-xs text-gray-400">
+                    Partner portal powered by LIMS
+                </div>
             )}
         </div>
     );

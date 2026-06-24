@@ -225,6 +225,453 @@ function normalizeAnalyteName(value: unknown): string {
   return String(value ?? '').toLowerCase().replace(/[^a-z0-9]/g, '')
 }
 
+function normalizeSectionKey(value: unknown): string {
+  return String(value ?? '').toLowerCase().replace(/[^a-z0-9]/g, '')
+}
+
+function isUuid(value: unknown): boolean {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(String(value ?? ''))
+}
+
+function normalizeSectionContent(value: unknown): string | null {
+  const content = String(value ?? '').replace(/\r\n/g, '\n').trim()
+  if (!content) return null
+
+  const placeholder = content.toUpperCase()
+  if (['NULL', 'N/A', 'NA', 'NIL', '*****', '****', '***'].includes(placeholder)) return null
+  return content
+}
+
+function looksLikeNarrativeResult(item: any): boolean {
+  const value = normalizeSectionContent(item?.value)
+  if (!value) return false
+
+  const valueType = String(item?.value_type ?? item?.type ?? '').trim().toUpperCase()
+  if (['TX', 'FT', 'ST', 'TEXT'].includes(valueType)) return true
+  if (value.includes('\n')) return true
+  if (/[A-Za-z]{4,}/.test(value) && value.length >= 20) return true
+  return false
+}
+
+function formatSectionContentFromResult(item: any): string | null {
+  const value = normalizeSectionContent(item?.content ?? item?.value ?? item?.text ?? item?.final_content)
+  if (!value) return null
+
+  const name = String(item?.section_name ?? item?.name ?? '').trim()
+  const code = String(item?.test_code ?? item?.machine_code ?? item?.analyzer_code ?? '').trim()
+  const prefix = name && !value.toLowerCase().startsWith(name.toLowerCase())
+    ? `${name}: `
+    : ''
+
+  if (prefix) return `${prefix}${value}`
+  if (code && value.length < 20) return `${code}: ${value}`
+  return value
+}
+
+function mergeSectionContent(previous: string | null | undefined, next: string): string {
+  const oldContent = String(previous ?? '').trim()
+  const newContent = next.trim()
+  if (!oldContent) return newContent
+  if (!newContent) return oldContent
+  if (oldContent === newContent) return oldContent
+  if (oldContent.includes(newContent)) return oldContent
+  return `${oldContent}\n\n${newContent}`
+}
+
+function updateSectionContent(previous: string | null | undefined, next: string): string {
+  const oldContent = String(previous ?? '').trim()
+  const newContent = next.trim()
+  if (!oldContent) return newContent
+  if (!newContent) return oldContent
+  if (oldContent === newContent) return oldContent
+  if (newContent.includes(oldContent)) return newContent
+  if (oldContent.includes(newContent)) return oldContent
+  return newContent
+}
+
+type SectionDefinition = {
+  id: string
+  test_group_id: string
+  section_type: string | null
+  section_name: string
+  placeholder_key: string | null
+  display_order: number | null
+  default_content?: string | null
+}
+
+type SectionOnlyGroup = {
+  test_group_id: string
+  test_group_name: string
+  order_test_group_id: string | null
+  order_test_id: string | null
+  sections: SectionDefinition[]
+}
+
+type SectionCandidate = {
+  test_code: string
+  name: string
+  content: string
+  test_group_id?: string | null
+  section_id?: string | null
+  section_key?: string | null
+  source: string
+}
+
+async function loadSectionOnlyGroups(supabase: any, orderId: string, labId: string): Promise<SectionOnlyGroup[]> {
+  const groups = new Map<string, SectionOnlyGroup>()
+
+  const { data: otgRows, error: otgError } = await supabase
+    .from('order_test_groups')
+    .select('id, test_group_id, test_groups!inner(id, name, is_section_only)')
+    .eq('order_id', orderId)
+    .eq('test_groups.is_section_only', true)
+
+  if (otgError) console.warn('Failed to load section-only order_test_groups:', otgError)
+
+  for (const row of otgRows ?? []) {
+    const tg = row.test_groups
+    if (!tg?.id) continue
+    groups.set(tg.id, {
+      test_group_id: tg.id,
+      test_group_name: tg.name || 'Section Report',
+      order_test_group_id: row.id,
+      order_test_id: null,
+      sections: [],
+    })
+  }
+
+  const { data: otRows, error: otError } = await supabase
+    .from('order_tests')
+    .select('id, test_group_id, test_groups!inner(id, name, is_section_only)')
+    .eq('order_id', orderId)
+    .eq('test_groups.is_section_only', true)
+
+  if (otError) console.warn('Failed to load section-only order_tests:', otError)
+
+  for (const row of otRows ?? []) {
+    const tg = row.test_groups
+    if (!tg?.id) continue
+    const existing = groups.get(tg.id)
+    groups.set(tg.id, {
+      test_group_id: tg.id,
+      test_group_name: tg.name || existing?.test_group_name || 'Section Report',
+      order_test_group_id: existing?.order_test_group_id ?? null,
+      order_test_id: row.id || existing?.order_test_id || null,
+      sections: existing?.sections ?? [],
+    })
+  }
+
+  const testGroupIds = [...groups.keys()]
+  if (testGroupIds.length === 0) return []
+
+  const { data: sections, error: sectionsError } = await supabase
+    .from('lab_template_sections')
+    .select('id, test_group_id, section_type, section_name, placeholder_key, display_order, default_content')
+    .eq('lab_id', labId)
+    .in('test_group_id', testGroupIds)
+    .order('display_order', { ascending: true })
+
+  if (sectionsError) {
+    console.warn('Failed to load section-only template sections:', sectionsError)
+    return [...groups.values()]
+  }
+
+  for (const section of sections ?? []) {
+    const group = groups.get(section.test_group_id)
+    if (!group) continue
+    group.sections.push(section)
+  }
+
+  return [...groups.values()].filter((group) => group.sections.length > 0)
+}
+
+function extractSectionCandidates(parsedData: any): SectionCandidate[] {
+  const candidates: SectionCandidate[] = []
+
+  for (const item of parsedData?.section_results ?? []) {
+    const content = formatSectionContentFromResult(item)
+    if (!content) continue
+    candidates.push({
+      test_code: String(item.test_code ?? item.machine_code ?? item.analyzer_code ?? item.section_key ?? '').toUpperCase(),
+      name: String(item.section_name ?? item.name ?? item.section_key ?? '').trim(),
+      content,
+      test_group_id: item.test_group_id || null,
+      section_id: item.section_id || null,
+      section_key: item.section_key || item.placeholder_key || item.section_type || null,
+      source: 'section_results',
+    })
+  }
+
+  for (const item of parsedData?.results ?? []) {
+    if (!looksLikeNarrativeResult(item)) continue
+    const content = formatSectionContentFromResult(item)
+    if (!content) continue
+    candidates.push({
+      test_code: String(item.test_code ?? '').toUpperCase(),
+      name: String(item.name ?? item.test_name ?? '').trim(),
+      content,
+      test_group_id: item.test_group_id || null,
+      section_id: item.section_id || null,
+      section_key: item.section_key || item.placeholder_key || null,
+      source: 'narrative_result',
+    })
+  }
+
+  return candidates
+}
+
+function findMatchingSection(
+  candidate: SectionCandidate,
+  groups: SectionOnlyGroup[],
+  mapping: any | null,
+): { group: SectionOnlyGroup; section: SectionDefinition } | null {
+  const mappedSectionId = mapping?.section_id || candidate.section_id
+  if (mappedSectionId && isUuid(mappedSectionId)) {
+    for (const group of groups) {
+      const section = group.sections.find((s) => s.id === mappedSectionId)
+      if (section) return { group, section }
+    }
+  }
+
+  const mappedGroupId = mapping?.test_group_id || candidate.test_group_id
+  const targetGroups = mappedGroupId
+    ? groups.filter((group) => group.test_group_id === mappedGroupId)
+    : groups
+
+  if (targetGroups.length === 0) return null
+
+  const sectionKeys = [
+    candidate.section_key,
+    mapping?.lims_code,
+    mapping?.test_name,
+    candidate.name,
+    candidate.test_code,
+  ].map(normalizeSectionKey).filter(Boolean)
+
+  for (const group of targetGroups) {
+    for (const section of group.sections) {
+      const possibleKeys = [
+        section.id,
+        section.placeholder_key,
+        section.section_type,
+        section.section_name,
+      ].map(normalizeSectionKey).filter(Boolean)
+
+      if (sectionKeys.some((key) => possibleKeys.some((sectionKey) => key === sectionKey || key.includes(sectionKey) || sectionKey.includes(key)))) {
+        return { group, section }
+      }
+    }
+  }
+
+  if (targetGroups.length === 1 && targetGroups[0].sections.length === 1) {
+    return { group: targetGroups[0], section: targetGroups[0].sections[0] }
+  }
+
+  if (targetGroups.length === 1) {
+    const firstEditable = [...targetGroups[0].sections].sort((a, b) => (a.display_order ?? 0) - (b.display_order ?? 0))[0]
+    if (firstEditable) return { group: targetGroups[0], section: firstEditable }
+  }
+
+  return null
+}
+
+async function getOrCreateSectionResult(
+  supabase: any,
+  params: {
+    orderId: string
+    patientId: string
+    patientName: string
+    labId: string
+    group: SectionOnlyGroup
+  },
+): Promise<any | null> {
+  const { data: existing, error: existingError } = await supabase
+    .from('results')
+    .select('id, verification_status, test_group_id, order_test_group_id, order_test_id')
+    .eq('order_id', params.orderId)
+    .eq('test_group_id', params.group.test_group_id)
+    .order('created_at', { ascending: false })
+    .limit(1)
+    .maybeSingle()
+
+  if (existingError) {
+    console.warn('Failed to load section result row:', existingError)
+  }
+  if (existing) return existing
+
+  const resultPayload = {
+    order_id: params.orderId,
+    patient_id: params.patientId,
+    patient_name: params.patientName,
+    test_name: params.group.test_group_name,
+    status: 'Entered',
+    entered_by: 'AI Interface',
+    entered_date: new Date().toISOString().split('T')[0],
+    test_group_id: params.group.test_group_id,
+    lab_id: params.labId,
+    ...(params.group.order_test_group_id && { order_test_group_id: params.group.order_test_group_id }),
+    ...(params.group.order_test_id && { order_test_id: params.group.order_test_id }),
+  }
+
+  const { data: created, error: createError } = await supabase
+    .from('results')
+    .upsert(resultPayload, { onConflict: 'order_id,test_name', ignoreDuplicates: false })
+    .select('id, verification_status, test_group_id, order_test_group_id, order_test_id')
+    .single()
+
+  if (createError) {
+    console.error('Failed to create section result row:', createError)
+    return null
+  }
+
+  return created
+}
+
+async function upsertAnalyzerSectionContent(
+  supabase: any,
+  params: {
+    orderId: string
+    patientId: string
+    patientName: string
+    labId: string
+    record: any
+    parsedData: any
+  },
+): Promise<{ saved: number; skipped: number; log: string }> {
+  const groups = await loadSectionOnlyGroups(supabase, params.orderId, params.labId)
+  if (groups.length === 0) return { saved: 0, skipped: 0, log: 'No section-only groups found. ' }
+
+  const candidates = extractSectionCandidates(params.parsedData)
+  if (candidates.length === 0) return { saved: 0, skipped: 0, log: 'No section content found. ' }
+
+  const machineCodes = [...new Set(candidates.map((candidate) => candidate.test_code).filter(Boolean))]
+  const sectionMappings = new Map<string, any>()
+
+  if (machineCodes.length > 0) {
+    let mappingQuery = supabase
+      .from('test_mappings')
+      .select('analyzer_code, lims_code, test_name, test_group_id, section_id, ai_confidence, analyzer_connection_id')
+      .eq('lab_id', params.labId)
+      .eq('mapping_type', 'result_section')
+      .in('direction', ['inbound', 'bidirectional'])
+      .in('analyzer_code', machineCodes)
+
+    if (params.record.analyzer_connection_id) {
+      mappingQuery = mappingQuery.or(`analyzer_connection_id.eq.${params.record.analyzer_connection_id},analyzer_connection_id.is.null`)
+    }
+
+    const { data: mappingRows, error: mappingError } = await mappingQuery
+    if (mappingError) {
+      console.warn('Section mapping lookup failed:', mappingError)
+    } else {
+      const specificity = (row: any) => params.record.analyzer_connection_id && row.analyzer_connection_id === params.record.analyzer_connection_id ? 2 : 1
+      for (const row of (mappingRows ?? []).sort((a: any, b: any) => specificity(a) - specificity(b))) {
+        const code = String(row.analyzer_code ?? '').toUpperCase()
+        if (code) sectionMappings.set(code, row)
+      }
+    }
+  }
+
+  const mergedBySection = new Map<string, {
+    group: SectionOnlyGroup
+    section: SectionDefinition
+    content: string
+    sources: string[]
+  }>()
+
+  let skipped = 0
+  for (const candidate of candidates) {
+    const mapping = candidate.test_code ? sectionMappings.get(candidate.test_code) ?? null : null
+    const target = findMatchingSection(candidate, groups, mapping)
+    if (!target) {
+      skipped++
+      continue
+    }
+
+    const key = `${target.group.test_group_id}:${target.section.id}`
+    const existing = mergedBySection.get(key)
+    if (existing) {
+      existing.content = mergeSectionContent(existing.content, candidate.content)
+      existing.sources.push(candidate.source)
+    } else {
+      mergedBySection.set(key, {
+        group: target.group,
+        section: target.section,
+        content: candidate.content,
+        sources: [candidate.source],
+      })
+    }
+  }
+
+  let saved = 0
+  for (const entry of mergedBySection.values()) {
+    const resultRow = await getOrCreateSectionResult(supabase, {
+      orderId: params.orderId,
+      patientId: params.patientId,
+      patientName: params.patientName,
+      labId: params.labId,
+      group: entry.group,
+    })
+
+    if (!resultRow?.id) {
+      skipped++
+      continue
+    }
+
+    if (resultRow.verification_status === 'verified') {
+      skipped++
+      continue
+    }
+
+    const { data: existingContent, error: contentFetchError } = await supabase
+      .from('result_section_content')
+      .select('id, final_content, is_finalized')
+      .eq('result_id', resultRow.id)
+      .eq('section_id', entry.section.id)
+      .maybeSingle()
+
+    if (contentFetchError) {
+      console.warn('Failed to fetch existing section content:', contentFetchError)
+    }
+
+    if (existingContent?.is_finalized) {
+      skipped++
+      continue
+    }
+
+    const finalContent = updateSectionContent(existingContent?.final_content, entry.content)
+    const payload = {
+      result_id: resultRow.id,
+      section_id: entry.section.id,
+      selected_options: [],
+      custom_text: finalContent,
+      final_content: finalContent,
+      image_urls: [],
+      cascading_selections: {},
+      edited_at: new Date().toISOString(),
+    }
+
+    const { error: upsertError } = await supabase
+      .from('result_section_content')
+      .upsert(payload, { onConflict: 'result_id,section_id' })
+
+    if (upsertError) {
+      console.error('Failed to upsert analyzer section content:', upsertError)
+      skipped++
+    } else {
+      saved++
+    }
+  }
+
+  return {
+    saved,
+    skipped,
+    log: saved > 0
+      ? `Updated ${saved} section content row(s). ${skipped ? `Skipped ${skipped}. ` : ''}`
+      : `No section content updated. ${skipped ? `Skipped ${skipped}. ` : ''}`,
+  }
+}
+
 function matchResolvedRange(candidate: {
   analyte_id: string
   analyte_name: string
@@ -397,7 +844,7 @@ async function resolveAiReferenceRanges(
 
 function parseHl7ResultsDeterministic(rawContent: string): {
   sample_barcode: string
-  results: Array<{ test_code: string; name: string; value: string; unit: string; flag: string; reference_range: string }>
+  results: Array<{ test_code: string; name: string; value: string; unit: string; flag: string; reference_range: string; value_type?: string }>
   instrument: string
   graphs: Array<{ type: string; name: string; test_code: string; description: string; associated_test: string }>
 } | null {
@@ -419,7 +866,7 @@ function parseHl7ResultsDeterministic(rawContent: string): {
     }
   }
 
-  const results: Array<{ test_code: string; name: string; value: string; unit: string; flag: string; reference_range: string }> = []
+  const results: Array<{ test_code: string; name: string; value: string; unit: string; flag: string; reference_range: string; value_type?: string }> = []
   const graphs: Array<{ type: string; name: string; test_code: string; description: string; associated_test: string }> = []
 
   for (const segment of segments) {
@@ -452,6 +899,7 @@ function parseHl7ResultsDeterministic(rawContent: string): {
       unit: firstComponent(fields[6]),
       reference_range: String(fields[7] ?? '').trim(),
       flag: normalizeHl7Flag(fields[8]),
+      value_type: valueType,
     })
   }
 
@@ -627,6 +1075,14 @@ REQUIRED JSON STRUCTURE:
   "results": [
     { "test_code": "string", "value": "string", "unit": "string", "flag": "string", "reference_range": "string" }
   ],
+  "section_results": [
+    {
+      "test_code": "string",
+      "section_key": "findings|impression|recommendation|technique|clinical_history|conclusion|custom-or-placeholder",
+      "section_name": "string",
+      "content": "string"
+    }
+  ],
   "instrument": "string",
   "graphs": [
     { "type": "histogram|scatter|waveform", "name": "string", "test_code": "string", "description": "string", "associated_test": "string" }
@@ -714,6 +1170,20 @@ Do NOT include or describe binary histogram data — it is already extracted sep
         // @ts-ignore
         const patientGender: string = (orderData as any)?.patients?.gender || ''
         const patientName = orderData?.patient_name || "Unknown Patient"
+
+        if (patientId) {
+            const sectionResult = await upsertAnalyzerSectionContent(supabase, {
+                orderId: sample.order_id,
+                patientId,
+                patientName,
+                labId: sample.lab_id,
+                record,
+                parsedData,
+            })
+            if (sectionResult.saved > 0 || sectionResult.skipped > 0) {
+                statusLog += sectionResult.log
+            }
+        }
 
         // Ensure master Result record exists
         let { data: resultHeader } = await supabase

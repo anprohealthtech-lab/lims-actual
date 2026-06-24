@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { Plus, Search, DollarSign, FileText, Eye, CreditCard, Calendar, TrendingUp, Clock as ClockIcon, Calculator, Building, RotateCcw, File } from 'lucide-react';
-import { useNavigate, useSearchParams } from 'react-router-dom';
+import { Search, DollarSign, FileText, Eye, CreditCard, Calendar, TrendingUp, Clock as ClockIcon, Calculator, Building, RotateCcw, File } from 'lucide-react';
+import { useSearchParams } from 'react-router-dom';
 
 import { database } from '../utils/supabase';
 import InvoiceForm from '../components/Billing/InvoiceForm';
@@ -63,7 +63,6 @@ interface Invoice {
 
 const Billing: React.FC = () => {
   const [searchParams, setSearchParams] = useSearchParams();
-  const navigate = useNavigate();
   const view = searchParams.get('view') || 'invoices';
 
   const [invoices, setInvoices] = useState<Invoice[]>([]);
@@ -829,92 +828,6 @@ const Billing: React.FC = () => {
       </div>
 
       {renderContent()}
-
-      {/* Payment Gateway Integration */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
-          <h3 className="text-lg font-semibold text-gray-900 mb-4">Payment Methods</h3>
-
-          <div className="space-y-4">
-            <div className="flex items-center justify-between p-4 bg-green-50 border border-green-200 rounded-lg">
-              <div className="flex items-center">
-                <div className="bg-green-100 p-2 rounded">
-                  <CreditCard className="h-5 w-5 text-green-600" />
-                </div>
-                <div className="ml-3">
-                  <div className="font-medium text-green-900">UPI Payments</div>
-                  <div className="text-sm text-green-700">PhonePe, GPay, Paytm</div>
-                </div>
-              </div>
-              <span className="text-green-600 bg-green-100 px-2 py-1 rounded text-xs font-medium">Active</span>
-            </div>
-
-            <div className="flex items-center justify-between p-4 bg-blue-50 border border-blue-200 rounded-lg">
-              <div className="flex items-center">
-                <div className="bg-blue-100 p-2 rounded">
-                  <CreditCard className="h-5 w-5 text-blue-600" />
-                </div>
-                <div className="ml-3">
-                  <div className="font-medium text-blue-900">Card Payments</div>
-                  <div className="text-sm text-blue-700">Visa, MasterCard, RuPay</div>
-                </div>
-              </div>
-              <span className="text-blue-600 bg-blue-100 px-2 py-1 rounded text-xs font-medium">Active</span>
-            </div>
-
-            <div className="flex items-center justify-between p-4 bg-gray-50 border border-gray-200 rounded-lg">
-              <div className="flex items-center">
-                <div className="bg-gray-100 p-2 rounded">
-                  <DollarSign className="h-5 w-5 text-gray-600" />
-                </div>
-                <div className="ml-3">
-                  <div className="font-medium text-gray-900">Cash Payments</div>
-                  <div className="text-sm text-gray-700">Counter payments</div>
-                </div>
-              </div>
-              <span className="text-gray-600 bg-gray-100 px-2 py-1 rounded text-xs font-medium">Available</span>
-            </div>
-          </div>
-        </div>
-
-        <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
-          <h3 className="text-lg font-semibold text-gray-900 mb-4">Quick Actions</h3>
-
-          <div className="space-y-3">
-            <button
-              className="w-full flex items-center justify-center px-4 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
-              onClick={() => setShowInvoiceForm(true)}
-            >
-              <Plus className="h-5 w-5 mr-2" />
-              Create New Invoice
-            </button>
-
-            <button
-              className="w-full flex items-center justify-center px-4 py-3 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors"
-              onClick={() => navigate('/reports?tab=billing')}
-            >
-              <FileText className="h-5 w-5 mr-2" />
-              Generate Payment Report
-            </button>
-
-            <button
-              className="w-full flex items-center justify-center px-4 py-3 bg-orange-600 text-white rounded-lg hover:bg-orange-700 transition-colors"
-              onClick={() => navigate('/whatsapp')}
-            >
-              <Calendar className="h-5 w-5 mr-2" />
-              Send Payment Reminders
-            </button>
-
-            <button
-              className="w-full flex items-center justify-center px-4 py-3 border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 transition-colors"
-              onClick={() => navigate('/dashboard2')}
-            >
-              <TrendingUp className="h-5 w-5 mr-2" />
-              Financial Analytics
-            </button>
-          </div>
-        </div>
-      </div>
 
       {/* Invoice Preview Modal */}
       {selectedInvoice && (

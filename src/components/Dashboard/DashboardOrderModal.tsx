@@ -552,7 +552,7 @@ const DashboardOrderModal: React.FC<DashboardOrderModalProps> = ({
       // never be written back to orders.total_amount.
       const { data: freshOrder, error: freshOrderError } = await supabase
         .from('orders')
-        .select('total_amount, collection_charge, billing_status, paid_amount, patient_id')
+        .select('total_amount, collection_charge, billing_status, patient_id')
         .eq('id', order.id)
         .single();
       if (freshOrderError) throw freshOrderError;
@@ -646,7 +646,7 @@ const DashboardOrderModal: React.FC<DashboardOrderModalProps> = ({
         0,
         newCurrentTotal
           - (invoiceDiscount?.total_discount || 0)
-          - (Number(freshOrder.paid_amount) || order.paid_amount || 0)
+          - (order.paid_amount || 0)
       ));
       await onUpdateStatus(order.id, order.status);
 

@@ -30,6 +30,102 @@ const toBase64 = (file: File) =>
     reader.readAsDataURL(file);
   });
 
+const loadImageFromFile = (file: File) =>
+  new Promise<HTMLImageElement>((resolve, reject) => {
+    const url = URL.createObjectURL(file);
+    const image = new Image();
+    image.onload = () => {
+      URL.revokeObjectURL(url);
+      resolve(image);
+    };
+    image.onerror = () => {
+      URL.revokeObjectURL(url);
+      reject(new Error('Unable to read signature image'));
+    };
+    image.src = url;
+  });
+
+const canvasToPngFile = (canvas: HTMLCanvasElement, fileName: string) =>
+  new Promise<File>((resolve, reject) => {
+    canvas.toBlob((blob) => {
+      if (!blob) {
+        reject(new Error('Unable to prepare transparent signature image'));
+        return;
+      }
+
+      const baseName = fileName.replace(/\.[^.]+$/, '') || 'signature';
+      resolve(new File([blob], `${baseName}-transparent.png`, { type: 'image/png' }));
+    }, 'image/png');
+  });
+
+const removeLightSignatureBackground = async (sourceFile: File): Promise<File> => {
+  const image = await loadImageFromFile(sourceFile);
+  const maxSide = 1400;
+  const scale = Math.min(1, maxSide / Math.max(image.naturalWidth, image.naturalHeight));
+  const width = Math.max(1, Math.round(image.naturalWidth * scale));
+  const height = Math.max(1, Math.round(image.naturalHeight * scale));
+
+  const canvas = document.createElement('canvas');
+  canvas.width = width;
+  canvas.height = height;
+  const ctx = canvas.getContext('2d', { willReadFrequently: true });
+  if (!ctx) throw new Error('Unable to process signature image');
+
+  ctx.drawImage(image, 0, 0, width, height);
+  const imageData = ctx.getImageData(0, 0, width, height);
+  const data = imageData.data;
+  let minX = width;
+  let minY = height;
+  let maxX = 0;
+  let maxY = 0;
+
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const index = (y * width + x) * 4;
+      const red = data[index];
+      const green = data[index + 1];
+      const blue = data[index + 2];
+      const alpha = data[index + 3];
+      const max = Math.max(red, green, blue);
+      const min = Math.min(red, green, blue);
+      const brightness = (red + green + blue) / 3;
+      const isLightPaper = brightness > 220 && max - min < 48;
+
+      if (alpha < 8 || isLightPaper) {
+        const softenedAlpha = brightness > 245 ? 0 : Math.max(0, Math.min(alpha, Math.round((245 - brightness) * 10)));
+        data[index + 3] = softenedAlpha;
+      }
+
+      if (data[index + 3] > 24) {
+        minX = Math.min(minX, x);
+        minY = Math.min(minY, y);
+        maxX = Math.max(maxX, x);
+        maxY = Math.max(maxY, y);
+      }
+    }
+  }
+
+  ctx.putImageData(imageData, 0, 0);
+
+  if (minX > maxX || minY > maxY) {
+    return canvasToPngFile(canvas, sourceFile.name);
+  }
+
+  const padding = 10;
+  const cropX = Math.max(0, minX - padding);
+  const cropY = Math.max(0, minY - padding);
+  const cropWidth = Math.min(width - cropX, maxX - minX + 1 + padding * 2);
+  const cropHeight = Math.min(height - cropY, maxY - minY + 1 + padding * 2);
+  const croppedCanvas = document.createElement('canvas');
+  croppedCanvas.width = cropWidth;
+  croppedCanvas.height = cropHeight;
+  const croppedCtx = croppedCanvas.getContext('2d');
+  if (!croppedCtx) throw new Error('Unable to crop signature image');
+
+  croppedCtx.drawImage(canvas, cropX, cropY, cropWidth, cropHeight, 0, 0, cropWidth, cropHeight);
+  return canvasToPngFile(croppedCanvas, sourceFile.name);
+};
+
 export const SignatureUploader: React.FC<SignatureUploaderProps> = ({ labId, userId, apiBaseUrl = '', onSuccess, onClose }) => {
   const [signatureName, setSignatureName] = useState('');
   const [signatureType, setSignatureType] = useState<SignatureType>('digital');
@@ -79,9 +175,10 @@ export const SignatureUploader: React.FC<SignatureUploaderProps> = ({ labId, use
     setIsSubmitting(true);
 
     try {
-      const base64Data = await toBase64(file);
-      const contentType = file.type;
-      const fileName = file.name;
+      const uploadFile = await removeLightSignatureBackground(file);
+      const base64Data = await toBase64(uploadFile);
+      const contentType = uploadFile.type;
+      const fileName = uploadFile.name;
 
       const response = await fetch(`${apiBaseUrl}/.netlify/functions/branding-upload`, {
         method: 'POST',

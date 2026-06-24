@@ -127,7 +127,7 @@ interface OrderFormProps {
 }
 
 const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPatientId, initialBookingData, onOrderCreated }) => {
-  const { autoPrintBarcode } = useQZTray();
+  const { autoPrintBarcodes } = useQZTray();
   // Masters
   const [doctors, setDoctors] = useState<Doctor[]>([]);
   const searchInputRef = useRef<HTMLInputElement>(null);
@@ -136,6 +136,9 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
   const locationInputRef = useRef<HTMLInputElement>(null);
   const accountInputRef = useRef<HTMLInputElement>(null);
   const clinicalNotesRef = useRef<HTMLTextAreaElement>(null);
+  const createOrderButtonRef = useRef<HTMLButtonElement>(null);
+  const createAndNewButtonRef = useRef<HTMLButtonElement>(null);
+  const submitModeRef = useRef<'close' | 'new'>('close');
   const modalScrollRef = useRef<HTMLDivElement>(null);
   const newPatientModalRef = useRef<HTMLDivElement>(null);
   const [locations, setLocations] = useState<Location[]>([]);
@@ -161,6 +164,9 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
   const [paymentType, setPaymentType] = useState<PaymentType>('self');
   const [priority, setPriority] = useState<'Normal' | 'Urgent' | 'STAT'>('Normal');
   const [orderDetailsOpen, setOrderDetailsOpen] = useState(false);
+  const [clinicalNotesOpen, setClinicalNotesOpen] = useState(false);
+  const [preBarcoded, setPreBarcoded] = useState(false);
+  const [preBarcode, setPreBarcode] = useState('');
   const [expectedDate, setExpectedDate] = useState<string>(() =>
     new Date().toISOString().split('T')[0]
   );
@@ -1336,8 +1342,70 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
     onClose();
   };
 
+  const focusFirstField = () => {
+    setTimeout(() => {
+      patientInputRef.current?.focus();
+      modalScrollRef.current?.scrollTo({ top: 0, behavior: 'smooth' });
+    }, 50);
+  };
+
+  const resetForNextOrder = () => {
+    setSelectedPatient(null);
+    setPatientSearch('');
+    setSelectedTests([]);
+    setTestSearch('');
+    setShowTestList(false);
+    setTestOutsourcingConfig({});
+    setAdditionalInputs({});
+    setSelectedBillingItems([]);
+    setShowAddBillingItem(false);
+    setNewBillingItemTypeId('');
+    setNewBillingItemName('');
+    setNewBillingItemAmount('');
+    setDiscountType('percentage');
+    setDiscountValue(0);
+    setDiscountBy('lab');
+    setPaymentMethod('cash');
+    setAmountPaid(0);
+    setTakeFullPayment(false);
+    setLoyaltyPointsToRedeem(0);
+    setLoyaltyRedeemEnabled(false);
+    setNotes('');
+    setClinicalNotesOpen(false);
+    setPreBarcoded(false);
+    setPreBarcode('');
+    setOrderDetailsOpen(false);
+    setPriority('Normal');
+    setCustomOrderDate('');
+    setCustomReportDate('');
+    setTestRequestFile(null);
+    setTrfExtraction(null);
+    setTrfProgress(null);
+    setShowTRFReview(false);
+    setTrfUnmatchedTests([]);
+    setValidationErrors([]);
+    setSubmissionProgress('');
+    trfAttachmentLinked.current = false;
+    focusFirstField();
+  };
+
+  const finishSuccessfulSubmit = (message: string) => {
+    const createNext = submitModeRef.current === 'new';
+
+    setSubmissionProgress(message);
+    setTimeout(() => {
+      setIsSubmitting(false);
+      if (createNext) {
+        resetForNextOrder();
+      } else {
+        onClose();
+      }
+    }, 700);
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    const createNext = submitModeRef.current === 'new';
 
     // Clear previous errors
     setValidationErrors([]);
@@ -1395,6 +1463,40 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
         errors.push(`❌ Missing required information: ${info.replace(/_/g, ' ')}`);
       }
     });
+
+    if (preBarcoded) {
+      const cleanBarcode = preBarcode.trim();
+      const selectedTestDetailsForBarcode = testGroups.filter((t) => selectedTests.includes(t.id));
+      const uniqueSampleTypes = Array.from(new Set(
+        selectedTestDetailsForBarcode.map((test) => test.sampleType || test.sample_type || 'Blood')
+      ));
+
+      if (!/^\d{10,12}$/.test(cleanBarcode)) {
+        errors.push('Pre-barcoded Sample: Barcode must be numeric and 10 to 12 digits');
+      }
+
+      if (uniqueSampleTypes.length > 1) {
+        errors.push('Pre-barcoded Sample: Manual barcode is supported only when selected tests need one sample type');
+      }
+
+      if (/^\d{10,12}$/.test(cleanBarcode)) {
+        const labId = await database.getCurrentUserLabId();
+        if (labId) {
+          const { data: existingBarcode, error: barcodeCheckError } = await supabase
+            .from('samples')
+            .select('id')
+            .eq('lab_id', labId)
+            .eq('barcode', cleanBarcode)
+            .maybeSingle();
+
+          if (barcodeCheckError) {
+            errors.push(`Pre-barcoded Sample: Could not validate barcode uniqueness (${barcodeCheckError.message})`);
+          } else if (existingBarcode?.id) {
+            errors.push('Pre-barcoded Sample: This barcode is already used in this lab');
+          }
+        }
+      }
+    }
 
     // If validation fails, show errors and stop
     if (errors.length > 0) {
@@ -1454,6 +1556,9 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
         expected_date: computedExpectedDate,
         doctor: (selectedDoctor && selectedDoctor !== SELF_DOCTOR_ID) ? (doctors.find((d) => d.id === selectedDoctor)?.name || 'Self') : 'Self',
         notes: notes || null,
+        __createAndNew: createNext,
+        __preBarcoded: preBarcoded,
+        __preBarcodedBarcode: preBarcoded ? preBarcode.trim() : null,
         total_amount: calculatedTotal + collectionCharge, // Tests + collection only; extra charges tracked separately in order_billing_items
         collection_charge: collectionCharge > 0 ? collectionCharge : null,
         final_amount: finalAmount, // Total after discount
@@ -1516,28 +1621,37 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
       // Mark TRF attachment as linked so handleClose won't delete it
       trfAttachmentLinked.current = true;
 
-      // Auto-print barcode via LIMS Utility queue if enabled
+      // Auto-print every generated barcode label if enabled.
       const newOrderId = result?.id || result;
       if (newOrderId) {
         supabase
-          .from('orders')
-          .select('sample_id, sample_type')
-          .eq('id', newOrderId)
-          .single()
-          .then(({ data: orderRow }) => {
-            if (orderRow?.sample_id) {
-              autoPrintBarcode({
-                sampleId: orderRow.sample_id,
+          .from('samples')
+          .select('id, barcode, sample_type, created_at')
+          .eq('order_id', newOrderId)
+          .then(({ data: createdSamples }) => {
+            if (!createdSamples || createdSamples.length === 0) return;
+
+            autoPrintBarcodes(createdSamples.map((sample: any) => {
+              const collectionDate = sample.created_at ? new Date(sample.created_at) : new Date();
+              return {
+                sampleId: sample.barcode || sample.id,
+                labelId: sample.id,
                 patientName: patientForOrder?.name || '',
-                sampleType: orderRow.sample_type || undefined,
-              });
-            }
+                sampleType: sample.sample_type || undefined,
+                date: collectionDate.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: '2-digit' }).replace(/ /g, '-'),
+                collectionTime: collectionDate.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', hour12: false }),
+                gender: patientForOrder?.gender || undefined,
+                age: patientForOrder?.age ? String(patientForOrder.age) : undefined,
+                referredBy: selectedDoctor === SELF_DOCTOR_ID ? undefined : doctorSearch,
+              };
+            }));
           })
           .catch(() => {});
 
-        // Notify parent to auto-open collection modal (setting: auto_open_collection_modal)
+        // Notify parent to auto-open collection modal (setting: auto_open_collection_modal).
+        // Fast-entry mode intentionally skips this so accession collects manually later.
         console.debug('[AutoCollect] onOrderCreated prop present?', !!onOrderCreated, '| newOrderId:', newOrderId);
-        if (onOrderCreated) {
+        if (onOrderCreated && !createNext) {
           onOrderCreated(newOrderId);
         }
       }
@@ -1819,16 +1933,16 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
             }
           }
 
-          setSubmissionProgress('Order, invoice, and payment created successfully!');
-
-          // Close after short delay
-          setTimeout(() => {
-            onClose();
-          }, 1000);
+          finishSuccessfulSubmit('Order, invoice, and payment created successfully!');
         } catch (err: any) {
           console.error('Post-order creation error:', err);
           alert(`Order created but failed to create invoice/payment: ${err.message}`);
-          onClose();
+          if (createNext) {
+            setIsSubmitting(false);
+            resetForNextOrder();
+          } else {
+            onClose();
+          }
         }
       } else {
         // No invoice created — save billing items as order_billing_items only
@@ -1858,10 +1972,7 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
             console.error('Loyalty points redemption error (non-critical):', loyaltyErr);
           }
         }
-        setSubmissionProgress('Order created successfully!');
-        setTimeout(() => {
-          onClose();
-        }, 1000);
+        finishSuccessfulSubmit('Order created successfully!');
       }
 
       // OrderForm will be unmounted by onClose
@@ -3027,15 +3138,13 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
                         setSelectedAccount(acc.id); setAccountSearch(acc.name);
                         setShowAccountDropdown(false); setHighlightedAccountIndex(-1);
                         setTimeout(() => {
-                          clinicalNotesRef.current?.focus();
-                          clinicalNotesRef.current?.closest('section')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                          (createAndNewButtonRef.current || createOrderButtonRef.current)?.focus();
                         }, 50);
                       } else if (e.key === 'Tab' || e.key === 'Escape') {
                         e.preventDefault();
                         setShowAccountDropdown(false); setHighlightedAccountIndex(-1);
                         setTimeout(() => {
-                          clinicalNotesRef.current?.focus();
-                          clinicalNotesRef.current?.closest('section')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                          (createAndNewButtonRef.current || createOrderButtonRef.current)?.focus();
                         }, 50);
                       }
                     }}
@@ -3251,18 +3360,76 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
             )}
           </section>
 
-          {/* Notes */}
-          <section>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Clinical Notes</label>
-            <textarea
-              ref={clinicalNotesRef}
-              value={notes}
-              onChange={(e) => setNotes(e.target.value)}
-              rows={3}
-              placeholder="Any special instructions or clinical notes…"
-              onFocus={(e) => e.currentTarget.closest('section')?.scrollIntoView({ behavior: 'smooth', block: 'start' })}
-              className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
-            />
+          {/* Pre-barcoded sample */}
+          <section className="border border-gray-200 rounded-lg p-4 space-y-3">
+            <label className="flex items-center gap-2 text-sm font-medium text-gray-800">
+              <input
+                type="checkbox"
+                checked={preBarcoded}
+                onChange={(e) => {
+                  setPreBarcoded(e.target.checked);
+                  if (!e.target.checked) setPreBarcode('');
+                }}
+                className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+              />
+              Pre-barcoded sample
+            </label>
+            {preBarcoded && (
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                <div className="md:col-span-2">
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                    Manual tube barcode
+                  </label>
+                  <input
+                    type="text"
+                    inputMode="numeric"
+                    value={preBarcode}
+                    onChange={(e) => setPreBarcode(e.target.value.replace(/\D/g, '').slice(0, 12))}
+                    placeholder="Scan or enter barcode"
+                    className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  />
+                </div>
+                <div className="text-xs text-gray-500 flex items-end">
+                  Numeric only. Supports existing 10-digit labels and 12-digit YYYYMMDD sequence labels.
+                </div>
+              </div>
+            )}
+          </section>
+
+          {/* Additional Notes - collapsed by default for faster registration */}
+          <section className="border border-gray-200 rounded-lg overflow-hidden">
+            <button
+              type="button"
+              onClick={() => setClinicalNotesOpen((v) => !v)}
+              className="w-full flex items-center justify-between px-4 py-3 text-left hover:bg-gray-50 transition-colors"
+            >
+              <span className="text-base font-medium text-gray-900 flex items-center gap-2">
+                <Stethoscope className="h-4 w-4" />
+                Additional Notes
+                {notes.trim() && (
+                  <span className="text-xs font-medium text-blue-700 bg-blue-50 px-2 py-0.5 rounded-full">
+                    Added
+                  </span>
+                )}
+              </span>
+              <ChevronDown
+                className={`h-4 w-4 text-gray-500 transition-transform ${clinicalNotesOpen ? 'rotate-180' : ''}`}
+              />
+            </button>
+            {clinicalNotesOpen && (
+              <div className="px-4 pb-4 border-t border-gray-100">
+                <label className="block text-sm font-medium text-gray-700 mb-1 pt-4">Clinical Notes</label>
+                <textarea
+                  ref={clinicalNotesRef}
+                  value={notes}
+                  onChange={(e) => setNotes(e.target.value)}
+                  rows={3}
+                  placeholder="Any special instructions or clinical notes..."
+                  onFocus={(e) => e.currentTarget.closest('section')?.scrollIntoView({ behavior: 'smooth', block: 'start' })}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                />
+              </div>
+            )}
           </section>
 
           {/* Discount & Payment Section */}
@@ -3516,6 +3683,24 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
               </button>
               <button
                 type="submit"
+                ref={createAndNewButtonRef}
+                onClick={() => { submitModeRef.current = 'new'; }}
+                disabled={isSubmitting}
+                className="px-4 py-2 border border-blue-600 text-blue-700 bg-white rounded-md hover:bg-blue-50 transition-colors disabled:opacity-60 disabled:cursor-not-allowed flex items-center gap-2"
+              >
+                {isSubmitting && submitModeRef.current === 'new' ? (
+                  <>
+                    <Loader className="h-4 w-4 animate-spin" />
+                    <span>Creating...</span>
+                  </>
+                ) : (
+                  <span>Create & New</span>
+                )}
+              </button>
+              <button
+                type="submit"
+                ref={createOrderButtonRef}
+                onClick={() => { submitModeRef.current = 'close'; }}
                 disabled={isSubmitting}
                 className="px-6 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 transition-colors disabled:opacity-60 disabled:cursor-not-allowed flex items-center gap-2"
               >

@@ -13,12 +13,18 @@ import JsBarcode from 'jsbarcode';
 interface SampleLabelPrinterProps {
   sample: Sample;
   patientName?: string;
+  patientGender?: string;
+  patientAge?: string | number;
+  referredBy?: string;
   showDownload?: boolean;
 }
 
 export const SampleLabelPrinter: React.FC<SampleLabelPrinterProps> = ({
   sample,
   patientName,
+  patientGender,
+  patientAge,
+  referredBy,
   showDownload = false
 }) => {
   const [barcodeDataUrl, setBarcodeDataUrl] = useState<string>('');
@@ -26,7 +32,7 @@ export const SampleLabelPrinter: React.FC<SampleLabelPrinterProps> = ({
   const [loading, setLoading] = useState(true);
   const [printing, setPrinting] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const { settings, connect } = useQZTray();
+  const { settings, refreshSettings, connect } = useQZTray();
 
   useEffect(() => {
     generateCodes();
@@ -65,6 +71,25 @@ export const SampleLabelPrinter: React.FC<SampleLabelPrinterProps> = ({
     }
   };
 
+  const getLabelPrintData = () => {
+    const collectionDate = new Date(sample.created_at);
+    return {
+      sampleId: sample.barcode || sample.id,
+      labelId: sample.id,
+      patientName: patientName || 'Sample',
+      sampleType: sample.sample_type,
+      date: collectionDate.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: '2-digit' }).replace(/ /g, '-'),
+      gender: patientGender,
+      age: patientAge ? String(patientAge) : undefined,
+      collectionTime: collectionDate.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', hour12: false }),
+      referredBy: referredBy,
+    };
+  };
+
+  const handleBrowserPrint = (preferredPrinterName?: string | null) => {
+    qzTrayService.printBarcodeLabelsInBrowser([getLabelPrintData()], preferredPrinterName);
+  };
+
   const handlePrint = async () => {
     console.debug('[PrintBridge][BarcodeLabel] print button clicked', {
       sampleId: sample.id,
@@ -72,11 +97,21 @@ export const SampleLabelPrinter: React.FC<SampleLabelPrinterProps> = ({
       sampleType: sample.sample_type,
       configuredPrinter: settings.barcodePrinterName,
       queueReady: qzTrayService.isConnected(),
+      browserPrint: settings.barcodeBrowserPrintEnabled,
     });
 
-    if (!settings.barcodePrinterName) {
-      console.warn('[PrintBridge][BarcodeLabel] print blocked: barcode printer is not configured');
-      alert('Barcode / Label Printer is not configured in Workflow Settings.');
+    let barcodePrinterName = settings.barcodePrinterName;
+    let barcodeBrowserPrintEnabled = settings.barcodeBrowserPrintEnabled;
+    if (!barcodePrinterName) {
+      console.debug('[PrintBridge][BarcodeLabel] no printer in context, refreshing settings once');
+      const refreshedSettings = await refreshSettings();
+      barcodePrinterName = refreshedSettings.barcodePrinterName;
+      barcodeBrowserPrintEnabled = refreshedSettings.barcodeBrowserPrintEnabled;
+    }
+
+    if (!barcodePrinterName) {
+      console.warn('[PrintBridge][BarcodeLabel] barcode printer is still not configured after refresh, falling back to browser print');
+      handleBrowserPrint();
       return;
     }
 
@@ -84,31 +119,30 @@ export const SampleLabelPrinter: React.FC<SampleLabelPrinterProps> = ({
       setPrinting(true);
       setError(null);
 
+      if (barcodeBrowserPrintEnabled) {
+        handleBrowserPrint(barcodePrinterName);
+        return;
+      }
+
       if (!qzTrayService.isConnected()) {
         console.debug('[PrintBridge][BarcodeLabel] queue paused, resuming');
         await connect();
       }
 
       console.debug('[PrintBridge][BarcodeLabel] queueing label print job', {
-        printerName: settings.barcodePrinterName,
+        printerName: barcodePrinterName,
         sampleIdForBarcode: sample.barcode || sample.id,
         labelId: sample.id,
       });
-      await qzTrayService.printBarcodeLabel(settings.barcodePrinterName, {
-        sampleId: sample.barcode || sample.id,
-        labelId: sample.id,
-        patientName: patientName || 'Sample',
-        sampleType: sample.sample_type,
-        date: new Date(sample.created_at).toLocaleDateString('en-GB'),
-      });
+      await qzTrayService.printBarcodeLabel(barcodePrinterName, getLabelPrintData());
       console.debug('[PrintBridge][BarcodeLabel] print job queued', {
-        printerName: settings.barcodePrinterName,
+        printerName: barcodePrinterName,
         sampleId: sample.id,
       });
       return;
     } catch (err: any) {
       console.error('Print bridge label queue failed:', err);
-      setError(err?.message || 'Failed to queue label for LIMS Utility');
+      setError('Failed to queue print job. Please try again.');
     } finally {
       setPrinting(false);
     }

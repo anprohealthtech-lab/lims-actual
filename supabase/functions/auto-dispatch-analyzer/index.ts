@@ -40,7 +40,7 @@ Deno.serve(async (req) => {
         id, lab_id, patient_id, priority, order_number,
         sample_id,
         patients(name, date_of_birth, gender),
-        samples(barcode),
+        samples(barcode, sample_type),
         labs!inner(lab_interface_enabled)
       `)
       .eq('id', orderId)
@@ -64,10 +64,12 @@ Deno.serve(async (req) => {
     // Only use the physical tube barcode from samples.barcode — no fallbacks.
     // Using a non-numeric fallback (e.g. LIMS sample_id) causes the analyzer to echo
     // that string back in the ORU result, which then matches the wrong sample in the DB.
-    const samplesArr: { barcode: string }[] = Array.isArray((orderData as any).samples)
+    const samplesArr: { barcode: string; sample_type?: string | null }[] = Array.isArray((orderData as any).samples)
       ? (orderData as any).samples
       : (orderData as any).samples ? [(orderData as any).samples] : []
     let sampleBarcode: string | null = samplesArr.find((s) => s.barcode)?.barcode ?? null
+    let collectedSampleType: string | null =
+      samplesArr.find((s) => s.barcode === sampleBarcode)?.sample_type ?? null
 
     // If barcode not yet set (sample not yet printed/scanned), retry once after 4 s.
     // The DB trigger fn_dispatch_on_barcode_set will re-queue when barcode is assigned.
@@ -75,11 +77,12 @@ Deno.serve(async (req) => {
       await new Promise((r) => setTimeout(r, 4000))
       const { data: freshSamples } = await supabase
         .from('samples')
-        .select('barcode')
+        .select('barcode, sample_type')
         .eq('order_id', orderId)
         .not('barcode', 'is', null)
         .limit(1)
       sampleBarcode = freshSamples?.[0]?.barcode ?? null
+      collectedSampleType = freshSamples?.[0]?.sample_type ?? null
     }
 
     // Still no barcode — abort. The DB trigger will dispatch when barcode is set.
@@ -103,7 +106,7 @@ Deno.serve(async (req) => {
         id,
         test_group_id,
         test_groups!inner(
-          id, code, name, analyzer_connection_id
+          id, code, name, sample_type, analyzer_connection_id
         )
       `)
       .eq('order_id', orderId)
@@ -118,7 +121,7 @@ Deno.serve(async (req) => {
         id,
         test_group_id,
         test_groups!inner(
-          id, code, name, analyzer_connection_id
+          id, code, name, sample_type, analyzer_connection_id
         )
       `)
       .eq('order_id', orderId)
@@ -128,7 +131,11 @@ Deno.serve(async (req) => {
     if (otError) throw new Error(`order_tests query failed: ${otError.message}`)
 
     // Normalise both sources into a common shape
-    type TGLink = { rowId: string; tgId: string; tg: { id: string; code: string; name: string; analyzer_connection_id: string } }
+    type TGLink = {
+      rowId: string
+      tgId: string
+      tg: { id: string; code: string; name: string; sample_type?: string | null; analyzer_connection_id: string }
+    }
 
     const allLinks: TGLink[] = [
       ...(otgRows ?? []).map((r: any) => ({ rowId: r.id, tgId: r.test_group_id, tg: r.test_groups })),
@@ -150,14 +157,14 @@ Deno.serve(async (req) => {
 
       const { data: otRowsRetry } = await supabase
         .from('order_tests')
-        .select(`id, test_group_id, test_groups!inner(id, code, name, analyzer_connection_id)`)
+        .select(`id, test_group_id, test_groups!inner(id, code, name, sample_type, analyzer_connection_id)`)
         .eq('order_id', orderId)
         .eq('is_canceled', false)
         .not('test_groups.analyzer_connection_id', 'is', null)
 
       const { data: otgRowsRetry } = await supabase
         .from('order_test_groups')
-        .select(`id, test_group_id, test_groups!inner(id, code, name, analyzer_connection_id)`)
+        .select(`id, test_group_id, test_groups!inner(id, code, name, sample_type, analyzer_connection_id)`)
         .eq('order_id', orderId)
         .not('test_groups.analyzer_connection_id', 'is', null)
 
@@ -193,7 +200,7 @@ Deno.serve(async (req) => {
         lab_analytes!inner(id, code, name, analyte_id)
       `)
       .in('test_group_id', allTestGroupIds)
-      .eq('is_active', true)
+      .eq('lab_analytes.is_active', true)
 
     if (tgaError) throw new Error(`test_group_analytes query failed: ${tgaError.message}`)
 
@@ -219,7 +226,14 @@ Deno.serve(async (req) => {
     const byAnalyzer = new Map<string, {
       tests: string[]
       testGroupIds: string[]
-      labAnalytes: Array<{ lab_analyte_id: string; code: string; name: string; test_group_id: string }>
+      sampleTypes: string[]
+      labAnalytes: Array<{
+        lab_analyte_id: string
+        code: string
+        name: string
+        test_group_id: string
+        sample_type: string
+      }>
     }>()
 
     for (const link of uniqueLinks) {
@@ -228,16 +242,18 @@ Deno.serve(async (req) => {
       const code: string = tg.code || tg.name
 
       if (!byAnalyzer.has(connId)) {
-        byAnalyzer.set(connId, { tests: [], testGroupIds: [], labAnalytes: [] })
+        byAnalyzer.set(connId, { tests: [], testGroupIds: [], sampleTypes: [], labAnalytes: [] })
       }
       const group = byAnalyzer.get(connId)!
       group.tests.push(code)
       group.testGroupIds.push(tg.id)
+      const sampleType = collectedSampleType || tg.sample_type || ''
+      if (sampleType) group.sampleTypes.push(sampleType)
 
       // Add lab_analytes for this test_group
       const labAnalytesForTg = tgToLabAnalytes.get(tg.id) ?? []
       for (const la of labAnalytesForTg) {
-        group.labAnalytes.push({ ...la, test_group_id: tg.id })
+        group.labAnalytes.push({ ...la, test_group_id: tg.id, sample_type: sampleType })
       }
     }
 
@@ -278,6 +294,7 @@ Deno.serve(async (req) => {
               analyzer_connection_id: analyzerConnectionId,
               tests: group.tests,
               lab_analytes: group.labAnalytes,
+              sample_type: group.sampleTypes[0] || collectedSampleType || undefined,
               patient: patient
                 ? {
                     name: patient.name ?? '',

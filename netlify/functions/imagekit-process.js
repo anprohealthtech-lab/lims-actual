@@ -34,9 +34,9 @@ const buildVariantUrls = (baseUrl, assetType, tableName) => {
   const isSignatureAsset = tableName === 'lab_user_signatures';
   const isWideBranding = assetType === 'header' || assetType === 'footer' || assetType === 'watermark';
 
-  if (assetType === 'watermark' || isSignatureAsset) {
+  if (assetType === 'watermark') {
     baseTransforms.push('e-removedotbg');
-  } else {
+  } else if (!isSignatureAsset) {
     baseTransforms.push('e-upscale');
   }
 
@@ -252,7 +252,7 @@ export const handler = async (event) => {
 
     await updateStatus('ready', updateFields);
 
-    // Warm up ImageKit variant URLs so on-demand transformations (e.g. e-removedotbg)
+    // Warm up ImageKit variant URLs so on-demand transformations
     // are pre-processed and cached before any PDF generation requests them.
     // Fire-and-forget — we don't await or block on these.
     if (variants && typeof variants === 'object') {

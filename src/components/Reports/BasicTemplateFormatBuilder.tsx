@@ -14,10 +14,16 @@ export interface BasicPrintOptions {
   showFlagLegend?: boolean;        // show H=High, L=Low legend below each group table
   resultColors?: { high?: string; low?: string; enabled?: boolean }; // custom flag colors (matches edge fn)
   testGroupTitlePosition?: 'below_headers' | 'above_headers_center' | 'above_headers_left';
-  qrPosition?: 'bottom_left' | 'top_left' | 'top_right';
+  qrPosition?: 'bottom_left' | 'top_left' | 'top_right' | 'header_right';
   qrHorizontalOffset?: number;
+  headerQrTop?: number;      // Header QR: distance from top in px (10-80, default 20)
+  headerQrRight?: number;    // Header QR: distance from right in px (10-80, default 25)
   signatureMaxHeight?: number;    // Signature image max height px (30-120, default 70)
   signatureMaxWidth?: number;     // Signature image max width px (80-260, default 180)
+  reportSignatures?: {
+    enabled?: boolean;
+    maxCount?: number;
+  };
   sectionFieldNamePct?: number;    // Section field name width % for narrative/section-only reports (20-70, default 40)
   resultTableBackground?: 'white' | 'transparent';
   basicColumnWidths?: {
@@ -48,10 +54,10 @@ const SAMPLE_ANALYTES_BY_GROUP = new Map([
     { parameter: 'MCHC',                  value: '30.2',  unit: 'g/dL',   reference_range: '32 - 36',         flag: 'low',  method: '',           is_auto_calculated: true, interpretation_low: 'Hypochromic', section_heading: 'Red Blood Cell Indices', sort_order: 6  },
     { parameter: 'RDW-CV',               value: '16.5',  unit: '%',       reference_range: '11.5 - 14.0',    flag: 'high', method: '',           interpretation_high: 'High — Anisocytosis',              section_heading: 'Red Blood Cell Indices', sort_order: 7  },
     { parameter: 'Total Leukocyte Count', value: '12800', unit: '/cmm',    reference_range: '4000 - 10500',   flag: 'high', method: 'Impedance',  interpretation_high: 'Leukocytosis',                     section_heading: 'White Blood Cell Differential', sort_order: 8  },
-    { parameter: 'Neutrophils (%)',       value: '72',    unit: '%',       reference_range: '50 - 80',         flag: '',     method: '',           section_heading: 'White Blood Cell Differential', sort_order: 9  },
-    { parameter: 'Neutrophils (Abs)',     value: '9216',  unit: '/cmm',    reference_range: '1500 - 6600',    flag: 'high', method: '',           is_auto_calculated: true, interpretation_high: 'Neutrophilia', section_heading: 'White Blood Cell Differential', sort_order: 10 },
-    { parameter: 'Lymphocytes (%)',       value: '20',    unit: '%',       reference_range: '25 - 50',         flag: 'low',  method: '',           interpretation_low: 'Lymphopenia',                       section_heading: 'White Blood Cell Differential', sort_order: 11 },
-    { parameter: 'Lymphocytes (Abs)',     value: '2560',  unit: '/cmm',    reference_range: '1500 - 3500',    flag: '',     method: '',           is_auto_calculated: true,                                section_heading: 'White Blood Cell Differential', sort_order: 12 },
+    { id: 'neutrophils-pct', parameter: 'Neutrophils (%)', value: '72', unit: '%', reference_range: '50 - 80', flag: '', method: '', section_heading: 'White Blood Cell Differential', sort_order: 9, report_display_options: { sameRowSiblingAnalyteId: 'neutrophils-abs', sameRowSiblingLabel: 'Absolute Count' } },
+    { id: 'neutrophils-abs', parameter: 'Neutrophils (Abs)', value: '9216', unit: '/cmm', reference_range: '1500 - 6600', flag: 'high', method: '', is_auto_calculated: true, interpretation_high: 'Neutrophilia', section_heading: 'White Blood Cell Differential', sort_order: 10 },
+    { id: 'lymphocytes-pct', parameter: 'Lymphocytes (%)', value: '20', unit: '%', reference_range: '25 - 50', flag: 'low', method: '', interpretation_low: 'Lymphopenia', section_heading: 'White Blood Cell Differential', sort_order: 11, report_display_options: { sameRowSiblingAnalyteId: 'lymphocytes-abs', sameRowSiblingLabel: 'Absolute Count' } },
+    { id: 'lymphocytes-abs', parameter: 'Lymphocytes (Abs)', value: '2560', unit: '/cmm', reference_range: '1500 - 3500', flag: '', method: '', is_auto_calculated: true, section_heading: 'White Blood Cell Differential', sort_order: 12 },
     { parameter: 'Monocytes (%)',         value: '5',     unit: '%',       reference_range: '2 - 10',          flag: '',     method: '',           section_heading: 'White Blood Cell Differential', sort_order: 13 },
     { parameter: 'Eosinophils (%)',       value: '2',     unit: '%',       reference_range: '0.0 - 5.0',      flag: '',     method: '',           section_heading: 'White Blood Cell Differential', sort_order: 14 },
     { parameter: 'Basophils (%)',         value: '1',     unit: '%',       reference_range: '0 - 2',           flag: '',     method: '',           section_heading: 'White Blood Cell Differential', sort_order: 15 },
@@ -148,12 +154,18 @@ function buildBasicHtml(
   const testGroupTitlePosition = printOptions.testGroupTitlePosition ?? 'above_headers_center';
   const qrPosition = printOptions.qrPosition ?? 'bottom_left';
   const qrHorizontalOffset = Math.max(0, Math.min(80, printOptions.qrHorizontalOffset ?? 0));
+  const headerQrTop = Math.max(10, Math.min(80, printOptions.headerQrTop ?? 20));
+  const headerQrRight = Math.max(10, Math.min(80, printOptions.headerQrRight ?? 25));
   const signatureMaxHeight = Math.max(30, Math.min(120, Number(printOptions.signatureMaxHeight ?? 70)));
   const signatureMaxWidth = Math.max(80, Math.min(260, Number(printOptions.signatureMaxWidth ?? 180)));
+  const signatureSampleCount = printOptions.reportSignatures?.enabled === false
+    ? 0
+    : Math.max(1, Math.min(3, Number(printOptions.reportSignatures?.maxCount ?? 1)));
   const resultTableBackground = printOptions.resultTableBackground === 'transparent' ? 'transparent' : '#fff';
   const sectionRowBackground = printOptions.resultTableBackground === 'transparent' ? 'transparent' : '#f5f5f5';
   const colCount = 4;
   const standardColumnWidths = normalizeBasicColumnWidths(printOptions.basicColumnWidths?.standard, DEFAULT_BASIC_STANDARD_WIDTHS, 4);
+  const siblingColumnWidths = normalizeBasicColumnWidths(printOptions.basicColumnWidths?.sibling, DEFAULT_BASIC_SIBLING_WIDTHS, 6);
   const highColor = printOptions.resultColors?.enabled ? (printOptions.resultColors?.high ?? '#dc2626') : '#dc2626';
   const lowColor  = printOptions.resultColors?.enabled ? (printOptions.resultColors?.low  ?? '#000')    : '#000';
 
@@ -282,10 +294,23 @@ function buildBasicHtml(
 .basic-report-template .tbl-results thead th:nth-child(2) { width: ${formatBasicWidth(standardColumnWidths[1])} !important; text-align: right !important; }
 .basic-report-template .tbl-results thead th:nth-child(3) { width: ${formatBasicWidth(standardColumnWidths[2])} !important; text-align: left !important; }
 .basic-report-template .tbl-results thead th:nth-child(4) { width: ${formatBasicWidth(standardColumnWidths[3])} !important; text-align: left !important; }
+.basic-report-template .tbl-results.has-sibling thead th:nth-child(1) { width: ${formatBasicWidth(siblingColumnWidths[0])} !important; }
+.basic-report-template .tbl-results.has-sibling thead th:nth-child(2) { width: ${formatBasicWidth(siblingColumnWidths[1])} !important; }
+.basic-report-template .tbl-results.has-sibling thead th:nth-child(3) { width: ${formatBasicWidth(siblingColumnWidths[2])} !important; }
+.basic-report-template .tbl-results.has-sibling thead th:nth-child(4) { width: ${formatBasicWidth(siblingColumnWidths[3])} !important; }
+.basic-report-template .tbl-results.has-sibling thead th:nth-child(5) { width: ${formatBasicWidth(siblingColumnWidths[4])} !important; }
+.basic-report-template .tbl-results.has-sibling thead th:nth-child(6) { width: ${formatBasicWidth(siblingColumnWidths[5])} !important; }
 .basic-report-template .tbl-results tbody td:nth-child(1) { width: ${formatBasicWidth(standardColumnWidths[0])} !important; text-align: ${testNameAlignment} !important; color: #111 !important; }
 .basic-report-template .tbl-results tbody td:nth-child(2) { width: ${formatBasicWidth(standardColumnWidths[1])} !important; text-align: right !important; }
 .basic-report-template .tbl-results tbody td:nth-child(3) { width: ${formatBasicWidth(standardColumnWidths[2])} !important; text-align: left !important; color: #444 !important; white-space: nowrap !important; }
 .basic-report-template .tbl-results tbody td:nth-child(4) { width: ${formatBasicWidth(standardColumnWidths[3])} !important; text-align: left !important; color: #666 !important; }
+
+.basic-report-template .tbl-results.has-sibling tbody tr.sibling-data-row td:nth-child(1) { width: ${formatBasicWidth(siblingColumnWidths[0])} !important; }
+.basic-report-template .tbl-results.has-sibling tbody tr.sibling-data-row td:nth-child(2) { width: ${formatBasicWidth(siblingColumnWidths[1])} !important; }
+.basic-report-template .tbl-results.has-sibling tbody tr.sibling-data-row td:nth-child(3) { width: ${formatBasicWidth(siblingColumnWidths[2])} !important; }
+.basic-report-template .tbl-results.has-sibling tbody tr.sibling-data-row td:nth-child(4) { width: ${formatBasicWidth(siblingColumnWidths[3])} !important; }
+.basic-report-template .tbl-results.has-sibling tbody tr.sibling-data-row td:nth-child(5) { width: ${formatBasicWidth(siblingColumnWidths[4])} !important; text-align: right !important; }
+.basic-report-template .tbl-results.has-sibling tbody tr.sibling-data-row td:nth-child(6) { width: ${formatBasicWidth(siblingColumnWidths[5])} !important; text-align: left !important; }
 
 .basic-report-template .tbl-results td {
   border: none !important;
@@ -383,6 +408,16 @@ function buildBasicHtml(
 .basic-report-template .descriptive-row td {
   border-bottom: 0.5px dotted #e5e5e5 !important;
   color: #111 !important;
+}
+
+.basic-report-template .tbl-results.has-sibling .sub-section-header .sibling-section-title,
+.basic-report-template .tbl-results.has-sibling .sub-section-header .sibling-section-label {
+  width: auto !important;
+}
+
+.basic-report-template .tbl-results.has-sibling .sub-section-header .sibling-section-label {
+  text-align: left !important;
+  text-decoration: underline !important;
 }
 
 .basic-report-template .tbl-results .qualitative-wide-value {
@@ -523,12 +558,27 @@ function buildBasicHtml(
   font-size: ${smallPx}px !important;
   color: #444 !important;
   font-style: italic !important;
+  flex: 1 1 auto !important;
 }
 
-.basic-report-template .signature-box { text-align: right !important; }
+.basic-report-template .signature-row {
+  display: flex !important;
+  justify-content: flex-end !important;
+  align-items: flex-end !important;
+  gap: 14px !important;
+  flex: 0 1 auto !important;
+  max-width: 72% !important;
+}
+.basic-report-template .signature-box {
+  text-align: right !important;
+  flex: 0 1 150px !important;
+  min-width: 0 !important;
+  margin-left: 10px !important;
+  overflow-wrap: anywhere !important;
+}
 .basic-report-template .signature-sample {
-  max-height: ${signatureMaxHeight}px !important;
-  max-width: ${signatureMaxWidth}px !important;
+  max-height: ${signatureSampleCount >= 2 ? Math.min(signatureMaxHeight, 54) : signatureMaxHeight}px !important;
+  max-width: ${signatureSampleCount >= 3 ? Math.min(signatureMaxWidth, 128) : signatureSampleCount === 2 ? Math.min(signatureMaxWidth, 150) : signatureMaxWidth}px !important;
   width: auto !important;
   height: auto !important;
   object-fit: contain !important;
@@ -600,6 +650,24 @@ function buildBasicHtml(
 
     const groupTitleBelowHeaders = testGroupTitlePosition === 'below_headers';
     const groupTitleClass = testGroupTitlePosition === 'above_headers_left' ? 'center-title left' : 'center-title';
+    const analyteById = new Map<string, any>();
+    const sameRowSiblingIds = new Set<string>();
+    const sectionsWithSiblings = new Set<string | null>();
+    let sameRowSiblingLabel = 'Absolute Count';
+    for (const analyte of analytes) {
+      if (analyte.id) analyteById.set(String(analyte.id), analyte);
+    }
+    for (const analyte of analytes) {
+      const options = analyte.report_display_options || {};
+      const siblingId = String(options.sameRowSiblingAnalyteId || '').trim();
+      if (siblingId && analyteById.has(siblingId)) {
+        sameRowSiblingIds.add(siblingId);
+        sectionsWithSiblings.add(analyte.section_heading ?? null);
+        if (options.sameRowSiblingLabel) sameRowSiblingLabel = String(options.sameRowSiblingLabel);
+      }
+    }
+    const hasSameRowSibling = sameRowSiblingIds.size > 0;
+    const effectiveColCount = hasSameRowSibling ? 6 : colCount;
 
     testResultsHtml += `
       <figure class="table" style="margin: 0 0 14px;">
@@ -607,19 +675,23 @@ function buildBasicHtml(
           <div class="${groupTitleClass}" style="font-size:${basePx + 1}px;">${groupName}</div>
           ${specimenText}
 		        ` : ''}
-		        <table class="tbl-results">
+		        <table class="tbl-results${hasSameRowSibling ? ' has-sibling' : ''}">
+              ${hasSameRowSibling ? `<colgroup>
+                ${siblingColumnWidths.map((width) => `<col style="width:${formatBasicWidth(width)}">`).join('')}
+              </colgroup>` : ''}
 		          <thead>
 		            <tr>
 		              <th style="font-size:${basePx}px;">TEST NAME</th>
 		              <th style="font-size:${basePx}px;">VALUE</th>
 		              <th style="font-size:${basePx}px;">UNITS</th>
 		              <th style="font-size:${basePx}px;">Bio. Ref. Interval</th>
+                  ${hasSameRowSibling ? '<th></th><th></th>' : ''}
 		            </tr>
 		          </thead>
 		          <tbody>
 		            ${groupTitleBelowHeaders ? `
             <tr class="main-group-row">
-              <td colspan="${colCount}">
+              <td colspan="${effectiveColCount}">
                 <div class="center-title" style="font-size:${basePx + 1}px;">${groupName}</div>
                 ${specimenText}
               </td>
@@ -629,15 +701,19 @@ function buildBasicHtml(
 
     const sectionBlocks = groupAnalytesBySectionHeading(analytes);
     for (const block of sectionBlocks) {
+      const sectionHasSiblings = sectionsWithSiblings.has(block.heading);
       if (block.heading) {
         testResultsHtml += `
             <tr class="sub-section-header">
-              <td colspan="${colCount}" style="font-size:${smallPx + 1}px;">${block.heading}</td>
+              ${sectionHasSiblings
+                ? `<td class="sibling-section-title" colspan="4">${block.heading}</td><td class="sibling-section-label" colspan="2">${sameRowSiblingLabel}</td>`
+                : `<td colspan="${effectiveColCount}" style="font-size:${smallPx + 1}px;">${block.heading}</td>`}
             </tr>
         `;
       }
 
       for (const analyte of block.analytes) {
+        if (analyte.id && sameRowSiblingIds.has(String(analyte.id))) continue;
         const parameterName = analyte.parameter || analyte.name || analyte.test_name || '';
         const isCalculated    = analyte.is_auto_calculated || analyte.is_calculated;
         const rawValue        = analyte.value ?? '';
@@ -691,7 +767,7 @@ function buildBasicHtml(
         if (isDescriptive) {
           testResultsHtml += `
               <tr class="descriptive-row">
-                <td colspan="${colCount}" style="font-size: ${basePx}px;">
+                <td colspan="${effectiveColCount}" style="font-size: ${basePx}px;">
                   <span style="font-weight:600;">${parameterName}</span>: ${value || refText || ''}
                 </td>
               </tr>
@@ -700,6 +776,13 @@ function buildBasicHtml(
         }
 
         const valClass = canonicalFlag ? `val ${canonicalFlag}` : 'val';
+        const siblingId = String(analyte.report_display_options?.sameRowSiblingAnalyteId || '').trim();
+        const siblingAnalyte = siblingId ? analyteById.get(siblingId) : null;
+        const siblingValue = siblingAnalyte?.value ?? '';
+        const siblingUnit = siblingAnalyte?.unit || '';
+        const siblingRefRange = siblingAnalyte?.reference_range || '';
+        const siblingFlag = siblingAnalyte ? normalizeReportFlag(siblingAnalyte.flag || '').canonical : '';
+        const siblingValClass = siblingFlag ? `val ${siblingFlag}` : 'val';
 
         const calcSuffix = isCalculated
           ? calcMarker === 'asterisk' ? `<sup style="font-size:${smallPx - 1}px; color:#444; margin-left:1px;">*</sup>`
@@ -708,7 +791,7 @@ function buildBasicHtml(
           : '';
 
         testResultsHtml += `
-              <tr class="${isQualitativeWithoutMetadata ? 'qualitative-wide-row' : ''}">
+              <tr class="${sectionHasSiblings ? 'sibling-data-row' : ''} ${isQualitativeWithoutMetadata ? 'qualitative-wide-row' : ''}">
                 <td class="test-name-cell">
                   <div class="test-name" style="font-size:${basePx}px; font-weight:${testNameWeight};">
                     ${parameterName}${calcSuffix}
@@ -719,7 +802,11 @@ function buildBasicHtml(
                   ? `<td class="${valClass} qualitative-wide-value" colspan="3" style="font-size:${basePx}px;">${displayValue}</td>`
                   : `<td class="${valClass}" style="font-size:${basePx}px;">${displayValue}</td>
                 <td style="text-align:left; vertical-align:top; font-size:${basePx}px; color:#444;">${unit}</td>
-                <td style="text-align:right; vertical-align:top; font-size:${smallPx + 1}px; color:#666;">${refRange}</td>`}
+                <td style="text-align:left; vertical-align:top; font-size:${smallPx + 1}px; color:#666;">${refRange}</td>
+                ${sectionHasSiblings
+                  ? `<td style="text-align:right; vertical-align:top;"><span class="${siblingValClass}">${siblingValue}</span>${siblingUnit ? ` <span style="color:#444;font-weight:normal;">${siblingUnit}</span>` : ''}</td>
+                <td style="text-align:left; vertical-align:top; font-size:${smallPx + 1}px; color:#666;">${siblingRefRange}</td>`
+                  : ''}`}
               </tr>
         `;
 
@@ -731,7 +818,7 @@ function buildBasicHtml(
           if (interp) {
             testResultsHtml += `
               <tr class="interpretation-row">
-                <td colspan="${colCount}" style="font-size:${smallPx}px;">${interp}</td>
+                <td colspan="${effectiveColCount}" style="font-size:${smallPx}px;">${interp}</td>
               </tr>
             `;
           }
@@ -757,6 +844,17 @@ function buildBasicHtml(
 
   testResultsHtml += '</div>';
 
+  const sampleSignatureBlocks = Array.from({ length: signatureSampleCount }, (_, index) => `
+      <div class="signature-box">
+        <svg class="signature-sample" viewBox="0 0 220 80" xmlns="http://www.w3.org/2000/svg" aria-label="Sample signature">
+          <path d="M12 48 C35 12, 45 78, 62 38 S91 20, 104 47 S132 70, 144 34 S171 20, 188 44 S207 54, 216 31" fill="none" stroke="#1d4ed8" stroke-width="4" stroke-linecap="round"/>
+          <path d="M30 64 C78 58, 145 61, 214 50" fill="none" stroke="#1d4ed8" stroke-width="3" stroke-linecap="round"/>
+        </svg>
+        <div style="font-weight:700; font-size:${Math.max(9, sigPx - (signatureSampleCount >= 3 ? 1 : 0))}px; line-height:1.15;">${index === 0 ? 'Dr. Signatory Name' : `Dr. Signatory ${index + 1}`}</div>
+        <div style="font-size:${Math.max(8, basePx - 2)}px; margin-top:2px; line-height:1.15;">MD Pathology</div>
+      </div>
+  `).join('');
+
   const signatoryHtml = `
     <div class="report-footer">
       ${qrPosition === 'bottom_left' ? `<div class="qr-verify" style="text-align:left;">
@@ -767,20 +865,23 @@ function buildBasicHtml(
         <p style="margin:2px 0 0 0;font-size:9px;color:#6b7280;">Scan to verify</p>
       </div>` : '<div></div>'}
       <div class="auth-text">Authenticated Electronic Report</div>
-      <div class="signature-box">
-        <svg class="signature-sample" viewBox="0 0 220 80" xmlns="http://www.w3.org/2000/svg" aria-label="Sample signature">
-          <path d="M12 48 C35 12, 45 78, 62 38 S91 20, 104 47 S132 70, 144 34 S171 20, 188 44 S207 54, 216 31" fill="none" stroke="#1d4ed8" stroke-width="4" stroke-linecap="round"/>
-          <path d="M30 64 C78 58, 145 61, 214 50" fill="none" stroke="#1d4ed8" stroke-width="3" stroke-linecap="round"/>
-        </svg>
-        <div style="font-weight:700; font-size:${sigPx}px;">Dr. Signatory Name</div>
-        <div style="font-size:${basePx - 1}px; margin-top:2px;">MD Pathology</div>
-      </div>
+      <div class="signature-row">${sampleSignatureBlocks}</div>
     </div>
   `;
 
+  const headerQrHtml = qrPosition === 'header_right' ? `
+    <div style="position:absolute;top:${headerQrTop}px;right:${headerQrRight}px;z-index:10;text-align:left;">
+      <div style="width:55px;height:55px;border:1px solid #9ca3af;background:
+        linear-gradient(90deg,#111 10%,transparent 10%,transparent 20%,#111 20%,#111 30%,transparent 30%,transparent 40%,#111 40%,#111 50%,transparent 50%,transparent 60%,#111 60%,#111 70%,transparent 70%,transparent 80%,#111 80%,#111 90%,transparent 90%),
+        linear-gradient(#111 10%,transparent 10%,transparent 20%,#111 20%,#111 30%,transparent 30%,transparent 40%,#111 40%,#111 50%,transparent 50%,transparent 60%,#111 60%,#111 70%,transparent 70%,transparent 80%,#111 80%,#111 90%,transparent 90%);
+        background-size:11px 11px;background-color:#fff;"></div>
+      <p style="margin:2px 0 0 0;font-size:8px;color:#555;">Scan to verify</p>
+    </div>` : '';
+
   return `
     ${noColorCss}
-    <div class="basic-report-template" style="font-family: Arial, Helvetica, sans-serif; font-size: ${basePx}px; color: #000;">
+    <div class="basic-report-template" style="position:relative;font-family: Arial, Helvetica, sans-serif; font-size: ${basePx}px; color: #000;">
+      ${headerQrHtml}
       ${patientInfoHtml}
       ${testResultsHtml}
       ${signatoryHtml}
@@ -824,6 +925,7 @@ export default function BasicTemplateFormatBuilder({ printOptions, showMethodolo
     onChange({ printOptions: { ...printOptions, ...patch } });
   const standardWidths = withCalculatedLastWidth(editableBasicColumnWidths(printOptions.basicColumnWidths?.standard, DEFAULT_BASIC_STANDARD_WIDTHS, 4));
   const siblingWidths = withCalculatedLastWidth(editableBasicColumnWidths(printOptions.basicColumnWidths?.sibling, DEFAULT_BASIC_SIBLING_WIDTHS, 6));
+  const siblingBlockStart = Number(siblingWidths.slice(0, 4).reduce((sum, width) => sum + width, 0).toFixed(2));
   const setColumnWidth = (kind: 'standard' | 'sibling', index: number, value: number) => {
     const current = kind === 'standard' ? standardWidths : siblingWidths;
     const lastIndex = current.length - 1;
@@ -838,6 +940,23 @@ export default function BasicTemplateFormatBuilder({ printOptions, showMethodolo
       basicColumnWidths: {
         ...(printOptions.basicColumnWidths || {}),
         [kind]: next,
+      },
+    });
+  };
+  const setSiblingBlockStart = (value: number) => {
+    const nextStart = Math.max(45, Math.min(80, Number(value) || 68));
+    const currentLeftTotal = siblingWidths.slice(0, 4).reduce((sum, width) => sum + width, 0);
+    const currentRightTotal = siblingWidths.slice(4).reduce((sum, width) => sum + width, 0);
+    const leftScale = nextStart / currentLeftTotal;
+    const rightScale = (100 - nextStart) / currentRightTotal;
+    const next = siblingWidths.map((width, index) =>
+      Number((width * (index < 4 ? leftScale : rightScale)).toFixed(2)),
+    );
+    next[next.length - 1] = Number((100 - next.slice(0, -1).reduce((sum, width) => sum + width, 0)).toFixed(2));
+    setPO({
+      basicColumnWidths: {
+        ...(printOptions.basicColumnWidths || {}),
+        sibling: next,
       },
     });
   };
@@ -948,26 +1067,58 @@ export default function BasicTemplateFormatBuilder({ printOptions, showMethodolo
               <option value="bottom_left">Bottom left</option>
               <option value="top_left">Top left</option>
               <option value="top_right">Top right</option>
+              <option value="header_right">Header right (letterhead area)</option>
             </select>
           </Row>
-          <Row
-            label="QR Horizontal Shift"
-            hint={printOptions.qrPosition === 'top_right'
-              ? 'Move the top-right QR left from the right edge'
-              : 'Move the QR right from the left edge'}
-          >
-            <div className="flex items-center gap-2">
-              <input
-                type="range" min={0} max={80} step={2}
-                value={printOptions.qrHorizontalOffset ?? 0}
-                onChange={(e) => setPO({ qrHorizontalOffset: Number(e.target.value) })}
-                className="w-24 accent-indigo-600"
-              />
-              <span className="w-10 text-sm font-mono font-semibold text-gray-700">
-                {printOptions.qrHorizontalOffset ?? 0}
-              </span>
-            </div>
-          </Row>
+          {printOptions.qrPosition === 'header_right' ? (
+            <>
+              <Row label="Header QR Top" hint="Distance from top of page (px)">
+                <div className="flex items-center gap-2">
+                  <input
+                    type="range" min={10} max={80} step={2}
+                    value={printOptions.headerQrTop ?? 20}
+                    onChange={(e) => setPO({ headerQrTop: Number(e.target.value) })}
+                    className="w-24 accent-indigo-600"
+                  />
+                  <span className="w-10 text-sm font-mono font-semibold text-gray-700">
+                    {printOptions.headerQrTop ?? 20}
+                  </span>
+                </div>
+              </Row>
+              <Row label="Header QR Right" hint="Distance from right edge (px)">
+                <div className="flex items-center gap-2">
+                  <input
+                    type="range" min={10} max={80} step={2}
+                    value={printOptions.headerQrRight ?? 25}
+                    onChange={(e) => setPO({ headerQrRight: Number(e.target.value) })}
+                    className="w-24 accent-indigo-600"
+                  />
+                  <span className="w-10 text-sm font-mono font-semibold text-gray-700">
+                    {printOptions.headerQrRight ?? 25}
+                  </span>
+                </div>
+              </Row>
+            </>
+          ) : (
+            <Row
+              label="QR Horizontal Shift"
+              hint={printOptions.qrPosition === 'top_right'
+                ? 'Move the top-right QR left from the right edge'
+                : 'Move the QR right from the left edge'}
+            >
+              <div className="flex items-center gap-2">
+                <input
+                  type="range" min={0} max={80} step={2}
+                  value={printOptions.qrHorizontalOffset ?? 0}
+                  onChange={(e) => setPO({ qrHorizontalOffset: Number(e.target.value) })}
+                  className="w-24 accent-indigo-600"
+                />
+                <span className="w-10 text-sm font-mono font-semibold text-gray-700">
+                  {printOptions.qrHorizontalOffset ?? 0}
+                </span>
+              </div>
+            </Row>
+          )}
           <Row label="Signature Height" hint="Image max height in PDF (30-120 px)">
             <div className="flex items-center gap-2">
               <input
@@ -1039,6 +1190,41 @@ export default function BasicTemplateFormatBuilder({ printOptions, showMethodolo
 	                  className={`w-9 text-xs border border-gray-300 rounded px-1 py-0.5 text-right ${index === siblingWidths.length - 1 ? 'bg-gray-100 text-gray-500' : ''}`}
 	                />
 	              ))}
+            </div>
+          </Row>
+          <Row
+            label="Absolute Count Start"
+            hint="Lower value moves the sibling block left"
+          >
+            <div className="flex flex-col items-end gap-1.5">
+              <div className="flex items-center gap-2">
+                <input
+                  type="range"
+                  min={45}
+                  max={80}
+                  step={1}
+                  value={siblingBlockStart}
+                  onChange={(e) => setSiblingBlockStart(Number(e.target.value))}
+                  className="w-24 accent-indigo-600"
+                />
+                <span className="w-10 text-sm font-mono font-semibold text-gray-700">
+                  {siblingBlockStart}%
+                </span>
+              </div>
+              <div className="flex h-4 w-36 overflow-hidden rounded border border-gray-300 text-[9px] leading-4">
+                <div
+                  className="bg-gray-100 text-center text-gray-500"
+                  style={{ width: `${siblingBlockStart}%` }}
+                >
+                  Primary
+                </div>
+                <div
+                  className="bg-indigo-100 text-center text-indigo-700"
+                  style={{ width: `${100 - siblingBlockStart}%` }}
+                >
+                  Absolute
+                </div>
+              </div>
             </div>
           </Row>
           <Row label="Flag Symbol" hint="Show H/L symbol before or after value">

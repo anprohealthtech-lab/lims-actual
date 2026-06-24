@@ -25,6 +25,8 @@ interface TestMapping {
   from_cache: boolean
   source?: 'lab_mapping' | 'profile_mapping' | 'ai' | 'fallback'
   lab_analyte_id?: string
+  sample_type?: string
+  specimen?: SpecimenMapping
 }
 
 interface LabAnalyteInfo {
@@ -32,6 +34,18 @@ interface LabAnalyteInfo {
   code: string
   name: string
   test_group_id?: string
+  sample_type?: string
+}
+
+interface SpecimenMapping {
+  lims_code: string
+  analyzer_code: string
+  analyzer_display?: string | null
+  analyzer_code_system?: string | null
+  hl7_field?: string | null
+  value_map?: Record<string, unknown>
+  metadata?: Record<string, unknown>
+  source: 'lab_mapping' | 'profile_mapping'
 }
 
 interface OrderPayload {
@@ -40,6 +54,7 @@ interface OrderPayload {
   analyzer_connection_id: string
   tests: string[]
   lab_analytes?: LabAnalyteInfo[]
+  sample_type?: string
   patient?: {
     name: string
     dob?: string
@@ -85,6 +100,36 @@ function isAnalyzerInitiated(profile: any, connection: any): boolean {
 
 function analyzerProtocol(profile: any): string {
   return String(profile?.protocol || 'HL7').trim().toUpperCase()
+}
+
+function normalizeSpecimenType(value?: string | null): string {
+  const normalized = String(value ?? '').trim().toUpperCase().replace(/[^A-Z0-9]+/g, '_')
+  const aliases: Record<string, string> = {
+    BLOOD: 'WHOLE_BLOOD',
+    EDTA_BLOOD: 'WHOLE_BLOOD',
+    EDTA_WHOLE_BLOOD: 'WHOLE_BLOOD',
+  }
+  return aliases[normalized] || normalized
+}
+
+function specimenField(mapping?: SpecimenMapping): string {
+  return String(
+    mapping?.hl7_field || mapping?.metadata?.astm_field || mapping?.metadata?.field || '',
+  ).trim().toUpperCase()
+}
+
+function specimenCode(mapping?: SpecimenMapping): string {
+  if (!mapping) return ''
+  if (mapping.analyzer_code.includes('^')) return mapping.analyzer_code
+  const display = mapping.analyzer_display || mapping.lims_code
+  const system = mapping.analyzer_code_system || 'LOCAL'
+  return `${mapping.analyzer_code}^${display}^${system}`
+}
+
+function supportsSpecimenField(protocol: string, mapping?: SpecimenMapping): boolean {
+  const field = specimenField(mapping)
+  if (protocol === 'ASTM') return field === 'O-16'
+  return ['OBR-15', 'SPM-4', 'OBX-3'].includes(field)
 }
 
 function universalServiceId(test: TestMapping, profile: any): string {
@@ -140,6 +185,17 @@ function buildHl7Payload(
       requested_datetime: timestamp,
       diagnostic_serv_sect_id: diagnosticServiceId,
       lims_code: test.lims_code,
+      specimen: test.specimen
+        ? {
+            sample_type: test.sample_type,
+            field: specimenField(test.specimen),
+            code: specimenCode(test.specimen),
+            analyzer_code: test.specimen.analyzer_code,
+            observation_id: test.specimen.metadata?.observation_id,
+            value: test.specimen.value_map?.[normalizeSpecimenType(test.sample_type)] ??
+              test.specimen.value_map?.default,
+          }
+        : null,
     })),
     obx: messageType === 'ORR^O02'
       ? [
@@ -211,7 +267,7 @@ function generateHL7Order(
   ].join('|'))
 
   for (const obr of p.obr) {
-    segments.push([
+    const obrFields = [
       'OBR',
       String(obr.set_id),
       obr.placer_order_number,
@@ -227,8 +283,19 @@ function generateHL7Order(
       '',
       '',
       '',
-      '',
-    ].join('|'))
+      obr.specimen?.field === 'OBR-15' ? obr.specimen.code : '',
+    ]
+    segments.push(obrFields.join('|'))
+
+    if (obr.specimen?.field === 'SPM-4') {
+      segments.push([
+        'SPM',
+        String(obr.set_id),
+        obr.placer_order_number,
+        '',
+        obr.specimen.code,
+      ].join('|'))
+    }
   }
 
   return { hl7Message: segments.join('\r') + '\r', hl7Payload }
@@ -280,7 +347,7 @@ function generateHL7WorklistResponse(
   segments.push(['ORC', p.orc.order_control, p.orc.placer_order_number].join('|'))
 
   for (const obr of p.obr) {
-    segments.push([
+    const obrFields = [
       'OBR',
       String(obr.set_id),
       obr.placer_order_number,
@@ -308,6 +375,36 @@ function generateHL7WorklistResponse(
       '',
       '',
       obr.diagnostic_serv_sect_id,
+    ]
+    if (obr.specimen?.field === 'OBR-15') obrFields[15] = obr.specimen.code
+    segments.push(obrFields.join('|'))
+
+    if (obr.specimen?.field === 'SPM-4') {
+      segments.push([
+        'SPM',
+        String(obr.set_id),
+        obr.placer_order_number,
+        '',
+        obr.specimen.code,
+      ].join('|'))
+    }
+  }
+
+  for (const obr of p.obr) {
+    if (obr.specimen?.field !== 'OBX-3') continue
+    segments.push([
+      'OBX',
+      String(p.obx.length + obr.set_id),
+      'IS',
+      String(obr.specimen.observation_id || obr.specimen.code),
+      '',
+      String(obr.specimen.value || obr.specimen.analyzer_code),
+      '',
+      '',
+      '',
+      '',
+      '',
+      'F',
     ].join('|'))
   }
 
@@ -332,14 +429,43 @@ function generateHL7WorklistResponse(
 }
 
 function astmRepeatDelimiter(profile: any): string {
-  const configured = String(profile?.repetition_delimiter || profile?.connection_settings?.repetition_delimiter || '')
-  return configured && configured !== '~' ? configured : '\\'
+  const configured = astmDelimiter(profile?.repetition_delimiter || profile?.connection_settings?.repetition_delimiter)
+  return configured || '~'
+}
+
+function astmDelimiter(value: unknown, fallback = ''): string {
+  const raw = String(value ?? '').trim()
+  if (!raw) return fallback
+  if (raw === '\\\\') return '\\'
+  return raw.slice(0, 1)
 }
 
 function astmTestCode(test: TestMapping): string {
   const fromMetadata = test.metadata?.astm_test_code
   if (typeof fromMetadata === 'string' && fromMetadata) return fromMetadata
   return test.analyzer_code || test.lims_code
+}
+
+function astmTestField(test: TestMapping, componentDelimiter: string): string {
+  const fromMetadata = test.metadata?.astm_test_field
+  if (typeof fromMetadata === 'string' && fromMetadata) return fromMetadata
+
+  const code = astmTestCode(test)
+  const display = test.analyzer_display || test.lims_code || code
+  return [code, '', '', display].join(componentDelimiter)
+}
+
+function astmReceiverId(profile: any): string {
+  return String(
+    profile?.connection_settings?.astm_receiver_id ||
+      profile?.connection_settings?.receiver_id ||
+      profile?.connection_settings?.instrument_identifier ||
+      profile?.astm_receiver_id ||
+      profile?.receiver_id ||
+      profile?.model ||
+      profile?.name ||
+      'ANALYZER',
+  ).trim()
 }
 
 function buildAstmPayload(
@@ -351,13 +477,15 @@ function buildAstmPayload(
 ) {
   const timestamp = compactHl7Timestamp()
   const repeatDelimiter = astmRepeatDelimiter(profile)
-  const componentDelimiter = String(profile?.component_delimiter || '^')
-  const escapeDelimiter = String(profile?.escape_delimiter || '\\')
-  const subcomponentDelimiter = String(profile?.subcomponent_delimiter || '&')
+  const componentDelimiter = astmDelimiter(profile?.component_delimiter, '^')
+  const escapeDelimiter = astmDelimiter(profile?.escape_delimiter, '\\')
+  const subcomponentDelimiter = astmDelimiter(profile?.subcomponent_delimiter, '&')
   const protocolVersion = profile?.protocol_version || 'E1394-97'
   const testField = mappedTests
-    .map((test) => ['', '', '', astmTestCode(test)].join(componentDelimiter))
+    .map((test) => astmTestField(test, componentDelimiter))
     .join(repeatDelimiter)
+
+  const receiverId = astmReceiverId(profile)
 
   return {
     protocol: 'ASTM',
@@ -366,6 +494,7 @@ function buildAstmPayload(
       control_id: messageControlId,
       timestamp,
       protocol_version: protocolVersion,
+      receiver_id: receiverId,
     },
     delimiters: {
       field: '|',
@@ -385,11 +514,20 @@ function buildAstmPayload(
       priority: payload.priority === 1 ? 'S' : 'R',
       requested_datetime: timestamp,
       test_field: testField,
+      specimen: mappedTests[0]?.specimen
+        ? {
+            sample_type: mappedTests[0].sample_type,
+            analyzer_code: mappedTests[0].specimen?.analyzer_code,
+            field: mappedTests[0].specimen?.metadata?.astm_field ||
+              mappedTests[0].specimen?.hl7_field,
+          }
+        : null,
     },
     tests: mappedTests.map((test) => ({
       lims_code: test.lims_code,
       analyzer_code: astmTestCode(test),
       analyzer_display: test.analyzer_display || test.lims_code,
+      test_field: astmTestField(test, componentDelimiter),
     })),
   }
 }
@@ -403,7 +541,7 @@ function generateASTMOrder(
 ): { hl7Message: string; hl7Payload: Record<string, unknown> } {
   const astmPayload = buildAstmPayload(payload, mappedTests, profile, messageControlId, messageType)
   const p = astmPayload as any
-  const delimiterDeclaration = `${p.delimiters.escape}${p.delimiters.component}${p.delimiters.subcomponent}`
+  const delimiterDeclaration = `${p.delimiters.escape}${p.delimiters.component}${p.delimiters.subcomponent}${p.delimiters.repeat}`
   const segments: string[] = []
 
   segments.push([
@@ -416,7 +554,7 @@ function generateASTMOrder(
     '',
     '',
     '',
-    'ANALYZER',
+    p.message.receiver_id || 'ANALYZER',
     '',
     'P',
     p.message.protocol_version,
@@ -435,24 +573,184 @@ function generateASTMOrder(
     p.patient.gender,
   ].join('|'))
 
-  segments.push([
-    'O',
-    '1',
-    p.order.sample_id,
-    '',
-    p.order.test_field,
-    p.order.priority,
-    p.order.requested_datetime,
-    '',
-    '',
-    '',
-    '',
-    'A',
-  ].join('|'))
+  p.tests.forEach((test: any, index: number) => {
+    const orderFields = [
+      'O',
+      String(index + 1),
+      p.order.sample_id,
+      '',
+      test.test_field,
+      p.order.priority,
+      p.order.requested_datetime,
+      '',
+      '',
+      '',
+      '',
+      'A',
+    ]
+    if (String(p.order.specimen?.field || '').toUpperCase() === 'O-16') {
+      while (orderFields.length <= 16) orderFields.push('')
+      orderFields[16] = p.order.specimen.analyzer_code
+    }
+    segments.push(orderFields.join('|'))
+  })
+
+  if (p.tests.length === 0) {
+    const orderFields = [
+      'O',
+      '1',
+      p.order.sample_id,
+      '',
+      p.order.test_field,
+      p.order.priority,
+      p.order.requested_datetime,
+      '',
+      '',
+      '',
+      '',
+      'A',
+    ]
+    segments.push(orderFields.join('|'))
+  }
 
   segments.push(['L', '1', 'N'].join('|'))
 
   return { hl7Message: segments.join('\r') + '\r', hl7Payload: astmPayload }
+}
+
+async function resolveSpecimenMappings(
+  supabase: any,
+  labId: string,
+  analyzerProfileId: string,
+  analyzerConnectionId: string | null,
+  sampleTypes: string[],
+): Promise<{ mappings: Map<string, SpecimenMapping>; unresolved: string[] }> {
+  const normalizedTypes = [...new Set(sampleTypes.map(normalizeSpecimenType).filter(Boolean))]
+  const mappings = new Map<string, SpecimenMapping>()
+  if (normalizedTypes.length === 0) return { mappings, unresolved: [] }
+
+  let labQuery = supabase
+    .from('test_mappings')
+    .select('*')
+    .eq('lab_id', labId)
+    .eq('mapping_type', 'specimen_mode')
+    .in('direction', ['outbound', 'bidirectional'])
+
+  if (analyzerConnectionId) {
+    labQuery = labQuery.or(
+      `analyzer_connection_id.eq.${analyzerConnectionId},analyzer_profile_id.eq.${analyzerProfileId},analyzer_id.eq.${analyzerProfileId}`,
+    )
+  } else {
+    labQuery = labQuery.or(`analyzer_profile_id.eq.${analyzerProfileId},analyzer_id.eq.${analyzerProfileId}`)
+  }
+
+  const [{ data: labRows }, { data: profileRows }] = await Promise.all([
+    labQuery,
+    supabase
+      .from('analyzer_profile_code_mappings')
+      .select('*')
+      .eq('analyzer_profile_id', analyzerProfileId)
+      .eq('mapping_type', 'specimen_mode')
+      .in('direction', ['outbound', 'bidirectional'])
+      .eq('is_active', true),
+  ])
+
+  for (const row of profileRows ?? []) {
+    const key = normalizeSpecimenType(row.lims_code)
+    if (!normalizedTypes.includes(key)) continue
+    mappings.set(key, {
+      lims_code: row.lims_code,
+      analyzer_code: row.analyzer_code,
+      analyzer_display: row.analyzer_display,
+      analyzer_code_system: row.analyzer_code_system,
+      hl7_field: row.hl7_field,
+      value_map: row.value_map ?? {},
+      metadata: row.metadata ?? {},
+      source: 'profile_mapping',
+    })
+  }
+
+  const specificity = (row: any) => {
+    if (analyzerConnectionId && row.analyzer_connection_id === analyzerConnectionId) return 3
+    if (row.analyzer_profile_id === analyzerProfileId || row.analyzer_id === analyzerProfileId) return 2
+    return 1
+  }
+  const labSpecificity = new Map<string, number>()
+  for (const row of labRows ?? []) {
+    const key = normalizeSpecimenType(row.lims_code)
+    if (!normalizedTypes.includes(key)) continue
+    const score = specificity(row)
+    if ((labSpecificity.get(key) ?? 0) > score) continue
+    labSpecificity.set(key, score)
+    mappings.set(key, {
+      lims_code: row.lims_code,
+      analyzer_code: row.analyzer_code,
+      analyzer_display: row.analyzer_display ?? row.test_name,
+      analyzer_code_system: row.analyzer_code_system,
+      hl7_field: row.hl7_field,
+      value_map: row.value_map ?? {},
+      metadata: row.metadata ?? {},
+      source: 'lab_mapping',
+    })
+  }
+
+  // Specimen send must be explicitly mapped. Inferred ASTM specimen values can
+  // land in vendor-specific O fields and make the analyzer reject the order.
+  const unresolved = normalizedTypes.filter(type => !mappings.has(type))
+
+  return {
+    mappings,
+    unresolved: normalizedTypes.filter(type => !mappings.has(type)),
+  }
+}
+
+function getCommonSpecimenCode(sampleType: string): string | null {
+  const normalized = sampleType.toLowerCase().trim()
+  const specimenCodes: Record<string, string> = {
+    serum: 'SER',
+    ser: 'SER',
+    plasma: 'PLAS',
+    plas: 'PLAS',
+    'whole blood': 'WB',
+    blood: 'WB',
+    wb: 'WB',
+    'edta blood': 'EDTA',
+    edta: 'EDTA',
+    urine: 'UR',
+    ur: 'UR',
+    'spot urine': 'UR',
+    '24h urine': 'UR24',
+    '24hr urine': 'UR24',
+    csf: 'CSF',
+    'cerebrospinal fluid': 'CSF',
+    stool: 'STL',
+    faeces: 'STL',
+    feces: 'STL',
+    sputum: 'SPT',
+    swab: 'SWB',
+    'throat swab': 'SWB',
+    'nasal swab': 'SWB',
+    tissue: 'TIS',
+    biopsy: 'TIS',
+    'synovial fluid': 'SNV',
+    'pleural fluid': 'PLR',
+    'ascitic fluid': 'ASC',
+    'peritoneal fluid': 'ASC',
+    saliva: 'SAL',
+    semen: 'SEM',
+    'seminal fluid': 'SEM',
+    'amniotic fluid': 'AMN',
+    'bone marrow': 'BM',
+    hair: 'HAR',
+    nail: 'NAL',
+    'citrate blood': 'CIT',
+    citrate: 'CIT',
+    'fluoride blood': 'FL',
+    fluoride: 'FL',
+    heparin: 'HEP',
+    'heparin blood': 'HEP',
+  }
+  return specimenCodes[normalized] || null
 }
 
 async function mapTestCodesWithAI(
@@ -467,6 +765,8 @@ async function mapTestCodesWithAI(
   const mappedTests: TestMapping[] = []
   const unmappedCodes: string[] = []
   const unmappedLabAnalytes: LabAnalyteInfo[] = []
+
+  const canSendMapping = (row: any) => row?.supports_order_send !== false
 
   const pushMapping = (limsCode: string, row: any, source: TestMapping['source'], labAnalyteId?: string) => {
     mappedTests.push({
@@ -572,6 +872,7 @@ async function mapTestCodesWithAI(
     for (const la of uniqueLabAnalytes) {
       const laMapping = labAnalyteMappings.get(la.lab_analyte_id)
       if (laMapping) {
+        if (!canSendMapping(laMapping)) continue
         pushMapping(la.code, laMapping, 'lab_mapping', la.lab_analyte_id)
         continue
       }
@@ -579,12 +880,14 @@ async function mapTestCodesWithAI(
       const codeKey = String(la.code).toUpperCase()
       const codeMapping = labCodeMappings.get(codeKey)
       if (codeMapping) {
+        if (!canSendMapping(codeMapping)) continue
         pushMapping(la.code, codeMapping, 'lab_mapping', la.lab_analyte_id)
         continue
       }
 
       const profileMapping = profileMappings.get(codeKey)
       if (profileMapping) {
+        if (!canSendMapping(profileMapping)) continue
         pushMapping(la.code, profileMapping, 'profile_mapping', la.lab_analyte_id)
         continue
       }
@@ -600,8 +903,10 @@ async function mapTestCodesWithAI(
       const profileMapping = profileMappings.get(key)
 
       if (labMapping) {
+        if (!canSendMapping(labMapping)) continue
         pushMapping(limsCode, labMapping, 'lab_mapping')
       } else if (profileMapping) {
+        if (!canSendMapping(profileMapping)) continue
         pushMapping(limsCode, profileMapping, 'profile_mapping')
       } else {
         unmappedCodes.push(limsCode)
@@ -639,6 +944,10 @@ ${existingMappings?.map((m: any) => `${m.lims_code} -> ${m.analyzer_code}`).join
 
 CODES TO MAP:
 ${unmappedCodes.join(', ')}
+
+SPECIMEN NOTE:
+Specimen/sample type is mapped independently through mapping_type=specimen_mode.
+Do not invent specimen codes or include them in order_service mappings.
 
 OUTPUT ONLY valid JSON:
 {
@@ -805,6 +1114,39 @@ Deno.serve(async (req) => {
       payload.lab_analytes,
     )
 
+    const sampleTypeByLabAnalyte = new Map(
+      (payload.lab_analytes ?? []).map(item => [
+        item.lab_analyte_id,
+        item.sample_type || payload.sample_type || '',
+      ]),
+    )
+    const sampleTypes = [
+      payload.sample_type || '',
+      ...(payload.lab_analytes ?? []).map(item => item.sample_type || ''),
+    ].filter(Boolean)
+    const specimenResolution = await resolveSpecimenMappings(
+      supabase,
+      connection.lab_id,
+      connection.profile_id || 'generic-hl7',
+      payload.analyzer_connection_id,
+      sampleTypes,
+    )
+    const unsupportedSpecimenTypes = [...specimenResolution.mappings.entries()]
+      .filter(([, mapping]) => !supportsSpecimenField(protocol, mapping))
+      .map(([sampleType]) => sampleType)
+    const unresolvedSpecimenTypes = [
+      ...new Set([...specimenResolution.unresolved, ...unsupportedSpecimenTypes]),
+    ]
+
+    for (const test of mappedTests) {
+      const sampleType = test.lab_analyte_id
+        ? sampleTypeByLabAnalyte.get(test.lab_analyte_id) || payload.sample_type || ''
+        : payload.sample_type || ''
+      test.sample_type = sampleType
+      const mapping = specimenResolution.mappings.get(normalizeSpecimenType(sampleType))
+      test.specimen = supportsSpecimenField(protocol, mapping) ? mapping : undefined
+    }
+
     const generated = protocol === 'ASTM'
       ? generateASTMOrder(
           payload,
@@ -836,6 +1178,7 @@ Deno.serve(async (req) => {
           cached_mappings: mappedTests.filter((t) => t.from_cache).length,
           ai_mappings: mappedTests.filter((t) => !t.from_cache).length,
           average_confidence: mappedTests.reduce((sum, t) => sum + t.confidence, 0) / mappedTests.length,
+          unresolved_specimen_types: unresolvedSpecimenTypes,
         },
       })
       .eq('id', queueEntry.id)
@@ -860,6 +1203,7 @@ Deno.serve(async (req) => {
       queue_id: queueEntry.id,
       message_control_id: messageControlId,
       mapped_tests: mappedTests,
+      unresolved_specimen_types: unresolvedSpecimenTypes,
       hl7_message: generated.hl7Message,
       hl7_payload: generated.hl7Payload,
       flow_type: analyzerInitiated ? 'analyzer_initiated' : 'lims_push',

@@ -20,6 +20,7 @@ export interface Sample {
   id: string;
   order_id: string;
   sample_type: string;
+  sample_condition?: string | null;
   barcode: string;
   qr_code_data?: SampleQRData;
   container_type: string;
@@ -53,6 +54,43 @@ export interface OrderTestGroupWithInfo {
   };
 }
 
+function parseSampleSequence(sampleId: string): number {
+  const match = sampleId.match(/-(\d+)-[^-]+$/);
+  return match ? (parseInt(match[1], 10) || 0) : 0;
+}
+
+function parseBarcodeSequence(barcode: string, datePrefixLength: number): number {
+  const suffix = barcode.substring(datePrefixLength);
+  return parseInt(suffix, 10) || 0;
+}
+
+async function getNextDailySampleSequence(labCode: string, dateStr: string): Promise<number> {
+  const { data, error } = await supabase
+    .from('samples')
+    .select('id')
+    .like('id', `${labCode}-${dateStr}-%`)
+    .order('id', { ascending: false })
+    .limit(1);
+
+  if (error) throw error;
+  return Math.max(1, parseSampleSequence(String(data?.[0]?.id || '')) + 1);
+}
+
+async function getNextDailyBarcodeSequence(labId: string, shortDate: string): Promise<number> {
+  const { data, error } = await supabase
+    .from('samples')
+    .select('barcode')
+    .eq('lab_id', labId)
+    .like('barcode', `${shortDate}%`)
+    .order('barcode', { ascending: false })
+    .limit(1);
+
+  if (error) throw error;
+
+  const lastBarcode = String(data?.[0]?.barcode || '');
+  return Math.max(1, parseBarcodeSequence(lastBarcode, shortDate.length) + 1);
+}
+
 /**
  * Create samples for an order based on test group requirements
  * Groups tests by sample type and creates one sample per unique type
@@ -61,7 +99,10 @@ export async function createSamplesForOrder(
   orderId: string,
   orderTestGroups: OrderTestGroupWithInfo[],
   labId: string,
-  patientId: string
+  patientId: string,
+  options?: {
+    preBarcodedBarcode?: string | null;
+  }
 ): Promise<Sample[]> {
   const labCode = await getLabCode(labId);
   const sampleTypeGroups = new Map<string, OrderTestGroupWithInfo[]>();
@@ -77,35 +118,33 @@ export async function createSamplesForOrder(
 
   const now = new Date();
   const dateStr = format(now, 'yyyyMMdd');
-  const shortDate = format(now, 'yyMMdd');
-  const [{ data: latestIds }, { data: latestBarcodes }] = await Promise.all([
-    supabase
-      .from('samples')
-      .select('id')
-      .like('id', `${labCode}-${dateStr}-%`)
-      .order('created_at', { ascending: false })
-      .limit(1),
+  const barcodeDatePrefix = dateStr;
+  const [initialIdSequence, { data: latestBarcodes }] = await Promise.all([
+    getNextDailySampleSequence(labCode, dateStr),
     supabase
       .from('samples')
       .select('barcode')
-      .like('barcode', `${shortDate}%`)
-      .order('created_at', { ascending: false })
+      .eq('lab_id', labId)
+      .like('barcode', `${barcodeDatePrefix}%`)
+      .order('barcode', { ascending: false })
       .limit(1),
   ]);
 
-  const lastIdParts = String(latestIds?.[0]?.id || '').split('-');
-  let idSequence = Math.max(1, (parseInt(lastIdParts[2] || '0', 10) || 0) + 1);
+  let idSequence = initialIdSequence;
   const lastBarcode = String(latestBarcodes?.[0]?.barcode || '');
   let barcodeSequence = Math.max(
     1,
-    (parseInt(lastBarcode.length >= 10 ? lastBarcode.substring(6) : '0', 10) || 0) + 1,
+    parseBarcodeSequence(lastBarcode, barcodeDatePrefix.length) + 1,
   );
 
-  const samplePlans = Array.from(sampleTypeGroups.entries()).map(([sampleType, testGroups]) => {
+  const manualBarcode = String(options?.preBarcodedBarcode || '').trim();
+  const canUseManualBarcode = !!manualBarcode && sampleTypeGroups.size === 1;
+
+  const samplePlans = Array.from(sampleTypeGroups.entries()).map(([sampleType, testGroups], index) => {
     const sampleId = `${labCode}-${dateStr}-${idSequence.toString().padStart(4, '0')}-${getSampleTypeCode(sampleType)}`;
-    const barcode = generateNumericBarcode(now, barcodeSequence);
+    const barcode = canUseManualBarcode && index === 0 ? manualBarcode : generateNumericBarcode(now, barcodeSequence);
     idSequence += 1;
-    barcodeSequence += 1;
+    if (!(canUseManualBarcode && index === 0)) barcodeSequence += 1;
 
     const qrCodeData: SampleQRData = {
       sampleId,
@@ -128,14 +167,60 @@ export async function createSamplesForOrder(
         container_type: getContainerType(sampleType),
         lab_id: labId,
         status: 'created',
+        pre_barcoded: canUseManualBarcode && index === 0,
+        barcode_source: canUseManualBarcode && index === 0 ? 'preprinted' : 'generated',
+        barcode_assigned_at: now.toISOString(),
       },
     };
   });
 
-  const { data: insertedSamples, error: sampleError } = await supabase
-    .from('samples')
-    .insert(samplePlans.map((plan) => plan.row))
-    .select();
+  let insertedSamples: Sample[] = [];
+  let sampleError: any = null;
+
+  // IDs are human-readable and generated client-side, so concurrent requests can
+  // calculate the same next sequence. Keep the primary key and retry with the
+  // latest sequence instead of allowing duplicate sample identities.
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    const result = await supabase
+      .from('samples')
+      .insert(samplePlans.map((plan) => plan.row))
+      .select();
+
+    if (!result.error) {
+      insertedSamples = (result.data || []) as Sample[];
+      sampleError = null;
+      break;
+    }
+
+    sampleError = result.error;
+    const isSampleIdCollision =
+      result.error.code === '23505'
+      && String(result.error.message || result.error.details || '').includes('samples_pkey');
+    const isBarcodeCollision =
+      result.error.code === '23505'
+      && String(result.error.message || result.error.details || '').includes('barcode');
+
+    if ((!isSampleIdCollision && !isBarcodeCollision) || attempt === 4) break;
+
+    [idSequence, barcodeSequence] = await Promise.all([
+      getNextDailySampleSequence(labCode, dateStr),
+      getNextDailyBarcodeSequence(labId, barcodeDatePrefix),
+    ]);
+    for (const plan of samplePlans) {
+      const sampleId = `${labCode}-${dateStr}-${idSequence.toString().padStart(4, '0')}-${getSampleTypeCode(plan.row.sample_type)}`;
+      const keepManualBarcode = plan.row.barcode_source === 'preprinted';
+      const barcode = keepManualBarcode ? plan.row.barcode : generateNumericBarcode(now, barcodeSequence);
+      plan.row.id = sampleId;
+      plan.row.barcode = barcode;
+      plan.row.qr_code_data = {
+        ...plan.row.qr_code_data,
+        sampleId,
+        barcode,
+      };
+      idSequence += 1;
+      if (!keepManualBarcode) barcodeSequence += 1;
+    }
+  }
 
   if (sampleError) throw sampleError;
 
@@ -169,7 +254,7 @@ export async function createSamplesForOrder(
   );
 
   if (eventError) console.error('Error creating initial sample events:', eventError);
-  return (insertedSamples || []) as Sample[];
+  return insertedSamples;
 }
 
 async function createSamplesForOrderLegacy(
@@ -199,7 +284,7 @@ async function createSamplesForOrderLegacy(
   for (const [sampleType, testGroups] of sampleTypeGroups.entries()) {
     try {
       // Generate unique sample ID and instrument-compatible barcode
-      const { id: sampleId, barcode } = await generateSampleIdAndBarcode(labCode, sampleType);
+      const { id: sampleId, barcode } = await generateSampleIdAndBarcode(labCode, sampleType, labId);
       
       // Get tube color (from test group or standard)
       const tubeColor = testGroups[0].test_group?.sample_color || getStandardTubeColor(sampleType);
