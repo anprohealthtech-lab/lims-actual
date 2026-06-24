@@ -69,6 +69,7 @@ import {
   isAnalyteInterfaceConversionEnabled,
   type AnalyteInterfaceConversionConfig,
 } from "../../utils/analyteInterfaceConversion";
+import { normalizeResultFlagForSave } from "../../utils/referenceRangeService";
 
 interface WorkflowStep {
   name: string;
@@ -167,6 +168,7 @@ interface TestGroupResult {
   source?: "order_test_groups" | "order_tests";
   analytes: {
     id: string;
+    lab_analyte_id?: string | null;
     name: string;
     code: string;
     units?: string;
@@ -3477,8 +3479,8 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
             value: r.value && r.value.trim() !== "" ? r.value : null,
             unit: r.unit || "",
             reference_range: r.reference || "",
-            flag: autoFlag || null,
-            flag_source: r.flag ? 'manual' : (autoFlag ? 'auto_numeric' : undefined),
+            flag: normalizeResultFlagForSave(autoFlag, r.value),
+            flag_source: r.flag ? 'manual' : 'auto_numeric',
             is_auto_calculated: !!r.is_calculated,
             order_id: order.id,
             test_group_id: testGroup.test_group_id,
@@ -3557,13 +3559,14 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
 
       if (groupsToResolve.length > 0) {
         setSaveMessage(`Auto-resolving ranges for ${groupsToResolve.length} group(s)...`);
-        const { resolveReferenceRanges } = await import('../../utils/referenceRangeService');
+        const { findResolvedReferenceRange, resolveReferenceRanges } = await import('../../utils/referenceRangeService');
 
         for (const tg of groupsToResolve) {
           const payload = tg.analytes.map(a => {
             const vItem = finalResults.find(v => v.parameter === a.name);
             return {
               id: a.id,
+              lab_analyte_id: a.lab_analyte_id || null,
               name: a.name,
               value: vItem?.value || '',
               unit: a.units || vItem?.unit || ''
@@ -3574,7 +3577,7 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
             const resolved = await resolveReferenceRanges(order.id, tg.test_group_id, payload);
             resolved?.forEach(r => {
               if (r.used_reference_range) {
-                const target = finalResults.find(v => v.parameter === r.name);
+                const target = finalResults.find(v => findResolvedReferenceRange([r], v));
                 if (target && !target.reference_locked) {
                   target.reference = r.used_reference_range;
                   if (r.flag && ['H', 'L', 'C', 'LL', 'HH', 'H*', 'L*', 'high', 'low', 'critical_h', 'critical_l', 'critical_high', 'critical_low'].includes(r.flag)) target.flag = r.flag;
@@ -3868,8 +3871,8 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
             value: r.value && r.value.trim() !== "" ? r.value : null,
             unit: r.unit || "",
             reference_range: r.reference || "",
-	            flag: autoFlag || null,
-	            flag_source: hasUserFlag ? 'manual' : (autoFlag ? 'auto_numeric' : undefined),
+	            flag: normalizeResultFlagForSave(autoFlag, r.value),
+	            flag_source: hasUserFlag ? 'manual' : 'auto_numeric',
 	            is_auto_calculated: !!r.is_calculated,
 	            verify_status: r.is_hidden_from_report ? 'approved' : 'pending',
 	            is_hidden_from_report: !!r.is_hidden_from_report,
@@ -3916,14 +3919,13 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
         }
       }
 
-      // Run AI flag analysis in background to avoid blocking save UX.
-      import('../../utils/aiFlagAnalysis')
-        .then(({ runAIFlagAnalysis }) =>
-          runAIFlagAnalysis(order.id, { applyToDatabase: true, createAudit: true })
-        )
-        .catch((flagErr) => {
-          console.warn('AI flag analysis failed (non-blocking):', flagErr);
-        });
+      try {
+        setSaveMessage("Finalizing flags and reference details...");
+        const { runAIFlagAnalysis } = await import('../../utils/aiFlagAnalysis');
+        await runAIFlagAnalysis(order.id, { applyToDatabase: true, createAudit: true, useAIService: true });
+      } catch (flagErr) {
+        console.warn('AI flag analysis failed:', flagErr);
+      }
 
       // Local immediate UX: hide submitted analytes now
       markAnalytesAsSubmitted(submittedRowsForUx.length > 0 ? submittedRowsForUx : finalResults);
@@ -4194,7 +4196,7 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
     });
 
     try {
-      const { resolveReferenceRanges } = await import('../../utils/referenceRangeService');
+      const { findResolvedReferenceRange, resolveReferenceRanges } = await import('../../utils/referenceRangeService');
       const resolved = await resolveReferenceRanges(order.id, tgId, payload);
 
       if (resolved) {
@@ -4202,7 +4204,7 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({
           const next = [...prev];
           resolved.forEach((r) => {
             if (r.used_reference_range) {
-              const idx = next.findIndex((n) => n.parameter === r.name);
+              const idx = next.findIndex((n) => findResolvedReferenceRange([r], n));
               if (idx !== -1 && !next[idx].reference_locked) {
                 next[idx] = {
                   ...next[idx],

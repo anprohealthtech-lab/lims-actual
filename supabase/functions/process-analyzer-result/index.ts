@@ -674,9 +674,15 @@ async function upsertAnalyzerSectionContent(
 
 function matchResolvedRange(candidate: {
   analyte_id: string
+  lab_analyte_id?: string | null
   analyte_name: string
 }, results: any[]): { result: any; matchType: string } | null {
-  let result = results.find((item) => item?.analyte_id === candidate.analyte_id)
+  let result = candidate.lab_analyte_id
+    ? results.find((item) => item?.lab_analyte_id === candidate.lab_analyte_id)
+    : null
+  if (result) return { result, matchType: 'exact_lab_analyte_id' }
+
+  result = results.find((item) => item?.analyte_id === candidate.analyte_id)
   if (result) return { result, matchType: 'exact_id' }
 
   result = results.find((item) => item?.analyte_name === candidate.analyte_name)
@@ -693,6 +699,10 @@ function matchResolvedRange(candidate: {
 
   if (results.length === 1) return { result: results[0], matchType: 'single_result' }
   return null
+}
+
+function resolvedRangeKey(testGroupId: string, candidate: { analyte_id: string; lab_analyte_id?: string | null }): string {
+  return `${testGroupId}:${candidate.lab_analyte_id || candidate.analyte_id}`
 }
 
 async function resolveAiReferenceRanges(
@@ -794,7 +804,7 @@ async function resolveAiReferenceRanges(
       for (const candidate of groupCandidates) {
         const match = matchResolvedRange(candidate, payload.results)
         if (match) {
-          resolvedByKey.set(`${testGroupId}:${candidate.analyte_id}`, match.result)
+          resolvedByKey.set(resolvedRangeKey(testGroupId, candidate), match.result)
           logAiRefRange('analyte_response_matched', {
             order_id: orderId,
             test_group_id: testGroupId,
@@ -1797,7 +1807,7 @@ OUTPUT ONLY valid JSON in this exact format (no markdown, no explanation):
                   fallbackReferenceRange,
                 } = candidate
                 const aiResolution = mapping.test_group_id
-                  ? aiResolvedRanges.get(`${mapping.test_group_id}:${mapping.analyte_id}`)
+                  ? aiResolvedRanges.get(`${mapping.test_group_id}:${labAnalyteId || mapping.analyte_id}`)
                   : null
                 const finalFlag = aiResolution?.flag || normalizeHl7Flag(item.flag)
                 const finalReferenceRange = aiResolution?.used_reference_range || fallbackReferenceRange

@@ -15,7 +15,7 @@
 
 import { database, supabase } from './supabase';
 import { determineFlag, FlagResult, ValueType, AnalyteConfig, PatientContext as FlagPatientContext } from './flagDetermination';
-import { resolveReferenceRanges } from './referenceRangeService';
+import { findResolvedReferenceRange, isPlaceholderReferenceRange, resolveReferenceRanges } from './referenceRangeService';
 
 // Netlify function URL for AI interpretation (keeps API key secure)
 const AI_FLAG_FUNCTION_URL = '/.netlify/functions/ai-flag-interpretation';
@@ -334,10 +334,14 @@ export async function analyzeResultValue(
       }
     }
 
-    // Get gender-specific reference range
-    const referenceRange = analyteData 
-      ? getGenderSpecificRange(analyteData, patient)
-      : resultValue.reference_range;
+    // Prefer the concrete range already saved on result_values. AI reference
+    // range resolution writes patient-specific ranges there; falling back to
+    // catalog/lab config here would clobber values such as neonatal ranges.
+    const savedReferenceRange = String(resultValue.reference_range || '').trim();
+    const referenceRange = !isPlaceholderReferenceRange(savedReferenceRange)
+      ? savedReferenceRange
+      : (analyteData ? getGenderSpecificRange(analyteData, patient) : savedReferenceRange);
+    const shouldPersistReferenceRange = !isPlaceholderReferenceRange(savedReferenceRange);
 
     // Build config for flag determination
     const config: AnalyteConfig = {
@@ -387,7 +391,7 @@ export async function analyzeResultValue(
       newFlag: normalizedNewFlag,
       flagSource: flagResult.source === 'manual' ? 'manual' : 'auto_rule',
       flagConfidence: confidence,
-      resolvedReferenceRange: referenceRange,
+      resolvedReferenceRange: shouldPersistReferenceRange ? referenceRange : undefined,
       interpretation,
       auditStatus: changed ? 'pending' : 'approved',
       auditNotes: changed 
@@ -524,7 +528,7 @@ export async function analyzeOrderResults(
             id: rv.id,
             value: rv.value,
             unit: rv.unit,
-            reference_range: analyteContext?.reference_range || rv.reference_range,
+            reference_range: rv.reference_range,
             flag: rv.flag,
             analyte_id: rv.analyte_id
           },
@@ -799,12 +803,22 @@ export async function runAIFlagAnalysis(
             });
 
             // Process each group
+            const aiRangeEnabledGroupIds = new Set<string>();
+            const groupIds = Object.keys(rvsByGroup);
+            if (groupIds.length > 0) {
+              const { data: aiRangeGroups } = await supabase
+                .from('test_groups')
+                .select('id, ref_range_ai_config')
+                .in('id', groupIds);
+              for (const group of aiRangeGroups || []) {
+                if (group.ref_range_ai_config?.enabled === true) aiRangeEnabledGroupIds.add(group.id);
+              }
+            }
+
             for (const [tgId, groupRvs] of Object.entries(rvsByGroup)) {
                // Check if any result in this group uses "Age-specific" or generic text
-               const needsResolution = groupRvs.some(rv => 
-                 rv.reference_range?.toLowerCase().includes('age-specific') || 
-                 rv.reference_range?.toLowerCase().includes('interpretation') ||
-                 rv.reference_range?.toLowerCase().includes('dynamic')
+               const needsResolution = aiRangeEnabledGroupIds.has(tgId) || groupRvs.some(rv =>
+                 isPlaceholderReferenceRange(rv.reference_range)
                );
 
                if (needsResolution) {
@@ -813,6 +827,7 @@ export async function runAIFlagAnalysis(
                  // Call the Edge Function
                  const analytesPayload = groupRvs.map(rv => ({
                    id: rv.analyte_id || '',
+                   lab_analyte_id: rv.lab_analyte_id || null,
                    name: rv.parameter || '',
                    value: rv.value,
                    unit: rv.unit || ''
@@ -825,10 +840,12 @@ export async function runAIFlagAnalysis(
                    // Apply back to the resultValues arrays (IN MEMORY) so AI gets '13.5-17.5' instead of 'Age-specific'
                    resolved.forEach(res => {
                     if (res.used_reference_range) {
-                      const match = groupRvs.find(rv => rv.analyte_id === res.id || rv.parameter === res.name);
+                      const match = groupRvs.find(rv => findResolvedReferenceRange([res], rv));
                       if (match && match.reference_range !== res.used_reference_range) {
                         console.log(`[AI Flag] ✅ Resolved Range for ${match.parameter}: "${match.reference_range}" -> "${res.used_reference_range}"`);
                         match.reference_range = res.used_reference_range;
+                        const ruleResult = analysisResult.results.find(r => r.resultValueId === match.id);
+                        if (ruleResult) ruleResult.resolvedReferenceRange = res.used_reference_range;
                         
                         // Persist the resolved range to the database so it displays correctly in UI/Reports
                         supabase.from('result_values')

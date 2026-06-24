@@ -19,6 +19,7 @@ import {
   isAnalyteInterfaceConversionEnabled,
   type AnalyteInterfaceConversionConfig,
 } from "../../utils/analyteInterfaceConversion";
+import { normalizeResultFlagForSave } from "../../utils/referenceRangeService";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -1011,7 +1012,7 @@ const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, on
       const groupsToResolve = testGroups.filter(tg => tg.ref_range_ai_config?.enabled === true);
       if (groupsToResolve.length > 0) {
         setMessage({ text: `Resolving AI reference ranges for ${groupsToResolve.length} group(s)...`, type: "success" });
-        const { resolveReferenceRanges } = await import("../../utils/referenceRangeService");
+        const { findResolvedReferenceRange, resolveReferenceRanges } = await import("../../utils/referenceRangeService");
         for (const tg of groupsToResolve) {
           const payload = tg.analytes.map(a => {
 	            const row = workingRows.find(r =>
@@ -1030,7 +1031,7 @@ const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, on
             const resolved = await resolveReferenceRanges(order.id, tg.test_group_id, payload);
             if (resolved) {
               workingRows = workingRows.map(r => {
-                const hit = resolved.find(res => res.id === r.analyte_id || res.name === r.parameter);
+                const hit = findResolvedReferenceRange(resolved, r);
                 if (!hit?.used_reference_range) return r;
                 const newRef = hit.used_reference_range;
                 const autoFlag = calculateFlag(r.value, newRef, order.patient?.gender ?? undefined, undefined, undefined, undefined, undefined, undefined, r.value_type);
@@ -1130,8 +1131,8 @@ const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, on
           value: rawVal || null,
           unit: r.unit || "",
           reference_range: r.reference || "",
-	          flag: autoFlag || null,
-	          flag_source: r.flag ? "manual" : (autoFlag ? "auto_numeric" : undefined),
+	          flag: normalizeResultFlagForSave(autoFlag, rawVal),
+	          flag_source: r.flag ? "manual" : "auto_numeric",
 	          is_auto_calculated: r.is_calculated,
           verify_status: (r.is_hidden_from_report || autoVerifyOnSubmit) ? "approved" : "pending",
           verified: r.is_hidden_from_report || autoVerifyOnSubmit,
@@ -1179,10 +1180,13 @@ const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, on
         }).catch(e => console.warn("Inventory auto-consume skipped:", e));
       }
 
-      // Non-blocking: AI flag analysis
-      import("../../utils/aiFlagAnalysis")
-        .then(({ runAIFlagAnalysis }) => runAIFlagAnalysis(order.id, { applyToDatabase: true, createAudit: true }))
-        .catch(e => console.warn("AI flag analysis skipped:", e));
+      try {
+        setMessage({ text: "Finalizing flags and reference details...", type: "success" });
+        const { runAIFlagAnalysis } = await import("../../utils/aiFlagAnalysis");
+        await runAIFlagAnalysis(order.id, { applyToDatabase: true, createAudit: true, useAIService: true });
+      } catch (e) {
+        console.warn("AI flag analysis skipped:", e);
+      }
 
       // Update result IDs so SectionEditors have the correct resultId
       const newResultIds = new Map(resultIds);

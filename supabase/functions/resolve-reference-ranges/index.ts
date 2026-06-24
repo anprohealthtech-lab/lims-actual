@@ -21,6 +21,7 @@ interface ResolveRequest {
 
 interface ReferenceRangeResult {
   analyte_id: string;
+  lab_analyte_id?: string | null;
   analyte_name: string;
   ref_low: number | null;
   ref_high: number | null;
@@ -280,7 +281,18 @@ serve(async (req) => {
     };
 
     const responseText = aiData.content[0].text;
-    const results: ReferenceRangeResult[] = JSON.parse(cleanJson(responseText));
+    const rawResults: ReferenceRangeResult[] = JSON.parse(cleanJson(responseText));
+    const normalizeName = (value: string) => value.toLowerCase().replace(/[^a-z0-9]/g, '');
+    const results = rawResults.map((result) => {
+      if (result.lab_analyte_id) return result;
+      const matchedInput =
+        analytes.find((a) => a.id === result.analyte_id && a.lab_analyte_id) ||
+        analytes.find((a) => normalizeName(a.name) === normalizeName(result.analyte_name || '') && a.lab_analyte_id);
+      return {
+        ...result,
+        lab_analyte_id: matchedInput?.lab_analyte_id || null,
+      };
+    });
     mark('ai_json_parsed', { result_count: results.length })
 
     // 6. Log AI decision for audit
@@ -337,6 +349,8 @@ ${a.name}:
 TEST RESULTS TO EVALUATE:
 ${analyteValues.map(a => `
 - ${a.name}: ${a.value} ${a.unit}
+  analyte_id: ${a.id}
+  lab_analyte_id: ${a.lab_analyte_id || 'null'}
 `).join('\n')}
 
 INSTRUCTIONS:
@@ -368,6 +382,7 @@ INSTRUCTIONS:
 Return JSON array with this structure:
 [{
   "analyte_id": "uuid (match from input)",
+  "lab_analyte_id": "uuid or null (match from input)",
   "analyte_name": "string",
   "ref_low": number | null,
   "ref_high": number | null,
