@@ -242,7 +242,6 @@ type CardOrder = {
 };
 
 type DashboardPortalUpdate = {
-  accountName: string;
   sectionTitle: string;
   title: string;
   message: string;
@@ -315,6 +314,7 @@ const Dashboard: React.FC = () => {
   const [isSendingReport, setIsSendingReport] = useState<string | null>(null);
   const [isSendingInvoice, setIsSendingInvoice] = useState<string | null>(null);
   const [printingReportId, setPrintingReportId] = useState<string | null>(null);
+  const [printingLabelId, setPrintingLabelId] = useState<string | null>(null);
 
   // dashboard counters
   const [summary, setSummary] = useState({
@@ -343,26 +343,23 @@ const Dashboard: React.FC = () => {
       if (!currentLabId) return;
 
       const { data, error } = await supabase
-        .from("accounts")
-        .select("name, portal_settings")
-        .eq("lab_id", currentLabId)
-        .eq("is_active", true);
+        .from("labs")
+        .select("portal_settings")
+        .eq("id", currentLabId)
+        .single();
 
       if (error) {
         console.warn("Failed to load portal updates:", error);
         return;
       }
 
-      const updates = (data || []).flatMap((account: any) => {
-        const settings = account.portal_settings || {};
-        const sectionTitle = String(settings.updates_title || "Partner Portal Updates").trim() || "Partner Portal Updates";
-        return normalizePortalUpdateSlides(settings).map((slide) => ({
-          accountName: account.name || "Account",
-          sectionTitle,
-          title: slide.title,
-          message: slide.message,
-        }));
-      });
+      const settings = (data as any)?.portal_settings || {};
+      const sectionTitle = String(settings.updates_title || "Partner Portal Updates").trim() || "Partner Portal Updates";
+      const updates = normalizePortalUpdateSlides(settings).map((slide) => ({
+        sectionTitle,
+        title: slide.title,
+        message: slide.message,
+      }));
 
       setPortalUpdates(updates.slice(0, 6));
     };
@@ -1411,6 +1408,23 @@ id,
         return;
       }
 
+      const sentInvoices = invoices.filter((invoice: any) => invoice.whatsapp_sent_at);
+      if (sentInvoices.length > 0) {
+        const latestSentAt = sentInvoices
+          .map((invoice: any) => invoice.whatsapp_sent_at)
+          .filter(Boolean)
+          .sort()
+          .pop();
+        const sentDate = latestSentAt ? new Date(latestSentAt).toLocaleString() : "an earlier time";
+        const confirmResend = window.confirm(
+          `Invoice already sent via WhatsApp on ${sentDate}.\n\nSend again?`
+        );
+        if (!confirmResend) {
+          setIsSendingInvoice(null);
+          return;
+        }
+      }
+
       // Calculate totals across all invoices
       const totalInvoiced = invoices.reduce((sum, inv) => sum + (inv.total_after_discount || inv.total || 0), 0);
       const totalPaid = invoices.reduce((sum, inv) => sum + (inv.paid_amount || 0), 0);
@@ -1431,7 +1445,7 @@ id,
       for (const invoice of invoices) {
         let pdfUrl = invoice.pdf_url;
         if (!pdfUrl) {
-          pdfUrl = await generateInvoicePDF(invoice.id, defaultTemplate.id);
+          pdfUrl = await generateInvoicePDF(invoice.id, defaultTemplate.id, { triggerNotification: false });
           if (!pdfUrl) {
             alert(`Failed to generate PDF for invoice ${invoice.invoice_number || invoice.id.slice(0, 8)}`);
             setIsSendingInvoice(null);
@@ -1597,7 +1611,7 @@ id,
           alert("No invoice template found. Please configure templates in Settings.");
           return;
         }
-        pdfUrl = await generateInvoicePDF(primaryInvoice.id, defaultTemplate.id);
+        pdfUrl = await generateInvoicePDF(primaryInvoice.id, defaultTemplate.id, { triggerNotification: false });
       }
 
       if (pdfUrl) {
@@ -1657,6 +1671,60 @@ id,
       alert(error?.message || "Failed to queue report for LIMS Utility.");
     } finally {
       setPrintingReportId(null);
+    }
+  };
+
+  const getDashboardLabelData = (order: CardOrder): qzTrayService.BarcodeLabelData | null => {
+    const sampleId = order.sample_id || order.id;
+    if (!sampleId) return null;
+
+    const labelDate = new Date(order.order_date);
+    const primaryPanel = order.panels.find((panel) => panel.sample_type || panel.name) || order.panels[0];
+
+    return {
+      sampleId,
+      labelId: order.sample_id || sampleId,
+      patientName: order.patient_name || "Sample",
+      sampleType: primaryPanel?.sample_type || order.color_name || "Sample",
+      date: isValid(labelDate)
+        ? labelDate.toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "2-digit" }).replace(/ /g, "-")
+        : undefined,
+      collectionTime: isValid(labelDate)
+        ? labelDate.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", hour12: false })
+        : undefined,
+      gender: order.patient?.gender || undefined,
+      age: order.patient?.age ? String(order.patient.age) : undefined,
+      referredBy: order.doctor || undefined,
+    };
+  };
+
+  const handlePrintBarcodeLabel = async (order: CardOrder) => {
+    const labelData = getDashboardLabelData(order);
+    if (!labelData) {
+      alert("No sample ID is available for this order.");
+      return;
+    }
+
+    const barcodePrinterName = qzSettings.barcodePrinterName;
+
+    try {
+      setPrintingLabelId(order.id);
+
+      if (!barcodePrinterName || qzSettings.barcodeBrowserPrintEnabled) {
+        qzTrayService.printBarcodeLabelsInBrowser([labelData], barcodePrinterName);
+        return;
+      }
+
+      if (!qzTrayService.isConnected()) {
+        await qzConnect();
+      }
+
+      await qzTrayService.printBarcodeLabel(barcodePrinterName, labelData);
+    } catch (error: any) {
+      console.error("Print bridge label queue failed:", error);
+      alert(error?.message || "Failed to print barcode label.");
+    } finally {
+      setPrintingLabelId(null);
     }
   };
 
@@ -1890,16 +1958,15 @@ id,
                 <MessageCircle className="h-4 w-4 text-indigo-600" />
                 <div>
                   <h2 className="font-semibold text-gray-900">Partner Portal Updates</h2>
-                  <p className="text-xs text-gray-500">Updates configured in Account Master</p>
+                  <p className="text-xs text-gray-500">Updates configured in Settings</p>
                 </div>
               </div>
               <span className="text-xs font-medium text-gray-500">{portalUpdates.length} live</span>
             </div>
             <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3 p-4">
               {portalUpdates.map((update, index) => (
-                <div key={`${update.accountName}-${index}`} className="rounded-lg border border-gray-200 bg-gray-50 p-3">
-                  <div className="text-xs font-medium text-indigo-700 truncate">{update.accountName}</div>
-                  <div className="text-xs text-gray-500 truncate">{update.sectionTitle}</div>
+                <div key={`${update.sectionTitle}-${index}`} className="rounded-lg border border-gray-200 bg-gray-50 p-3">
+                  <div className="text-xs font-medium text-indigo-700 truncate">{update.sectionTitle}</div>
                   {update.title && <div className="mt-2 text-sm font-semibold text-gray-900">{update.title}</div>}
                   {update.message && (
                     <p className="mt-1 text-xs leading-5 text-gray-600 line-clamp-3">{update.message}</p>
@@ -2726,6 +2793,19 @@ id,
                                 >
                                   <Eye className="h-4 w-4 mr-1.5" />
                                   View
+                                </button>
+
+                                <button
+                                  onClick={async (e) => {
+                                    e.stopPropagation();
+                                    await handlePrintBarcodeLabel(o);
+                                  }}
+                                  disabled={printingLabelId === o.id}
+                                  className="inline-flex items-center justify-center px-3 py-1.5 text-sm font-medium bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:bg-blue-300 disabled:cursor-not-allowed transition-colors"
+                                  title="Print barcode label"
+                                >
+                                  {printingLabelId === o.id ? "..." : <Printer className="h-4 w-4 mr-1.5" />}
+                                  Label
                                 </button>
 
                                 <button

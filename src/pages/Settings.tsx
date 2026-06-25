@@ -182,7 +182,39 @@ interface LabSettings {
   auto_print_barcode_on_order?: boolean;
   auto_print_report_on_approval?: boolean;
   sample_type_colors?: Record<string, string>;
+  portal_settings?: PortalSettings | null;
 }
+
+interface PortalUpdateSlide {
+  title: string;
+  message: string;
+}
+
+interface PortalSettings {
+  welcome_note: string;
+  updates_enabled: boolean;
+  updates_title: string;
+  update_slides: PortalUpdateSlide[];
+  hide_lims_branding: boolean;
+}
+
+const normalizePortalSettings = (raw: Partial<PortalSettings> | null | undefined, keepBlankSlides = false): PortalSettings => {
+  const updateSlides = Array.isArray(raw?.update_slides) ? raw.update_slides : [];
+  const normalizedSlides = updateSlides.map((slide) => ({
+    title: String(slide?.title || '').trim(),
+    message: String(slide?.message || '').trim(),
+  }));
+
+  return {
+    welcome_note: String(raw?.welcome_note || '').trim(),
+    updates_enabled: raw?.updates_enabled !== false,
+    updates_title: String(raw?.updates_title || 'Partner Portal Updates').trim() || 'Partner Portal Updates',
+    update_slides: keepBlankSlides
+      ? normalizedSlides
+      : normalizedSlides.filter((slide) => slide.title || slide.message),
+    hide_lims_branding: raw?.hide_lims_branding === true,
+  };
+};
 
 // Define UserForm component outside of Settings
 const UserFormComponent: React.FC<{
@@ -699,6 +731,7 @@ const Settings: React.FC = () => {
             auto_print_barcode_on_order: (labData as any).auto_print_barcode_on_order ?? false,
             auto_print_report_on_approval: (labData as any).auto_print_report_on_approval ?? false,
             sample_type_colors: (labData as any).sample_type_colors ?? {},
+            portal_settings: normalizePortalSettings((labData as any).portal_settings, true),
           });
         }
 
@@ -893,6 +926,8 @@ const Settings: React.FC = () => {
     return matchesSearch && matchesRole;
   });
 
+  const portalSettings = normalizePortalSettings(labSettings?.portal_settings, true);
+
   // Delete user (soft delete)
   const handleDeleteUser = async (userId: string) => {
     if (!window.confirm('Are you sure you want to delete this user?')) return;
@@ -979,6 +1014,39 @@ const Settings: React.FC = () => {
   };
   // ────────────────────────────────────────────────────────────────
 
+  const updatePortalSettings = (patch: Partial<PortalSettings>) => {
+    setLabSettings(prev => prev ? {
+      ...prev,
+      portal_settings: normalizePortalSettings({
+        ...normalizePortalSettings(prev.portal_settings, true),
+        ...patch,
+      }, true),
+    } : prev);
+  };
+
+  const updatePortalSlide = (index: number, patch: Partial<PortalUpdateSlide>) => {
+    const current = normalizePortalSettings(labSettings?.portal_settings, true);
+    updatePortalSettings({
+      update_slides: current.update_slides.map((slide, slideIndex) =>
+        slideIndex === index ? { ...slide, ...patch } : slide
+      ),
+    });
+  };
+
+  const addPortalSlide = () => {
+    const current = normalizePortalSettings(labSettings?.portal_settings, true);
+    updatePortalSettings({
+      update_slides: [...current.update_slides, { title: '', message: '' }],
+    });
+  };
+
+  const removePortalSlide = (index: number) => {
+    const current = normalizePortalSettings(labSettings?.portal_settings, true);
+    updatePortalSettings({
+      update_slides: current.update_slides.filter((_, slideIndex) => slideIndex !== index),
+    });
+  };
+
   // Save lab settings
   const handleSaveLabSettings = async () => {
     if (!labSettings || !labId) return;
@@ -1027,6 +1095,7 @@ const Settings: React.FC = () => {
         auto_print_barcode_on_order: labSettings.auto_print_barcode_on_order ?? false,
         auto_print_report_on_approval: labSettings.auto_print_report_on_approval ?? false,
         sample_type_colors: labSettings.sample_type_colors || {},
+        portal_settings: normalizePortalSettings(labSettings.portal_settings),
         pdf_layout_settings: {
           ...(labSettings._pdf_layout_settings_raw || {}),
           printOptions: labSettings.print_options ?? undefined,
@@ -2881,6 +2950,117 @@ const Settings: React.FC = () => {
                             <li><strong>Print version</strong>: Uses bold text instead of colors for grayscale printing</li>
                           </ul>
                         </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* B2B Portal Settings */}
+                  <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6 lg:col-span-2">
+                    <h3 className="text-lg font-semibold text-gray-900 mb-2 flex items-center">
+                      <MessageSquare className="h-5 w-5 mr-2 text-blue-600" />
+                      B2B Portal Settings
+                    </h3>
+                    <p className="text-xs text-gray-500 mb-5">
+                      Common welcome note, updates slider, and branding option for all B2B partner accounts.
+                    </p>
+
+                    <div className="space-y-5">
+                      <div>
+                        <label className="block text-sm font-medium text-gray-700 mb-1">Welcome Note</label>
+                        <textarea
+                          value={portalSettings.welcome_note}
+                          onChange={(e) => updatePortalSettings({ welcome_note: e.target.value })}
+                          className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                          rows={3}
+                          placeholder="Welcome to your partner portal. Track orders, download reports, and book new tests here."
+                        />
+                      </div>
+
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        <label className="flex items-start cursor-pointer gap-3 rounded-lg border border-gray-200 p-3">
+                          <input
+                            type="checkbox"
+                            checked={portalSettings.updates_enabled}
+                            onChange={(e) => updatePortalSettings({ updates_enabled: e.target.checked })}
+                            className="mt-0.5 h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded"
+                          />
+                          <div>
+                            <span className="text-sm font-medium text-gray-800">Show updates section</span>
+                            <p className="text-xs text-gray-400 mt-0.5">Displays the update slider on the B2B portal.</p>
+                          </div>
+                        </label>
+
+                        <label className="flex items-start cursor-pointer gap-3 rounded-lg border border-gray-200 p-3">
+                          <input
+                            type="checkbox"
+                            checked={portalSettings.hide_lims_branding}
+                            onChange={(e) => updatePortalSettings({ hide_lims_branding: e.target.checked })}
+                            className="mt-0.5 h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded"
+                          />
+                          <div>
+                            <span className="text-sm font-medium text-gray-800">Hide LIMS branding in B2B portal</span>
+                            <p className="text-xs text-gray-400 mt-0.5">Removes the footer branding for all partner accounts.</p>
+                          </div>
+                        </label>
+                      </div>
+
+                      <div>
+                        <label className="block text-sm font-medium text-gray-700 mb-1">Updates Section Name</label>
+                        <input
+                          type="text"
+                          value={portalSettings.updates_title}
+                          onChange={(e) => updatePortalSettings({ updates_title: e.target.value })}
+                          className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                          placeholder="Partner Portal Updates"
+                        />
+                      </div>
+
+                      <div className="space-y-3">
+                        <div className="flex items-center justify-between">
+                          <label className="block text-sm font-medium text-gray-700">Update Slider</label>
+                          <button
+                            type="button"
+                            onClick={addPortalSlide}
+                            className="px-3 py-1.5 text-xs font-medium bg-blue-50 text-blue-700 rounded border border-blue-200 hover:bg-blue-100"
+                          >
+                            Add Update
+                          </button>
+                        </div>
+
+                        {portalSettings.update_slides.length === 0 ? (
+                          <div className="rounded-lg border border-dashed border-gray-300 p-4 text-sm text-gray-500">
+                            No updates added yet.
+                          </div>
+                        ) : (
+                          portalSettings.update_slides.map((slide, index) => (
+                            <div key={index} className="rounded-lg border border-gray-200 bg-gray-50 p-3 space-y-2">
+                              <div className="flex items-center justify-between">
+                                <span className="text-xs font-semibold text-gray-600">Update {index + 1}</span>
+                                <button
+                                  type="button"
+                                  onClick={() => removePortalSlide(index)}
+                                  className="text-xs text-red-600 hover:text-red-700"
+                                >
+                                  Remove
+                                </button>
+                              </div>
+                              <input
+                                type="text"
+                                value={slide.title}
+                                onChange={(e) => updatePortalSlide(index, { title: e.target.value })}
+                                className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                                placeholder="Update title"
+                              />
+                              <textarea
+                                value={slide.message}
+                                onChange={(e) => updatePortalSlide(index, { message: e.target.value })}
+                                className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                                rows={2}
+                                placeholder="Short update message"
+                              />
+                            </div>
+                          ))
+                        )}
                       </div>
                     </div>
                   </div>

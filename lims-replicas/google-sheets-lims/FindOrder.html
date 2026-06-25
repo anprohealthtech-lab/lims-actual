@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <base target="_top">
+  <style>
+    * { box-sizing: border-box; font-family: Arial, sans-serif; }
+    body { padding: 16px; margin: 0; background: #f5f5f5; }
+    h3 { color: #4285f4; margin-top: 0; border-bottom: 2px solid #4285f4; padding-bottom: 8px; }
+    .form-group { margin-bottom: 16px; }
+    label { display: block; font-weight: bold; margin-bottom: 6px; }
+    input { width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 4px; font-size: 14px; }
+    .btn { padding: 10px 16px; border: none; border-radius: 4px; cursor: pointer; font-size: 14px; }
+    .btn-primary { background: #4285f4; color: white; }
+    .order-card { background: white; padding: 16px; border-radius: 8px; margin-top: 16px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
+    .order-card h4 { margin: 0 0 12px 0; color: #4285f4; }
+    .info-row { display: flex; justify-content: space-between; padding: 6px 0; border-bottom: 1px solid #eee; }
+    .info-row:last-child { border-bottom: none; }
+    .info-label { color: #666; }
+    .info-value { font-weight: bold; }
+    .test-tag { display: inline-block; background: #e8f0fe; color: #4285f4; padding: 4px 8px; border-radius: 4px; margin: 2px; font-size: 12px; }
+    .status { padding: 4px 8px; border-radius: 4px; font-size: 12px; font-weight: bold; }
+    .status-registered { background: #fff3cd; color: #856404; }
+    .status-processing { background: #cce5ff; color: #004085; }
+    .status-verified { background: #d4edda; color: #155724; }
+    .error { background: #f8d7da; color: #721c24; padding: 12px; border-radius: 4px; margin-top: 12px; }
+  </style>
+</head>
+<body>
+  <h3>🔍 Find Order</h3>
+
+  <div class="form-group">
+    <label>Order Number or Barcode</label>
+    <input type="text" id="searchInput" placeholder="ORD-250625-001" onkeypress="if(event.key==='Enter')findOrder()">
+  </div>
+
+  <button class="btn btn-primary" onclick="findOrder()">Search</button>
+
+  <div id="result"></div>
+
+  <script>
+    function findOrder() {
+      const query = document.getElementById('searchInput').value.trim();
+      if (!query) {
+        alert('Please enter an order number or barcode');
+        return;
+      }
+
+      google.script.run
+        .withSuccessHandler(displayOrder)
+        .withFailureHandler(function(error) {
+          document.getElementById('result').innerHTML = `<div class="error">❌ ${error.message}</div>`;
+        })
+        .findOrderByNumber(query);
+    }
+
+    function displayOrder(order) {
+      if (!order) {
+        document.getElementById('result').innerHTML = '<div class="error">Order not found</div>';
+        return;
+      }
+
+      const statusClass = 'status-' + order.status.replace('_', '-');
+      const orderDate = new Date(order.order_date).toLocaleDateString();
+
+      document.getElementById('result').innerHTML = `
+        <div class="order-card">
+          <h4>${order.order_number}</h4>
+          <div class="info-row">
+            <span class="info-label">Patient</span>
+            <span class="info-value">${order.patient_name}</span>
+          </div>
+          <div class="info-row">
+            <span class="info-label">Doctor</span>
+            <span class="info-value">${order.doctor_name || 'N/A'}</span>
+          </div>
+          <div class="info-row">
+            <span class="info-label">Date</span>
+            <span class="info-value">${orderDate}</span>
+          </div>
+          <div class="info-row">
+            <span class="info-label">Barcode</span>
+            <span class="info-value">${order.barcode}</span>
+          </div>
+          <div class="info-row">
+            <span class="info-label">Priority</span>
+            <span class="info-value">${order.priority}</span>
+          </div>
+          <div class="info-row">
+            <span class="info-label">Status</span>
+            <span class="status ${statusClass}">${order.status.toUpperCase()}</span>
+          </div>
+          <div style="margin-top:12px;">
+            <strong>Tests:</strong><br>
+            ${order.tests.map(t => `<span class="test-tag">${t.test_name}</span>`).join('')}
+          </div>
+        </div>
+      `;
+    }
+  </script>
+</body>
+</html>

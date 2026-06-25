@@ -109,6 +109,11 @@ export function buildMessageWithReportLink(
   
   // Remove any trailing "Thank you." to append link before it
   let message = baseMessage.trim();
+
+  if (message.includes(customDomainUrl) || message.includes(reportUrl)) {
+    return message;
+  }
+
   const thankYouMatch = message.match(/\n*Thank you\.?\s*$/i);
   
   if (thankYouMatch) {

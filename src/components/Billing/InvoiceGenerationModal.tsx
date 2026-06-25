@@ -127,7 +127,10 @@ const InvoiceGenerationModal: React.FC<InvoiceGenerationModalProps> = ({
         await supabase.from('invoices').update({ custom_fields: fieldsMap }).eq('id', invoiceId);
       }
 
-      const pdfUrl = await generateInvoicePDF(invoiceId, selectedTemplateId);
+      const pdfUrl = await generateInvoicePDF(invoiceId, selectedTemplateId, {
+        forceRegenerate: true,
+        triggerNotification: false,
+      });
 
       setSuccess(true);
       setGeneratedPdfUrl(pdfUrl);
@@ -168,6 +171,16 @@ const InvoiceGenerationModal: React.FC<InvoiceGenerationModalProps> = ({
         throw new Error('Failed to fetch invoice details');
       }
 
+      const alreadySent = await database.invoices.wasAlreadySent(invoiceId, 'whatsapp');
+      if (alreadySent) {
+        const { data: deliveryStatus } = await database.invoices.getDeliveryStatus(invoiceId);
+        const sentDate = deliveryStatus?.whatsapp_sent_at
+          ? new Date(deliveryStatus.whatsapp_sent_at).toLocaleString()
+          : 'an earlier time';
+        const confirmResend = window.confirm(`Invoice already sent via WhatsApp on ${sentDate}.\n\nSend again?`);
+        if (!confirmResend) return;
+      }
+
       // Get patient phone number
       const { data: patient, error: patientError } = await database.patients.getById(invoice.patient_id);
 
@@ -177,6 +190,8 @@ const InvoiceGenerationModal: React.FC<InvoiceGenerationModalProps> = ({
 
       const cleanMessage = `Dear ${patient.name},\n\nYour invoice is ready.\n\nThank you for choosing our services!`;
       const messageWithLink = `Dear ${patient.name},\n\nYour invoice is ready. Please find the invoice PDF here:\n\n${generatedPdfUrl}\n\nThank you for choosing our services!`;
+      const { data: auth } = await supabase.auth.getUser();
+      const sentBy = auth?.user?.id || '';
 
       // Try backend API first
       try {
@@ -195,6 +210,12 @@ const InvoiceGenerationModal: React.FC<InvoiceGenerationModalProps> = ({
         );
 
         if (result.success) {
+          await database.invoices.recordWhatsAppSend(invoiceId, {
+            to: patient.phone,
+            caption: cleanMessage,
+            sentBy,
+            sentVia: 'api',
+          });
           alert('Invoice sent via WhatsApp successfully!');
           return;
         }
@@ -209,6 +230,12 @@ const InvoiceGenerationModal: React.FC<InvoiceGenerationModalProps> = ({
       );
 
       if (manualSuccess) {
+        await database.invoices.recordWhatsAppSend(invoiceId, {
+          to: patient.phone,
+          caption: messageWithLink,
+          sentBy,
+          sentVia: 'manual_link',
+        });
         alert('WhatsApp opened. Please send the message manually.');
       }
     } catch (err: any) {

@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <base target="_top">
+  <style>
+    body { font-family: Arial, sans-serif; padding: 20px; }
+    .form-group { margin-bottom: 15px; }
+    label { display: block; margin-bottom: 5px; font-weight: bold; }
+    input[type="text"] { width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 4px; box-sizing: border-box; font-size: 16px; }
+    button { padding: 12px 24px; border: none; border-radius: 4px; cursor: pointer; font-size: 14px; width: 100%; }
+    .btn-primary { background: #4285f4; color: white; }
+    button:disabled { opacity: 0.6; }
+
+    .result { padding: 20px; border-radius: 8px; margin-top: 20px; text-align: center; }
+    .result.valid { background: #e8f5e9; }
+    .result.invalid { background: #ffebee; }
+
+    .result-icon { font-size: 48px; margin-bottom: 10px; }
+    .result-title { font-size: 18px; font-weight: bold; margin-bottom: 10px; }
+    .result-details { text-align: left; background: white; padding: 10px; border-radius: 4px; margin-top: 10px; }
+    .result-row { display: flex; justify-content: space-between; padding: 5px 0; border-bottom: 1px solid #eee; }
+    .result-row:last-child { border-bottom: none; }
+  </style>
+</head>
+<body>
+  <div id="form">
+    <div class="form-group">
+      <label>Order Number</label>
+      <input type="text" id="orderNumber" placeholder="e.g., ORD-240625-001">
+    </div>
+    <div class="form-group">
+      <label>Verification Code</label>
+      <input type="text" id="code" placeholder="e.g., ABC12345" style="text-transform: uppercase;">
+    </div>
+    <button class="btn-primary" onclick="verify()">Verify Report</button>
+  </div>
+
+  <div id="result" class="result" style="display: none;"></div>
+
+  <script>
+    function verify() {
+      const orderNumber = document.getElementById('orderNumber').value.trim();
+      const code = document.getElementById('code').value.trim().toUpperCase();
+
+      if (!orderNumber || !code) {
+        alert('Please enter both order number and verification code');
+        return;
+      }
+
+      document.getElementById('form').style.display = 'none';
+
+      google.script.run
+        .withSuccessHandler(showResult)
+        .withFailureHandler(function(error) {
+          showResult({ valid: false, error: error.message });
+        })
+        .verifyReport(orderNumber, code);
+    }
+
+    function showResult(result) {
+      const el = document.getElementById('result');
+      el.style.display = 'block';
+
+      if (result.valid) {
+        el.className = 'result valid';
+        el.innerHTML = `
+          <div class="result-icon">✅</div>
+          <div class="result-title" style="color: #2e7d32;">Report Verified</div>
+          <p style="color: #666;">This is an authentic laboratory report.</p>
+          <div class="result-details">
+            <div class="result-row">
+              <span>Order #:</span>
+              <strong>${result.orderNumber}</strong>
+            </div>
+            <div class="result-row">
+              <span>Patient:</span>
+              <strong>${result.patientName}</strong>
+            </div>
+            <div class="result-row">
+              <span>Doctor:</span>
+              <strong>${result.doctorName || 'N/A'}</strong>
+            </div>
+            <div class="result-row">
+              <span>Date:</span>
+              <strong>${result.orderDate}</strong>
+            </div>
+            <div class="result-row">
+              <span>Results:</span>
+              <strong>${result.verifiedCount}/${result.testCount} verified</strong>
+            </div>
+          </div>
+          <button onclick="reset()" style="margin-top: 15px; background: #6c757d; color: white;">Verify Another</button>
+        `;
+      } else {
+        el.className = 'result invalid';
+        el.innerHTML = `
+          <div class="result-icon">❌</div>
+          <div class="result-title" style="color: #c62828;">Verification Failed</div>
+          <p style="color: #666;">${result.error || 'The verification code is incorrect or the report may have been tampered with.'}</p>
+          <button onclick="reset()" style="margin-top: 15px; background: #6c757d; color: white;">Try Again</button>
+        `;
+      }
+    }
+
+    function reset() {
+      document.getElementById('form').style.display = 'block';
+      document.getElementById('result').style.display = 'none';
+      document.getElementById('orderNumber').value = '';
+      document.getElementById('code').value = '';
+    }
+  </script>
+</body>
+</html>

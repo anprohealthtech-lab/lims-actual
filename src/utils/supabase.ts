@@ -5322,7 +5322,7 @@ export const database = {
         .update({
           whatsapp_sent_at: new Date().toISOString(),
           whatsapp_sent_to: params.to,
-          whatsapp_sent_by: params.sentBy,
+          whatsapp_sent_by: params.sentBy || null,
           whatsapp_caption: params.caption,
           whatsapp_sent_via: params.sentVia || "api",
         })
@@ -5342,7 +5342,7 @@ export const database = {
         .update({
           email_sent_at: new Date().toISOString(),
           email_sent_to: params.to,
-          email_sent_by: params.sentBy,
+          email_sent_by: params.sentBy || null,
           email_sent_via: params.sentVia || "api",
         })
         .eq("id", invoiceId)
@@ -5359,7 +5359,7 @@ export const database = {
         .from("invoices")
         .update({
           last_reminder_at: new Date().toISOString(),
-          reminder_sent_by: params.sentBy,
+          reminder_sent_by: params.sentBy || null,
         })
         .eq("id", invoiceId)
         .select()

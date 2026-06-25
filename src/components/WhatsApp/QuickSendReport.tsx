@@ -262,17 +262,12 @@ const QuickSendReport: React.FC<QuickSendReportProps> = ({
         console.log('⚠️ WhatsApp not connected, using manual fallback...');
 
         // Import the fallback utility
-        const { openWhatsAppManually, buildMessageWithReportLink } = await import('../../utils/whatsappUtils');
-
-        // Build message with report link embedded
-        const messageWithLink = customDomainReportUrl
-          ? buildMessageWithReportLink(message, customDomainReportUrl, 'patient')
-          : message;
+        const { openWhatsAppManually } = await import('../../utils/whatsappUtils');
 
         // Open WhatsApp manually
         const { success, method } = await openWhatsAppManually(
           phoneNumber,
-          messageWithLink,
+          message,
           customDomainReportUrl,
           'patient'
         );

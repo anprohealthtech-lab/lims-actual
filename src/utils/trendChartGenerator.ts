@@ -74,6 +74,31 @@ const DEFAULT_OPTIONS: TrendChartOptions = {
   maxDataPoints: 10,
 };
 
+const escapeHtml = (value: string | number | null | undefined): string =>
+  String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+
+const formatTrendDateTime = (value: string): string => {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return escapeHtml(value);
+
+  return date.toLocaleString("en-GB", {
+    day: "2-digit",
+    month: "short",
+    year: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: true,
+  });
+};
+
+const getTrendImageSrc = (trend: TrendChartResult): string | null =>
+  trend.image_base64 || trend.image_url || null;
+
 // ============ Trend Data Fetching ============
 
 /**
@@ -717,6 +742,86 @@ export const generateTrendTableHtmlPrint = (
   `;
 };
 
+const generateCompactTrendHistoryTableHtml = (
+  trendResult: TrendChartResult,
+): string => {
+  if (!trendResult.data || trendResult.data.length === 0) {
+    return "";
+  }
+
+  const rows = trendResult.data
+    .slice()
+    .reverse()
+    .map((d) => {
+      const refRange = parseReferenceRange(d.reference_range || trendResult.reference_range);
+      const numericValue = parseFloat(String(d.value));
+      const status = Number.isFinite(numericValue)
+        ? getPointStatus(numericValue, d.flag, refRange)
+        : "normal";
+      const valueColor = status === "high"
+        ? "#b91c1c"
+        : status === "low"
+        ? "#1d4ed8"
+        : "#111827";
+
+      return `<tr>
+        <td style="padding: 3px 6px; border: 1px solid #d1d5db; white-space: nowrap;">${formatTrendDateTime(d.order_date)}</td>
+        <td style="padding: 3px 6px; border: 1px solid #d1d5db; text-align: right; font-weight: 600; color: ${valueColor};">${escapeHtml(d.value)}</td>
+      </tr>`;
+    }).join("");
+
+  return `
+    <table style="border-collapse: collapse; width: 100%; margin: 0; font-size: 9px; line-height: 1.25;">
+      <thead>
+        <tr style="background: #f3f4f6;">
+          <th style="padding: 4px 6px; border: 1px solid #d1d5db; text-align: left; font-weight: 700;">Date Time</th>
+          <th style="padding: 4px 6px; border: 1px solid #d1d5db; text-align: right; font-weight: 700;">Result</th>
+        </tr>
+      </thead>
+      <tbody>${rows}</tbody>
+    </table>
+  `;
+};
+
+const generateTrendCardHtml = (
+  trend: TrendChartResult,
+  forPrint: boolean,
+): string => {
+  const imgSrc = getTrendImageSrc(trend);
+  const historyTable = generateCompactTrendHistoryTableHtml(trend);
+
+  if (!imgSrc) {
+    return forPrint
+      ? generateTrendTableHtmlPrint(trend)
+      : generateTrendTableHtml(trend);
+  }
+
+  const borderColor = forPrint ? "#333" : "#d1d5db";
+  const titleColor = forPrint ? "#000" : "#111827";
+  const imageFilter = forPrint ? "filter: grayscale(1);" : "";
+  const meta = [
+    trend.unit ? `Unit: ${escapeHtml(trend.unit)}` : "",
+    trend.reference_range ? `Ref: ${escapeHtml(trend.reference_range)}` : "",
+  ].filter(Boolean).join(" | ");
+
+  return `
+    <div class="trend-chart" style="margin: 10px 0 16px 0; page-break-inside: avoid; break-inside: avoid;">
+      <div style="font-size: 12px; font-weight: 700; color: ${titleColor}; text-align: center; margin-bottom: 5px;">
+        ${escapeHtml(trend.analyte_name)} Previous History
+      </div>
+      <div style="display: table; width: 100%; table-layout: fixed; border-collapse: separate; border-spacing: 8px 0;">
+        <div style="display: table-cell; width: 62%; vertical-align: top;">
+          <img src="${imgSrc}" alt="${escapeHtml(trend.analyte_name)} trend" style="width: 100%; max-width: 100%; height: auto; border: 1px solid ${borderColor}; ${imageFilter}" />
+        </div>
+        <div style="display: table-cell; width: 38%; vertical-align: top;">
+          ${historyTable}
+        </div>
+      </div>
+      ${meta ? `<div style="font-size: 9px; color: #4b5563; text-align: center; margin-top: 4px;">${meta}</div>` : ""}
+    </div>
+  `;
+};
+
 /**
  * Generate complete trend section HTML with either images or tables
  * forPrint: When true, uses black & white styling suitable for printing
@@ -729,39 +834,14 @@ export const generateTrendSectionHtml = (
     return "";
   }
 
-  const content = trends.map((trend) => {
-    // If no image URL available, fall back to table
-    if (!trend.image_url) {
-      return forPrint
-        ? generateTrendTableHtmlPrint(trend)
-        : generateTrendTableHtml(trend);
-    }
-
-    // Use image for both print and e-copy
-    const borderStyle = forPrint
-      ? "border: 1px solid #333;"
-      : "border: 1px solid #e5e7eb; border-radius: 4px;";
-    const titleColor = forPrint ? "color: #000;" : "color: #333;";
-    // Add grayscale filter for print version
-    const imageFilter = forPrint ? "filter: grayscale(1);" : "";
-
-    return `
-      <div style="margin-bottom: 20px; text-align: center;">
-        <h4 style="margin: 0 0 8px 0; ${titleColor} font-size: 13px;">
-          ${trend.analyte_name} Trend
-          ${trend.unit ? `(${trend.unit})` : ""}
-        </h4>
-        <img src="${trend.image_url}" alt="${trend.analyte_name} Trend" style="max-width: 100%; height: auto; ${borderStyle} ${imageFilter}"/>
-      </div>
-    `;
-  }).join("");
+  const content = trends.map((trend) => generateTrendCardHtml(trend, forPrint)).join("");
 
   // Print version: black & white header, no emoji
   if (forPrint) {
     return `
       <div style="margin-top: 20px;">
         <h3 style="font-size: 14px; color: #000; border-bottom: 1px solid #333; padding-bottom: 6px; margin-bottom: 12px;">
-          Historical Trend Analysis
+          Previous History
         </h3>
         ${content}
       </div>
@@ -771,7 +851,7 @@ export const generateTrendSectionHtml = (
   return `
     <div style="margin-top: 20px;">
       <h3 style="font-size: 16px; color: #1e40af; border-bottom: 2px solid #3b82f6; padding-bottom: 8px; margin-bottom: 15px;">
-        📈 Historical Trend Analysis
+        Previous History
       </h3>
       ${content}
     </div>

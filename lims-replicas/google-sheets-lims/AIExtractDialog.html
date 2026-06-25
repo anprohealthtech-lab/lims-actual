@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <base target="_top">
+  <style>
+    body { font-family: Arial, sans-serif; padding: 15px; }
+    .form-group { margin-bottom: 15px; }
+    label { display: block; margin-bottom: 5px; font-weight: bold; }
+    input[type="text"] { width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 4px; box-sizing: border-box; }
+    button { padding: 10px 20px; border: none; border-radius: 4px; cursor: pointer; margin-right: 10px; }
+    .btn-primary { background: #4285f4; color: white; }
+    .btn-secondary { background: #6c757d; color: white; }
+    .btn-success { background: #28a745; color: white; }
+    button:disabled { opacity: 0.6; cursor: not-allowed; }
+    .status { padding: 10px; margin: 10px 0; border-radius: 4px; }
+    .status.info { background: #e3f2fd; color: #1976d2; }
+    .status.success { background: #e8f5e9; color: #388e3c; }
+    .status.error { background: #ffebee; color: #d32f2f; }
+    .results-table { width: 100%; border-collapse: collapse; margin-top: 10px; }
+    .results-table th, .results-table td { border: 1px solid #ddd; padding: 8px; text-align: left; }
+    .results-table th { background: #f5f5f5; }
+    .step { margin-bottom: 20px; padding-bottom: 15px; border-bottom: 1px solid #eee; }
+    .step-title { font-size: 14px; color: #666; margin-bottom: 10px; }
+    .file-picker { padding: 40px; border: 2px dashed #ddd; text-align: center; cursor: pointer; border-radius: 8px; }
+    .file-picker:hover { border-color: #4285f4; background: #f8f9fa; }
+    .hidden { display: none; }
+  </style>
+</head>
+<body>
+  <div id="step1" class="step">
+    <div class="step-title">Step 1: Enter Order Number</div>
+    <div class="form-group">
+      <input type="text" id="orderNumber" placeholder="e.g., ORD-2024-001">
+    </div>
+    <button class="btn-primary" onclick="loadOrder()">Load Order</button>
+  </div>
+
+  <div id="step2" class="step hidden">
+    <div class="step-title">Step 2: Select Image from Google Drive</div>
+    <div class="form-group">
+      <input type="text" id="fileId" placeholder="Google Drive File ID or paste image URL">
+      <small style="color:#666">Upload image to Google Drive first, then paste the file ID here</small>
+    </div>
+    <button class="btn-primary" onclick="extractFromImage()">Extract Results</button>
+  </div>
+
+  <div id="step3" class="step hidden">
+    <div class="step-title">Step 3: Review & Save Extracted Results</div>
+    <div id="extractedResults"></div>
+    <br>
+    <button class="btn-success" onclick="saveResults()">Save Results</button>
+    <button class="btn-secondary" onclick="resetForm()">Start Over</button>
+  </div>
+
+  <div id="status" class="status hidden"></div>
+
+  <script>
+    let currentOrder = null;
+    let extractedData = [];
+
+    function showStatus(message, type) {
+      const el = document.getElementById('status');
+      el.textContent = message;
+      el.className = 'status ' + type;
+      el.classList.remove('hidden');
+    }
+
+    function hideStatus() {
+      document.getElementById('status').classList.add('hidden');
+    }
+
+    function loadOrder() {
+      const orderNumber = document.getElementById('orderNumber').value.trim();
+      if (!orderNumber) {
+        showStatus('Please enter an order number', 'error');
+        return;
+      }
+
+      showStatus('Loading order...', 'info');
+
+      google.script.run
+        .withSuccessHandler(function(order) {
+          if (order) {
+            currentOrder = order;
+            showStatus('Order loaded: ' + order.patient_name, 'success');
+            document.getElementById('step2').classList.remove('hidden');
+          } else {
+            showStatus('Order not found', 'error');
+          }
+        })
+        .withFailureHandler(function(error) {
+          showStatus('Error: ' + error.message, 'error');
+        })
+        .findOrderByNumber(orderNumber);
+    }
+
+    function extractFromImage() {
+      const fileId = document.getElementById('fileId').value.trim();
+      if (!fileId) {
+        showStatus('Please enter a file ID or URL', 'error');
+        return;
+      }
+
+      const orderNumber = document.getElementById('orderNumber').value.trim();
+      showStatus('Extracting results with AI... This may take a few seconds.', 'info');
+
+      google.script.run
+        .withSuccessHandler(function(result) {
+          if (result.success) {
+            extractedData = result.matched;
+            displayExtractedResults(result.matched);
+            showStatus('Extracted ' + result.count + ' values!', 'success');
+            document.getElementById('step3').classList.remove('hidden');
+          } else {
+            showStatus(result.message || 'No results found', 'error');
+          }
+        })
+        .withFailureHandler(function(error) {
+          showStatus('Error: ' + error.message, 'error');
+        })
+        .processImageForOrder(orderNumber, fileId);
+    }
+
+    function displayExtractedResults(results) {
+      let html = '<table class="results-table"><tr><th>Analyte</th><th>Value</th><th>Unit</th><th>Ref Range</th></tr>';
+      results.forEach(r => {
+        html += '<tr>';
+        html += '<td>' + r.analyte + '</td>';
+        html += '<td><input type="text" value="' + (r.value || '') + '" onchange="updateValue(\'' + r.analyte + '\', this.value)"></td>';
+        html += '<td>' + (r.unit || '') + '</td>';
+        html += '<td>' + (r.reference_range || '') + '</td>';
+        html += '</tr>';
+      });
+      html += '</table>';
+      document.getElementById('extractedResults').innerHTML = html;
+    }
+
+    function updateValue(analyte, value) {
+      const item = extractedData.find(r => r.analyte === analyte);
+      if (item) item.value = value;
+    }
+
+    function saveResults() {
+      if (extractedData.length === 0) {
+        showStatus('No results to save', 'error');
+        return;
+      }
+
+      const orderNumber = document.getElementById('orderNumber').value.trim();
+      showStatus('Saving results...', 'info');
+
+      google.script.run
+        .withSuccessHandler(function(result) {
+          showStatus('Saved ' + result.count + ' results successfully!', 'success');
+          setTimeout(function() {
+            google.script.host.close();
+          }, 1500);
+        })
+        .withFailureHandler(function(error) {
+          showStatus('Error: ' + error.message, 'error');
+        })
+        .saveExtractedResults(orderNumber, extractedData);
+    }
+
+    function resetForm() {
+      currentOrder = null;
+      extractedData = [];
+      document.getElementById('orderNumber').value = '';
+      document.getElementById('fileId').value = '';
+      document.getElementById('extractedResults').innerHTML = '';
+      document.getElementById('step2').classList.add('hidden');
+      document.getElementById('step3').classList.add('hidden');
+      hideStatus();
+    }
+  </script>
+</body>
+</html>

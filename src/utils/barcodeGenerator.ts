@@ -184,7 +184,7 @@ export function generateBarcodeLabelsHTML(
             box-sizing: border-box;
           }
           @page {
-            size: 50.8mm 30mm;
+            size: 50.8mm 25.4mm;
             margin: 0;
           }
           html,
@@ -202,8 +202,8 @@ export function generateBarcodeLabelsHTML(
           }
           .barcode-label {
             width: 50.8mm;
-            height: 30mm;
-            padding: 1.5mm 2mm;
+            height: 25.4mm;
+            padding: 1mm 1.75mm;
             margin: 0;
             overflow: hidden;
             color: #000;
@@ -225,7 +225,7 @@ export function generateBarcodeLabelsHTML(
             display: flex;
             justify-content: space-between;
             align-items: baseline;
-            margin-bottom: 2px;
+            margin-bottom: 1px;
           }
           .patient-name {
             font-size: 10px;
@@ -243,14 +243,14 @@ export function generateBarcodeLabelsHTML(
             white-space: nowrap;
           }
           .barcode {
-            margin: 2px 0;
-            height: 11mm;
+            margin: 1px 0;
+            height: 9.5mm;
             overflow: hidden;
             text-align: center;
           }
           .barcode img {
             max-width: 100%;
-            height: 11mm;
+            height: 9.5mm;
             object-fit: contain;
           }
           .info-row {
@@ -306,12 +306,25 @@ export function generateBarcodeLabelsHTML(
             html,
             body {
               width: 50.8mm !important;
+              min-height: 0 !important;
+              height: auto !important;
               margin: 0 !important;
               padding: 0 !important;
               background: #fff !important;
+              overflow: hidden !important;
             }
             .print-note {
               display: none !important;
+            }
+            .barcode-label {
+              box-sizing: border-box !important;
+              width: 50.8mm !important;
+              height: 25.4mm !important;
+              margin: 0 !important;
+              page-break-after: auto !important;
+              break-after: auto !important;
+              page-break-inside: avoid !important;
+              break-inside: avoid !important;
             }
           }
         </style>

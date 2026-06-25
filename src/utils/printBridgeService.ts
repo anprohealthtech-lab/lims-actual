@@ -18,6 +18,22 @@ export interface PrintJobInsertResult {
   id: string;
 }
 
+export type PrintBridgePrinterRole =
+  | 'barcode_label'
+  | 'report'
+  | 'invoice_thermal'
+  | 'bulk_pdf_merge'
+  | 'report_pdf_generate';
+
+export type PrintBridgeJobType =
+  | 'raw_zpl'
+  | 'pdf_url'
+  | 'pdf_base64'
+  | 'html'
+  | 'bulk_merge'
+  | 'bulk_pdf_merge'
+  | 'html_to_pdf';
+
 let connectionStatus: PrintBridgeStatus = 'connected';
 let connectionListeners: Array<(status: PrintBridgeStatus) => void> = [];
 
@@ -166,11 +182,35 @@ export interface BulkPdfMergePayload {
   output_filename: string;
   save_to_folder: string | null;
   total_count: number;
+  print_after_merge?: boolean;
+}
+
+export type HtmlToPdfVariant = 'ecopy' | 'print';
+
+export interface HtmlToPdfDocument {
+  variant: HtmlToPdfVariant;
+  html: string;
+  output_filename: string;
+  title?: string | null;
+  storage_path?: string | null;
+  save_to_folder?: string | null;
+  paper?: 'A4' | 'Letter';
+  landscape?: boolean;
+  print_background?: boolean;
+}
+
+export interface HtmlToPdfPayload {
+  order_id: string;
+  report_id: string | null;
+  documents: HtmlToPdfDocument[];
+  save_to_folder: string | null;
+  archive_local_copy: boolean;
+  requested_at: string;
 }
 
 async function insertPrintJob(input: {
-  printerRole: 'barcode_label' | 'report' | 'invoice_thermal' | 'bulk_pdf_merge';
-  jobType: 'raw_zpl' | 'pdf_url' | 'pdf_base64' | 'html' | 'bulk_merge';
+  printerRole: PrintBridgePrinterRole;
+  jobType: PrintBridgeJobType;
   payload: Record<string, unknown>;
   copies?: number;
   priority?: number;
@@ -275,6 +315,48 @@ export async function enqueueThermalHtmlPrint(input: {
   });
 }
 
+export async function enqueueHtmlToPdfBridgeJob(input: {
+  orderId: string;
+  reportId?: string | null;
+  documents: HtmlToPdfDocument[];
+  saveToFolder?: string | null;
+  archiveLocalCopy?: boolean;
+  priority?: number;
+  idempotencyKey?: string | null;
+}): Promise<PrintJobInsertResult> {
+  if (!input.orderId) {
+    throw new Error('Cannot queue HTML to PDF job: orderId is required.');
+  }
+
+  const documents = input.documents.filter((document) => document.html.trim() && document.output_filename.trim());
+  if (documents.length === 0) {
+    throw new Error('Cannot queue HTML to PDF job: at least one HTML document is required.');
+  }
+
+  return insertPrintJob({
+    printerRole: 'report_pdf_generate',
+    jobType: 'html_to_pdf',
+    payload: {
+      order_id: input.orderId,
+      report_id: input.reportId ?? null,
+      documents: documents.map((document) => ({
+        ...document,
+        paper: document.paper ?? 'A4',
+        landscape: document.landscape ?? false,
+        print_background: document.print_background ?? true,
+        save_to_folder: document.save_to_folder ?? input.saveToFolder ?? null,
+      })),
+      save_to_folder: input.saveToFolder ?? null,
+      archive_local_copy: input.archiveLocalCopy ?? true,
+      requested_at: new Date().toISOString(),
+    } satisfies HtmlToPdfPayload,
+    priority: input.priority ?? 6,
+    orderId: input.orderId,
+    reportId: input.reportId ?? null,
+    idempotencyKey: input.idempotencyKey ?? null,
+  });
+}
+
 function getDailySeq(order: { order_number?: number | null; sample_id?: string | null }): number {
   if (typeof order.order_number === 'number' && Number.isFinite(order.order_number)) {
     return order.order_number;
@@ -317,6 +399,7 @@ export async function enqueueBulkPdfMerge(input: {
   sortMode: BulkPdfSortMode;
   outputFilename?: string;
   saveToFolder?: string | null;
+  printAfterMerge?: boolean;
 }): Promise<PrintJobInsertResult & { total_count: number }> {
   const { data: orders, error } = await supabase
     .from('orders')
@@ -366,13 +449,14 @@ export async function enqueueBulkPdfMerge(input: {
 
   const result = await insertPrintJob({
     printerRole: 'bulk_pdf_merge',
-    jobType: 'bulk_merge',
+    jobType: 'bulk_pdf_merge',
     payload: {
       pdf_list: sortedList,
       sort_mode: input.sortMode,
       output_filename: filename,
       save_to_folder: input.saveToFolder ?? null,
       total_count: sortedList.length,
+      print_after_merge: input.printAfterMerge ?? false,
     } satisfies BulkPdfMergePayload,
     priority: 6,
   });

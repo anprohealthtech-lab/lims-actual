@@ -146,7 +146,7 @@ const B2BPortal: React.FC = () => {
     );
     const [selectedOrderIds, setSelectedOrderIds] = useState<Set<string>>(new Set());
     const [showResultAnalysis, setShowResultAnalysis] = useState(false);
-    const [labInfo, setLabInfo] = useState<{ name: string; logo: string | null } | null>(null);
+    const [labInfo, setLabInfo] = useState<{ name: string; logo: string | null; portalSettings: PortalSettings } | null>(null);
     const [activeUpdateIndex, setActiveUpdateIndex] = useState(0);
 
     // Load account and orders
@@ -159,7 +159,7 @@ const B2BPortal: React.FC = () => {
         applyFilters();
     }, [orders, searchTerm, statusFilter, dateRange, sortMode]);
 
-    const portalSettings = normalizePortalSettings(account?.portal_settings);
+    const portalSettings = normalizePortalSettings(labInfo?.portalSettings);
     const activeUpdate = portalSettings.update_slides[activeUpdateIndex] || portalSettings.update_slides[0];
 
     useEffect(() => {
@@ -185,7 +185,7 @@ const B2BPortal: React.FC = () => {
             if (accountData.lab_id) {
                 const { data: labData } = await supabase
                     .from('labs')
-                    .select('name')
+                    .select('name, portal_settings')
                     .eq('id', accountData.lab_id)
                     .single();
 
@@ -202,6 +202,7 @@ const B2BPortal: React.FC = () => {
                     setLabInfo({
                         name: labData.name,
                         logo: logoAssets?.[0]?.file_url || null,
+                        portalSettings: normalizePortalSettings((labData as any).portal_settings),
                     });
                 }
             }

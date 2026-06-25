@@ -997,7 +997,7 @@ const DashboardOrderModal: React.FC<DashboardOrderModalProps> = ({
         }
 
         // Generate PDF using the proper invoice PDF service
-        pdfUrl = await generateInvoicePDF(invoice.id, templateId);
+        pdfUrl = await generateInvoicePDF(invoice.id, templateId, { triggerNotification: false });
 
         if (!pdfUrl) {
           throw new Error('Failed to generate invoice PDF');

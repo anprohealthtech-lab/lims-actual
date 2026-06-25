@@ -1,4 +1,4 @@
-ALTER TABLE public.accounts
+ALTER TABLE public.labs
 ADD COLUMN IF NOT EXISTS portal_settings jsonb NOT NULL DEFAULT jsonb_build_object(
   'welcome_note', '',
   'updates_enabled', true,
@@ -7,5 +7,5 @@ ADD COLUMN IF NOT EXISTS portal_settings jsonb NOT NULL DEFAULT jsonb_build_obje
   'hide_lims_branding', false
 );
 
-COMMENT ON COLUMN public.accounts.portal_settings IS
-  'B2B partner portal content and display options managed from Account Master.';
+COMMENT ON COLUMN public.labs.portal_settings IS
+  'Common B2B partner portal content and display options for all accounts in the lab.';

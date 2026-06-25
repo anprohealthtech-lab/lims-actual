@@ -19,9 +19,13 @@ const PDF_GENERATION_FUNCTION_URL = import.meta.env.VITE_SUPABASE_URL
   ? `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/generate-invoice-pdf`
   : 'http://localhost:54321/functions/v1/generate-invoice-pdf';
 
+const invoicePdfGenerationPromises = new Map<string, Promise<string>>();
+
 export interface Invoice {
   id: string;
   lab_id: string;
+  pdf_url?: string | null;
+  pdf_generated_at?: string | null;
   invoice_number?: string;
   invoice_date: string;
   due_date: string;
@@ -38,6 +42,8 @@ export interface Invoice {
   parent_invoice_id?: string;
   invoice_type?: string;
   account_id?: string;
+  template_id?: string | null;
+  whatsapp_sent_at?: string | null;
   payment_type: string;
   notes?: string;
   custom_fields?: Record<string, string>;
@@ -128,18 +134,52 @@ export interface InvoiceTemplate {
   };
 }
 
+export interface GenerateInvoicePDFOptions {
+  forceRegenerate?: boolean;
+  triggerNotification?: boolean;
+}
+
 /**
  * Main function to generate invoice PDF
  */
 export async function generateInvoicePDF(
   invoiceId: string,
-  templateId?: string
+  templateId?: string,
+  options: GenerateInvoicePDFOptions = {}
+): Promise<string> {
+  const existingPromise = invoicePdfGenerationPromises.get(invoiceId);
+  if (existingPromise && !options.forceRegenerate) {
+    return existingPromise;
+  }
+
+  const generationPromise = generateInvoicePDFInternal(invoiceId, templateId, options)
+    .finally(() => {
+      invoicePdfGenerationPromises.delete(invoiceId);
+    });
+
+  invoicePdfGenerationPromises.set(invoiceId, generationPromise);
+  return generationPromise;
+}
+
+async function generateInvoicePDFInternal(
+  invoiceId: string,
+  templateId?: string,
+  options: GenerateInvoicePDFOptions = {}
 ): Promise<string> {
   try {
     // 1. Fetch invoice data with all relations
     const invoice = await fetchInvoiceData(invoiceId);
     if (!invoice) {
       throw new Error('Invoice not found');
+    }
+
+    const requestedTemplateId = templateId || undefined;
+    if (
+      !options.forceRegenerate &&
+      invoice.pdf_url &&
+      (!requestedTemplateId || requestedTemplateId === invoice.template_id)
+    ) {
+      return invoice.pdf_url;
     }
 
     // 2. Auto-repair missing invoice_items from order_tests if applicable
@@ -219,7 +259,14 @@ export async function generateInvoicePDF(
     );
 
     // 7. Update invoice record
-    await updateInvoiceWithPdf(invoiceId, pdfUrl, template.id, invoice.invoice_number, invoice.lab_id);
+    await updateInvoiceWithPdf(
+      invoiceId,
+      pdfUrl,
+      template.id,
+      invoice.invoice_number,
+      invoice.lab_id,
+      options.triggerNotification !== false && !invoice.whatsapp_sent_at
+    );
 
     return pdfUrl;
   } catch (error) {
@@ -1242,7 +1289,8 @@ async function updateInvoiceWithPdf(
   pdfUrl: string,
   templateId: string,
   invoiceNumber: string,
-  labId: string
+  labId: string,
+  shouldTriggerNotification: boolean = true
 ): Promise<void> {
   const { error } = await supabase
     .from('invoices')
@@ -1261,8 +1309,10 @@ async function updateInvoiceWithPdf(
   }
 
   // Trigger invoice generated notification (async, don't block response)
-  notificationTriggerService.triggerInvoiceGenerated(invoiceId, pdfUrl, labId)
-    .catch(err => console.error('Error triggering invoice generation notification:', err));
+  if (shouldTriggerNotification) {
+    notificationTriggerService.triggerInvoiceGenerated(invoiceId, pdfUrl, labId)
+      .catch(err => console.error('Error triggering invoice generation notification:', err));
+  }
 }
 
 /**

@@ -1,0 +1,259 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <base target="_top">
+  <style>
+    * { box-sizing: border-box; font-family: Arial, sans-serif; }
+    body { padding: 16px; margin: 0; background: #f5f5f5; }
+    h3 { color: #4285f4; margin-top: 0; border-bottom: 2px solid #4285f4; padding-bottom: 8px; }
+    .form-group { margin-bottom: 12px; }
+    label { display: block; font-weight: bold; margin-bottom: 4px; font-size: 13px; color: #333; }
+    input, select, textarea { width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 4px; font-size: 14px; }
+    input:focus, select:focus { outline: none; border-color: #4285f4; }
+    .btn { padding: 10px 16px; border: none; border-radius: 4px; cursor: pointer; font-size: 14px; margin-right: 8px; }
+    .btn-primary { background: #4285f4; color: white; }
+    .btn-secondary { background: #f1f3f4; color: #333; }
+    .btn:hover { opacity: 0.9; }
+    .patient-search { position: relative; }
+    .patient-results { position: absolute; background: white; border: 1px solid #ddd; width: 100%; max-height: 150px; overflow-y: auto; z-index: 100; display: none; }
+    .patient-item { padding: 8px; cursor: pointer; border-bottom: 1px solid #eee; }
+    .patient-item:hover { background: #e8f0fe; }
+    .test-list { max-height: 200px; overflow-y: auto; border: 1px solid #ddd; border-radius: 4px; padding: 8px; background: white; }
+    .test-item { display: flex; align-items: center; padding: 4px 0; }
+    .test-item input { width: auto; margin-right: 8px; }
+    .selected-tests { margin-top: 8px; }
+    .tag { display: inline-block; background: #e8f0fe; color: #4285f4; padding: 4px 8px; border-radius: 12px; margin: 2px; font-size: 12px; }
+    .success { background: #d4edda; color: #155724; padding: 12px; border-radius: 4px; margin-top: 12px; }
+    .error { background: #f8d7da; color: #721c24; padding: 12px; border-radius: 4px; margin-top: 12px; }
+    .section { background: white; padding: 12px; border-radius: 8px; margin-bottom: 16px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
+    .loading { display: none; text-align: center; padding: 20px; }
+  </style>
+</head>
+<body>
+  <h3>🔬 New Order</h3>
+
+  <div class="section">
+    <h4 style="margin-top:0;">Patient</h4>
+    <div class="form-group patient-search">
+      <label>Search Patient (name or phone)</label>
+      <input type="text" id="patientSearch" placeholder="Start typing..." oninput="searchPatient()">
+      <div class="patient-results" id="patientResults"></div>
+    </div>
+    <input type="hidden" id="patientId">
+    <div id="selectedPatient" style="display:none; padding:8px; background:#e8f0fe; border-radius:4px; margin-bottom:12px;"></div>
+    <button class="btn btn-secondary" onclick="showNewPatientForm()" id="newPatientBtn">+ New Patient</button>
+
+    <div id="newPatientForm" style="display:none; margin-top:12px;">
+      <div class="form-group">
+        <label>Full Name *</label>
+        <input type="text" id="newPatientName">
+      </div>
+      <div class="form-group">
+        <label>Date of Birth</label>
+        <input type="date" id="newPatientDob">
+      </div>
+      <div class="form-group">
+        <label>Gender</label>
+        <select id="newPatientGender">
+          <option value="">Select</option>
+          <option value="Male">Male</option>
+          <option value="Female">Female</option>
+          <option value="Other">Other</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label>Phone *</label>
+        <input type="tel" id="newPatientPhone">
+      </div>
+    </div>
+  </div>
+
+  <div class="section">
+    <h4 style="margin-top:0;">Tests</h4>
+    <div class="test-list" id="testList">Loading tests...</div>
+    <div class="selected-tests" id="selectedTests"></div>
+  </div>
+
+  <div class="section">
+    <h4 style="margin-top:0;">Order Details</h4>
+    <div class="form-group">
+      <label>Referring Doctor</label>
+      <input type="text" id="doctorName" placeholder="Dr.">
+    </div>
+    <div class="form-group">
+      <label>Priority</label>
+      <select id="priority">
+        <option value="Normal">Normal</option>
+        <option value="Urgent">Urgent</option>
+        <option value="STAT">STAT</option>
+      </select>
+    </div>
+    <div class="form-group">
+      <label>Notes</label>
+      <textarea id="notes" rows="2" placeholder="Any special instructions..."></textarea>
+    </div>
+  </div>
+
+  <button class="btn btn-primary" onclick="createOrder()">Create Order</button>
+  <button class="btn btn-secondary" onclick="google.script.host.close()">Cancel</button>
+
+  <div class="loading" id="loading">⏳ Creating order...</div>
+  <div id="result"></div>
+
+  <script>
+    let selectedTests = [];
+    let testCatalog = [];
+
+    // Load test catalog on page load
+    google.script.run.withSuccessHandler(function(tests) {
+      testCatalog = tests;
+      renderTestList();
+    }).getTestCatalog();
+
+    function renderTestList() {
+      const container = document.getElementById('testList');
+      if (testCatalog.length === 0) {
+        container.innerHTML = '<p style="color:#666;">No tests found. Add tests to TestCatalog sheet.</p>';
+        return;
+      }
+      container.innerHTML = testCatalog.map(t => `
+        <div class="test-item">
+          <input type="checkbox" id="test_${t.test_code}" value="${t.test_code}" onchange="toggleTest('${t.test_code}')">
+          <label for="test_${t.test_code}">${t.test_name} (${t.test_code}) - ₹${t.price}</label>
+        </div>
+      `).join('');
+    }
+
+    function toggleTest(testCode) {
+      const checkbox = document.getElementById('test_' + testCode);
+      const test = testCatalog.find(t => t.test_code === testCode);
+
+      if (checkbox.checked) {
+        selectedTests.push(test);
+      } else {
+        selectedTests = selectedTests.filter(t => t.test_code !== testCode);
+      }
+      renderSelectedTests();
+    }
+
+    function renderSelectedTests() {
+      const container = document.getElementById('selectedTests');
+      if (selectedTests.length === 0) {
+        container.innerHTML = '';
+        return;
+      }
+      const total = selectedTests.reduce((sum, t) => sum + (t.price || 0), 0);
+      container.innerHTML = selectedTests.map(t => `<span class="tag">${t.test_code}</span>`).join('') +
+        `<div style="margin-top:8px;font-weight:bold;">Total: ₹${total}</div>`;
+    }
+
+    let searchTimeout;
+    function searchPatient() {
+      clearTimeout(searchTimeout);
+      const query = document.getElementById('patientSearch').value;
+      if (query.length < 2) {
+        document.getElementById('patientResults').style.display = 'none';
+        return;
+      }
+      searchTimeout = setTimeout(function() {
+        google.script.run.withSuccessHandler(showPatientResults).searchPatients(query);
+      }, 300);
+    }
+
+    function showPatientResults(patients) {
+      const container = document.getElementById('patientResults');
+      if (patients.length === 0) {
+        container.innerHTML = '<div class="patient-item" style="color:#666;">No patients found</div>';
+      } else {
+        container.innerHTML = patients.map(p => `
+          <div class="patient-item" onclick="selectPatient('${p.patient_id}', '${p.name}', '${p.phone}')">
+            <strong>${p.name}</strong><br>
+            <small>${p.phone} | ${p.gender || ''} | DOB: ${p.dob || 'N/A'}</small>
+          </div>
+        `).join('');
+      }
+      container.style.display = 'block';
+    }
+
+    function selectPatient(id, name, phone) {
+      document.getElementById('patientId').value = id;
+      document.getElementById('patientSearch').value = '';
+      document.getElementById('patientResults').style.display = 'none';
+      document.getElementById('selectedPatient').innerHTML = `<strong>${name}</strong> | ${phone}`;
+      document.getElementById('selectedPatient').style.display = 'block';
+      document.getElementById('newPatientForm').style.display = 'none';
+    }
+
+    function showNewPatientForm() {
+      document.getElementById('patientId').value = '';
+      document.getElementById('selectedPatient').style.display = 'none';
+      document.getElementById('newPatientForm').style.display = 'block';
+    }
+
+    function createOrder() {
+      const patientId = document.getElementById('patientId').value;
+      const newPatientName = document.getElementById('newPatientName').value;
+
+      if (!patientId && !newPatientName) {
+        alert('Please select or create a patient');
+        return;
+      }
+      if (selectedTests.length === 0) {
+        alert('Please select at least one test');
+        return;
+      }
+
+      document.getElementById('loading').style.display = 'block';
+
+      // If new patient, create first
+      if (!patientId && newPatientName) {
+        const patientData = {
+          name: newPatientName,
+          dob: document.getElementById('newPatientDob').value,
+          gender: document.getElementById('newPatientGender').value,
+          phone: document.getElementById('newPatientPhone').value
+        };
+        google.script.run.withSuccessHandler(function(newPatientId) {
+          submitOrder(newPatientId, newPatientName);
+        }).withFailureHandler(showError).createPatient(patientData);
+      } else {
+        const patientName = document.getElementById('selectedPatient').innerText.split('|')[0].trim();
+        submitOrder(patientId, patientName);
+      }
+    }
+
+    function submitOrder(patientId, patientName) {
+      const orderData = {
+        patient_id: patientId,
+        patient_name: patientName,
+        doctor_name: document.getElementById('doctorName').value,
+        priority: document.getElementById('priority').value,
+        notes: document.getElementById('notes').value,
+        tests: selectedTests.map(t => ({
+          test_code: t.test_code,
+          test_name: t.test_name,
+          department: t.department
+        }))
+      };
+
+      google.script.run.withSuccessHandler(showSuccess).withFailureHandler(showError).createOrder(orderData);
+    }
+
+    function showSuccess(result) {
+      document.getElementById('loading').style.display = 'none';
+      document.getElementById('result').innerHTML = `
+        <div class="success">
+          <strong>✅ Order Created!</strong><br>
+          Order #: ${result.orderNumber}<br>
+          Barcode: ${result.barcode}
+        </div>
+      `;
+    }
+
+    function showError(error) {
+      document.getElementById('loading').style.display = 'none';
+      document.getElementById('result').innerHTML = `<div class="error">❌ Error: ${error.message}</div>`;
+    }
+  </script>
+</body>
+</html>

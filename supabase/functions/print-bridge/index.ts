@@ -63,6 +63,13 @@ function normalizeLimit(value: string | null): number {
   return Math.max(1, Math.min(parsed, 25))
 }
 
+function objectOrEmpty(value: unknown): Record<string, unknown> {
+  if (typeof value === 'object' && value !== null && !Array.isArray(value)) {
+    return value as Record<string, unknown>
+  }
+  return {}
+}
+
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') {
     return new Response(null, { headers: corsHeaders })
@@ -233,7 +240,7 @@ Deno.serve(async (req) => {
 
       const { data: job, error: jobError } = await supabase
         .from('print_jobs')
-        .select('id, lab_id, status, attempt_count')
+        .select('id, lab_id, status, attempt_count, payload')
         .eq('id', jobId)
         .eq('lab_id', labId)
         .single()
@@ -251,6 +258,7 @@ Deno.serve(async (req) => {
       const now = new Date().toISOString()
       const nextStatus = success ? 'completed' : 'failed'
       const nextAttemptCount = Number(job.attempt_count ?? 0) + 1
+      const ackMetadata = objectOrEmpty(body.metadata || body.result || body.payload)
 
       const updatePayload: Record<string, unknown> = {
         status: nextStatus,
@@ -262,8 +270,18 @@ Deno.serve(async (req) => {
       }
 
       if (body.append_payload_metadata === true) {
+        const existingPayload = objectOrEmpty(job.payload)
         updatePayload.payload = {
-          ...(body.payload || {}),
+          ...existingPayload,
+          bridge_result: {
+            ...objectOrEmpty(existingPayload.bridge_result),
+            ...ackMetadata,
+            success,
+            error,
+            printer_name: printerName,
+            device_id: deviceId,
+            at: now,
+          },
           ack: {
             success,
             error,

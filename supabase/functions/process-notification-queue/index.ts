@@ -302,8 +302,28 @@ serve(async (req: Request) => {
         }
       }
 
+      if (item.trigger_type === 'invoice_generated' && item.invoice_id) {
+        const { data: invoiceStatus } = await supabaseClient
+          .from('invoices')
+          .select('whatsapp_sent_at')
+          .eq('id', item.invoice_id)
+          .maybeSingle()
+
+        if (invoiceStatus?.whatsapp_sent_at) {
+          await supabaseClient
+            .from('notification_queue')
+            .update({
+              status: 'skipped',
+              last_error: 'Invoice already sent via WhatsApp',
+              updated_at: new Date().toISOString()
+            })
+            .eq('id', item.id)
+          continue
+        }
+      }
+
       // Mark as sending
-      await supabaseClient
+      const { data: claimedItem, error: claimError } = await supabaseClient
         .from('notification_queue')
         .update({ 
           status: 'sending',
@@ -311,6 +331,13 @@ serve(async (req: Request) => {
           updated_at: new Date().toISOString()
         })
         .eq('id', item.id)
+        .eq('status', 'pending')
+        .select('id')
+        .maybeSingle()
+
+      if (claimError || !claimedItem) {
+        continue
+      }
 
       try {
         const sent = await sendWhatsApp(item)
