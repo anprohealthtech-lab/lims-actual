@@ -58,6 +58,18 @@ interface Order {
         status: string;
         generated_date?: string;
     } | null;
+    samples?: SampleSummary[] | null;
+}
+
+interface SampleSummary {
+    id: string;
+    barcode: string | null;
+    sample_type: string | null;
+    status: string;
+    collected_at?: string | null;
+    received_at?: string | null;
+    rejected_at?: string | null;
+    rejection_reason?: string | null;
 }
 
 type OrderSortMode = 'sample_desc' | 'sample_asc' | 'order_id_asc' | 'order_id_desc' | 'date_desc' | 'patient_az';
@@ -214,6 +226,7 @@ const B2BPortal: React.FC = () => {
                 .from('orders')
                 .select(`
                     *,
+                    samples(id, barcode, sample_type, status, collected_at, received_at, rejected_at, rejection_reason),
                     reports(id, pdf_url, print_pdf_url, status, generated_date)
                 `)
                 .eq('account_id', accountData.id)
@@ -342,6 +355,11 @@ const B2BPortal: React.FC = () => {
             filtered = filtered.filter(
                 (order) =>
                     order.sample_id?.toLowerCase().includes(search) ||
+                    (order.samples || []).some((sample) =>
+                        sample.id?.toLowerCase().includes(search) ||
+                        sample.barcode?.toLowerCase().includes(search) ||
+                        sample.sample_type?.toLowerCase().includes(search)
+                    ) ||
                     order.patient_name?.toLowerCase().includes(search) ||
                     order.id.toLowerCase().includes(search)
             );
@@ -362,7 +380,8 @@ const B2BPortal: React.FC = () => {
 
         const dailySequence = (order: Order) => {
             if (typeof order.order_number === 'number' && Number.isFinite(order.order_number)) return order.order_number;
-            const tail = String(order.sample_id || '').match(/(?:^|[/-])(\d+)\s*$/)?.[1];
+            const firstSample = order.samples?.[0]?.barcode || order.samples?.[0]?.id || order.sample_id || '';
+            const tail = String(firstSample).match(/(?:^|[/-])(\d+)\s*$/)?.[1];
             return tail ? Number(tail) : 0;
         };
 
@@ -545,6 +564,21 @@ const B2BPortal: React.FC = () => {
         return colors[status] || 'bg-gray-100 text-gray-800';
     };
 
+    const getSampleStatusColor = (status: string) => {
+        const normalized = String(status || '').toLowerCase();
+        if (normalized === 'rejected') return 'bg-red-100 text-red-700';
+        if (normalized === 'received') return 'bg-blue-100 text-blue-700';
+        if (normalized === 'collected') return 'bg-green-100 text-green-700';
+        if (normalized === 'processing' || normalized === 'processed') return 'bg-purple-100 text-purple-700';
+        return 'bg-amber-100 text-amber-700';
+    };
+
+    const getSampleStatusLabel = (status: string) => {
+        const normalized = String(status || '').toLowerCase();
+        if (normalized === 'created') return 'Pending';
+        return normalized ? normalized.charAt(0).toUpperCase() + normalized.slice(1) : 'Pending';
+    };
+
     const formatCurrency = (amount: number) => {
         return new Intl.NumberFormat('en-IN', {
             style: 'currency',
@@ -632,7 +666,7 @@ const B2BPortal: React.FC = () => {
                                 <div className="text-base font-semibold text-gray-900">
                                     {labInfo?.name || 'Laboratory'}
                                 </div>
-                                <div className="text-xs text-gray-500">B2B Portal</div>
+                                <div className="text-xs text-gray-500">Partner Portal</div>
                             </div>
                         </div>
 
@@ -1150,7 +1184,9 @@ const B2BPortal: React.FC = () => {
                                         </td>
                                     </tr>
                                 ) : (
-                                    filteredOrders.map((order) => (
+                                    filteredOrders.map((order) => {
+                                        const orderSamples = order.samples || [];
+                                        return (
                                         <tr key={order.id} className="hover:bg-gray-50 transition-colors">
                                             <td className="px-4 py-4">
                                                 <input
@@ -1162,17 +1198,30 @@ const B2BPortal: React.FC = () => {
                                                 />
                                             </td>
                                             <td className="px-6 py-4 whitespace-nowrap">
-                                                <div className="flex items-center">
-                                                    {order.color_code && (
-                                                        <div
-                                                            className="w-3 h-3 rounded-full mr-2"
-                                                            style={{ backgroundColor: order.color_code }}
-                                                            title={order.color_name}
-                                                        />
+                                                <div className="space-y-1.5">
+                                                    {orderSamples.length > 0 ? orderSamples.map((sample) => (
+                                                        <div key={sample.id} className="flex items-center">
+                                                            {order.color_code && (
+                                                                <div
+                                                                    className="w-3 h-3 rounded-full mr-2"
+                                                                    style={{ backgroundColor: order.color_code }}
+                                                                    title={order.color_name}
+                                                                />
+                                                            )}
+                                                            <div>
+                                                                <span className="text-sm font-medium text-gray-900 font-mono">
+                                                                    {sample.barcode || sample.id}
+                                                                </span>
+                                                                {sample.sample_type && (
+                                                                    <div className="text-xs text-gray-500">{sample.sample_type}</div>
+                                                                )}
+                                                            </div>
+                                                        </div>
+                                                    )) : (
+                                                        <span className="text-sm font-medium text-gray-900">
+                                                            {order.sample_id || 'N/A'}
+                                                        </span>
                                                     )}
-                                                    <span className="text-sm font-medium text-gray-900">
-                                                        {order.sample_id || 'N/A'}
-                                                    </span>
                                                 </div>
                                             </td>
                                             <td className="px-6 py-4 whitespace-nowrap">
@@ -1182,9 +1231,23 @@ const B2BPortal: React.FC = () => {
                                                 <div className="text-sm text-gray-900">{formatDate(order.order_date)}</div>
                                             </td>
                                             <td className="px-6 py-4 whitespace-nowrap">
-                                                <span className={`px-2 py-1 rounded-full text-xs font-medium ${getStatusColor(order.status)}`}>
-                                                    {order.status}
-                                                </span>
+                                                <div className="space-y-1.5">
+                                                    <span className={`inline-flex px-2 py-1 rounded-full text-xs font-medium ${getStatusColor(order.status)}`}>
+                                                        {order.status}
+                                                    </span>
+                                                    {orderSamples.map((sample) => (
+                                                        <div key={`${sample.id}-status`} className="text-xs">
+                                                            <span className={`inline-flex px-2 py-0.5 rounded-full font-medium ${getSampleStatusColor(sample.status)}`}>
+                                                                {getSampleStatusLabel(sample.status)}
+                                                            </span>
+                                                            {sample.rejection_reason && (
+                                                                <div className="mt-1 max-w-[220px] text-red-600 whitespace-normal">
+                                                                    {sample.rejection_reason}
+                                                                </div>
+                                                            )}
+                                                        </div>
+                                                    ))}
+                                                </div>
                                             </td>
                                             <td className="px-6 py-4 whitespace-nowrap">
                                                 <div className="text-sm font-medium text-gray-900">
@@ -1224,7 +1287,8 @@ const B2BPortal: React.FC = () => {
                                                 </div>
                                             </td>
                                         </tr>
-                                    ))
+                                        );
+                                    })
                                 )}
                             </tbody>
                         </table>

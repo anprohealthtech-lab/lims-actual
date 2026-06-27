@@ -1,0 +1,349 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <base target="_top">
+  <style>
+    * { box-sizing: border-box; font-family: Arial, sans-serif; }
+    body { padding: 0; margin: 0; background: #f5f5f5; }
+
+    .tabs { display: flex; background: #4285f4; }
+    .tab { padding: 12px 24px; color: white; cursor: pointer; border: none; background: transparent; font-size: 14px; }
+    .tab:hover { background: rgba(255,255,255,0.1); }
+    .tab.active { background: white; color: #4285f4; font-weight: bold; }
+
+    .content { padding: 16px; }
+    .card { background: white; border-radius: 8px; padding: 16px; margin-bottom: 16px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
+    h3 { margin: 0 0 12px 0; color: #333; }
+
+    .form-row { display: flex; gap: 8px; margin-bottom: 12px; }
+    input, select { padding: 8px; border: 1px solid #ddd; border-radius: 4px; font-size: 13px; }
+    input:focus, select:focus { outline: none; border-color: #4285f4; }
+    .input-sm { width: 100px; }
+    .input-md { width: 150px; }
+    .input-lg { flex: 1; }
+
+    .btn { padding: 8px 16px; border: none; border-radius: 4px; cursor: pointer; font-size: 13px; }
+    .btn-primary { background: #4285f4; color: white; }
+    .btn-danger { background: #dc3545; color: white; }
+    .btn-secondary { background: #6c757d; color: white; }
+    .btn:hover { opacity: 0.9; }
+
+    table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    th { text-align: left; padding: 8px; border-bottom: 2px solid #ddd; color: #666; font-weight: 600; }
+    td { padding: 8px; border-bottom: 1px solid #eee; }
+    tr:hover { background: #f8f9fa; }
+
+    .badge { padding: 2px 8px; border-radius: 12px; font-size: 11px; font-weight: 500; }
+    .badge-numeric { background: #e3f2fd; color: #1976d2; }
+    .badge-dropdown { background: #f3e5f5; color: #7b1fa2; }
+    .badge-text { background: #e8f5e9; color: #388e3c; }
+    .badge-calc { background: #fff3e0; color: #f57c00; }
+
+    .hidden { display: none; }
+    .text-muted { color: #999; font-size: 12px; }
+    .text-danger { color: #dc3545; cursor: pointer; }
+    .text-danger:hover { text-decoration: underline; }
+
+    .analyte-list { max-height: 300px; overflow-y: auto; }
+    .analyte-chip { display: inline-block; padding: 2px 8px; margin: 2px; background: #e3f2fd; border-radius: 12px; font-size: 11px; }
+    .analyte-chip.calc { background: #fff3e0; }
+    .analyte-chip.dropdown { background: #f3e5f5; }
+  </style>
+</head>
+<body>
+  <div class="tabs">
+    <button class="tab active" onclick="showTab('groups')">📁 Test Groups</button>
+    <button class="tab" onclick="showTab('analytes')">🧬 Global Analytes</button>
+    <button class="tab" onclick="showTab('tests')">🧪 Test Catalog</button>
+  </div>
+
+  <!-- Test Groups Tab -->
+  <div id="tab-groups" class="content">
+    <div class="card">
+      <h3>Add Test Group</h3>
+      <div class="form-row">
+        <input type="text" id="groupName" class="input-md" placeholder="Group Name (e.g., Hematology)">
+        <input type="text" id="groupCode" class="input-sm" placeholder="Code (HEMA)" style="text-transform: uppercase;">
+        <button class="btn btn-primary" onclick="addGroup()">Add Group</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3>Test Groups</h3>
+      <table>
+        <thead>
+          <tr>
+            <th>Order</th>
+            <th>Name</th>
+            <th>Code</th>
+            <th>Tests</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody id="groupsTable"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- Global Analytes Tab -->
+  <div id="tab-analytes" class="content hidden">
+    <div class="card">
+      <h3>Add Global Analyte</h3>
+      <div class="form-row">
+        <input type="text" id="analyteCode" class="input-sm" placeholder="Code" style="text-transform: uppercase;">
+        <input type="text" id="analyteName" class="input-md" placeholder="Name">
+        <input type="text" id="analyteUnit" class="input-sm" placeholder="Unit">
+        <select id="analyteType" class="input-sm" onchange="toggleExpectedValues()">
+          <option value="numeric">Numeric</option>
+          <option value="dropdown">Dropdown</option>
+          <option value="text">Text</option>
+        </select>
+        <input type="text" id="analyteRef" class="input-sm" placeholder="Ref Range">
+        <button class="btn btn-primary" onclick="addAnalyte()">Add</button>
+      </div>
+      <div id="expectedValuesRow" class="form-row hidden">
+        <input type="text" id="analyteExpected" class="input-lg" placeholder="Expected values: Negative, Trace, 1+, 2+, 3+">
+      </div>
+    </div>
+
+    <div class="card">
+      <h3>Global Analytes Master List</h3>
+      <p class="text-muted">Define analytes once, reuse across multiple tests.</p>
+      <div class="analyte-list">
+        <table>
+          <thead>
+            <tr>
+              <th>Code</th>
+              <th>Name</th>
+              <th>Unit</th>
+              <th>Type</th>
+              <th>Ref Range</th>
+              <th>Expected Values</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody id="analytesTable"></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <!-- Test Catalog Tab -->
+  <div id="tab-tests" class="content hidden">
+    <div class="card">
+      <h3>Add Test</h3>
+      <div class="form-row">
+        <input type="text" id="testCode" class="input-sm" placeholder="Code" style="text-transform: uppercase;">
+        <input type="text" id="testName" class="input-md" placeholder="Test Name">
+        <select id="testGroup" class="input-sm">
+          <option value="">-- Group --</option>
+        </select>
+        <input type="text" id="testDept" class="input-sm" placeholder="Department">
+        <input type="text" id="testSample" class="input-sm" placeholder="Sample Type">
+        <input type="number" id="testPrice" class="input-sm" placeholder="Price">
+        <button class="btn btn-primary" onclick="addTest()">Add Test</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3>Test Catalog</h3>
+      <table>
+        <thead>
+          <tr>
+            <th>Code</th>
+            <th>Name</th>
+            <th>Group</th>
+            <th>Sample</th>
+            <th>Analytes</th>
+            <th>Price</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody id="testsTable"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <script>
+    let groups = [];
+    let analytes = [];
+    let tests = [];
+
+    // Load all data on init
+    document.addEventListener('DOMContentLoaded', loadAllData);
+
+    function loadAllData() {
+      google.script.run.withSuccessHandler(data => {
+        groups = data;
+        renderGroups();
+        populateGroupDropdown();
+      }).getTestGroups();
+
+      google.script.run.withSuccessHandler(data => {
+        analytes = data;
+        renderAnalytes();
+      }).getGlobalAnalytes();
+
+      google.script.run.withSuccessHandler(data => {
+        tests = data;
+        renderTests();
+      }).getTestCatalogFull();
+    }
+
+    function showTab(tab) {
+      document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+      document.querySelectorAll('.content').forEach(c => c.classList.add('hidden'));
+      event.target.classList.add('active');
+      document.getElementById('tab-' + tab).classList.remove('hidden');
+    }
+
+    function toggleExpectedValues() {
+      const type = document.getElementById('analyteType').value;
+      document.getElementById('expectedValuesRow').classList.toggle('hidden', type !== 'dropdown');
+    }
+
+    // ==========================================
+    // GROUPS
+    // ==========================================
+    function renderGroups() {
+      const tbody = document.getElementById('groupsTable');
+      tbody.innerHTML = groups.map(g => `
+        <tr>
+          <td>${g.display_order}</td>
+          <td><strong>${g.name}</strong></td>
+          <td><code>${g.code}</code></td>
+          <td>${tests.filter(t => t.group_code === g.code).length} tests</td>
+          <td><span class="text-danger" onclick="deleteGroup('${g.group_id}')">Delete</span></td>
+        </tr>
+      `).join('');
+    }
+
+    function populateGroupDropdown() {
+      const select = document.getElementById('testGroup');
+      select.innerHTML = '<option value="">-- Group --</option>' +
+        groups.map(g => `<option value="${g.code}">${g.name}</option>`).join('');
+    }
+
+    function addGroup() {
+      const name = document.getElementById('groupName').value.trim();
+      const code = document.getElementById('groupCode').value.trim().toUpperCase();
+      if (!name || !code) return alert('Name and code required');
+
+      google.script.run.withSuccessHandler(() => {
+        document.getElementById('groupName').value = '';
+        document.getElementById('groupCode').value = '';
+        loadAllData();
+      }).addTestGroup(name, code);
+    }
+
+    function deleteGroup(id) {
+      if (!confirm('Delete this group?')) return;
+      google.script.run.withSuccessHandler(loadAllData).deleteTestGroup(id);
+    }
+
+    // ==========================================
+    // ANALYTES
+    // ==========================================
+    function renderAnalytes() {
+      const tbody = document.getElementById('analytesTable');
+      tbody.innerHTML = analytes.map(a => `
+        <tr>
+          <td><code>${a.code}</code></td>
+          <td><strong>${a.name}</strong></td>
+          <td>${a.unit || '-'}</td>
+          <td><span class="badge badge-${a.result_type}">${a.result_type}</span></td>
+          <td>${a.default_ref_range || '-'}</td>
+          <td class="text-muted">${a.result_type === 'dropdown' && a.expected_values ? a.expected_values.join(', ') : '-'}</td>
+          <td><span class="text-danger" onclick="deleteAnalyte('${a.analyte_id}')">Delete</span></td>
+        </tr>
+      `).join('');
+    }
+
+    function addAnalyte() {
+      const code = document.getElementById('analyteCode').value.trim();
+      const name = document.getElementById('analyteName').value.trim();
+      if (!code || !name) return alert('Code and name required');
+
+      const analyte = {
+        code: code,
+        name: name,
+        unit: document.getElementById('analyteUnit').value.trim(),
+        result_type: document.getElementById('analyteType').value,
+        default_ref_range: document.getElementById('analyteRef').value.trim(),
+        expected_values: document.getElementById('analyteExpected').value.trim()
+      };
+
+      google.script.run.withSuccessHandler(() => {
+        document.getElementById('analyteCode').value = '';
+        document.getElementById('analyteName').value = '';
+        document.getElementById('analyteUnit').value = '';
+        document.getElementById('analyteRef').value = '';
+        document.getElementById('analyteExpected').value = '';
+        loadAllData();
+      }).addGlobalAnalyte(analyte);
+    }
+
+    function deleteAnalyte(id) {
+      if (!confirm('Delete this analyte?')) return;
+      google.script.run.withSuccessHandler(loadAllData).deleteGlobalAnalyte(id);
+    }
+
+    // ==========================================
+    // TESTS
+    // ==========================================
+    function renderTests() {
+      const tbody = document.getElementById('testsTable');
+      tbody.innerHTML = tests.map(t => {
+        const analyteChips = (t.analytes || []).map(a => {
+          let cls = 'analyte-chip';
+          if (a.is_calculated) cls += ' calc';
+          else if (a.result_type === 'dropdown') cls += ' dropdown';
+          return `<span class="${cls}">${a.name}</span>`;
+        }).join('');
+
+        return `
+          <tr>
+            <td><code>${t.test_code}</code></td>
+            <td><strong>${t.test_name}</strong></td>
+            <td>${t.group_code || '-'}</td>
+            <td>${t.sample_type || '-'}</td>
+            <td>${analyteChips || '-'}</td>
+            <td>₹${t.price || 0}</td>
+            <td><span class="text-danger" onclick="deleteTest('${t.test_code}')">Delete</span></td>
+          </tr>
+        `;
+      }).join('');
+    }
+
+    function addTest() {
+      const code = document.getElementById('testCode').value.trim();
+      const name = document.getElementById('testName').value.trim();
+      if (!code || !name) return alert('Code and name required');
+
+      const test = {
+        test_code: code,
+        test_name: name,
+        group_code: document.getElementById('testGroup').value,
+        department: document.getElementById('testDept').value.trim(),
+        sample_type: document.getElementById('testSample').value.trim(),
+        price: parseFloat(document.getElementById('testPrice').value) || 0,
+        analytes: []
+      };
+
+      google.script.run.withSuccessHandler(() => {
+        document.getElementById('testCode').value = '';
+        document.getElementById('testName').value = '';
+        document.getElementById('testDept').value = '';
+        document.getElementById('testSample').value = '';
+        document.getElementById('testPrice').value = '';
+        loadAllData();
+      }).addTest(test);
+    }
+
+    function deleteTest(code) {
+      if (!confirm('Delete this test?')) return;
+      google.script.run.withSuccessHandler(loadAllData).deleteTest(code);
+    }
+  </script>
+</body>
+</html>

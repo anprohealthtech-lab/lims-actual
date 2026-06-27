@@ -219,7 +219,7 @@ const AccountMaster: React.FC = () => {
 
             if (result.success) {
                 setPortalData(prev => ({ ...prev, portalPassword: '' }));
-                alert(`B2B Portal Access Enabled\nLogin URL: ${window.location.origin}/b2b\nEmail: ${portalData.portalEmail}`);
+                alert(`Partner Portal Access Enabled\nLogin URL: ${window.location.origin}/b2b\nEmail: ${portalData.portalEmail}`);
             } else {
                 alert(`Portal access failed: ${result.error}\n\nPlease contact support to enable portal access.`);
             }
@@ -269,7 +269,7 @@ const AccountMaster: React.FC = () => {
                 const createdAccount = data[0];
                 setAccounts(prev => [createdAccount, ...prev]);
 
-                // Create B2B portal user if enabled
+                // Create partner portal user if enabled
                 if (portalData.enablePortal && createdAccount) {
                     const result = await createB2BAccountUser({
                         email: portalData.portalEmail,
@@ -280,7 +280,7 @@ const AccountMaster: React.FC = () => {
                     });
 
                     if (result.success) {
-                        alert(`Account created successfully!\n\nB2B Portal Access Enabled\nLogin URL: ${window.location.origin}/b2b\nEmail: ${portalData.portalEmail}`);
+                        alert(`Account created successfully!\n\nPartner Portal Access Enabled\nLogin URL: ${window.location.origin}/b2b\nEmail: ${portalData.portalEmail}`);
                     } else {
                         alert(`Account created, but portal access failed: ${result.error}\n\nPlease contact support to enable portal access.`);
                     }
@@ -699,17 +699,17 @@ const AccountMaster: React.FC = () => {
                                                 />
                                                 <label htmlFor="enablePortal" className="flex items-center text-sm font-medium text-gray-700 cursor-pointer">
                                                     <Lock className="w-4 h-4 mr-2 text-blue-600" />
-                                                    Enable B2B Portal Access
+                                                    Enable Partner Portal Access
                                                 </label>
                                             </div>
                                         ) : (
                                             <div className="flex items-center mb-4">
                                                 <Lock className="w-4 h-4 mr-2 text-blue-600" />
-                                                <span className="text-sm font-medium text-gray-700">B2B Portal Access</span>
+                                                <span className="text-sm font-medium text-gray-700">Partner Portal Access</span>
                                             </div>
                                         )}
                                         <p className="text-xs text-gray-500 mb-4">
-                                            Allow this account to access the B2B portal to view their orders and download reports.
+                                            Allow this account to access the partner portal to view their orders and download reports.
                                         </p>
 
                                         {(editingAccount || portalData.enablePortal) && (
@@ -724,7 +724,7 @@ const AccountMaster: React.FC = () => {
                                                         className="w-full border rounded p-2"
                                                         placeholder="portal@hospital.com"
                                                     />
-                                                    <p className="text-xs text-gray-500 mt-1">This email will be used to login to the B2B portal</p>
+                                                    <p className="text-xs text-gray-500 mt-1">This email will be used to login to the partner portal</p>
                                                 </div>
                                                 <div className="col-span-2">
                                                     <label className="block text-sm font-medium mb-1 text-gray-700">Portal Password *</label>

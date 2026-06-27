@@ -43,9 +43,12 @@ export const SampleLabelPrinter: React.FC<SampleLabelPrinterProps> = ({
       setLoading(true);
       setError(null);
 
-      // Generate barcode
-      // Generate barcode using the numeric barcode if available
-      const barcodeValue = sample.barcode || sample.id;
+      // Generate barcode using the numeric tube barcode. Do not encode the
+      // human-readable sample ID here; analyzers scan samples.barcode.
+      const barcodeValue = String(sample.barcode || '').trim();
+      if (!barcodeValue) {
+        throw new Error('Sample barcode is missing');
+      }
       const barcode = generateBarcodeSync(JsBarcode, barcodeValue, {
         width: 2,
         height: 50,
@@ -65,7 +68,7 @@ export const SampleLabelPrinter: React.FC<SampleLabelPrinterProps> = ({
       }
     } catch (err) {
       console.error('Error generating codes:', err);
-      setError('Failed to generate barcode/QR code');
+      setError(err instanceof Error ? err.message : 'Failed to generate barcode/QR code');
     } finally {
       setLoading(false);
     }
@@ -74,7 +77,7 @@ export const SampleLabelPrinter: React.FC<SampleLabelPrinterProps> = ({
   const getLabelPrintData = () => {
     const collectionDate = new Date(sample.created_at);
     return {
-      sampleId: sample.barcode || sample.id,
+      sampleId: String(sample.barcode || '').trim(),
       labelId: sample.id,
       patientName: patientName || 'Sample',
       sampleType: sample.sample_type,
@@ -131,7 +134,7 @@ export const SampleLabelPrinter: React.FC<SampleLabelPrinterProps> = ({
 
       console.debug('[PrintBridge][BarcodeLabel] queueing label print job', {
         printerName: barcodePrinterName,
-        sampleIdForBarcode: sample.barcode || sample.id,
+        sampleIdForBarcode: sample.barcode,
         labelId: sample.id,
       });
       await qzTrayService.printBarcodeLabel(barcodePrinterName, getLabelPrintData());

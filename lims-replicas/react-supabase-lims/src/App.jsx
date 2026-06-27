@@ -11,6 +11,7 @@ import Verification from './pages/Verification'
 import Settings from './pages/Settings'
 import Report from './pages/Report'
 import Verify from './pages/Verify'
+import TestManagement from './pages/TestManagement'
 
 function Layout({ children, user, onSignOut }) {
   const location = useLocation()
@@ -23,6 +24,7 @@ function Layout({ children, user, onSignOut }) {
     { path: '/results', label: 'Results', icon: '📝' },
     { path: '/verification', label: 'Verify', icon: '✅' },
     { path: '/report', label: 'Report', icon: '📄' },
+    { path: '/tests', label: 'Tests', icon: '🧪' },
     { path: '/settings', label: 'Settings', icon: '⚙️' },
   ]
 
@@ -111,6 +113,7 @@ function App() {
               <Route path="/results" element={<ResultEntry />} />
               <Route path="/verification" element={<Verification />} />
               <Route path="/report" element={<Report />} />
+              <Route path="/tests" element={<TestManagement />} />
               <Route path="/settings" element={<Settings />} />
               <Route path="*" element={<Navigate to="/" />} />
             </Routes>

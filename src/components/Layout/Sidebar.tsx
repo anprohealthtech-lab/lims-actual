@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import {
   LayoutDashboard,
@@ -31,6 +31,7 @@ import {
   Package,
   Star,
 } from 'lucide-react';
+import { database, supabase } from '../../utils/supabase';
 
 interface SidebarProps {
   isOpen: boolean;
@@ -133,6 +134,15 @@ const sections: { label: string; emoji: string; category: CategoryKey }[] = [
 
 const Sidebar: React.FC<SidebarProps> = ({ isOpen, onToggle, isMobile = false, isCollapsed, setIsCollapsed }) => {
   const location = useLocation();
+  const [sidebarBranding, setSidebarBranding] = useState<{
+    mode: 'anpro' | 'lab' | 'hidden';
+    labName: string;
+    logoUrl: string | null;
+  }>({
+    mode: 'anpro',
+    labName: '',
+    logoUrl: null,
+  });
 
   const [favorites, setFavorites] = useState<string[]>(() => {
     try {
@@ -155,6 +165,38 @@ const Sidebar: React.FC<SidebarProps> = ({ isOpen, onToggle, isMobile = false, i
   const handleNavClick = () => {
     if (isMobile && isOpen) onToggle();
   };
+
+  useEffect(() => {
+    const loadSidebarBranding = async () => {
+      const labId = await database.getCurrentUserLabId();
+      if (!labId) return;
+
+      const [{ data: labData }, { data: logoAssets }] = await Promise.all([
+        supabase
+          .from('labs')
+          .select('name, portal_settings')
+          .eq('id', labId)
+          .single(),
+        supabase
+          .from('lab_branding_assets')
+          .select('file_url, imagekit_url, is_default')
+          .eq('lab_id', labId)
+          .eq('asset_type', 'logo')
+          .eq('is_active', true)
+          .order('is_default', { ascending: false })
+          .limit(1),
+      ]);
+
+      const mode = String((labData as any)?.portal_settings?.sidebar_branding_mode || 'anpro');
+      setSidebarBranding({
+        mode: mode === 'lab' || mode === 'hidden' ? mode : 'anpro',
+        labName: (labData as any)?.name || 'Laboratory',
+        logoUrl: (logoAssets?.[0] as any)?.imagekit_url || (logoAssets?.[0] as any)?.file_url || null,
+      });
+    };
+
+    loadSidebarBranding();
+  }, []);
 
   const renderNavItem = (item: typeof navigation[0], keyPrefix: string) => {
     const config = categoryConfig[item.category as CategoryKey];
@@ -218,17 +260,29 @@ const Sidebar: React.FC<SidebarProps> = ({ isOpen, onToggle, isMobile = false, i
       `}>
         {/* Header */}
         <div className={`flex-none flex items-center justify-between bg-primary-600 ${isCollapsed ? 'h-16 px-2 justify-center' : 'h-16 px-5'}`}>
-          {!isCollapsed && (
+          {!isCollapsed && sidebarBranding.mode !== 'hidden' && (
             <div className="flex min-w-0 flex-1 items-center">
-              <img
-                src="https://ik.imagekit.io/18tsendxqy/website/Screenshot%202025-12-15%20133819.png?updatedAt=1765786115578"
-                alt="AnPro LIMS"
-                className="h-8 w-8 object-contain rounded"
-              />
-              <span className="ml-2 text-xl font-bold leading-tight text-white">AnPro LIMS</span>
+              {sidebarBranding.mode === 'lab' && sidebarBranding.logoUrl ? (
+                <img
+                  src={sidebarBranding.logoUrl}
+                  alt={sidebarBranding.labName}
+                  className="h-8 w-8 object-contain rounded bg-white"
+                />
+              ) : sidebarBranding.mode === 'lab' ? (
+                <Building2 className="h-8 w-8 rounded bg-white/10 p-1.5 text-white" />
+              ) : (
+                <img
+                  src="https://ik.imagekit.io/18tsendxqy/website/Screenshot%202025-12-15%20133819.png?updatedAt=1765786115578"
+                  alt="AnPro LIMS"
+                  className="h-8 w-8 object-contain rounded"
+                />
+              )}
+              <span className="ml-2 truncate text-xl font-bold leading-tight text-white">
+                {sidebarBranding.mode === 'lab' ? sidebarBranding.labName : 'AnPro LIMS'}
+              </span>
             </div>
           )}
-          <div className="flex items-center gap-2">
+          <div className={`flex items-center gap-2 ${!isCollapsed && sidebarBranding.mode === 'hidden' ? 'ml-auto' : ''}`}>
             <button
               onClick={() => setIsCollapsed(!isCollapsed)}
               className="hidden lg:block text-white hover:text-gray-200 transition-colors"

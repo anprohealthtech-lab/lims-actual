@@ -35,6 +35,18 @@ interface Order {
   total_amount: number;
   reports: Report | null;
   order_tests?: { test_group?: { name: string } }[];
+  samples?: SampleSummary[] | null;
+}
+
+interface SampleSummary {
+  id: string;
+  barcode: string | null;
+  sample_type: string | null;
+  status: string;
+  collected_at?: string | null;
+  received_at?: string | null;
+  rejected_at?: string | null;
+  rejection_reason?: string | null;
 }
 
 const STATUS_CONFIG: Record<string, { label: string; color: string; icon: React.ReactNode }> = {
@@ -44,6 +56,7 @@ const STATUS_CONFIG: Record<string, { label: string; color: string; icon: React.
   'Report Ready':       { label: 'Report Ready',       color: 'bg-green-100 text-green-800', icon: <CheckCircle className="h-3 w-3" /> },
   'Completed':          { label: 'Completed',          color: 'bg-green-100 text-green-800', icon: <CheckCircle className="h-3 w-3" /> },
   'Delivered':          { label: 'Delivered',          color: 'bg-gray-100 text-gray-700',   icon: <CheckCircle className="h-3 w-3" /> },
+  'Rejected':           { label: 'Rejected',           color: 'bg-red-100 text-red-700',     icon: <AlertCircle className="h-3 w-3" /> },
 };
 
 const PatientPortal: React.FC = () => {
@@ -71,7 +84,14 @@ const PatientPortal: React.FC = () => {
     if (searchTerm) {
       const s = searchTerm.toLowerCase();
       filtered = filtered.filter(
-        (o) => o.sample_id?.toLowerCase().includes(s) || o.id.toLowerCase().includes(s)
+        (o) =>
+          o.sample_id?.toLowerCase().includes(s) ||
+          (o.samples || []).some((sample) =>
+            sample.id?.toLowerCase().includes(s) ||
+            sample.barcode?.toLowerCase().includes(s) ||
+            sample.sample_type?.toLowerCase().includes(s)
+          ) ||
+          o.id.toLowerCase().includes(s)
       );
     }
     if (statusFilter !== 'All') {
@@ -109,6 +129,7 @@ const PatientPortal: React.FC = () => {
         .from('orders')
         .select(`
           id, sample_id, order_date, status, total_amount,
+          samples(id, barcode, sample_type, status, collected_at, received_at, rejected_at, rejection_reason),
           reports(id, pdf_url, print_pdf_url, status, generated_date)
         `)
         .eq('patient_id', meta.patient_id)
@@ -153,6 +174,21 @@ const PatientPortal: React.FC = () => {
     new Date(dateString).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
 
   const openReport = (url: string) => window.open(url, '_blank');
+
+  const getSampleStatusColor = (status: string) => {
+    const normalized = String(status || '').toLowerCase();
+    if (normalized === 'rejected') return 'bg-red-100 text-red-700';
+    if (normalized === 'received') return 'bg-blue-100 text-blue-700';
+    if (normalized === 'collected') return 'bg-green-100 text-green-700';
+    if (normalized === 'processing' || normalized === 'processed') return 'bg-purple-100 text-purple-700';
+    return 'bg-amber-100 text-amber-700';
+  };
+
+  const getSampleStatusLabel = (status: string) => {
+    const normalized = String(status || '').toLowerCase();
+    if (normalized === 'created') return 'Pending';
+    return normalized ? normalized.charAt(0).toUpperCase() + normalized.slice(1) : 'Pending';
+  };
 
   if (loading) {
     return (
@@ -305,6 +341,7 @@ const PatientPortal: React.FC = () => {
                 {filteredOrders.map((order) => {
                   const statusCfg = STATUS_CONFIG[order.status] || { label: order.status, color: 'bg-gray-100 text-gray-700', icon: null };
                   const hasReport = !!order.reports?.pdf_url;
+                  const orderSamples = order.samples || [];
 
                   return (
                     <div
@@ -314,17 +351,33 @@ const PatientPortal: React.FC = () => {
                       <div className="flex items-start justify-between gap-3">
                         <div className="min-w-0">
                           <div className="flex items-center gap-2 flex-wrap">
-                            {order.sample_id && (
-                              <span className="font-mono text-sm font-semibold text-gray-900">
-                                {order.sample_id}
+                            {(orderSamples.length > 0 ? orderSamples : [{ id: order.sample_id || order.id, barcode: order.sample_id, sample_type: null, status: '' }]).map((sample) => (
+                              <span key={sample.id} className="font-mono text-sm font-semibold text-gray-900">
+                                {sample.barcode || sample.id}
                               </span>
-                            )}
+                            ))}
                             <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium ${statusCfg.color}`}>
                               {statusCfg.icon}
                               {statusCfg.label}
                             </span>
                           </div>
                           <p className="text-xs text-gray-500 mt-1">{formatDate(order.order_date)}</p>
+                          {orderSamples.length > 0 && (
+                            <div className="mt-2 flex flex-wrap gap-2">
+                              {orderSamples.map((sample) => (
+                                <div key={`${sample.id}-sample-status`} className="text-xs">
+                                  <span className={`inline-flex px-2 py-0.5 rounded-full font-medium ${getSampleStatusColor(sample.status)}`}>
+                                    {sample.sample_type ? `${sample.sample_type}: ` : ''}{getSampleStatusLabel(sample.status)}
+                                  </span>
+                                  {sample.rejection_reason && (
+                                    <div className="mt-1 max-w-sm rounded-md bg-red-50 px-2 py-1 text-red-700">
+                                      {sample.rejection_reason}
+                                    </div>
+                                  )}
+                                </div>
+                              ))}
+                            </div>
+                          )}
                         </div>
 
                         {/* Report Actions */}

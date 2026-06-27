@@ -660,6 +660,7 @@ CREATE TABLE public.labs (
   show_signature_block boolean NOT NULL DEFAULT true,
   auto_open_collection_modal boolean NOT NULL DEFAULT false,
   sample_type_colors jsonb DEFAULT '{}'::jsonb,
+  accession_collection_config jsonb NOT NULL DEFAULT '{"sample_type_flows": {}}'::jsonb,
   CONSTRAINT labs_pkey PRIMARY KEY (id),
   CONSTRAINT labs_default_processing_location_id_fkey FOREIGN KEY (default_processing_location_id) REFERENCES public.locations(id)
 );
@@ -1263,6 +1264,7 @@ CREATE TABLE public.samples (
   qr_code_data jsonb,
   checklist_completed jsonb NOT NULL DEFAULT '{}'::jsonb,
   sample_condition text,
+  collection_form_response jsonb NOT NULL DEFAULT '{}'::jsonb,
   CONSTRAINT samples_pkey PRIMARY KEY (id),
   CONSTRAINT samples_order_id_fkey FOREIGN KEY (order_id) REFERENCES public.orders(id),
   CONSTRAINT samples_lab_id_fkey FOREIGN KEY (lab_id) REFERENCES public.labs(id),
@@ -1327,6 +1329,7 @@ CREATE TABLE public.locations (
   is_main_lab boolean DEFAULT false,
   barcode_printer_name text,
   report_printer_name text,
+  barcode_browser_print_enabled boolean,
   auto_print_barcode_on_order boolean,
   auto_print_report_on_approval boolean,
   CONSTRAINT locations_pkey PRIMARY KEY (id),

@@ -74,11 +74,24 @@ function saveResults(orderNumber, results) {
 function calculateFlag(value, referenceRange) {
   if (!referenceRange || !value) return 'normal';
 
-  const numValue = parseFloat(value);
-  if (isNaN(numValue)) return 'normal';
-
-  // Parse reference range (formats: "10-20", "< 100", "> 5", "10 - 20")
   const rangeStr = referenceRange.toString().trim();
+  const numValue = parseFloat(value);
+
+  // For text/dropdown values - check if matches expected
+  if (isNaN(numValue)) {
+    const normalizedValue = value.toString().toLowerCase().trim();
+    const normalizedRef = rangeStr.toLowerCase().trim();
+
+    // If value equals expected normal, it's normal
+    if (normalizedValue === normalizedRef) return 'normal';
+
+    // Common "normal" values for qualitative tests
+    const normalValues = ['negative', 'non-reactive', 'nil', 'absent', 'clear', 'normal', 'few'];
+    if (normalValues.includes(normalizedValue)) return 'normal';
+
+    // Otherwise mark as abnormal
+    return 'abnormal';
+  }
 
   // Range format: "10-20" or "10 - 20"
   const rangeMatch = rangeStr.match(/^([\d.]+)\s*[-–]\s*([\d.]+)$/);
@@ -90,15 +103,15 @@ function calculateFlag(value, referenceRange) {
     return 'normal';
   }
 
-  // Less than format: "< 100"
-  const ltMatch = rangeStr.match(/^[<]\s*([\d.]+)$/);
+  // Less than format: "< 100" or "<= 100"
+  const ltMatch = rangeStr.match(/^[<]=?\s*([\d.]+)$/);
   if (ltMatch) {
     const max = parseFloat(ltMatch[1]);
     return numValue > max ? 'high' : 'normal';
   }
 
-  // Greater than format: "> 5"
-  const gtMatch = rangeStr.match(/^[>]\s*([\d.]+)$/);
+  // Greater than format: "> 5" or ">= 5"
+  const gtMatch = rangeStr.match(/^[>]=?\s*([\d.]+)$/);
   if (gtMatch) {
     const min = parseFloat(gtMatch[1]);
     return numValue < min ? 'low' : 'normal';

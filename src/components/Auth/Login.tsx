@@ -29,9 +29,9 @@ const Login: React.FC = () => {
       const { data: { user } } = await supabase.auth.getUser();
 
       if (user?.user_metadata?.role === 'b2b_account') {
-        // B2B users should use the B2B portal, not the LIMS dashboard
+        // B2B users should use the partner portal, not the LIMS dashboard
         await supabase.auth.signOut();
-        setError('This is a B2B account. Please login at the B2B portal instead.');
+        setError('This is a partner account. Please login at the partner portal instead.');
         setLoading(false);
 
         // Optionally redirect to B2B login after a delay

@@ -1,6 +1,8 @@
 // utils/barcodeGenerator.ts
 // Barcode generation for sample tubes using Code 128 format
 
+import { jsPDF } from 'jspdf';
+
 /**
  * Generate Code 128 barcode as data URL
  * Uses canvas-based rendering for maximum compatibility
@@ -136,6 +138,88 @@ export interface PrintableBarcodeLabel {
   sampleId: string;
   barcodeDataUrl: string;
   metadata?: BarcodeLabelMetadata;
+}
+
+const LABEL_WIDTH_MM = 50.8;
+const LABEL_HEIGHT_MM = 25.4;
+
+function cleanPdfText(value: unknown): string {
+  return String(value ?? '').replace(/[\r\n]+/g, ' ').trim();
+}
+
+function fitPdfText(doc: jsPDF, value: unknown, maxWidthMm: number): string {
+  const text = cleanPdfText(value);
+  if (doc.getTextWidth(text) <= maxWidthMm) return text;
+
+  let fitted = text;
+  while (fitted.length > 0 && doc.getTextWidth(`${fitted}..`) > maxWidthMm) {
+    fitted = fitted.slice(0, -1);
+  }
+
+  return fitted ? `${fitted}..` : '';
+}
+
+function drawBarcodeLabelPdfPage(doc: jsPDF, label: PrintableBarcodeLabel): void {
+  const metadata = label.metadata || {};
+  const genderAgeStr = [metadata.gender, metadata.age ? `${metadata.age} Y` : ''].filter(Boolean).join(' ');
+  const dateTimeStr = [metadata.collectionDate, metadata.collectionTime].filter(Boolean).join(' ');
+
+  doc.setFillColor(255, 255, 255);
+  doc.rect(0, 0, LABEL_WIDTH_MM, LABEL_HEIGHT_MM, 'F');
+  doc.setTextColor(0, 0, 0);
+
+  const left = 1.75;
+  const right = LABEL_WIDTH_MM - 1.75;
+
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(7);
+  doc.text(fitPdfText(doc, `${metadata.sampleType || 'Sample'}.`, right - left), left, 3.7);
+
+  doc.setFontSize(7.6);
+  const genderAgeWidth = genderAgeStr ? Math.min(doc.getTextWidth(genderAgeStr), 12) : 0;
+  const nameMaxWidth = right - left - genderAgeWidth - (genderAgeStr ? 2 : 0);
+  doc.text(fitPdfText(doc, metadata.patientName || 'Patient', nameMaxWidth), left, 7.2);
+
+  if (genderAgeStr) {
+    doc.text(fitPdfText(doc, genderAgeStr, 12), right, 7.2, { align: 'right' });
+  }
+
+  doc.addImage(label.barcodeDataUrl, 'PNG', 3, 8.1, 44.8, 9.7);
+
+  doc.setFontSize(6.8);
+  doc.text(fitPdfText(doc, label.sampleId, 21), left, 20);
+  doc.text(fitPdfText(doc, dateTimeStr, 24), right, 20, { align: 'right' });
+
+  if (metadata.referredBy) {
+    doc.setFontSize(6.6);
+    doc.text(fitPdfText(doc, metadata.referredBy, right - left), left, 23);
+  }
+}
+
+export function generateBarcodeLabelsPDFBlob(
+  labels: PrintableBarcodeLabel[],
+  options?: { title?: string }
+): Blob {
+  const doc = new jsPDF({
+    unit: 'mm',
+    format: [LABEL_WIDTH_MM, LABEL_HEIGHT_MM],
+    orientation: 'landscape',
+    compress: true,
+    putOnlyUsedFonts: true,
+  });
+
+  if (options?.title) {
+    doc.setProperties({ title: options.title });
+  }
+
+  labels.forEach((label, index) => {
+    if (index > 0) {
+      doc.addPage([LABEL_WIDTH_MM, LABEL_HEIGHT_MM], 'landscape');
+    }
+    drawBarcodeLabelPdfPage(doc, label);
+  });
+
+  return doc.output('blob');
 }
 
 function generateBarcodeLabelMarkup(label: PrintableBarcodeLabel): string {

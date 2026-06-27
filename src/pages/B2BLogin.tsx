@@ -43,7 +43,7 @@ const B2BLogin: React.FC = () => {
             // Check if user is a B2B account
             if (data.user?.user_metadata?.role !== 'b2b_account') {
                 await supabase.auth.signOut();
-                setError('This account does not have B2B portal access. Please contact your administrator.');
+                setError('This account does not have partner portal access. Please contact your administrator.');
                 setLoading(false);
                 return;
             }
@@ -65,7 +65,7 @@ const B2BLogin: React.FC = () => {
                     <div className="inline-flex items-center justify-center w-16 h-16 bg-blue-600 rounded-full mb-4">
                         <Building2 className="h-8 w-8 text-white" />
                     </div>
-                    <h1 className="text-3xl font-bold text-gray-900 mb-2">B2B Portal</h1>
+                    <h1 className="text-3xl font-bold text-gray-900 mb-2">Partner Portal</h1>
                     <p className="text-gray-600">Access your account and track orders</p>
                 </div>
 

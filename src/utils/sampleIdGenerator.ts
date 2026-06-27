@@ -82,11 +82,11 @@ export async function generateSampleId(
 
 /**
  * Generate a numeric barcode compatible with most instruments.
- * Format: YYYYMMDDSSSS (Date + Sequence)
- * Example: 202601010001
+ * Format: YYMMDDSSSS (Date + Sequence)
+ * Example: 2601010001
  */
 export function generateNumericBarcode(date: Date, sequence: number): string {
-  const dateStr = format(date, 'yyyyMMdd');
+  const dateStr = format(date, 'yyMMdd');
   const seqStr = sequence.toString().padStart(4, '0');
   return `${dateStr}${seqStr}`;
 }
@@ -127,8 +127,8 @@ export async function generateSampleIdAndBarcode(
 
   // 2. Determine Sequence for Barcode. Scope by lab when a lab id is available
   // so two labs can each use the same daily sequence without blocking each other.
-  // Format: YYYYMMDDSSSS
-  const barcodeDatePrefix = format(date, 'yyyyMMdd');
+  // Format: YYMMDDSSSS
+  const barcodeDatePrefix = format(date, 'yyMMdd');
   let barcodeQuery = supabase
     .from('samples')
     .select('barcode')
@@ -146,15 +146,13 @@ export async function generateSampleIdAndBarcode(
 
   if (barcodeData && barcodeData.length > 0) {
     // Try to find the highest numeric suffix
-    // Since we filter by YYMMDD%, strictly speaking we should just parse the suffix
     const lastBarcode = barcodeData[0].barcode;
-    // Assuming fixed length 10 or just taking the suffix
-    if (lastBarcode && lastBarcode.length >= 12) {
-        const seqSuffix = lastBarcode.substring(8); // Skip first 8 digits (YYYYMMDD)
-        const seqNum = parseInt(seqSuffix, 10);
-        if(!isNaN(seqNum)) {
-            barcodeSequence = seqNum + 1;
-        }
+    if (lastBarcode && lastBarcode.length >= 10) {
+      const seqSuffix = lastBarcode.substring(barcodeDatePrefix.length);
+      const seqNum = parseInt(seqSuffix, 10);
+      if (!isNaN(seqNum)) {
+        barcodeSequence = seqNum + 1;
+      }
     }
   }
   

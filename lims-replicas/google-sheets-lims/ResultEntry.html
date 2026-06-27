@@ -24,6 +24,10 @@
     .ref-range { font-size: 11px; color: #666; }
     .flag-high { background: #ffcccb !important; }
     .flag-low { background: #fff3cd !important; }
+    .flag-abnormal { background: #ffe4c4 !important; }
+    .calculated { background: #f3e8ff !important; }
+    .calculated-label { color: #7c3aed; font-size: 10px; }
+    select { padding: 6px; font-size: 13px; }
     .success { background: #d4edda; color: #155724; padding: 12px; border-radius: 4px; margin-top: 12px; }
     .error { background: #f8d7da; color: #721c24; padding: 12px; border-radius: 4px; margin-top: 12px; }
     .loading { display: none; text-align: center; padding: 20px; }
@@ -120,6 +124,36 @@
       const container = document.getElementById('testsContainer');
       const section = document.createElement('div');
       section.className = 'test-section';
+
+      let analytesHtml = analytes.map((a, aIdx) => {
+        const isDropdown = a.result_type === 'dropdown' && Array.isArray(a.expected_values) && a.expected_values.length > 0;
+        const isCalculated = a.is_calculated;
+        const rowClass = isCalculated ? 'analyte-row calculated' : 'analyte-row';
+
+        let valueInput;
+        if (isDropdown) {
+          const options = a.expected_values.map(v => `<option value="${v}">${v}</option>`).join('');
+          valueInput = `<select id="value_${testIdx}_${aIdx}" onchange="checkDropdownFlag(this, '${a.reference_range}')">
+            <option value="">-- Select --</option>
+            ${options}
+          </select>`;
+        } else {
+          const readOnly = isCalculated ? 'readonly placeholder="Auto"' : 'placeholder="Result"';
+          valueInput = `<input type="text" id="value_${testIdx}_${aIdx}" ${readOnly} oninput="checkFlag(this, '${a.reference_range}', ${isCalculated})">`;
+        }
+
+        const labelSuffix = isCalculated ? ' <span class="calculated-label">[Cal]</span>' : '';
+
+        return `
+          <div class="${rowClass}">
+            <span class="analyte-label">${a.name}${labelSuffix}</span>
+            ${valueInput}
+            <input type="text" id="unit_${testIdx}_${aIdx}" value="${a.unit || ''}" placeholder="Unit">
+            <span class="ref-range">${a.reference_range || 'N/A'}</span>
+          </div>
+        `;
+      }).join('');
+
       section.innerHTML = `
         <div class="test-header">${test.test_name} (${test.test_code})</div>
         <div class="analyte-row" style="font-weight:bold;font-size:12px;color:#666;">
@@ -128,20 +162,14 @@
           <span>Unit</span>
           <span>Reference</span>
         </div>
-        ${analytes.map((a, aIdx) => `
-          <div class="analyte-row">
-            <span class="analyte-label">${a.name}</span>
-            <input type="text" id="value_${testIdx}_${aIdx}" placeholder="Result" oninput="checkFlag(this, '${a.reference_range}')">
-            <input type="text" id="unit_${testIdx}_${aIdx}" value="${a.unit || ''}" placeholder="Unit">
-            <span class="ref-range">${a.reference_range || 'N/A'}</span>
-          </div>
-        `).join('')}
+        ${analytesHtml}
       `;
       container.appendChild(section);
     }
 
-    function checkFlag(input, refRange) {
-      input.classList.remove('flag-high', 'flag-low');
+    function checkFlag(input, refRange, isCalculated) {
+      input.classList.remove('flag-high', 'flag-low', 'flag-abnormal');
+      if (isCalculated) input.classList.add('calculated');
       if (!refRange || !input.value) return;
 
       const value = parseFloat(input.value);
@@ -155,15 +183,33 @@
         else if (value > high) input.classList.add('flag-high');
       }
 
-      const ltMatch = refRange.match(/^[<]\s*([\d.]+)$/);
+      const ltMatch = refRange.match(/^[<]=?\s*([\d.]+)$/);
       if (ltMatch && value > parseFloat(ltMatch[1])) {
         input.classList.add('flag-high');
       }
 
-      const gtMatch = refRange.match(/^[>]\s*([\d.]+)$/);
+      const gtMatch = refRange.match(/^[>]=?\s*([\d.]+)$/);
       if (gtMatch && value < parseFloat(gtMatch[1])) {
         input.classList.add('flag-low');
       }
+    }
+
+    function checkDropdownFlag(select, refRange) {
+      select.classList.remove('flag-high', 'flag-low', 'flag-abnormal');
+      if (!refRange || !select.value) return;
+
+      const normalValue = refRange.toLowerCase().trim();
+      const selectedValue = select.value.toLowerCase().trim();
+
+      // If matches expected normal value, no flag
+      if (selectedValue === normalValue) return;
+
+      // Common normal values
+      const normalValues = ['negative', 'non-reactive', 'nil', 'absent', 'clear', 'normal', 'few'];
+      if (normalValues.includes(selectedValue)) return;
+
+      // Otherwise mark as abnormal
+      select.classList.add('flag-abnormal');
     }
 
     function saveResults() {

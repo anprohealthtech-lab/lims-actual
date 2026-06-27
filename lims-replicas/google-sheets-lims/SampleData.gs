@@ -6,17 +6,80 @@ function loadSampleData() {
   const ui = SpreadsheetApp.getUi();
   const response = ui.alert(
     'Load Sample Data',
-    'This will add sample test catalog and settings. Continue?',
+    'This will add sample test groups, analytes, test catalog and settings. Continue?',
     ui.ButtonSet.YES_NO
   );
 
   if (response !== ui.Button.YES) return;
 
+  loadTestGroups();
+  loadGlobalAnalytes();
   loadTestCatalog();
   loadSettings();
   loadSampleUsers();
 
   ui.alert('✅ Sample data loaded successfully!');
+}
+
+function loadTestGroups() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sheet = ss.getSheetByName(SHEETS.TEST_GROUPS);
+
+  if (sheet.getLastRow() > 1) {
+    sheet.getRange(2, 1, sheet.getLastRow() - 1, 5).clearContent();
+  }
+
+  const groups = [
+    [generateId(), 'Hematology', 'HEMA', 1, true],
+    [generateId(), 'Biochemistry', 'BIOC', 2, true],
+    [generateId(), 'Clinical Pathology', 'CLIP', 3, true],
+    [generateId(), 'Immunology', 'IMMU', 4, true],
+    [generateId(), 'Microbiology', 'MICR', 5, true],
+    [generateId(), 'Serology', 'SERO', 6, true]
+  ];
+
+  groups.forEach(g => sheet.appendRow(g));
+}
+
+function loadGlobalAnalytes() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sheet = ss.getSheetByName(SHEETS.ANALYTES);
+
+  if (sheet.getLastRow() > 1) {
+    sheet.getRange(2, 1, sheet.getLastRow() - 1, 12).clearContent();
+  }
+
+  const analytes = [
+    // Hematology
+    [generateId(), 'HGB', 'Hemoglobin', 'g/dL', 'numeric', '', '12-16', '13-17', '12-15', '7', '20', 1],
+    [generateId(), 'WBC', 'WBC Count', 'x10^3/uL', 'numeric', '', '4-11', '', '', '2', '30', 2],
+    [generateId(), 'RBC', 'RBC Count', 'x10^6/uL', 'numeric', '', '4.5-5.5', '', '', '', '', 2],
+    [generateId(), 'PLT', 'Platelet Count', 'x10^3/uL', 'numeric', '', '150-400', '', '', '50', '1000', 0],
+
+    // Biochemistry
+    [generateId(), 'GLU_F', 'Glucose (Fasting)', 'mg/dL', 'numeric', '', '70-100', '', '', '40', '400', 0],
+    [generateId(), 'UREA', 'Urea', 'mg/dL', 'numeric', '', '15-40', '', '', '', '200', 1],
+    [generateId(), 'CREAT', 'Creatinine', 'mg/dL', 'numeric', '', '0.7-1.3', '', '', '', '10', 2],
+    [generateId(), 'CHOL', 'Total Cholesterol', 'mg/dL', 'numeric', '', '< 200', '', '', '', '', 0],
+    [generateId(), 'TRIG', 'Triglycerides', 'mg/dL', 'numeric', '', '< 150', '', '', '', '500', 0],
+    [generateId(), 'HDL', 'HDL Cholesterol', 'mg/dL', 'numeric', '', '> 40', '', '', '', '', 0],
+    [generateId(), 'TSH', 'TSH', 'mIU/L', 'numeric', '', '0.4-4.0', '', '', '', '', 2],
+
+    // Urine - Dropdown types
+    [generateId(), 'URIN_COL', 'Urine Color', '', 'dropdown', JSON.stringify(['Pale Yellow', 'Yellow', 'Dark Yellow', 'Amber', 'Red', 'Brown']), 'Pale Yellow', '', '', '', '', 0],
+    [generateId(), 'URIN_APP', 'Urine Appearance', '', 'dropdown', JSON.stringify(['Clear', 'Slightly Turbid', 'Turbid', 'Cloudy']), 'Clear', '', '', '', '', 0],
+    [generateId(), 'URIN_PRO', 'Urine Protein', '', 'dropdown', JSON.stringify(['Negative', 'Trace', '1+', '2+', '3+', '4+']), 'Negative', '', '', '', '', 0],
+    [generateId(), 'URIN_GLU', 'Urine Glucose', '', 'dropdown', JSON.stringify(['Negative', 'Trace', '1+', '2+', '3+', '4+']), 'Negative', '', '', '', '', 0],
+
+    // Serology - Dropdown types
+    [generateId(), 'HIV', 'HIV I & II', '', 'dropdown', JSON.stringify(['Negative', 'Positive', 'Indeterminate']), 'Negative', '', '', '', '', 0],
+    [generateId(), 'HBS_AG', 'HBsAg', '', 'dropdown', JSON.stringify(['Negative', 'Positive']), 'Negative', '', '', '', '', 0],
+    [generateId(), 'VDRL', 'VDRL', '', 'dropdown', JSON.stringify(['Non-Reactive', 'Reactive', 'Weakly Reactive']), 'Non-Reactive', '', '', '', '', 0],
+    [generateId(), 'WIDAL_O', 'Widal TO', '', 'dropdown', JSON.stringify(['Negative', '1:20', '1:40', '1:80', '1:160', '1:320']), 'Negative', '', '', '', '', 0],
+    [generateId(), 'WIDAL_H', 'Widal TH', '', 'dropdown', JSON.stringify(['Negative', '1:20', '1:40', '1:80', '1:160', '1:320']), 'Negative', '', '', '', '', 0]
+  ];
+
+  analytes.forEach(a => sheet.appendRow(a));
 }
 
 function loadTestCatalog() {
@@ -105,18 +168,58 @@ function loadTestCatalog() {
        { name: 'Estimated Avg Glucose', unit: 'mg/dL', reference_range: '', is_calculated: true, formula: '(HbA1c * 28.7) - 46.7' }
      ]), 'EDTA Blood', 400],
 
-    ['URINE', 'Urine Routine', 'Clinical Pathology',
+    ['URINE', 'Urine Routine & Microscopy', 'Clinical Pathology',
      JSON.stringify([
-       { name: 'Color', unit: '', reference_range: 'Pale Yellow' },
-       { name: 'Appearance', unit: '', reference_range: 'Clear' },
-       { name: 'pH', unit: '', reference_range: '4.5-8' },
-       { name: 'Specific Gravity', unit: '', reference_range: '1.005-1.030' },
-       { name: 'Protein', unit: '', reference_range: 'Negative' },
-       { name: 'Glucose', unit: '', reference_range: 'Negative' },
-       { name: 'RBC', unit: '/HPF', reference_range: '0-2' },
-       { name: 'Pus Cells', unit: '/HPF', reference_range: '0-5' },
-       { name: 'Epithelial Cells', unit: '/HPF', reference_range: 'Few' }
-     ]), 'Urine', 150]
+       { name: 'Color', unit: '', result_type: 'dropdown', expected_values: ['Pale Yellow', 'Yellow', 'Dark Yellow', 'Amber', 'Red', 'Brown'], reference_range: 'Pale Yellow' },
+       { name: 'Appearance', unit: '', result_type: 'dropdown', expected_values: ['Clear', 'Slightly Turbid', 'Turbid', 'Cloudy'], reference_range: 'Clear' },
+       { name: 'pH', unit: '', result_type: 'numeric', reference_range: '4.5-8' },
+       { name: 'Specific Gravity', unit: '', result_type: 'numeric', reference_range: '1.005-1.030' },
+       { name: 'Protein', unit: '', result_type: 'dropdown', expected_values: ['Negative', 'Trace', '1+', '2+', '3+', '4+'], reference_range: 'Negative' },
+       { name: 'Glucose', unit: '', result_type: 'dropdown', expected_values: ['Negative', 'Trace', '1+', '2+', '3+', '4+'], reference_range: 'Negative' },
+       { name: 'Ketones', unit: '', result_type: 'dropdown', expected_values: ['Negative', 'Trace', 'Small', 'Moderate', 'Large'], reference_range: 'Negative' },
+       { name: 'Blood', unit: '', result_type: 'dropdown', expected_values: ['Negative', 'Trace', '1+', '2+', '3+'], reference_range: 'Negative' },
+       { name: 'RBC', unit: '/HPF', result_type: 'numeric', reference_range: '0-2' },
+       { name: 'Pus Cells', unit: '/HPF', result_type: 'numeric', reference_range: '0-5' },
+       { name: 'Epithelial Cells', unit: '/HPF', result_type: 'dropdown', expected_values: ['Nil', 'Few', 'Moderate', 'Many'], reference_range: 'Few' }
+     ]), 'Urine', 150],
+
+    ['WIDAL', 'Widal Test', 'Serology',
+     JSON.stringify([
+       { name: 'Salmonella Typhi O', result_type: 'dropdown', expected_values: ['Negative', '1:20', '1:40', '1:80', '1:160', '1:320'], reference_range: 'Negative' },
+       { name: 'Salmonella Typhi H', result_type: 'dropdown', expected_values: ['Negative', '1:20', '1:40', '1:80', '1:160', '1:320'], reference_range: 'Negative' },
+       { name: 'Salmonella Paratyphi AH', result_type: 'dropdown', expected_values: ['Negative', '1:20', '1:40', '1:80', '1:160', '1:320'], reference_range: 'Negative' },
+       { name: 'Salmonella Paratyphi BH', result_type: 'dropdown', expected_values: ['Negative', '1:20', '1:40', '1:80', '1:160', '1:320'], reference_range: 'Negative' }
+     ]), 'Serum', 250],
+
+    ['HIV', 'HIV I & II Antibody', 'Serology',
+     JSON.stringify([
+       { name: 'HIV I & II', result_type: 'dropdown', expected_values: ['Negative', 'Positive', 'Indeterminate'], reference_range: 'Negative' }
+     ]), 'Serum', 300],
+
+    ['HBS', 'HBsAg', 'Serology',
+     JSON.stringify([
+       { name: 'HBsAg', result_type: 'dropdown', expected_values: ['Negative', 'Positive'], reference_range: 'Negative' }
+     ]), 'Serum', 250],
+
+    ['VDRL', 'VDRL Test', 'Serology',
+     JSON.stringify([
+       { name: 'VDRL', result_type: 'dropdown', expected_values: ['Non-Reactive', 'Reactive', 'Weakly Reactive'], reference_range: 'Non-Reactive' }
+     ]), 'Serum', 200],
+
+    ['RA', 'Rheumatoid Factor', 'Serology',
+     JSON.stringify([
+       { name: 'RA Factor', result_type: 'dropdown', expected_values: ['Negative', 'Positive'], reference_range: 'Negative' }
+     ]), 'Serum', 250],
+
+    ['CRP', 'C-Reactive Protein', 'Serology',
+     JSON.stringify([
+       { name: 'CRP', unit: 'mg/L', result_type: 'dropdown', expected_values: ['Negative', 'Positive', '6', '12', '24', '48', '96'], reference_range: 'Negative' }
+     ]), 'Serum', 250],
+
+    ['ASO', 'ASO Titre', 'Serology',
+     JSON.stringify([
+       { name: 'ASO Titre', unit: 'IU/mL', result_type: 'dropdown', expected_values: ['< 200', '200', '400', '800', '1600'], reference_range: '< 200' }
+     ]), 'Serum', 250]
   ];
 
   tests.forEach(test => sheet.appendRow(test));

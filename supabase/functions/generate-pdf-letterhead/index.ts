@@ -3784,6 +3784,9 @@ function generateBasicDefaultTemplateHtml(
         }
 
 	        const valClass = canonicalFlag ? `val ${canonicalFlag}` : "val";
+	        const visibleFlagRowClass = flagSymbolText
+	          ? `has-visible-flag flag-${canonicalFlag}`
+	          : "";
 		        const siblingId = String(analyte.report_display_options?.sameRowSiblingAnalyteId || "").trim();
 	        const siblingAnalyte = siblingId ? analyteById.get(siblingId) : null;
 	        const siblingValueHtml = siblingAnalyte
@@ -3820,7 +3823,7 @@ function generateBasicDefaultTemplateHtml(
 	        if (sectionHasSiblings) {
 	          // 6-column layout for sibling sections
 	          testResultsHtml += `
-	              <tr>
+	              <tr class="${visibleFlagRowClass}">
                 <td class="test-name-cell">
                   <div class="test-name" style="font-size:${basePx}px; font-weight:${testNameWeight};">
                     ${parameterName}${calcSuffix}
@@ -3839,7 +3842,10 @@ function generateBasicDefaultTemplateHtml(
 	        } else {
 	          // 4-column layout for non-sibling sections
 	          testResultsHtml += `
-	              <tr class="${isQualitativeWithoutMetadata ? "qualitative-wide-row" : ""}">
+	              <tr class="${[
+	                isQualitativeWithoutMetadata ? "qualitative-wide-row" : "",
+	                visibleFlagRowClass,
+	              ].filter(Boolean).join(" ")}">
                 <td class="test-name-cell">
                   <div class="test-name" style="font-size:${basePx}px; font-weight:${testNameWeight};">
                     ${parameterName}${calcSuffix}
@@ -10342,6 +10348,48 @@ serve(async (req) => {
              border: none !important;
           }
 
+          /* Darken report result tables for physical paper prints */
+          .tbl-results,
+          .tbl-results *,
+          .basic-report-template .tbl-results,
+          .basic-report-template .tbl-results * {
+            color: #000000 !important;
+            opacity: 1 !important;
+            -webkit-text-fill-color: #000000 !important;
+          }
+
+          .tbl-results td,
+          .tbl-results th,
+          .basic-report-template .tbl-results td,
+          .basic-report-template .tbl-results th {
+            font-weight: 600 !important;
+            text-shadow: 0 0 0 #000000 !important;
+          }
+
+          .tbl-results thead th,
+          .basic-report-template .tbl-results thead th,
+          .main-group-row td,
+          .sub-section-header td,
+          .center-title {
+            font-weight: 800 !important;
+            color: #000000 !important;
+          }
+
+          .test-name,
+          .val,
+          .same-row-sibling,
+          .same-row-sibling-unit,
+          .same-row-sibling-ref,
+          .basic-report-template .test-name,
+          .basic-report-template .val,
+          .basic-report-template .same-row-sibling,
+          .basic-report-template .same-row-sibling-unit,
+          .basic-report-template .same-row-sibling-ref {
+            color: #000000 !important;
+            font-weight: 700 !important;
+            opacity: 1 !important;
+          }
+
           /* Hide non-print elements */
           .watermark, .draft-watermark { display: none !important; }
 
@@ -10355,7 +10403,17 @@ serve(async (req) => {
           .value-critical_l, .flag-critical_l {
             color: #000000 !important;
             font-weight: 900 !important;
-            text-decoration: none !important;
+          }
+
+          tr.has-visible-flag > td.val,
+          tr.has-visible-flag > td .val,
+          .basic-report-template tr.has-visible-flag > td.val,
+          .basic-report-template tr.has-visible-flag > td .val {
+            color: #000000 !important;
+            font-weight: 900 !important;
+            text-decoration-line: underline !important;
+            text-decoration-thickness: 1.2px !important;
+            text-underline-offset: 2px !important;
           }
         </style>
       `;

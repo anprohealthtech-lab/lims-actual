@@ -75,6 +75,11 @@ type DateFilter = CalendarDateFilter;
 type SortField = 'sample_id' | 'patient_name' | 'order_date' | 'verified_at' | 'test_name';
 type SortDirection = 'asc' | 'desc';
 
+const DEFAULT_REPORT_SORT: { field: SortField; direction: SortDirection } = {
+  field: 'sample_id',
+  direction: 'desc',
+};
+
 interface ApprovedResult {
   result_id: string;
   order_id: string;
@@ -187,8 +192,8 @@ const Reports: React.FC = () => {
   const [selectedDoctor, setSelectedDoctor] = useState('all');
   const [selectedAccount, setSelectedAccount] = useState('all');
   const [dateFilter, setDateFilter] = useState<DateFilter>('today');
-  const [sortField, setSortField] = useState<SortField>('sample_id');
-  const [sortDirection, setSortDirection] = useState<SortDirection>('desc');
+  const [sortField, setSortField] = useState<SortField>(DEFAULT_REPORT_SORT.field);
+  const [sortDirection, setSortDirection] = useState<SortDirection>(DEFAULT_REPORT_SORT.direction);
   const [showFilters, setShowFilters] = useState(false);
   const [selectedOrders, setSelectedOrders] = useState<Set<string>>(new Set());
   const [isQueueingSelectedReports, setIsQueueingSelectedReports] = useState(false);
@@ -1603,8 +1608,8 @@ const Reports: React.FC = () => {
     setSelectedDoctor('all');
     setSelectedAccount('all');
     setDateFilter('today');
-    setSortField('sample_id');
-    setSortDirection('desc');
+    setSortField(DEFAULT_REPORT_SORT.field);
+    setSortDirection(DEFAULT_REPORT_SORT.direction);
   };
 
   const getReportUrlForQueue = (result?: ApprovedResult | null): string | null => {

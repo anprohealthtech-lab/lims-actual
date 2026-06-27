@@ -148,22 +148,55 @@ export default function ResultEntry() {
 
   function calculateFlag(value, refRange) {
     if (!refRange || !value) return 'normal'
-    const numValue = parseFloat(value)
-    if (isNaN(numValue)) return 'normal'
 
+    // For text/dropdown values - check if matches expected
+    const numValue = parseFloat(value)
+    if (isNaN(numValue)) {
+      // Text comparison - if value equals refRange, it's normal
+      const normalizedValue = value.toString().toLowerCase().trim()
+      const normalizedRef = refRange.toString().toLowerCase().trim()
+      if (normalizedValue === normalizedRef) return 'normal'
+      // Common "normal" values for qualitative tests
+      if (['negative', 'non-reactive', 'nil', 'absent', 'clear', 'normal'].includes(normalizedValue)) {
+        return 'normal'
+      }
+      // If value doesn't match expected normal, mark as abnormal
+      return 'abnormal'
+    }
+
+    // Numeric range: "10-20" or "10 - 20"
     const rangeMatch = refRange.match(/^([\d.]+)\s*[-–]\s*([\d.]+)$/)
     if (rangeMatch) {
       const low = parseFloat(rangeMatch[1])
       const high = parseFloat(rangeMatch[2])
       if (numValue < low) return 'low'
       if (numValue > high) return 'high'
+      return 'normal'
     }
 
+    // Less than: "< 100"
     const ltMatch = refRange.match(/^[<]\s*([\d.]+)$/)
-    if (ltMatch && numValue > parseFloat(ltMatch[1])) return 'high'
+    if (ltMatch) {
+      return numValue > parseFloat(ltMatch[1]) ? 'high' : 'normal'
+    }
 
+    // Greater than: "> 5"
     const gtMatch = refRange.match(/^[>]\s*([\d.]+)$/)
-    if (gtMatch && numValue < parseFloat(gtMatch[1])) return 'low'
+    if (gtMatch) {
+      return numValue < parseFloat(gtMatch[1]) ? 'low' : 'normal'
+    }
+
+    // Less than or equal: "<= 100"
+    const lteMatch = refRange.match(/^[<]=?\s*([\d.]+)$/)
+    if (lteMatch) {
+      return numValue > parseFloat(lteMatch[1]) ? 'high' : 'normal'
+    }
+
+    // Greater than or equal: ">= 5"
+    const gteMatch = refRange.match(/^[>]=?\s*([\d.]+)$/)
+    if (gteMatch) {
+      return numValue < parseFloat(gteMatch[1]) ? 'low' : 'normal'
+    }
 
     return 'normal'
   }
@@ -337,26 +370,51 @@ export default function ResultEntry() {
                 const key = `${test.test_code}_${analyte.name}`
                 const resultData = results[key] || {}
                 const flag = calculateFlag(resultData.value, resultData.reference_range || analyte.reference_range)
+                const isDropdown = analyte.result_type === 'dropdown' && Array.isArray(analyte.expected_values) && analyte.expected_values.length > 0
+                const isCalculated = analyte.is_calculated
 
                 return (
-                  <div key={idx} className="grid grid-cols-12 gap-2 items-center py-2 border-b last:border-0">
-                    <div className="col-span-3 font-medium">{analyte.name}</div>
+                  <div key={idx} className={`grid grid-cols-12 gap-2 items-center py-2 border-b last:border-0 ${isCalculated ? 'bg-purple-50' : ''}`}>
+                    <div className="col-span-3 font-medium">
+                      {analyte.name}
+                      {isCalculated && <span className="text-purple-600 text-xs ml-1">[Cal]</span>}
+                    </div>
                     <div className="col-span-3">
-                      <input
-                        type="text"
-                        className={`input ${
-                          flag === 'high' ? 'border-red-500 bg-red-50' :
-                          flag === 'low' ? 'border-yellow-500 bg-yellow-50' : ''
-                        }`}
-                        placeholder="Result"
-                        value={resultData.value || ''}
-                        onChange={(e) => handleResultChange(test.test_code, analyte.name, 'value', e.target.value)}
-                      />
+                      {isDropdown ? (
+                        <select
+                          className={`input ${
+                            flag === 'high' || flag === 'abnormal' ? 'border-red-500 bg-red-50' :
+                            flag === 'low' ? 'border-yellow-500 bg-yellow-50' : ''
+                          }`}
+                          value={resultData.value || ''}
+                          onChange={(e) => handleResultChange(test.test_code, analyte.name, 'value', e.target.value)}
+                          disabled={isCalculated}
+                        >
+                          <option value="">-- Select --</option>
+                          {analyte.expected_values.map((val, i) => {
+                            const optValue = typeof val === 'object' ? val.value : val
+                            const optLabel = typeof val === 'object' ? val.label : val
+                            return <option key={i} value={optValue}>{optLabel}</option>
+                          })}
+                        </select>
+                      ) : (
+                        <input
+                          type="text"
+                          className={`input ${
+                            flag === 'high' || flag === 'critical_high' ? 'border-red-500 bg-red-50' :
+                            flag === 'low' || flag === 'critical_low' ? 'border-yellow-500 bg-yellow-50' : ''
+                          } ${isCalculated ? 'bg-purple-100' : ''}`}
+                          placeholder={isCalculated ? 'Auto' : 'Result'}
+                          value={resultData.value || ''}
+                          onChange={(e) => handleResultChange(test.test_code, analyte.name, 'value', e.target.value)}
+                          readOnly={isCalculated}
+                        />
+                      )}
                     </div>
                     <div className="col-span-2">
                       <input
                         type="text"
-                        className="input"
+                        className="input text-sm"
                         placeholder="Unit"
                         value={resultData.unit ?? analyte.unit ?? ''}
                         onChange={(e) => handleResultChange(test.test_code, analyte.name, 'unit', e.target.value)}
@@ -365,7 +423,7 @@ export default function ResultEntry() {
                     <div className="col-span-3">
                       <input
                         type="text"
-                        className="input"
+                        className="input text-sm"
                         placeholder="Ref Range"
                         value={resultData.reference_range ?? analyte.reference_range ?? ''}
                         onChange={(e) => handleResultChange(test.test_code, analyte.name, 'reference_range', e.target.value)}
@@ -373,8 +431,9 @@ export default function ResultEntry() {
                     </div>
                     <div className="col-span-1">
                       <span className={`px-2 py-1 rounded text-xs font-bold ${
-                        flag === 'high' ? 'bg-red-100 text-red-700' :
-                        flag === 'low' ? 'bg-yellow-100 text-yellow-700' :
+                        flag === 'high' || flag === 'critical_high' ? 'bg-red-100 text-red-700' :
+                        flag === 'low' || flag === 'critical_low' ? 'bg-yellow-100 text-yellow-700' :
+                        flag === 'abnormal' ? 'bg-orange-100 text-orange-700' :
                         'bg-green-100 text-green-700'
                       }`}>
                         {flag.toUpperCase()}

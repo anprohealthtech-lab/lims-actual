@@ -10,6 +10,8 @@ const SHEETS = {
   ORDER_TESTS: 'OrderTests',
   RESULTS: 'Results',
   TEST_CATALOG: 'TestCatalog',
+  TEST_GROUPS: 'TestGroups',
+  ANALYTES: 'Analytes',
   USERS: 'Users',
   SETTINGS: 'Settings'
 };
@@ -44,7 +46,8 @@ function onOpen() {
     .addSeparator()
     .addSubMenu(ui.createMenu('⚙️ Setup')
       .addItem('Initialize Sheets', 'initializeSheets')
-      .addItem('Load Sample Data', 'loadSampleData'))
+      .addItem('Load Sample Data', 'loadSampleData')
+      .addItem('🧪 Manage Tests', 'showTestManagement'))
     .addToUi();
 }
 
@@ -74,9 +77,19 @@ function initializeSheets() {
     'entered_by', 'entered_at', 'verified_by', 'verified_at', 'notes'
   ]);
 
+  // Test Groups
+  createSheetIfNotExists(ss, SHEETS.TEST_GROUPS, [
+    'group_id', 'name', 'code', 'display_order', 'is_active'
+  ]);
+
+  // Global Analytes Master
+  createSheetIfNotExists(ss, SHEETS.ANALYTES, [
+    'analyte_id', 'code', 'name', 'unit', 'result_type', 'expected_values', 'default_ref_range', 'ref_range_male', 'ref_range_female', 'critical_low', 'critical_high', 'decimal_places'
+  ]);
+
   // Test Catalog
   createSheetIfNotExists(ss, SHEETS.TEST_CATALOG, [
-    'test_code', 'test_name', 'department', 'analytes', 'sample_type', 'price'
+    'test_code', 'test_name', 'group_code', 'department', 'analytes', 'sample_type', 'price'
   ]);
 
   // Users

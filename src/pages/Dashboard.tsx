@@ -109,6 +109,7 @@ type OrderRow = {
   color_name: string | null;
   sample_collected_at: string | null;
   sample_collected_by: string | null;
+  samples?: { id: string; barcode: string | null; sample_type?: string | null; created_at?: string | null }[] | null;
 
   // Billing fields
   billing_status?: "pending" | "partial" | "billed" | null;
@@ -166,6 +167,8 @@ type CardOrder = {
   order_number?: number | null;
 
   sample_id: string | null;
+  sample_barcode?: string | null;
+  samples?: { id: string; barcode: string | null; sample_type?: string | null; created_at?: string | null }[];
   color_code: string | null;
   color_name: string | null;
   sample_collected_at: string | null;
@@ -241,22 +244,6 @@ type CardOrder = {
   tatStarted?: boolean;
 };
 
-type DashboardPortalUpdate = {
-  sectionTitle: string;
-  title: string;
-  message: string;
-};
-
-const normalizePortalUpdateSlides = (raw: any): Array<{ title: string; message: string }> => {
-  if (raw?.updates_enabled === false || !Array.isArray(raw?.update_slides)) return [];
-  return raw.update_slides
-    .map((slide: any) => ({
-      title: String(slide?.title || "").trim(),
-      message: String(slide?.message || "").trim(),
-    }))
-    .filter((slide: { title: string; message: string }) => slide.title || slide.message);
-};
-
 const formatOrderCreationError = (error: any) => {
   const message = String(error?.message || error || "Failed to create order");
   if (message.includes("unique_sample_id_per_lab")) {
@@ -330,42 +317,11 @@ const Dashboard: React.FC = () => {
   const [collectionOrder, setCollectionOrder] = useState<CardOrder | null>(null);
   const [selectedPhlebotomistId, setSelectedPhlebotomistId] = useState<string>("");
   const [selectedPhlebotomistName, setSelectedPhlebotomistName] = useState<string>("");
-  const [portalUpdates, setPortalUpdates] = useState<DashboardPortalUpdate[]>([]);
 
   useEffect(() => {
     fetchOrders();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [dateFrom, dateTo, allDates]);
-
-  useEffect(() => {
-    const loadPortalUpdates = async () => {
-      const currentLabId = await database.getCurrentUserLabId();
-      if (!currentLabId) return;
-
-      const { data, error } = await supabase
-        .from("labs")
-        .select("portal_settings")
-        .eq("id", currentLabId)
-        .single();
-
-      if (error) {
-        console.warn("Failed to load portal updates:", error);
-        return;
-      }
-
-      const settings = (data as any)?.portal_settings || {};
-      const sectionTitle = String(settings.updates_title || "Partner Portal Updates").trim() || "Partner Portal Updates";
-      const updates = normalizePortalUpdateSlides(settings).map((slide) => ({
-        sectionTitle,
-        title: slide.title,
-        message: slide.message,
-      }));
-
-      setPortalUpdates(updates.slice(0, 6));
-    };
-
-    loadPortalUpdates();
-  }, []);
 
   // Load auto_open_collection_modal setting once
   // eslint-disable-next-line no-console
@@ -422,6 +378,7 @@ id, patient_id, patient_name, status, priority, order_date, expected_date, total
   billing_status, is_billed, referring_doctor_id,
   location_id, transit_status, collected_at_location_id,
   patients(name, age, age_unit, gender, phone, email),
+  samples(id, barcode, sample_type, created_at),
   order_tests(id, test_group_id, test_name, outsourced_lab_id, package_id, is_billed, invoice_id, is_canceled, outsourced_labs(name), test_groups(sample_type, sample_color)),
   doctors(phone, email),
   locations!orders_location_id_fkey(id, name, type),
@@ -650,6 +607,12 @@ id, patient_id, patient_name, status, priority, order_date, expected_date, total
       const doctorData = (o as any).doctors;
       const doctor_phone = doctorData?.phone || null;
       const doctor_email = doctorData?.email || null;
+      const orderSamples = Array.isArray((o as any).samples)
+        ? [...((o as any).samples || [])].sort((a: any, b: any) =>
+            new Date(a.created_at || 0).getTime() - new Date(b.created_at || 0).getTime()
+          )
+        : [];
+      const primarySample = orderSamples[0] || null;
 
       // Extra uninvoiced charges for this order (not yet on any invoice)
       const uninvoicedCharges = uninvoicedChargesMap.get(o.id) || 0;
@@ -676,6 +639,8 @@ id, patient_id, patient_name, status, priority, order_date, expected_date, total
 
         order_number: o.order_number ?? null,
         sample_id: o.sample_id,
+        sample_barcode: primarySample?.barcode || null,
+        samples: orderSamples,
         color_code: o.color_code,
         color_name: o.color_name,
         sample_collected_at: o.sample_collected_at,
@@ -1674,34 +1639,42 @@ id,
     }
   };
 
-  const getDashboardLabelData = (order: CardOrder): qzTrayService.BarcodeLabelData | null => {
-    const sampleId = order.sample_id || order.id;
-    if (!sampleId) return null;
-
+  const getDashboardLabelData = (order: CardOrder): qzTrayService.BarcodeLabelData[] => {
     const labelDate = new Date(order.order_date);
     const primaryPanel = order.panels.find((panel) => panel.sample_type || panel.name) || order.panels[0];
+    const sourceSamples = order.samples?.length
+      ? order.samples
+      : order.sample_barcode
+        ? [{ id: order.sample_id || order.sample_barcode, barcode: order.sample_barcode, sample_type: primaryPanel?.sample_type || order.color_name || "Sample" }]
+        : [];
 
-    return {
-      sampleId,
-      labelId: order.sample_id || sampleId,
-      patientName: order.patient_name || "Sample",
-      sampleType: primaryPanel?.sample_type || order.color_name || "Sample",
-      date: isValid(labelDate)
-        ? labelDate.toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "2-digit" }).replace(/ /g, "-")
-        : undefined,
-      collectionTime: isValid(labelDate)
-        ? labelDate.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", hour12: false })
-        : undefined,
-      gender: order.patient?.gender || undefined,
-      age: order.patient?.age ? String(order.patient.age) : undefined,
-      referredBy: order.doctor || undefined,
-    };
+    return sourceSamples
+      .map((sample) => ({
+        sample,
+        barcodeValue: String(sample.barcode || '').trim(),
+      }))
+      .filter(({ barcodeValue }) => !!barcodeValue)
+      .map(({ sample, barcodeValue }) => ({
+        sampleId: barcodeValue,
+        labelId: sample.id || barcodeValue,
+        patientName: order.patient_name || "Sample",
+        sampleType: sample.sample_type || primaryPanel?.sample_type || order.color_name || "Sample",
+        date: isValid(labelDate)
+          ? labelDate.toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "2-digit" }).replace(/ /g, "-")
+          : undefined,
+        collectionTime: isValid(labelDate)
+          ? labelDate.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", hour12: false })
+          : undefined,
+        gender: order.patient?.gender || undefined,
+        age: order.patient?.age ? String(order.patient.age) : undefined,
+        referredBy: order.doctor || undefined,
+      }));
   };
 
   const handlePrintBarcodeLabel = async (order: CardOrder) => {
     const labelData = getDashboardLabelData(order);
-    if (!labelData) {
-      alert("No sample ID is available for this order.");
+    if (labelData.length === 0) {
+      alert("No sample barcode is available for this order.");
       return;
     }
 
@@ -1711,7 +1684,7 @@ id,
       setPrintingLabelId(order.id);
 
       if (!barcodePrinterName || qzSettings.barcodeBrowserPrintEnabled) {
-        qzTrayService.printBarcodeLabelsInBrowser([labelData], barcodePrinterName);
+        qzTrayService.printBarcodeLabelsInBrowser(labelData, barcodePrinterName);
         return;
       }
 
@@ -1719,7 +1692,9 @@ id,
         await qzConnect();
       }
 
-      await qzTrayService.printBarcodeLabel(barcodePrinterName, labelData);
+      for (const label of labelData) {
+        await qzTrayService.printBarcodeLabel(barcodePrinterName, label);
+      }
     } catch (error: any) {
       console.error("Print bridge label queue failed:", error);
       alert(error?.message || "Failed to print barcode label.");
@@ -1947,32 +1922,6 @@ id,
                   </div>
                 </div>
               </div>
-            </div>
-          </div>
-        )}
-
-        {portalUpdates.length > 0 && (
-          <div className="bg-white rounded-lg border border-gray-200 shadow-sm overflow-hidden">
-            <div className="px-5 py-3 border-b border-gray-100 flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <MessageCircle className="h-4 w-4 text-indigo-600" />
-                <div>
-                  <h2 className="font-semibold text-gray-900">Partner Portal Updates</h2>
-                  <p className="text-xs text-gray-500">Updates configured in Settings</p>
-                </div>
-              </div>
-              <span className="text-xs font-medium text-gray-500">{portalUpdates.length} live</span>
-            </div>
-            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3 p-4">
-              {portalUpdates.map((update, index) => (
-                <div key={`${update.sectionTitle}-${index}`} className="rounded-lg border border-gray-200 bg-gray-50 p-3">
-                  <div className="text-xs font-medium text-indigo-700 truncate">{update.sectionTitle}</div>
-                  {update.title && <div className="mt-2 text-sm font-semibold text-gray-900">{update.title}</div>}
-                  {update.message && (
-                    <p className="mt-1 text-xs leading-5 text-gray-600 line-clamp-3">{update.message}</p>
-                  )}
-                </div>
-              ))}
             </div>
           </div>
         )}

@@ -6,6 +6,7 @@ import { useNavigate } from 'react-router-dom';
 interface TATAlertOrder {
   order_id: string;
   order_number: number | null;
+  sample_id: string | null;
   patient_name: string;
   test_group_name: string;
   hours_until_tat_breach: number;
@@ -44,6 +45,7 @@ export const TATFloater: React.FC<TATFloaterProps> = ({ className = '' }) => {
         .select(`
           order_id,
           order_number,
+          sample_id,
           patient_name,
           test_group_name,
           hours_until_tat_breach,
@@ -65,7 +67,8 @@ export const TATFloater: React.FC<TATFloaterProps> = ({ className = '' }) => {
 
       const formatted: TATAlertOrder[] = (data || []).map((row: any) => ({
         order_id: row.order_id,
-        order_number: row.order_number,
+        order_number: typeof row.order_number === 'number' ? row.order_number : null,
+        sample_id: row.sample_id || null,
         patient_name: row.patient_name || 'Unknown',
         test_group_name: row.test_group_name || 'Unknown Test',
         hours_until_tat_breach: row.hours_until_tat_breach,
@@ -88,8 +91,17 @@ export const TATFloater: React.FC<TATFloaterProps> = ({ className = '' }) => {
     return `${Math.round(hours * 10) / 10}h left`;
   };
 
+  const getOrderLabel = (alert: TATAlertOrder): string => {
+    if (typeof alert.order_number === 'number' && Number.isFinite(alert.order_number)) {
+      return String(alert.order_number);
+    }
+
+    const sampleTail = alert.sample_id?.match(/(?:^|[/-])(\d+)\s*$/)?.[1];
+    return sampleTail || alert.sample_id || alert.order_id.slice(0, 8);
+  };
+
   const handleOrderClick = (orderId: string) => {
-    navigate(`/results/${orderId}`);
+    navigate(`/orders/${orderId}`);
   };
 
   // Don't show if dismissed or no alerts
@@ -153,7 +165,7 @@ export const TATFloater: React.FC<TATFloaterProps> = ({ className = '' }) => {
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center gap-1.5">
                         <span className="font-medium text-sm text-gray-900 truncate">
-                          #{alert.order_number || 'N/A'}
+                          #{getOrderLabel(alert)}
                         </span>
                         <span className="text-xs text-gray-500 truncate">
                           {alert.patient_name}

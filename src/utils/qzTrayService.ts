@@ -21,7 +21,7 @@ import {
   type PrintBridgeStatus,
 } from './printBridgeService';
 import JsBarcode from 'jsbarcode';
-import { generateBarcodeLabelsHTML, generateBarcodeSync } from './barcodeGenerator';
+import { generateBarcodeLabelsPDFBlob, generateBarcodeSync } from './barcodeGenerator';
 
 export type QZConnectionStatus = PrintBridgeStatus;
 export type { BarcodeLabelData };
@@ -41,6 +41,10 @@ export async function printBarcodeLabel(
   printerName: string,
   data: BarcodeLabelData
 ): Promise<void> {
+  if (!String(data.sampleId || '').trim()) {
+    throw new Error('Cannot print barcode label: sample barcode is missing.');
+  }
+
   await enqueueBarcodeLabelPrint(printerName, data);
 }
 
@@ -49,6 +53,10 @@ export function printBarcodeLabelsInBrowser(
   preferredPrinterName?: string | null
 ): void {
   if (labels.length === 0) return;
+  if (labels.some((label) => !String(label.sampleId || '').trim())) {
+    alert('Cannot print barcode label: sample barcode is missing.');
+    return;
+  }
 
   const printWindow = window.open('', '_blank', 'width=320,height=520');
   if (!printWindow) {
@@ -89,18 +97,17 @@ export function printBarcodeLabelsInBrowser(
     };
   });
 
-  const html = generateBarcodeLabelsHTML(printableLabels, {
+  const pdfBlob = generateBarcodeLabelsPDFBlob(printableLabels, {
     title: preferredPrinterName ? `Print labels - ${preferredPrinterName}` : 'Print labels',
-    preferredPrinterName,
   });
+  const pdfUrl = URL.createObjectURL(pdfBlob);
 
-  printWindow.document.write(html);
-  printWindow.document.close();
-  printWindow.focus();
+  printWindow.location.href = pdfUrl;
   setTimeout(() => {
+    printWindow.focus();
     printWindow.print();
-    printWindow.close();
-  }, 500);
+    setTimeout(() => URL.revokeObjectURL(pdfUrl), 60_000);
+  }, 1000);
 }
 
 /**

@@ -269,6 +269,7 @@ const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, on
   const [message, setMessage] = useState<{ text: string; type: "success" | "error" } | null>(null);
   const [groupRemarks, setGroupRemarks] = useState<Record<string, string>>({});
   const [initialGroupRemarks, setInitialGroupRemarks] = useState<Record<string, string>>({});
+  const [activeGroupId, setActiveGroupId] = useState<string | null>(null);
   // result row IDs per test_group_id — needed to render SectionEditor
   const [resultIds, setResultIds] = useState<Map<string, string>>(new Map());
   // Inline dependency editor state
@@ -295,6 +296,12 @@ const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, on
     loadFlagOptions();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [order.id]);
+
+  useEffect(() => {
+    if (activeGroupId && !testGroups.some((tg) => tg.test_group_id === activeGroupId)) {
+      setActiveGroupId(null);
+    }
+  }, [activeGroupId, testGroups]);
 
   const loadFlagOptions = async () => {
     try {
@@ -892,7 +899,7 @@ const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, on
   // valueRefs is rebuilt on each render via the ref callback below
   const inputableIndexes = rows
     .map((r, i) => ({ r, i }))
-    .filter(({ r }) => !r.is_calculated)
+    .filter(({ r }) => !r.is_calculated && (!activeGroupId || r.test_group_id === activeGroupId))
     .map(({ i }) => i);
 
   const focusNext = (currentRowIdx: number) => {
@@ -1230,6 +1237,21 @@ const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, on
     }).filter(x => x.row !== null && isEditableRow(x.row)),
   })).filter(g => g.rows.length > 0 || !!g.tg.is_section_only || resultIds.has(g.tg.test_group_id));
 
+  const visibleRowsByGroup = activeGroupId
+    ? rowsByGroup.filter(({ tg }) => tg.test_group_id === activeGroupId)
+    : rowsByGroup;
+
+  const focusFirstGroupInput = (testGroupId: string) => {
+    const firstRowIdx = rows.findIndex((row) => row.test_group_id === testGroupId && !row.is_calculated && isEditableRow(row));
+    if (firstRowIdx === -1) return;
+    window.setTimeout(() => valueRefs.current[firstRowIdx]?.focus(), 0);
+  };
+
+  const selectGroup = (testGroupId: string | null) => {
+    setActiveGroupId(testGroupId);
+    if (testGroupId) focusFirstGroupInput(testGroupId);
+  };
+
   // Re-index valueRefs array size
   valueRefs.current = valueRefs.current.slice(0, rows.length);
 
@@ -1277,6 +1299,45 @@ const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, on
           {resultIds.size > 0 && <span><kbd className="bg-gray-200 px-1.5 py-0.5 rounded text-gray-700 font-mono text-xs">A B C…</kbd> select section options</span>}
         </div>
 
+        {rowsByGroup.length > 1 && (
+          <div className="border-b bg-white px-5 py-2">
+            <div className="flex gap-2 overflow-x-auto pb-1">
+              <button
+                type="button"
+                onClick={() => selectGroup(null)}
+                className={`shrink-0 rounded-md border px-3 py-1.5 text-xs font-semibold transition-colors ${
+                  activeGroupId === null
+                    ? "border-green-600 bg-green-50 text-green-700"
+                    : "border-gray-200 bg-white text-gray-600 hover:bg-gray-50"
+                }`}
+              >
+                All Groups
+              </button>
+              {rowsByGroup.map(({ tg, rows: groupRows }) => {
+                const groupFilled = groupRows.filter(({ row }) => !row.is_calculated && (row.value.trim() || row.is_hidden_from_report)).length;
+                const groupInputable = groupRows.filter(({ row }) => !row.is_calculated).length;
+                const isActive = activeGroupId === tg.test_group_id;
+                return (
+                  <button
+                    key={tg.test_group_id}
+                    type="button"
+                    onClick={() => selectGroup(tg.test_group_id)}
+                    className={`shrink-0 rounded-md border px-3 py-1.5 text-left text-xs transition-colors ${
+                      isActive
+                        ? "border-green-600 bg-green-600 text-white shadow-sm"
+                        : "border-gray-200 bg-white text-gray-700 hover:border-green-300 hover:bg-green-50"
+                    }`}
+                    title={`Open ${tg.test_group_name}`}
+                  >
+                    <span className="block max-w-48 truncate font-semibold">{tg.test_group_name}</span>
+                    <span className={isActive ? "text-green-100" : "text-gray-500"}>{groupFilled}/{groupInputable} handled</span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
         {/* Body */}
         <div className="flex-1 overflow-y-auto" onKeyDown={e => { if (e.ctrlKey && e.key === "Enter") handleSubmit(); }}>
           {loading ? (
@@ -1291,7 +1352,7 @@ const QuickResultEntryModal: React.FC<QuickResultEntryModalProps> = ({ order, on
               <p className="text-sm text-gray-400">{existingCount} analyte{existingCount !== 1 ? "s" : ""} submitted previously</p>
             </div>
           ) : (
-            rowsByGroup.map(({ tg, rows: groupRows }) => (
+            visibleRowsByGroup.map(({ tg, rows: groupRows }) => (
               <div key={tg.test_group_id}>
                 {/* Test group header (only shown if >1 group) */}
                 {testGroups.length > 1 && (

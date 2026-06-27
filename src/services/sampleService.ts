@@ -118,7 +118,7 @@ export async function createSamplesForOrder(
 
   const now = new Date();
   const dateStr = format(now, 'yyyyMMdd');
-  const barcodeDatePrefix = dateStr;
+  const barcodeDatePrefix = format(now, 'yyMMdd');
   const [initialIdSequence, { data: latestBarcodes }] = await Promise.all([
     getNextDailySampleSequence(labCode, dateStr),
     supabase
@@ -542,6 +542,119 @@ export async function rejectSample(
     notes: reason,
     metadata: { rejection_reason: reason }
   });
+}
+
+/**
+ * Create a fresh replacement sample for a rejected sample without creating a new order.
+ * The rejected sample remains as audit history; linked test groups move to the new sample.
+ */
+export async function createReplacementSampleForRejected(
+  rejectedSampleId: string,
+  createdBy?: string
+): Promise<Sample> {
+  const { data: rejectedSample, error: sampleError } = await supabase
+    .from('samples')
+    .select('*')
+    .eq('id', rejectedSampleId)
+    .single();
+
+  if (sampleError || !rejectedSample) {
+    throw new Error(`Failed to load rejected sample: ${sampleError?.message || 'Sample not found'}`);
+  }
+
+  if (rejectedSample.status !== 'rejected') {
+    throw new Error('Fresh sample can only be received for a rejected sample.');
+  }
+
+  const { data: orderRow, error: orderError } = await supabase
+    .from('orders')
+    .select('id, patient_id, lab_id')
+    .eq('id', rejectedSample.order_id)
+    .single();
+
+  if (orderError || !orderRow) {
+    throw new Error(`Failed to load order for replacement sample: ${orderError?.message || 'Order not found'}`);
+  }
+
+  const labId = rejectedSample.lab_id || orderRow.lab_id;
+  if (!labId) throw new Error('Lab ID missing for replacement sample.');
+
+  const now = new Date();
+  const labCode = await getLabCode(labId);
+  const { id: sampleId, barcode } = await generateSampleIdAndBarcode(
+    labCode,
+    rejectedSample.sample_type || 'Sample',
+    labId,
+    now,
+  );
+
+  const qrCodeData: SampleQRData = {
+    sampleId,
+    sampleType: rejectedSample.sample_type || 'Sample',
+    patientId: orderRow.patient_id,
+    orderId: rejectedSample.order_id,
+    labCode,
+    collectionDate: now.toISOString(),
+    barcode,
+  };
+
+  const { data: newSample, error: insertError } = await supabase
+    .from('samples')
+    .insert({
+      id: sampleId,
+      order_id: rejectedSample.order_id,
+      sample_type: rejectedSample.sample_type,
+      barcode,
+      qr_code_data: qrCodeData,
+      container_type: rejectedSample.container_type,
+      specimen_site: rejectedSample.specimen_site,
+      lab_id: labId,
+      status: 'created',
+      collected_at_location_id: rejectedSample.collected_at_location_id,
+      current_location_id: rejectedSample.current_location_id,
+      destination_location_id: rejectedSample.destination_location_id,
+      transit_status: 'at_collection_point',
+      sample_condition: null,
+      checklist_completed: {},
+      collection_form_response: {
+        replacement_for_sample_id: rejectedSample.id,
+        replacement_for_barcode: rejectedSample.barcode,
+        replacement_reason: rejectedSample.rejection_reason || null,
+      },
+    })
+    .select()
+    .single();
+
+  if (insertError || !newSample) {
+    throw new Error(`Failed to create replacement sample: ${insertError?.message || 'Unknown error'}`);
+  }
+
+  const { error: groupRelinkError } = await supabase
+    .from('order_test_groups')
+    .update({ sample_id: newSample.id, sample_condition: null })
+    .eq('sample_id', rejectedSample.id);
+
+  if (groupRelinkError) {
+    throw new Error(`Failed to link replacement sample to tests: ${groupRelinkError.message}`);
+  }
+
+  await supabase
+    .from('order_tests')
+    .update({ sample_id: newSample.id })
+    .eq('sample_id', rejectedSample.id);
+
+  await supabase.from('sample_events').insert({
+    sample_id: newSample.id,
+    event_type: 'created',
+    performed_by: createdBy,
+    metadata: {
+      replacement_for_sample_id: rejectedSample.id,
+      replacement_for_barcode: rejectedSample.barcode,
+      rejection_reason: rejectedSample.rejection_reason || null,
+    },
+  });
+
+  return newSample as Sample;
 }
 
 /**

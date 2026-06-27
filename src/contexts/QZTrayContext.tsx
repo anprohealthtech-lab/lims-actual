@@ -103,7 +103,8 @@ export const QZTrayProvider: React.FC<{ children: React.ReactNode }> = ({ childr
               .from('locations')
               .select('barcode_printer_name, report_printer_name, barcode_browser_print_enabled, auto_print_barcode_on_order, auto_print_report_on_approval')
               .eq('id', locationId)
-              .single()
+              .eq('lab_id', labId)
+              .maybeSingle()
           : Promise.resolve({ data: null }),
       ]);
 

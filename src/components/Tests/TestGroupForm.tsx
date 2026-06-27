@@ -85,6 +85,94 @@ interface TestGroup {
   is_section_only?: boolean;
 }
 
+const INTERPRETATION_BLOCK_TAGS = /<\/(p|div|li|h[1-6]|tr)>/gi;
+const INTERPRETATION_UNSUPPORTED_HTML = /<(table|figure|img|svg|iframe|canvas|video|section|article)\b/i;
+const BULLET_PREFIX = /^(?:[•●▪◦\-*])\s*/;
+
+const escapeHtml = (value: string) =>
+  value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+
+const decodeHtmlEntities = (value: string) => {
+  if (typeof document !== 'undefined') {
+    const textarea = document.createElement('textarea');
+    textarea.innerHTML = value;
+    return textarea.value;
+  }
+
+  return value
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/&amp;/gi, '&')
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;/gi, "'");
+};
+
+const extractInterpretationLines = (value: string) => {
+  const hasHtml = /<\/?[a-z][\s\S]*>/i.test(value);
+  const text = hasHtml
+    ? value
+        .replace(/<br\s*\/?>/gi, '\n')
+        .replace(/<li\b[^>]*>/gi, '\n• ')
+        .replace(INTERPRETATION_BLOCK_TAGS, '\n')
+        .replace(/<[^>]+>/g, '')
+    : value;
+
+  return decodeHtmlEntities(text)
+    .replace(/\u00a0/g, ' ')
+    .split(/\r?\n/)
+    .map(line => line.trim())
+    .filter(Boolean);
+};
+
+const normalizeGroupInterpretationHtml = (value: string | null | undefined) => {
+  const raw = (value || '').trim();
+  if (!raw) return null;
+
+  if (INTERPRETATION_UNSUPPORTED_HTML.test(raw)) {
+    return raw;
+  }
+
+  const lines = extractInterpretationLines(raw);
+  if (!lines.length) return null;
+
+  const paragraphs: string[] = [];
+  let bulletGroup: string[] = [];
+
+  const flushBullets = () => {
+    if (!bulletGroup.length) return;
+    paragraphs.push(
+      `<p style="margin-left:20px;">${bulletGroup.map(line => escapeHtml(line)).join('<br>')}</p>`,
+    );
+    bulletGroup = [];
+  };
+
+  lines.forEach((line, index) => {
+    if (BULLET_PREFIX.test(line)) {
+      bulletGroup.push(`• ${line.replace(BULLET_PREFIX, '').trim()}`);
+      return;
+    }
+
+    flushBullets();
+
+    if (index === 0 && /^interpretation\s*[:-]\s*$/i.test(line)) {
+      paragraphs.push(`<p style="margin-left:0;"><strong><u>${escapeHtml(line)}</u></strong></p>`);
+      return;
+    }
+
+    paragraphs.push(`<p style="margin-left:0;">${escapeHtml(line)}</p>`);
+  });
+
+  flushBullets();
+
+  return paragraphs.join('');
+};
+
 const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGroup }) => {
   const [formData, setFormData] = useState({
     name: testGroup?.name || '',
@@ -176,6 +264,9 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
   const [showImportWizard, setShowImportWizard] = useState(false);
   const [syncingGlobal, setSyncingGlobal] = useState(false);
   const [syncGlobalResult, setSyncGlobalResult] = useState<string | null>(null);
+  const [aiLayoutBusy, setAiLayoutBusy] = useState(false);
+  const [aiDropdownBusy, setAiDropdownBusy] = useState(false);
+  const [aiHelperResult, setAiHelperResult] = useState<string | null>(null);
   const [showReportPreview, setShowReportPreview] = useState(false);
   const [newSampleCondition, setNewSampleCondition] = useState('');
 
@@ -748,6 +839,7 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
       const defaultSampleCondition = sampleConditionOptions.includes(formData.defaultSampleCondition)
         ? formData.defaultSampleCondition
         : sampleConditionOptions[0] || '';
+      const groupInterpretationHtml = normalizeGroupInterpretationHtml(formData.group_interpretation);
 
       onSubmit({
         ...formData,
@@ -776,7 +868,7 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
             : formData.default_template_style || null,
         report_priority: formData.report_priority ? parseInt(formData.report_priority, 10) : null,
         print_options: formData.print_options || null,
-        group_interpretation: formData.group_interpretation || null,
+        group_interpretation: groupInterpretationHtml,
         global_test_catalog_id: formData.global_test_catalog_id || null,
         analyzer_connection_id: formData.analyzer_connection_id || null,
         is_section_only: formData.is_section_only,
@@ -938,6 +1030,184 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
       return oa - ob;
     });
   })();
+
+  const buildAiHelperPayload = (action: 'layout_order' | 'dropdown_values') => ({
+    action,
+    test_group: {
+      name: formData.name || testGroup?.name || '',
+      code: formData.code || testGroup?.code || '',
+      category: formData.category || testGroup?.category || '',
+      sample_type: formData.sampleType || testGroup?.sampleType || '',
+    },
+    analytes: selectedAnalyteDetails.map((analyte: any, index: number) => {
+      const meta = analyteMetadata[analyte.id] || { sort_order: 0, section_heading: '', is_visible: true };
+      const expectedValues = Array.isArray(analyte.expected_normal_values)
+        ? analyte.expected_normal_values
+        : [];
+      return {
+        analyte_id: analyte.id,
+        lab_analyte_id: meta.lab_analyte_id || analyte.lab_analyte_id || null,
+        name: analyte.name,
+        code: analyte.code || '',
+        unit: analyte.unit || '',
+        category: analyte.category || '',
+        sample_type: analyte.sample_type || analyte.sampleType || '',
+        value_type: analyte.value_type || '',
+        expected_normal_values: expectedValues,
+        reference_range: analyte.referenceRange || analyte.reference_range || '',
+        sort_order: meta.sort_order || index + 1,
+        section_heading: meta.section_heading || '',
+      };
+    }),
+  });
+
+  const invokeAiHelper = async (action: 'layout_order' | 'dropdown_values') => {
+    const payload = buildAiHelperPayload(action);
+    const { data, error } = await supabase.functions.invoke('ai-test-group-analyte-helper', {
+      body: payload,
+    });
+    if (error) throw new Error(error.message);
+    if (!data?.success) throw new Error(data?.error || 'AI helper failed');
+    return data.data || {};
+  };
+
+  const handleAiArrangeSections = async () => {
+    if (aiLayoutBusy || formData.is_section_only || selectedAnalyteDetails.length === 0) return;
+    setAiLayoutBusy(true);
+    setAiHelperResult(null);
+    try {
+      const result = await invokeAiHelper('layout_order');
+      const items = Array.isArray(result.items) ? result.items : [];
+      if (items.length === 0) throw new Error('AI did not return any layout suggestions');
+
+      setAnalyteMetadata(prev => {
+        const next = { ...prev };
+        for (const item of items) {
+          const analyteId = String(item.analyte_id || '');
+          if (!analyteId) continue;
+          const current = next[analyteId] || { sort_order: 0, section_heading: '', is_visible: true };
+          const proposedSection = String(item.section_heading || '').trim();
+          next[analyteId] = {
+            ...current,
+            sort_order: Number(item.sort_order) || current.sort_order || 0,
+            section_heading: current.section_heading || proposedSection,
+            is_visible: current.is_visible ?? true,
+          };
+        }
+        return next;
+      });
+
+      setAiHelperResult(`AI arranged ${items.length} analytes. Existing section headings were kept.`);
+    } catch (error: any) {
+      setAiHelperResult(`Error: ${error.message || 'AI layout failed'}`);
+    } finally {
+      setAiLayoutBusy(false);
+    }
+  };
+
+  const handleAiDropdownValues = async () => {
+    if (aiDropdownBusy || formData.is_section_only || selectedAnalyteDetails.length === 0) return;
+    setAiDropdownBusy(true);
+    setAiHelperResult(null);
+    try {
+      const result = await invokeAiHelper('dropdown_values');
+      const updates = Array.isArray(result.updates) ? result.updates : [];
+      const createVariants = Array.isArray(result.create_variants) ? result.create_variants : [];
+      let changed = 0;
+
+      for (const update of updates) {
+        const labAnalyteId = update.lab_analyte_id;
+        if (!labAnalyteId) continue;
+        const expectedValues = Array.isArray(update.expected_normal_values)
+          ? update.expected_normal_values.map((value: any) => String(value).trim()).filter(Boolean)
+          : [];
+        const updatePayload: Record<string, any> = {};
+        if (update.value_type) updatePayload.value_type = update.value_type;
+        if (expectedValues.length > 0) updatePayload.expected_normal_values = expectedValues;
+        if (Object.keys(updatePayload).length === 0) continue;
+
+        const { error } = await database.labAnalytes.updateFieldsById(labAnalyteId, updatePayload);
+        if (error) throw new Error(error.message || `Failed updating ${labAnalyteId}`);
+        setAllLinkedAnalytes(prev => prev.map((analyte: any) =>
+          analyte.lab_analyte_id === labAnalyteId
+            ? { ...analyte, ...updatePayload }
+            : analyte
+        ));
+        setAnalytes(prev => prev.map((analyte: any) =>
+          analyte.lab_analyte_id === labAnalyteId
+            ? { ...analyte, ...updatePayload }
+            : analyte
+        ));
+        changed++;
+      }
+
+      for (const variant of createVariants) {
+        const replaceAnalyteId = String(variant.replace_analyte_id || '');
+        const expectedValues = Array.isArray(variant.expected_normal_values)
+          ? variant.expected_normal_values.map((value: any) => String(value).trim()).filter(Boolean)
+          : [];
+        if (!replaceAnalyteId || !variant.name) continue;
+
+        const { data: created, error } = await database.analytes.create({
+          name: String(variant.name),
+          code: variant.code || undefined,
+          unit: variant.unit || '',
+          reference_range: variant.reference_range || '',
+          category: variant.category || formData.category || 'General',
+          sample_type: variant.sample_type || formData.sampleType || null,
+          is_active: true,
+          is_global: false,
+          value_type: variant.value_type || 'semi_quantitative',
+          expected_normal_values: expectedValues,
+          group_ai_mode: 'individual',
+        });
+        if (error || !created?.id) {
+          throw new Error(error?.message || `Failed creating ${variant.name}`);
+        }
+
+        const replacementMeta = analyteMetadata[replaceAnalyteId] || { sort_order: 0, section_heading: '', is_visible: true };
+        setFormData(prev => ({
+          ...prev,
+          selectedAnalytes: prev.selectedAnalytes.map((id: string) => id === replaceAnalyteId ? created.id : id),
+        }));
+        setAnalyteMetadata(prev => {
+          const next = { ...prev };
+          delete next[replaceAnalyteId];
+          next[created.id] = {
+            ...replacementMeta,
+            lab_analyte_id: created.lab_analyte_id || null,
+            sort_order: Number(variant.sort_order) || replacementMeta.sort_order || 0,
+            section_heading: replacementMeta.section_heading || String(variant.section_heading || '').trim(),
+            is_visible: replacementMeta.is_visible ?? true,
+          };
+          return next;
+        });
+        const createdForList = {
+          ...created,
+          referenceRange: created.reference_range,
+          sample_type: created.sample_type || variant.sample_type || formData.sampleType || null,
+          value_type: variant.value_type || 'semi_quantitative',
+          expected_normal_values: expectedValues,
+        };
+        setAnalytes(prev => [...prev, createdForList]);
+        setAllLinkedAnalytes(prev => [
+          ...prev.filter((analyte: any) => analyte.id !== replaceAnalyteId),
+          createdForList,
+        ]);
+        changed++;
+      }
+
+      setAiHelperResult(
+        changed > 0
+          ? `AI updated dropdown/value type for ${changed} analyte${changed !== 1 ? 's' : ''}. Save the test group to persist replacements.`
+          : 'AI found no dropdown changes needed.'
+      );
+    } catch (error: any) {
+      setAiHelperResult(`Error: ${error.message || 'AI dropdown setup failed'}`);
+    } finally {
+      setAiDropdownBusy(false);
+    }
+  };
 
   const selectedAnalyzerConnection = analyzerConnections.find(
     (connection: any) => connection.id === formData.analyzer_connection_id
@@ -2122,6 +2392,26 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
                   <div className="flex items-center gap-2">
                     <button
                       type="button"
+                      onClick={handleAiArrangeSections}
+                      disabled={aiLayoutBusy || loading}
+                      className="flex items-center gap-1 px-2 py-1 border border-purple-300 text-purple-700 rounded hover:bg-purple-50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors text-xs"
+                      title="Use AI to set analyte report order and fill missing section headings"
+                    >
+                      <Sparkles className={`h-3 w-3 ${aiLayoutBusy ? 'animate-pulse' : ''}`} />
+                      {aiLayoutBusy ? 'Arranging...' : 'AI Order/Sections'}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleAiDropdownValues}
+                      disabled={aiDropdownBusy || loading}
+                      className="flex items-center gap-1 px-2 py-1 border border-indigo-300 text-indigo-700 rounded hover:bg-indigo-50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors text-xs"
+                      title="Use AI to add dropdown expected values or create sample-specific analyte variants"
+                    >
+                      <Sparkles className={`h-3 w-3 ${aiDropdownBusy ? 'animate-pulse' : ''}`} />
+                      {aiDropdownBusy ? 'Checking...' : 'AI Dropdowns'}
+                    </button>
+                    <button
+                      type="button"
                       onClick={() => {
                         if (confirm(`Remove all ${formData.selectedAnalytes.length} analytes from this test group?`)) {
                           setFormData(prev => ({ ...prev, selectedAnalytes: [] }));
@@ -2155,6 +2445,15 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
                     )}
                   </div>
                 </div>
+                {aiHelperResult && (
+                  <div className={`mb-3 text-xs px-3 py-2 rounded border ${
+                    aiHelperResult.startsWith('Error')
+                      ? 'bg-red-50 border-red-200 text-red-700'
+                      : 'bg-purple-50 border-purple-200 text-purple-700'
+                  }`}>
+                    {aiHelperResult}
+                  </div>
+                )}
                 <p className="text-xs text-gray-500 mb-3">Set sort order and optional section sub-headings for PDF report grouping.</p>
                 <div className="space-y-2">
 	                  {selectedAnalyteDetails.map((analyte) => {

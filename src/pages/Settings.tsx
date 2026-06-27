@@ -18,6 +18,7 @@ import LabBillingItemSettings from '../components/Settings/LabBillingItemSetting
 import PriceMasterSettings from '../components/Settings/PriceMasterSettings';
 import PaymentGatewaySettings from '../components/Settings/PaymentGatewaySettings';
 import SampleTypeColorsConfig from '../components/Settings/SampleTypeColorsConfig';
+import AccessionSettings, { type AccessionCollectionConfig } from '../components/Settings/AccessionSettings';
 import { useSampleTypeColors } from '../contexts/SampleTypeColorsContext';
 import {
   Users,
@@ -52,7 +53,9 @@ import {
   Tag,
   Printer,
   CreditCard,
-  Droplet
+  Droplet,
+  ClipboardCheck,
+  Image as ImageIcon
 } from 'lucide-react';
 import { LANGUAGE_DISPLAY_NAMES, type SupportedLanguage } from '../hooks/useAIResultIntelligence';
 import { COUNTRY_CODE_OPTIONS } from '../utils/phoneFormatter';
@@ -182,6 +185,7 @@ interface LabSettings {
   auto_print_barcode_on_order?: boolean;
   auto_print_report_on_approval?: boolean;
   sample_type_colors?: Record<string, string>;
+  accession_collection_config?: AccessionCollectionConfig | null;
   portal_settings?: PortalSettings | null;
 }
 
@@ -196,23 +200,29 @@ interface PortalSettings {
   updates_title: string;
   update_slides: PortalUpdateSlide[];
   hide_lims_branding: boolean;
+  sidebar_branding_mode: 'anpro' | 'lab' | 'hidden';
 }
 
 const normalizePortalSettings = (raw: Partial<PortalSettings> | null | undefined, keepBlankSlides = false): PortalSettings => {
   const updateSlides = Array.isArray(raw?.update_slides) ? raw.update_slides : [];
   const normalizedSlides = updateSlides.map((slide) => ({
-    title: String(slide?.title || '').trim(),
-    message: String(slide?.message || '').trim(),
+    title: keepBlankSlides ? String(slide?.title || '') : String(slide?.title || '').trim(),
+    message: keepBlankSlides ? String(slide?.message || '') : String(slide?.message || '').trim(),
   }));
 
   return {
-    welcome_note: String(raw?.welcome_note || '').trim(),
+    welcome_note: keepBlankSlides ? String(raw?.welcome_note || '') : String(raw?.welcome_note || '').trim(),
     updates_enabled: raw?.updates_enabled !== false,
-    updates_title: String(raw?.updates_title || 'Partner Portal Updates').trim() || 'Partner Portal Updates',
+    updates_title: keepBlankSlides
+      ? String(raw?.updates_title ?? 'Partner Portal Updates')
+      : String(raw?.updates_title || 'Partner Portal Updates').trim() || 'Partner Portal Updates',
     update_slides: keepBlankSlides
       ? normalizedSlides
       : normalizedSlides.filter((slide) => slide.title || slide.message),
     hide_lims_branding: raw?.hide_lims_branding === true,
+    sidebar_branding_mode: ['anpro', 'lab', 'hidden'].includes(String((raw as any)?.sidebar_branding_mode))
+      ? (raw as any).sidebar_branding_mode
+      : 'anpro',
   };
 };
 
@@ -583,7 +593,7 @@ const Settings: React.FC = () => {
   const { loading: permissionsLoading, hasPermission } = usePermissions();
   const { status: qzStatus, connect: qzConnect, disconnect: qzDisconnect } = useQZTray();
   const { refresh: refreshSampleTypeColors } = useSampleTypeColors();
-  const [activeTab, setActiveTab] = useState<'team' | 'permissions' | 'usage' | 'lab' | 'notifications' | 'invoices' | 'analyzer' | 'patient_portal' | 'billing_items' | 'price_masters' | 'patient_form' | 'payment_gateway'>('team');
+  const [activeTab, setActiveTab] = useState<'team' | 'permissions' | 'usage' | 'lab' | 'accession' | 'notifications' | 'invoices' | 'analyzer' | 'patient_portal' | 'billing_items' | 'price_masters' | 'patient_form' | 'payment_gateway'>('team');
   const [showUserForm, setShowUserForm] = useState(false);
   const [showEditUserModal, setShowEditUserModal] = useState(false);
   const [selectedUser, setSelectedUser] = useState<User | null>(null);
@@ -731,6 +741,7 @@ const Settings: React.FC = () => {
             auto_print_barcode_on_order: (labData as any).auto_print_barcode_on_order ?? false,
             auto_print_report_on_approval: (labData as any).auto_print_report_on_approval ?? false,
             sample_type_colors: (labData as any).sample_type_colors ?? {},
+            accession_collection_config: (labData as any).accession_collection_config ?? { sample_type_flows: {} },
             portal_settings: normalizePortalSettings((labData as any).portal_settings, true),
           });
         }
@@ -905,6 +916,7 @@ const Settings: React.FC = () => {
     { id: 'permissions', name: 'Permissions', icon: Shield },
     { id: 'usage', name: 'Usage & Analytics', icon: BarChart3 },
     { id: 'lab', name: 'Lab Settings', icon: Building },
+    { id: 'accession', name: 'Accession', icon: ClipboardCheck },
     { id: 'notifications', name: 'Notifications', icon: Bell },
     { id: 'invoices', name: 'Invoice Templates', icon: FileText },
     ...(labInterfaceEnabled ? [{ id: 'analyzer', name: 'Analyzer Interface', icon: Activity }] : []),
@@ -1095,6 +1107,7 @@ const Settings: React.FC = () => {
         auto_print_barcode_on_order: labSettings.auto_print_barcode_on_order ?? false,
         auto_print_report_on_approval: labSettings.auto_print_report_on_approval ?? false,
         sample_type_colors: labSettings.sample_type_colors || {},
+        accession_collection_config: labSettings.accession_collection_config || { sample_type_flows: {} },
         portal_settings: normalizePortalSettings(labSettings.portal_settings),
         pdf_layout_settings: {
           ...(labSettings._pdf_layout_settings_raw || {}),
@@ -2954,14 +2967,14 @@ const Settings: React.FC = () => {
                     </div>
                   </div>
 
-                  {/* B2B Portal Settings */}
+                  {/* Partner Portal Settings */}
                   <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6 lg:col-span-2">
                     <h3 className="text-lg font-semibold text-gray-900 mb-2 flex items-center">
                       <MessageSquare className="h-5 w-5 mr-2 text-blue-600" />
-                      B2B Portal Settings
+                      Partner Portal Settings
                     </h3>
                     <p className="text-xs text-gray-500 mb-5">
-                      Common welcome note, updates slider, and branding option for all B2B partner accounts.
+                      Common welcome note, updates slider, and branding option for all partner accounts.
                     </p>
 
                     <div className="space-y-5">
@@ -2986,7 +2999,7 @@ const Settings: React.FC = () => {
                           />
                           <div>
                             <span className="text-sm font-medium text-gray-800">Show updates section</span>
-                            <p className="text-xs text-gray-400 mt-0.5">Displays the update slider on the B2B portal.</p>
+                            <p className="text-xs text-gray-400 mt-0.5">Displays the update slider on the partner portal.</p>
                           </div>
                         </label>
 
@@ -2998,7 +3011,7 @@ const Settings: React.FC = () => {
                             className="mt-0.5 h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded"
                           />
                           <div>
-                            <span className="text-sm font-medium text-gray-800">Hide LIMS branding in B2B portal</span>
+                            <span className="text-sm font-medium text-gray-800">Hide LIMS branding in partner portal</span>
                             <p className="text-xs text-gray-400 mt-0.5">Removes the footer branding for all partner accounts.</p>
                           </div>
                         </label>
@@ -3062,6 +3075,45 @@ const Settings: React.FC = () => {
                           ))
                         )}
                       </div>
+                    </div>
+                  </div>
+
+                  {/* App Sidebar Branding */}
+                  <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6 lg:col-span-2">
+                    <h3 className="text-lg font-semibold text-gray-900 mb-2 flex items-center">
+                      <ImageIcon className="h-5 w-5 mr-2 text-blue-600" />
+                      App Sidebar Branding
+                    </h3>
+                    <p className="text-xs text-gray-500 mb-5">
+                      Choose what appears at the top of the main LIMS sidebar.
+                    </p>
+
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                      {[
+                        { value: 'anpro', title: 'Show AnPro LIMS', description: 'Use the default product logo and name.' },
+                        { value: 'lab', title: 'Use Lab Branding', description: 'Use the default lab logo and lab name.' },
+                        { value: 'hidden', title: 'Hide Branding', description: 'Show only the sidebar controls.' },
+                      ].map((option) => (
+                        <label
+                          key={option.value}
+                          className={`cursor-pointer rounded-lg border p-4 transition-colors ${
+                            portalSettings.sidebar_branding_mode === option.value
+                              ? 'border-blue-500 bg-blue-50'
+                              : 'border-gray-200 bg-white hover:bg-gray-50'
+                          }`}
+                        >
+                          <input
+                            type="radio"
+                            name="sidebar_branding_mode"
+                            value={option.value}
+                            checked={portalSettings.sidebar_branding_mode === option.value}
+                            onChange={(e) => updatePortalSettings({ sidebar_branding_mode: e.target.value as PortalSettings['sidebar_branding_mode'] })}
+                            className="sr-only"
+                          />
+                          <div className="text-sm font-semibold text-gray-900">{option.title}</div>
+                          <div className="mt-1 text-xs leading-5 text-gray-500">{option.description}</div>
+                        </label>
+                      ))}
                     </div>
                   </div>
 
@@ -3283,6 +3335,17 @@ const Settings: React.FC = () => {
             <div className="pt-8 border-t border-gray-200">
               <NotificationSettings />
             </div>
+          </div>
+        )}
+
+        {/* Accession Tab */}
+        {activeTab === 'accession' && labId && (
+          <div className="p-6">
+            <AccessionSettings
+              labId={labId}
+              value={labSettings?.accession_collection_config}
+              onSaved={(config) => setLabSettings((prev) => prev ? { ...prev, accession_collection_config: config } : prev)}
+            />
           </div>
         )}
 
