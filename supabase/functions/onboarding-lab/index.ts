@@ -14,7 +14,7 @@ serve(async (req) => {
 
   try {
     // 1. Parse Input
-    const { lab_id, mode, test_group_name } = await req.json();
+    const { lab_id, mode, test_group_name, test_group_code } = await req.json();
     if (!lab_id) {
       throw new Error('lab_id is required');
     }
@@ -30,6 +30,19 @@ serve(async (req) => {
     );
 
     console.log(`🚀 Starting ${isReset ? 'RESET' : isSync ? 'SYNC' : isSingle ? 'SINGLE' : 'ONBOARD'} for Lab: ${lab_id}`);
+
+    const normalizeTestGroupSampleType = (value: unknown) => {
+      const raw = String(value || '').trim();
+      const aliases: Record<string, string> = {
+        'Citrated Blood': 'Citrated Plasma',
+        'Whole Blood': 'EDTA Blood',
+        'Urine (Random)': 'Urine',
+        'Urine (24hr)': 'Urine',
+        'Aspirate': 'Other',
+        'Biopsy': 'Tissue',
+      };
+      return aliases[raw] || raw || 'EDTA Blood';
+    };
 
     // --- Shared helper: build hydrated lab_analytes payload from global analytes ---
     const buildHydratedLabAnalytePayload = async (analyteIds: string[]) => {
@@ -62,7 +75,8 @@ serve(async (req) => {
             value_type,
             expected_normal_values,
             expected_value_flag_map,
-            code
+            code,
+            sample_type
           `)
           .in('id', analyteIds.slice(i, i + 1000));
 
@@ -106,6 +120,7 @@ serve(async (req) => {
             expected_normal_values: analyte.expected_normal_values ?? [],
             expected_value_flag_map: analyte.expected_value_flag_map ?? {},
             code: analyte.code ?? null,
+            sample_type: analyte.sample_type ?? null,
             display_name: null,
             default_value: null,
           };
@@ -115,35 +130,49 @@ serve(async (req) => {
 
     // --- SINGLE MODE: non-destructive sync of one test group by name ---
     if (isSingle) {
-      if (!test_group_name) throw new Error('test_group_name is required for single mode');
+      if (!test_group_name && !test_group_code) throw new Error('test_group_name or test_group_code is required for single mode');
 
-      console.log(`🔍 SINGLE mode: lab_id="${lab_id}", test_group_name="${test_group_name}"`);
+      console.log(`🔍 SINGLE mode: lab_id="${lab_id}", test_group_name="${test_group_name}", test_group_code="${test_group_code}"`);
 
-      // Find entry in global catalog (case-insensitive)
-      const { data: catalogEntry, error: catalogError } = await supabaseClient
+      const catalogFilterParts = [];
+      if (test_group_code) catalogFilterParts.push(`code.ilike.${test_group_code}`);
+      if (test_group_name) catalogFilterParts.push(`name.ilike.${test_group_name}`);
+
+      // Find entry in global catalog (prefer code, then name; both case-insensitive)
+      const { data: catalogMatches, error: catalogError } = await supabaseClient
         .from('global_test_catalog')
-        .select('id, name, code, group_interpretation, default_ai_processing_type, group_level_prompt, ai_config')
-        .ilike('name', test_group_name)
-        .limit(1)
-        .maybeSingle();
+        .select('id, name, code, category, description, default_price, specimen_type_default, department_default, group_interpretation, default_ai_processing_type, group_level_prompt, ai_config')
+        .or(catalogFilterParts.join(','))
+        .limit(5);
+
+      const catalogEntry = (catalogMatches || []).find((row: any) =>
+        test_group_code && row.code?.toLowerCase() === String(test_group_code).toLowerCase()
+      ) || (catalogMatches || [])[0];
 
       console.log(`📚 Global catalog lookup: found=${!!catalogEntry}, name="${catalogEntry?.name}", error=${catalogError?.message}`);
 
       if (!catalogEntry) {
         return new Response(JSON.stringify({
           success: false,
-          error: `'${test_group_name}' not found in global catalog`,
+          error: `'${test_group_code || test_group_name}' not found in global catalog`,
         }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
       }
 
-      // Find lab's test group by name (limit(1) guards against duplicate names in the same lab)
-      const { data: labGroup, error: labGroupError } = await supabaseClient
+      const labFilterParts = [];
+      if (test_group_code) labFilterParts.push(`code.ilike.${test_group_code}`);
+      if (test_group_name) labFilterParts.push(`name.ilike.${test_group_name}`);
+
+      // Find lab's test group by code or name (limit guards against duplicate names in the same lab)
+      const { data: labMatches, error: labGroupError } = await supabaseClient
         .from('test_groups')
-        .select('id, name, lab_id, group_interpretation, global_test_catalog_id')
+        .select('id, name, code, lab_id, group_interpretation, global_test_catalog_id')
         .eq('lab_id', lab_id)
-        .ilike('name', test_group_name)
-        .limit(1)
-        .maybeSingle();
+        .or(labFilterParts.join(','))
+        .limit(5);
+
+      const labGroup = (labMatches || []).find((row: any) =>
+        test_group_code && row.code?.toLowerCase() === String(test_group_code).toLowerCase()
+      ) || (labMatches || [])[0];
 
       console.log(`🏥 Lab group lookup: found=${!!labGroup}, name="${labGroup?.name}", lab_id_match="${labGroup?.lab_id}", error=${labGroupError?.message}`);
 
@@ -151,13 +180,13 @@ serve(async (req) => {
         // Also check if group exists under a different lab_id (to help diagnose mismatches)
         const { data: anyMatch } = await supabaseClient
           .from('test_groups')
-          .select('id, name, lab_id')
-          .ilike('name', test_group_name)
+          .select('id, name, code, lab_id')
+          .or(labFilterParts.join(','))
           .limit(3);
         console.log(`🔎 Same-name groups in ANY lab: ${JSON.stringify(anyMatch)}`);
         return new Response(JSON.stringify({
           success: false,
-          error: `'${test_group_name}' not found in this lab's test groups`,
+          error: `'${test_group_code || test_group_name}' not found in this lab's test groups`,
           debug: { lab_id_used: lab_id, any_matches: anyMatch },
         }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
       }
@@ -344,7 +373,15 @@ serve(async (req) => {
 
       // Sync the global catalog link and group_interpretation when missing.
       let interpretationSynced = false;
-      const singleGroupPatch: Record<string, unknown> = {};
+      let groupDetailsSynced = false;
+      const singleGroupPatch: Record<string, unknown> = {
+        code: catalogEntry.code,
+        category: catalogEntry.department_default || catalogEntry.category || 'General',
+        default_ai_processing_type: catalogEntry.default_ai_processing_type || 'ocr_report',
+        group_level_prompt: catalogEntry.group_level_prompt || null,
+        ai_config: catalogEntry.ai_config || {},
+        sample_type: normalizeTestGroupSampleType(catalogEntry.specimen_type_default),
+      };
       if (labGroup.global_test_catalog_id !== catalogEntry.id) {
         singleGroupPatch.global_test_catalog_id = catalogEntry.id;
       }
@@ -356,7 +393,10 @@ serve(async (req) => {
           .from('test_groups')
           .update(singleGroupPatch)
           .eq('id', labGroup.id);
-        if (!groupSyncErr && 'group_interpretation' in singleGroupPatch) interpretationSynced = true;
+        if (!groupSyncErr) {
+          interpretationSynced = 'group_interpretation' in singleGroupPatch;
+          groupDetailsSynced = true;
+        }
       }
 
       // Seed report sections for this test group (non-destructive)
@@ -424,6 +464,17 @@ serve(async (req) => {
         analytesUpdated,
         analytesHydrated,
         interpretationSynced,
+        groupDetailsSynced,
+        syncedTestGroup: {
+          id: labGroup.id,
+          name: labGroup.name,
+          code: singleGroupPatch.code,
+          category: singleGroupPatch.category,
+          sample_type: singleGroupPatch.sample_type,
+          default_ai_processing_type: singleGroupPatch.default_ai_processing_type,
+          group_level_prompt: singleGroupPatch.group_level_prompt,
+          global_test_catalog_id: catalogEntry.id,
+        },
         sectionsAdded,
         repairSummary,
       }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
@@ -443,6 +494,19 @@ serve(async (req) => {
       sectionsCreated: 0,
       orphanLabAnalytesDeleted: 0,
       orphanLabTemplatesDeleted: 0
+    };
+    const syncDiagnostics: {
+      createCandidates: Array<Record<string, unknown>>;
+      existingMatches: Array<Record<string, unknown>>;
+      skippedTests: Array<Record<string, unknown>>;
+      createFailures: Array<Record<string, unknown>>;
+      createdTests: Array<Record<string, unknown>>;
+    } = {
+      createCandidates: [],
+      existingMatches: [],
+      skippedTests: [],
+      createFailures: [],
+      createdTests: [],
     };
 
     // --- B. Handle RESET Mode - Delete ALL test groups first ---
@@ -511,6 +575,10 @@ serve(async (req) => {
       }
     }
     const globalTestGroups = allGlobalTestGroups.length > 0 ? allGlobalTestGroups : null;
+    const toCreate: any[] = [];
+    const toUpdate: { gtg: any; existingId: string }[] = [];
+    const toSkip: any[] = [];
+    const createdMap = new Map<string, string>(); // global code -> new lab test_group_id
 
     // Bulk-fetch analyte metadata (section_heading, sort_order) from junction table
     const allCatalogIds = (globalTestGroups || []).map((g: any) => g.id);
@@ -594,19 +662,43 @@ serve(async (req) => {
       }
 
       // --- Separate globals into: needs create vs needs update vs skip ---
-      const toCreate: typeof globalTestGroups = [];
-      const toUpdate: { gtg: typeof globalTestGroups[0]; existingId: string }[] = [];
-      const toSkip: typeof globalTestGroups = [];
-
       for (const gtg of globalTestGroups) {
-        const existing = existingByCode.get(gtg.code) || existingByName.get(gtg.name);
+        const existingByCodeMatch = existingByCode.get(gtg.code);
+        const existingByNameMatch = existingByName.get(gtg.name);
+        const existing = existingByCodeMatch || existingByNameMatch;
         if (!existing) {
           toCreate.push(gtg);
+          syncDiagnostics.createCandidates.push({
+            global_id: gtg.id,
+            code: gtg.code,
+            name: gtg.name,
+            reason: 'missing_in_lab',
+          });
         } else if (isSync || isReset) {
           toUpdate.push({ gtg, existingId: existing.id });
+          syncDiagnostics.existingMatches.push({
+            global_id: gtg.id,
+            code: gtg.code,
+            name: gtg.name,
+            existing_id: existing.id,
+            existing_code: existing.code,
+            existing_name: existing.name,
+            match_type: existingByCodeMatch ? 'code' : 'name',
+            action: 'update_existing',
+          });
         } else {
           toSkip.push(gtg);
           stats.testsSkipped++;
+          syncDiagnostics.skippedTests.push({
+            global_id: gtg.id,
+            code: gtg.code,
+            name: gtg.name,
+            existing_id: existing.id,
+            existing_code: existing.code,
+            existing_name: existing.name,
+            match_type: existingByCodeMatch ? 'code' : 'name',
+            reason: 'existing_group_non_sync_mode',
+          });
         }
       }
 
@@ -614,7 +706,6 @@ serve(async (req) => {
 
       // --- BATCH CREATE new test groups in chunks of 50 ---
       const CHUNK = 50;
-      const createdMap = new Map<string, string>(); // global code → new lab test_group_id
 
       for (let i = 0; i < toCreate.length; i += CHUNK) {
         const chunk = toCreate.slice(i, i + CHUNK);
@@ -629,7 +720,7 @@ serve(async (req) => {
             clinical_purpose: gtg.description || gtg.name,
             price: gtg.default_price || 0,
             turnaround_time: '24 Hours',
-            sample_type: gtg.specimen_type_default || 'EDTA Blood',
+            sample_type: normalizeTestGroupSampleType(gtg.specimen_type_default),
             is_active: true,
             to_be_copied: false,
             default_ai_processing_type: gtg.default_ai_processing_type || 'ocr_report',
@@ -641,10 +732,24 @@ serve(async (req) => {
 
         if (batchErr) {
           console.error(`Batch insert error (chunk ${i}):`, batchErr);
+          syncDiagnostics.createFailures.push({
+            chunk_start: i,
+            chunk_size: chunk.length,
+            codes: chunk.map((gtg: any) => gtg.code),
+            names: chunk.map((gtg: any) => gtg.name),
+            error: batchErr.message,
+          });
           continue;
         }
         for (const ng of (newGroups || [])) {
           createdMap.set(ng.code, ng.id);
+          const source = chunk.find((gtg: any) => gtg.code === ng.code);
+          syncDiagnostics.createdTests.push({
+            id: ng.id,
+            code: ng.code,
+            name: source?.name || null,
+            global_id: source?.id || null,
+          });
         }
         stats.testsCreated += (newGroups || []).length;
         console.log(`   ✅ Created batch ${Math.floor(i/CHUNK)+1}: ${(newGroups||[]).length} test groups`);
@@ -940,7 +1045,7 @@ serve(async (req) => {
                 default_ai_processing_type: gtg.default_ai_processing_type,
                 group_level_prompt: gtg.group_level_prompt || null,
                 ai_config: gtg.ai_config || {},
-                sample_type: gtg.specimen_type_default || 'EDTA Blood',
+                sample_type: normalizeTestGroupSampleType(gtg.specimen_type_default),
                 category: gtg.department_default || 'General',
                 // Only propagate group_interpretation if global catalog has one set
                 ...(gtg.group_interpretation ? { group_interpretation: gtg.group_interpretation } : {})
@@ -1887,6 +1992,7 @@ body { margin: 0; padding: 0; background: #fff; }
         sectionsCreated: stats.sectionsCreated,
         orphanLabAnalytesDeleted: stats.orphanLabAnalytesDeleted,
         orphanLabTemplatesDeleted: stats.orphanLabTemplatesDeleted,
+        syncDiagnostics,
         repairSummary
       }),
       { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
@@ -1894,8 +2000,9 @@ body { margin: 0; padding: 0; background: #fff; }
 
   } catch (error) {
     console.error('Onboarding error:', error);
+    const message = error instanceof Error ? error.message : String(error);
     return new Response(
-      JSON.stringify({ error: error.message }),
+      JSON.stringify({ error: message }),
       { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
     );
   }

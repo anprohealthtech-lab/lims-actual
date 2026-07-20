@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { Search, DollarSign, FileText, Eye, CreditCard, Calendar, TrendingUp, Clock as ClockIcon, Calculator, Building, RotateCcw, File } from 'lucide-react';
+import { Search, DollarSign, FileText, Eye, CreditCard, Calendar, TrendingUp, Clock as ClockIcon, Calculator, Building, RotateCcw, File, Printer, Loader2 } from 'lucide-react';
 import { useSearchParams } from 'react-router-dom';
 
 import { database } from '../utils/supabase';
@@ -93,6 +93,11 @@ const Billing: React.FC = () => {
   // State for PDF generation modal
   const [showPdfModal, setShowPdfModal] = useState(false);
   const [pdfInvoiceId, setPdfInvoiceId] = useState<string | null>(null);
+
+  // Bulk invoice selection / print state
+  const [selectedInvoiceIds, setSelectedInvoiceIds] = useState<Set<string>>(new Set());
+  const [isBulkPrintingInvoices, setIsBulkPrintingInvoices] = useState(false);
+  const [bulkInvoicePrintProgress, setBulkInvoicePrintProgress] = useState<string | null>(null);
 
   // Lab details for invoice preview
   const [labDetails, setLabDetails] = useState<any>(null);
@@ -333,6 +338,91 @@ const Billing: React.FC = () => {
     return matchesSearch && matchesStatus && matchesDate && matchesPendingScope;
   });
 
+  const toggleInvoiceSelection = (invoiceId: string) => {
+    setSelectedInvoiceIds(prev => {
+      const next = new Set(prev);
+      if (next.has(invoiceId)) next.delete(invoiceId);
+      else next.add(invoiceId);
+      return next;
+    });
+  };
+
+  const toggleSelectAllInvoices = () => {
+    setSelectedInvoiceIds(prev => {
+      const allVisible = filteredInvoices.map(i => i.id);
+      const allSelected = allVisible.length > 0 && allVisible.every(id => prev.has(id));
+      return allSelected ? new Set<string>() : new Set(allVisible);
+    });
+  };
+
+  // Merge the already-generated PDFs of the selected invoices into one PDF and open it for printing
+  const handleBulkPrintInvoices = async () => {
+    const selected = filteredInvoices.filter(i => selectedInvoiceIds.has(i.id));
+    if (selected.length === 0) {
+      alert('Please select at least one invoice.');
+      return;
+    }
+
+    const withPdf = selected.filter(i => !!i.pdf_url);
+    if (withPdf.length === 0) {
+      alert('None of the selected invoices have a generated PDF yet. Use the Generate PDF action first.');
+      return;
+    }
+
+    const missingCount = selected.length - withPdf.length;
+    if (missingCount > 0) {
+      const proceed = window.confirm(
+        `${missingCount} selected invoice${missingCount === 1 ? ' does' : 's do'} not have a generated PDF and will be skipped.\n\nMerge and print the remaining ${withPdf.length}?`
+      );
+      if (!proceed) return;
+    }
+
+    setIsBulkPrintingInvoices(true);
+    setBulkInvoicePrintProgress('Preparing…');
+
+    try {
+      const { PDFDocument } = await import('pdf-lib');
+      const mergedPdf = await PDFDocument.create();
+      const failures: string[] = [];
+
+      for (let index = 0; index < withPdf.length; index++) {
+        const invoice = withPdf[index];
+        setBulkInvoicePrintProgress(`Merging ${index + 1}/${withPdf.length}…`);
+        try {
+          const response = await fetch(invoice.pdf_url!);
+          if (!response.ok) throw new Error(`HTTP ${response.status}`);
+          const bytes = await response.arrayBuffer();
+          const sourcePdf = await PDFDocument.load(bytes, { ignoreEncryption: true });
+          const pages = await mergedPdf.copyPages(sourcePdf, sourcePdf.getPageIndices());
+          pages.forEach(page => mergedPdf.addPage(page));
+        } catch (err) {
+          console.error(`Failed to merge invoice ${invoice.id}:`, err);
+          failures.push(`#${invoice.id.slice(0, 8)} (${invoice.patient_name || invoice.patientName || 'Unknown'})`);
+        }
+      }
+
+      if (mergedPdf.getPageCount() === 0) {
+        throw new Error('No invoice PDFs could be fetched for merging.');
+      }
+
+      const mergedBytes = await mergedPdf.save();
+      const blob = new Blob([mergedBytes], { type: 'application/pdf' });
+      const blobUrl = URL.createObjectURL(blob);
+      window.open(blobUrl, '_blank');
+      setTimeout(() => URL.revokeObjectURL(blobUrl), 5 * 60 * 1000);
+
+      if (failures.length > 0) {
+        alert(`Merged PDF opened, but ${failures.length} invoice${failures.length === 1 ? '' : 's'} could not be included:\n${failures.join('\n')}`);
+      }
+    } catch (err) {
+      console.error('Bulk invoice print failed:', err);
+      alert('Bulk print failed: ' + (err instanceof Error ? err.message : 'Unknown error'));
+    } finally {
+      setIsBulkPrintingInvoices(false);
+      setBulkInvoicePrintProgress(null);
+    }
+  };
+
   const getStatusColor = (status: string) => {
     const colors = {
       'Draft': 'bg-gray-100 text-gray-800',
@@ -347,8 +437,8 @@ const Billing: React.FC = () => {
 
 
 
-  // Updated Financials to use actual payment data (Revenue = Collected Cash)
-  const totalRevenue = invoices.reduce((sum, i) => sum + (i.paid_amount || 0), 0);
+  // Updated Financials to use actual payment data (Revenue = Collected Cash - Refunds)
+  const totalRevenue = invoices.reduce((sum, i) => sum + (i.paid_amount || 0) - (i.total_refunded_amount || 0), 0);
   const pendingAmount = invoices.reduce((sum, i) => sum + Math.max(0, (i.total || 0) - (i.paid_amount || 0)), 0);
   const overdueAmount = invoices
     .filter(i => i.status === 'Overdue')
@@ -548,16 +638,55 @@ const Billing: React.FC = () => {
           <div className="bg-red-50 border border-red-200 rounded-lg p-4 text-red-700">{error}</div>
         ) : (
           <div className="bg-white rounded-lg shadow-sm border border-gray-200 overflow-hidden">
-            <div className="px-6 py-4 border-b border-gray-200">
+            <div className="px-6 py-4 border-b border-gray-200 flex flex-wrap items-center justify-between gap-3">
               <h3 className="text-lg font-semibold text-gray-900">
                 Invoices ({filteredInvoices.length})
               </h3>
+              {selectedInvoiceIds.size > 0 && (
+                <div className="flex items-center gap-3">
+                  <span className="text-sm font-medium text-blue-900">
+                    {selectedInvoiceIds.size} selected
+                  </span>
+                  <button
+                    onClick={() => setSelectedInvoiceIds(new Set())}
+                    className="text-sm text-blue-700 hover:text-blue-900 underline"
+                  >
+                    Clear
+                  </button>
+                  <button
+                    onClick={handleBulkPrintInvoices}
+                    disabled={isBulkPrintingInvoices}
+                    className={`flex items-center gap-2 px-4 py-2 rounded-md text-sm font-medium transition-colors ${
+                      isBulkPrintingInvoices
+                        ? 'bg-indigo-300 text-white cursor-not-allowed'
+                        : 'bg-indigo-600 text-white hover:bg-indigo-700'
+                    }`}
+                    title="Merge the generated PDFs of the selected invoices into one PDF for printing"
+                  >
+                    {isBulkPrintingInvoices ? (
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                    ) : (
+                      <Printer className="w-4 h-4" />
+                    )}
+                    <span>{isBulkPrintingInvoices ? (bulkInvoicePrintProgress || 'Merging…') : 'Bulk Print'}</span>
+                  </button>
+                </div>
+              )}
             </div>
 
             <div className="overflow-x-auto">
               <table className="min-w-full divide-y divide-gray-200">
                 <thead className="bg-gray-50">
                   <tr>
+                    <th className="px-4 py-3 text-left">
+                      <input
+                        type="checkbox"
+                        checked={filteredInvoices.length > 0 && filteredInvoices.every(i => selectedInvoiceIds.has(i.id))}
+                        onChange={toggleSelectAllInvoices}
+                        className="h-4 w-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500"
+                        title="Select all"
+                      />
+                    </th>
                     <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                       Invoice Details
                     </th>
@@ -584,7 +713,7 @@ const Billing: React.FC = () => {
                 <tbody className="bg-white divide-y divide-gray-200">
                   {filteredInvoices.length === 0 ? (
                     <tr>
-                      <td colSpan={7} className="px-6 py-4 text-center text-gray-500">
+                      <td colSpan={8} className="px-6 py-4 text-center text-gray-500">
                         No invoices found
                       </td>
                     </tr>
@@ -600,6 +729,14 @@ const Billing: React.FC = () => {
 
                       return (
                         <tr key={invoice.id} className="hover:bg-gray-50 transition-colors">
+                          <td className="px-4 py-4">
+                            <input
+                              type="checkbox"
+                              checked={selectedInvoiceIds.has(invoice.id)}
+                              onChange={() => toggleInvoiceSelection(invoice.id)}
+                              className="h-4 w-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500"
+                            />
+                          </td>
                           <td className="px-6 py-4 whitespace-nowrap">
                             <div>
                               <div className="text-sm font-medium text-gray-900">#{invoice.id.slice(0, 8)}</div>

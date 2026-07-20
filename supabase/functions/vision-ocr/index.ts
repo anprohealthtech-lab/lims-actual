@@ -949,14 +949,14 @@ Deno.serve(async (req) => {
       );
     }
     
-    // Check for API key first - try ALLGOOGLE_KEY first, then fallback to GOOGLE_CLOUD_API_KEY
-    const visionApiKey = Deno.env.get('ALLGOOGLE_KEY') || Deno.env.get('GOOGLE_CLOUD_API_KEY');
+    // Check for API key first - try ALLGOOGLE_KEY2 first (Vision-enabled), then fallbacks
+    const visionApiKey = Deno.env.get('ALLGOOGLE_KEY2') || Deno.env.get('ALLGOOGLE_KEY') || Deno.env.get('GOOGLE_CLOUD_API_KEY');
     if (!visionApiKey) {
       console.error('Google API key not configured');
       return new Response(
         JSON.stringify({ 
           error: 'Google API key not configured',
-          details: 'Please set ALLGOOGLE_KEY or GOOGLE_CLOUD_API_KEY in Supabase secrets'
+          details: 'Please set ALLGOOGLE_KEY2, ALLGOOGLE_KEY, or GOOGLE_CLOUD_API_KEY in Supabase secrets'
         }),
         { 
           status: 500, 

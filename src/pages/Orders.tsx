@@ -2,11 +2,12 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   Plus, Search, Clock as ClockIcon, CheckCircle, AlertTriangle,
-  Eye, User, Calendar, TestTube, ChevronDown, ChevronUp, TrendingUp, ToggleLeft, ToggleRight, X, RefreshCcw, Activity, Building2, ArrowDownUp
+  Eye, User, Calendar, TestTube, ChevronDown, ChevronUp, TrendingUp, ToggleLeft, ToggleRight, X, RefreshCcw, Activity, Building2, ArrowDownUp, ClipboardList
 } from "lucide-react";
 import { useAuth } from "../contexts/AuthContext";
 import { database, supabase, formatAge } from "../utils/supabase";
 import OrderForm from "../components/Orders/OrderForm";
+import DailyChecklistModal from "../components/Orders/DailyChecklistModal";
 import OrderDetailsModal from "../components/Orders/OrderDetailsModal";
 import QuickResultEntryModal from "../components/Orders/QuickResultEntryModal";
 import EnhancedOrdersPage from "../components/Orders/EnhancedOrdersPage";
@@ -164,6 +165,7 @@ const Orders: React.FC = () => {
   const [orders, setOrders] = useState<CardOrder[]>([]);
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const [showOrderForm, setShowOrderForm] = useState(false);
+  const [showDailyChecklist, setShowDailyChecklist] = useState(false);
   const [selectedOrder, setSelectedOrder] = useState<CardOrder | null>(null);
   const [openOnResults, setOpenOnResults] = useState(false);
   const [quickEntryOrder, setQuickEntryOrder] = useState<CardOrder | null>(null);
@@ -1090,6 +1092,8 @@ const Orders: React.FC = () => {
             order.patient_id,
             {
               preBarcodedBarcode: orderData.__preBarcoded ? orderData.__preBarcodedBarcode : null,
+              collectedAt: order.sample_collected_at || orderData.sample_collected_at || null,
+              collectedBy: order.sample_collector_id || orderData.sample_collector_id || null,
             }
           );
 
@@ -1268,16 +1272,27 @@ const Orders: React.FC = () => {
               </button>
             </div>
           </div>
-          <button
-            type="button"
-            onClick={refreshOrdersData}
-            disabled={isRefreshingOrders}
-            className="inline-flex items-center rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm font-medium text-gray-700 shadow-sm transition-colors hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-60"
-            title="Refresh orders"
-          >
-            <RefreshCcw className={`h-4 w-4 mr-2 ${isRefreshingOrders ? "animate-spin" : ""}`} />
-            Refresh
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setShowDailyChecklist(true)}
+              className="inline-flex items-center rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm font-medium text-gray-700 shadow-sm transition-colors hover:bg-gray-50"
+              title="Print daily checklist"
+            >
+              <ClipboardList className="h-4 w-4 mr-2" />
+              Daily Checklist
+            </button>
+            <button
+              type="button"
+              onClick={refreshOrdersData}
+              disabled={isRefreshingOrders}
+              className="inline-flex items-center rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm font-medium text-gray-700 shadow-sm transition-colors hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-60"
+              title="Refresh orders"
+            >
+              <RefreshCcw className={`h-4 w-4 mr-2 ${isRefreshingOrders ? "animate-spin" : ""}`} />
+              Refresh
+            </button>
+          </div>
         </div>
 
         {/* Filters Bar */}
@@ -1300,6 +1315,9 @@ const Orders: React.FC = () => {
         />
 
         {/* Modals */}
+        {showDailyChecklist && (
+          <DailyChecklistModal onClose={() => setShowDailyChecklist(false)} />
+        )}
         {showOrderForm && (
           <OrderForm
             onClose={() => setShowOrderForm(false)}
@@ -1367,16 +1385,27 @@ const Orders: React.FC = () => {
             </button>
           </div>
         </div>
-        <button
-          type="button"
-          onClick={refreshOrdersData}
-          disabled={isRefreshingOrders}
-          className="inline-flex items-center justify-center rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm font-medium text-gray-700 shadow-sm transition-colors hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-60"
-          title="Refresh orders"
-        >
-          <RefreshCcw className={`h-4 w-4 mr-2 ${isRefreshingOrders ? "animate-spin" : ""}`} />
-          Refresh
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => setShowDailyChecklist(true)}
+            className="inline-flex items-center justify-center rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm font-medium text-gray-700 shadow-sm transition-colors hover:bg-gray-50"
+            title="Print daily checklist"
+          >
+            <ClipboardList className="h-4 w-4 mr-2" />
+            Daily Checklist
+          </button>
+          <button
+            type="button"
+            onClick={refreshOrdersData}
+            disabled={isRefreshingOrders}
+            className="inline-flex items-center justify-center rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm font-medium text-gray-700 shadow-sm transition-colors hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-60"
+            title="Refresh orders"
+          >
+            <RefreshCcw className={`h-4 w-4 mr-2 ${isRefreshingOrders ? "animate-spin" : ""}`} />
+            Refresh
+          </button>
+        </div>
       </div>
 
       {/* Overview cards */}
@@ -1945,6 +1974,9 @@ const Orders: React.FC = () => {
       </div>
 
       {/* Modals */}
+      {showDailyChecklist && (
+        <DailyChecklistModal onClose={() => setShowDailyChecklist(false)} />
+      )}
       {showOrderForm && (
         <OrderForm
           onClose={() => setShowOrderForm(false)}

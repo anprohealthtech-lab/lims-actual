@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import { useQZTray } from '../contexts/QZTrayContext';
-import { database, supabase, type LabPatientFieldConfig } from '../utils/supabase';
+import { database, generateFilePath, supabase, type LabPatientFieldConfig, uploadFile } from '../utils/supabase';
 import { usePermissions } from '../hooks/usePermissions';
 import EditUserModal from '../components/Users/EditUserModal';
 import { NotificationSettings } from '../components/Settings/NotificationSettings';
@@ -19,6 +19,8 @@ import PriceMasterSettings from '../components/Settings/PriceMasterSettings';
 import PaymentGatewaySettings from '../components/Settings/PaymentGatewaySettings';
 import SampleTypeColorsConfig from '../components/Settings/SampleTypeColorsConfig';
 import AccessionSettings, { type AccessionCollectionConfig } from '../components/Settings/AccessionSettings';
+import BarcodeLabelLayoutConfig from '../components/Settings/BarcodeLabelLayoutConfig';
+import { normalizeLabelLayout, type LabelLayout } from '../utils/labelLayout';
 import { useSampleTypeColors } from '../contexts/SampleTypeColorsContext';
 import {
   Users,
@@ -180,6 +182,7 @@ interface LabSettings {
   barcode_printer_name?: string | null;
   report_printer_name?: string | null;
   barcode_browser_print_enabled?: boolean;
+  barcode_label_layout?: LabelLayout | null;
   auto_collect_on_registration?: boolean;
   auto_open_collection_modal?: boolean;
   auto_print_barcode_on_order?: boolean;
@@ -192,6 +195,12 @@ interface LabSettings {
 interface PortalUpdateSlide {
   title: string;
   message: string;
+  image_url?: string;
+}
+
+interface PortalAnnouncement {
+  title: string;
+  message: string;
 }
 
 interface PortalSettings {
@@ -199,16 +208,36 @@ interface PortalSettings {
   updates_enabled: boolean;
   updates_title: string;
   update_slides: PortalUpdateSlide[];
+  announcements_enabled: boolean;
+  announcements_title: string;
+  announcement_slides: PortalAnnouncement[];
+  slider_aspect: 'square' | 'landscape' | 'banner';
   hide_lims_branding: boolean;
   sidebar_branding_mode: 'anpro' | 'lab' | 'hidden';
 }
 
 const normalizePortalSettings = (raw: Partial<PortalSettings> | null | undefined, keepBlankSlides = false): PortalSettings => {
+  const announcementSlides = Array.isArray(raw?.announcement_slides) ? raw.announcement_slides : [];
+  const normalizedAnnouncements = announcementSlides.map((slide) => ({
+    title: keepBlankSlides ? String(slide?.title || '') : String(slide?.title || '').trim(),
+    message: keepBlankSlides ? String(slide?.message || '') : String(slide?.message || '').trim(),
+  }));
   const updateSlides = Array.isArray(raw?.update_slides) ? raw.update_slides : [];
   const normalizedSlides = updateSlides.map((slide) => ({
     title: keepBlankSlides ? String(slide?.title || '') : String(slide?.title || '').trim(),
     message: keepBlankSlides ? String(slide?.message || '') : String(slide?.message || '').trim(),
+    image_url: keepBlankSlides ? String(slide?.image_url || '') : String(slide?.image_url || '').trim(),
   }));
+  const slidesWithMinimum = keepBlankSlides
+    ? [
+        ...normalizedSlides,
+        ...Array.from({ length: Math.max(0, 5 - normalizedSlides.length) }, () => ({
+          title: '',
+          message: '',
+          image_url: '',
+        })),
+      ]
+    : normalizedSlides;
 
   return {
     welcome_note: keepBlankSlides ? String(raw?.welcome_note || '') : String(raw?.welcome_note || '').trim(),
@@ -217,8 +246,18 @@ const normalizePortalSettings = (raw: Partial<PortalSettings> | null | undefined
       ? String(raw?.updates_title ?? 'Partner Portal Updates')
       : String(raw?.updates_title || 'Partner Portal Updates').trim() || 'Partner Portal Updates',
     update_slides: keepBlankSlides
-      ? normalizedSlides
-      : normalizedSlides.filter((slide) => slide.title || slide.message),
+      ? slidesWithMinimum
+      : slidesWithMinimum.filter((slide) => slide.title || slide.message || slide.image_url),
+    announcements_enabled: raw?.announcements_enabled !== false,
+    announcements_title: keepBlankSlides
+      ? String(raw?.announcements_title ?? 'Announcements')
+      : String(raw?.announcements_title || 'Announcements').trim() || 'Announcements',
+    announcement_slides: keepBlankSlides
+      ? normalizedAnnouncements
+      : normalizedAnnouncements.filter((slide) => slide.title || slide.message),
+    slider_aspect: ['square', 'landscape', 'banner'].includes(String((raw as any)?.slider_aspect))
+      ? (raw as any).slider_aspect
+      : 'square',
     hide_lims_branding: raw?.hide_lims_branding === true,
     sidebar_branding_mode: ['anpro', 'lab', 'hidden'].includes(String((raw as any)?.sidebar_branding_mode))
       ? (raw as any).sidebar_branding_mode
@@ -591,7 +630,7 @@ const UserFormComponent: React.FC<{
 const Settings: React.FC = () => {
   const { user: authUser } = useAuth();
   const { loading: permissionsLoading, hasPermission } = usePermissions();
-  const { status: qzStatus, connect: qzConnect, disconnect: qzDisconnect } = useQZTray();
+  const { status: qzStatus, connect: qzConnect, disconnect: qzDisconnect, refreshSettings: refreshPrintSettings } = useQZTray();
   const { refresh: refreshSampleTypeColors } = useSampleTypeColors();
   const [activeTab, setActiveTab] = useState<'team' | 'permissions' | 'usage' | 'lab' | 'accession' | 'notifications' | 'invoices' | 'analyzer' | 'patient_portal' | 'billing_items' | 'price_masters' | 'patient_form' | 'payment_gateway'>('team');
   const [showUserForm, setShowUserForm] = useState(false);
@@ -604,6 +643,7 @@ const Settings: React.FC = () => {
   const [labId, setLabId] = useState<string | null>(null);
   const [labInterfaceEnabled, setLabInterfaceEnabled] = useState(false);
   const [savingLab, setSavingLab] = useState(false);
+  const [uploadingPortalSlide, setUploadingPortalSlide] = useState<Record<number, boolean>>({});
   const [saveSuccess, setSaveSuccess] = useState(false);
 
   // Real database state
@@ -736,6 +776,7 @@ const Settings: React.FC = () => {
             barcode_printer_name: (labData as any).barcode_printer_name ?? null,
             report_printer_name: (labData as any).report_printer_name ?? null,
             barcode_browser_print_enabled: (labData as any).barcode_browser_print_enabled ?? false,
+            barcode_label_layout: normalizeLabelLayout((labData as any).barcode_label_layout),
             auto_collect_on_registration: (labData as any).auto_collect_on_registration ?? false,
             auto_open_collection_modal: (labData as any).auto_open_collection_modal ?? false,
             auto_print_barcode_on_order: (labData as any).auto_print_barcode_on_order ?? false,
@@ -1048,7 +1089,7 @@ const Settings: React.FC = () => {
   const addPortalSlide = () => {
     const current = normalizePortalSettings(labSettings?.portal_settings, true);
     updatePortalSettings({
-      update_slides: [...current.update_slides, { title: '', message: '' }],
+      update_slides: [...current.update_slides, { title: '', message: '', image_url: '' }],
     });
   };
 
@@ -1057,6 +1098,51 @@ const Settings: React.FC = () => {
     updatePortalSettings({
       update_slides: current.update_slides.filter((_, slideIndex) => slideIndex !== index),
     });
+  };
+
+  const updateAnnouncementSlide = (index: number, patch: Partial<PortalAnnouncement>) => {
+    const current = normalizePortalSettings(labSettings?.portal_settings, true);
+    updatePortalSettings({
+      announcement_slides: current.announcement_slides.map((slide, slideIndex) =>
+        slideIndex === index ? { ...slide, ...patch } : slide
+      ),
+    });
+  };
+
+  const addAnnouncementSlide = () => {
+    const current = normalizePortalSettings(labSettings?.portal_settings, true);
+    updatePortalSettings({
+      announcement_slides: [...current.announcement_slides, { title: '', message: '' }],
+    });
+  };
+
+  const removeAnnouncementSlide = (index: number) => {
+    const current = normalizePortalSettings(labSettings?.portal_settings, true);
+    updatePortalSettings({
+      announcement_slides: current.announcement_slides.filter((_, slideIndex) => slideIndex !== index),
+    });
+  };
+
+  const handlePortalSlideImageUpload = async (index: number, file?: File | null) => {
+    if (!file || !labId) return;
+
+    if (!file.type.startsWith('image/')) {
+      setError('Please upload an image file for the promotional slider.');
+      return;
+    }
+
+    try {
+      setError(null);
+      setUploadingPortalSlide(prev => ({ ...prev, [index]: true }));
+      const filePath = generateFilePath(file.name, undefined, labId, 'portal-promotions');
+      const result = await uploadFile(file, filePath, { upsert: true });
+      updatePortalSlide(index, { image_url: result.publicUrl });
+    } catch (err) {
+      console.error('Failed to upload portal slide image:', err);
+      setError(err instanceof Error ? err.message : 'Failed to upload promotional image.');
+    } finally {
+      setUploadingPortalSlide(prev => ({ ...prev, [index]: false }));
+    }
   };
 
   // Save lab settings
@@ -1102,6 +1188,7 @@ const Settings: React.FC = () => {
         barcode_printer_name: labSettings.barcode_printer_name || null,
         report_printer_name: labSettings.report_printer_name || null,
         barcode_browser_print_enabled: labSettings.barcode_browser_print_enabled ?? false,
+        barcode_label_layout: normalizeLabelLayout(labSettings.barcode_label_layout),
         auto_collect_on_registration: labSettings.auto_collect_on_registration ?? false,
         auto_open_collection_modal: labSettings.auto_open_collection_modal ?? false,
         auto_print_barcode_on_order: labSettings.auto_print_barcode_on_order ?? false,
@@ -1120,6 +1207,10 @@ const Settings: React.FC = () => {
 
       // Refresh sample type colors context so UI updates immediately
       await refreshSampleTypeColors();
+
+      // Re-resolve printer settings so the new label layout applies immediately
+      // to every print path without a page reload.
+      await refreshPrintSettings();
 
       setSaveSuccess(true);
       setTimeout(() => setSaveSuccess(false), 3000);
@@ -2993,13 +3084,26 @@ const Settings: React.FC = () => {
                         <label className="flex items-start cursor-pointer gap-3 rounded-lg border border-gray-200 p-3">
                           <input
                             type="checkbox"
+                            checked={portalSettings.announcements_enabled}
+                            onChange={(e) => updatePortalSettings({ announcements_enabled: e.target.checked })}
+                            className="mt-0.5 h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded"
+                          />
+                          <div>
+                            <span className="text-sm font-medium text-gray-800">Show text announcements</span>
+                            <p className="text-xs text-gray-400 mt-0.5">Displays text notices (holidays, closures, news) on the partner portal.</p>
+                          </div>
+                        </label>
+
+                        <label className="flex items-start cursor-pointer gap-3 rounded-lg border border-gray-200 p-3">
+                          <input
+                            type="checkbox"
                             checked={portalSettings.updates_enabled}
                             onChange={(e) => updatePortalSettings({ updates_enabled: e.target.checked })}
                             className="mt-0.5 h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded"
                           />
                           <div>
-                            <span className="text-sm font-medium text-gray-800">Show updates section</span>
-                            <p className="text-xs text-gray-400 mt-0.5">Displays the update slider on the partner portal.</p>
+                            <span className="text-sm font-medium text-gray-800">Show promotional image slider</span>
+                            <p className="text-xs text-gray-400 mt-0.5">Displays the image carousel promoting tests and packages.</p>
                           </div>
                         </label>
 
@@ -3017,8 +3121,70 @@ const Settings: React.FC = () => {
                         </label>
                       </div>
 
+                      <div className="space-y-3 rounded-lg border border-amber-200 bg-amber-50/40 p-4">
+                        <div className="flex items-center justify-between">
+                          <div>
+                            <label className="block text-sm font-medium text-gray-700">Text Announcements</label>
+                            <p className="mt-0.5 text-xs text-gray-500">Short text notices — e.g. "Lab closed for Diwali on 29 Oct" or today's news.</p>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={addAnnouncementSlide}
+                            className="px-3 py-1.5 text-xs font-medium bg-amber-50 text-amber-700 rounded border border-amber-300 hover:bg-amber-100"
+                          >
+                            Add Announcement
+                          </button>
+                        </div>
+
+                        <div>
+                          <label className="block text-xs font-medium text-gray-600 mb-1">Section Name</label>
+                          <input
+                            type="text"
+                            value={portalSettings.announcements_title}
+                            onChange={(e) => updatePortalSettings({ announcements_title: e.target.value })}
+                            className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                            placeholder="Announcements"
+                          />
+                        </div>
+
+                        {portalSettings.announcement_slides.length === 0 ? (
+                          <div className="rounded-lg border border-dashed border-gray-300 bg-white p-4 text-sm text-gray-500">
+                            No announcements added yet.
+                          </div>
+                        ) : (
+                          portalSettings.announcement_slides.map((slide, index) => (
+                            <div key={index} className="rounded-lg border border-gray-200 bg-white p-3 space-y-2">
+                              <div className="flex items-center justify-between">
+                                <span className="text-xs font-semibold text-gray-600">Announcement {index + 1}</span>
+                                <button
+                                  type="button"
+                                  onClick={() => removeAnnouncementSlide(index)}
+                                  className="text-xs text-red-600 hover:text-red-700"
+                                >
+                                  Remove
+                                </button>
+                              </div>
+                              <input
+                                type="text"
+                                value={slide.title}
+                                onChange={(e) => updateAnnouncementSlide(index, { title: e.target.value })}
+                                className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                                placeholder="Announcement title"
+                              />
+                              <textarea
+                                value={slide.message}
+                                onChange={(e) => updateAnnouncementSlide(index, { message: e.target.value })}
+                                className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                                rows={2}
+                                placeholder="Announcement message"
+                              />
+                            </div>
+                          ))
+                        )}
+                      </div>
+
                       <div>
-                        <label className="block text-sm font-medium text-gray-700 mb-1">Updates Section Name</label>
+                        <label className="block text-sm font-medium text-gray-700 mb-1">Image Slider Section Name</label>
                         <input
                           type="text"
                           value={portalSettings.updates_title}
@@ -3028,15 +3194,49 @@ const Settings: React.FC = () => {
                         />
                       </div>
 
+                      <div>
+                        <label className="block text-sm font-medium text-gray-700 mb-2">Image Slider Size</label>
+                        <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                          {[
+                            { value: 'square', title: 'Square (1:1)', description: 'Instagram-style square posts. Best for test/package creatives.' },
+                            { value: 'landscape', title: 'Landscape (16:9)', description: 'Standard widescreen images and posters.' },
+                            { value: 'banner', title: 'Wide Banner (3:1)', description: 'Slim full-width strip, like a website banner.' },
+                          ].map((option) => (
+                            <label
+                              key={option.value}
+                              className={`cursor-pointer rounded-lg border p-3 transition-colors ${
+                                portalSettings.slider_aspect === option.value
+                                  ? 'border-blue-500 bg-blue-50'
+                                  : 'border-gray-200 bg-white hover:bg-gray-50'
+                              }`}
+                            >
+                              <input
+                                type="radio"
+                                name="slider_aspect"
+                                value={option.value}
+                                checked={portalSettings.slider_aspect === option.value}
+                                onChange={(e) => updatePortalSettings({ slider_aspect: e.target.value as PortalSettings['slider_aspect'] })}
+                                className="sr-only"
+                              />
+                              <div className="text-sm font-semibold text-gray-900">{option.title}</div>
+                              <div className="mt-1 text-xs leading-5 text-gray-500">{option.description}</div>
+                            </label>
+                          ))}
+                        </div>
+                      </div>
+
                       <div className="space-y-3">
                         <div className="flex items-center justify-between">
-                          <label className="block text-sm font-medium text-gray-700">Update Slider</label>
+                          <div>
+                            <label className="block text-sm font-medium text-gray-700">Promotional Image Slider</label>
+                            <p className="mt-0.5 text-xs text-gray-500">Upload pictures promoting tests and packages. For best results match the slider size selected above.</p>
+                          </div>
                           <button
                             type="button"
                             onClick={addPortalSlide}
                             className="px-3 py-1.5 text-xs font-medium bg-blue-50 text-blue-700 rounded border border-blue-200 hover:bg-blue-100"
                           >
-                            Add Update
+                            Add Slide
                           </button>
                         </div>
 
@@ -3048,7 +3248,7 @@ const Settings: React.FC = () => {
                           portalSettings.update_slides.map((slide, index) => (
                             <div key={index} className="rounded-lg border border-gray-200 bg-gray-50 p-3 space-y-2">
                               <div className="flex items-center justify-between">
-                                <span className="text-xs font-semibold text-gray-600">Update {index + 1}</span>
+                                <span className="text-xs font-semibold text-gray-600">Slide {index + 1}</span>
                                 <button
                                   type="button"
                                   onClick={() => removePortalSlide(index)}
@@ -3056,6 +3256,50 @@ const Settings: React.FC = () => {
                                 >
                                   Remove
                                 </button>
+                              </div>
+                              {slide.image_url ? (
+                                <img
+                                  src={slide.image_url}
+                                  alt={slide.title || `Promotional slide ${index + 1}`}
+                                  className={`mx-auto rounded-md border border-gray-200 bg-white object-cover ${
+                                    portalSettings.slider_aspect === 'banner'
+                                      ? 'aspect-[3/1] w-full'
+                                      : portalSettings.slider_aspect === 'landscape'
+                                        ? 'aspect-video w-64'
+                                        : 'aspect-square w-40'
+                                  }`}
+                                />
+                              ) : (
+                                <div
+                                  className={`mx-auto flex items-center justify-center rounded-md border border-dashed border-gray-300 bg-white p-2 text-center text-xs text-gray-400 ${
+                                    portalSettings.slider_aspect === 'banner'
+                                      ? 'aspect-[3/1] w-full'
+                                      : portalSettings.slider_aspect === 'landscape'
+                                        ? 'aspect-video w-64'
+                                        : 'aspect-square w-40'
+                                  }`}
+                                >
+                                  No promotional image uploaded
+                                </div>
+                              )}
+                              <div className="grid grid-cols-1 md:grid-cols-[1fr_auto] gap-2">
+                                <input
+                                  type="url"
+                                  value={slide.image_url || ''}
+                                  onChange={(e) => updatePortalSlide(index, { image_url: e.target.value })}
+                                  className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                                  placeholder="Image URL"
+                                />
+                                <label className="inline-flex cursor-pointer items-center justify-center rounded-md border border-blue-200 bg-blue-50 px-3 py-2 text-xs font-medium text-blue-700 hover:bg-blue-100">
+                                  {uploadingPortalSlide[index] ? 'Uploading...' : 'Upload Image'}
+                                  <input
+                                    type="file"
+                                    accept="image/*"
+                                    className="sr-only"
+                                    disabled={uploadingPortalSlide[index]}
+                                    onChange={(e) => handlePortalSlideImageUpload(index, e.target.files?.[0])}
+                                  />
+                                </label>
                               </div>
                               <input
                                 type="text"
@@ -3164,6 +3408,18 @@ const Settings: React.FC = () => {
                           />
                         </div>
                       </div>
+                    </div>
+
+                    {/* Barcode Label Layout */}
+                    <div className="border-t border-gray-100 pt-5 mb-6">
+                      <h4 className="text-sm font-semibold text-gray-700 mb-1">Barcode Label Layout</h4>
+                      <p className="text-xs text-gray-500 mb-4">
+                        Match these to your physical label stock. The same geometry drives both the browser print dialog and the thermal (ZPL) printers, so labels come out at exact size without staff adjusting scale or orientation.
+                      </p>
+                      <BarcodeLabelLayoutConfig
+                        value={labSettings.barcode_label_layout}
+                        onChange={(layout) => setLabSettings(prev => prev ? { ...prev, barcode_label_layout: layout } : prev)}
+                      />
                     </div>
 
                     {/* Auto-collect on registration */}

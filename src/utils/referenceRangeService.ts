@@ -73,14 +73,9 @@ export function findResolvedReferenceRange<T extends ReferenceRangeTarget>(
 
   return resolvedRanges.find((range) => {
     if (range.lab_analyte_id && target.lab_analyte_id === range.lab_analyte_id) return true;
-    if (!range.lab_analyte_id && targetAnalyteId && range.id === targetAnalyteId) return true;
-    if (range.name && targetName && range.name === targetName) return true;
+    if (targetAnalyteId && range.id === targetAnalyteId) return true;
     const rangeNameSlug = normalizeRangeName(range.name);
-    return Boolean(
-      targetNameSlug &&
-      rangeNameSlug &&
-      (targetNameSlug.includes(rangeNameSlug) || rangeNameSlug.includes(targetNameSlug))
-    );
+    return Boolean(targetNameSlug && rangeNameSlug && targetNameSlug === rangeNameSlug);
   });
 }
 

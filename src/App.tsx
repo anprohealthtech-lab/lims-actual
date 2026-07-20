@@ -69,6 +69,7 @@ import QualityControl from './pages/QualityControl';
 import Inventory from './pages/Inventory';
 import CorporateBulkRegistration from './pages/CorporateBulkRegistration';
 import Accession from './pages/Accession';
+import PhleboCollections from './pages/PhleboCollections';
 
 // ⬇️ B2B Portal
 import B2BLogin from './pages/B2BLogin';
@@ -228,6 +229,7 @@ const AppRoutes: React.FC = () => {
                 <Route path="/dashboard2" element={<Dashboard2 />} />
 
                 <Route path="/patients" element={<Patients />} />
+                <Route path="/phlebo" element={<PhleboCollections />} />
                 <Route path="/tests" element={<Tests />} />
                 <Route path="/orders" element={<Orders />} />
                 {/* <Route path="/results" element={<Results />} /> Hidden - use Results Entry 2 */}

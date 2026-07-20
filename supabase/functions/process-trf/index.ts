@@ -454,16 +454,16 @@ serve(async (req) => {
 
     // Step 2: Call Google Vision API for OCR
     console.log("\n👁️  Calling Google Vision API for OCR...");
-    const apiKey = Deno.env.get("ALLGOOGLE_KEY");
-    if (!apiKey) {
-      throw new Error("ALLGOOGLE_KEY not configured");
+    const visionApiKey = Deno.env.get("ALLGOOGLE_KEY2") || Deno.env.get("GOOGLE_CLOUD_API_KEY");
+    if (!visionApiKey) {
+      throw new Error("ALLGOOGLE_KEY2 or GOOGLE_CLOUD_API_KEY not configured");
     }
 
     console.log(
       "  - Using Vision API features: TEXT_DETECTION, DOCUMENT_TEXT_DETECTION",
     );
     const visionResponse = await fetch(
-      `https://vision.googleapis.com/v1/images:annotate?key=${apiKey}`,
+      `https://vision.googleapis.com/v1/images:annotate?key=${visionApiKey}`,
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -528,8 +528,13 @@ IMPORTANT: Use the IMAGE to verify checkbox states. The OCR text shows what test
     );
     console.log("  - Sending image for visual checkbox detection");
 
+    const geminiApiKey = Deno.env.get("ALLGOOGLE_KEY") || Deno.env.get("GEMINI_API_KEY");
+    if (!geminiApiKey) {
+      throw new Error("ALLGOOGLE_KEY or GEMINI_API_KEY not configured");
+    }
+
     const geminiResponse = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`,
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${geminiApiKey}`,
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },

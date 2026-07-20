@@ -98,6 +98,7 @@ export const NotificationTriggerSettings: React.FC = () => {
         send_report_on_status: 'Completed',
         auto_send_invoice_to_patient: false,
         auto_send_registration_confirmation: false,
+        auto_send_registration_to_doctor: false,
         auto_send_loyalty_points: false,
         auto_send_loyalty_redemption: false,
         include_test_details_in_registration: true,
@@ -435,8 +436,8 @@ export const NotificationTriggerSettings: React.FC = () => {
 
                 <SettingRow
                     icon={<Bell className="h-5 w-5" />}
-                    title="Send registration confirmation"
-                    description="Automatically send a confirmation message when a new order is registered"
+                    title="Send registration confirmation to patient"
+                    description="Automatically send a confirmation message to the patient when a new order is registered"
                     enabled={settings.auto_send_registration_confirmation || false}
                     onChange={(v) => updateSetting('auto_send_registration_confirmation', v)}
                 >
@@ -452,6 +453,14 @@ export const NotificationTriggerSettings: React.FC = () => {
                         </label>
                     </div>
                 </SettingRow>
+
+                <SettingRow
+                    icon={<Stethoscope className="h-5 w-5" />}
+                    title="Send registration confirmation to doctor"
+                    description="Automatically notify the referring doctor when a new order is registered"
+                    enabled={settings.auto_send_registration_to_doctor || false}
+                    onChange={(v) => updateSetting('auto_send_registration_to_doctor', v)}
+                />
             </div>
 
             {/* Loyalty Notifications */}

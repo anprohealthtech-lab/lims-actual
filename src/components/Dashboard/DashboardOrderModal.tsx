@@ -1020,28 +1020,37 @@ const DashboardOrderModal: React.FC<DashboardOrderModalProps> = ({
     const discountAmt = parseFloat(discountInput) || 0;
     setSavingDiscount(true);
     try {
-      // Fetch all invoices for this order to get combined totals
+      // Fetch all invoices for this order to get combined totals.
+      // Completed refunds reduce the money the lab actually keeps, so they
+      // raise the discount ceiling (net paid = amount_paid - total_refunded_amount).
       const { data: allInvoices } = await supabase
         .from('invoices')
-        .select('id, subtotal, discount, total, amount_paid')
+        .select('id, subtotal, discount, total, amount_paid, total_refunded_amount')
         .eq('order_id', order.id);
 
       const combinedSubtotal  = (allInvoices || []).reduce((s: number, inv: any) => s + (parseFloat(inv.subtotal) || 0), 0);
-      const combinedPaid      = (allInvoices || []).reduce((s: number, inv: any) => s + (parseFloat(inv.amount_paid) || 0), 0);
+      const combinedRefunded  = (allInvoices || []).reduce((s: number, inv: any) => s + (parseFloat(inv.total_refunded_amount) || 0), 0);
+      const combinedNetPaid   = (allInvoices || []).reduce(
+        (s: number, inv: any) => s + Math.max(0, (parseFloat(inv.amount_paid) || 0) - (parseFloat(inv.total_refunded_amount) || 0)),
+        0
+      );
       const newTotal          = combinedSubtotal - discountAmt;
 
-      if (newTotal < combinedPaid) {
-        alert(`Discount of ₹${discountAmt} would make total ₹${newTotal} less than already paid ₹${combinedPaid}.\nMaximum discount allowed: ₹${combinedSubtotal - combinedPaid}`);
+      if (newTotal < combinedNetPaid) {
+        const refundNote = combinedRefunded > 0 ? ` (₹${combinedNetPaid} = paid minus ₹${combinedRefunded} refunded)` : '';
+        alert(`Discount of ₹${discountAmt} would make total ₹${newTotal} less than the amount already collected ₹${combinedNetPaid}${refundNote}.\nMaximum discount allowed: ₹${combinedSubtotal - combinedNetPaid}`);
         return;
       }
 
       const primaryInvoice = (allInvoices || []).find((inv: any) => inv.id === order.invoice_id);
       const primarySubtotal = parseFloat(primaryInvoice?.subtotal || '0') || 0;
-      const primaryPaid = parseFloat(primaryInvoice?.amount_paid || '0') || 0;
+      const primaryNetPaid = Math.max(0,
+        (parseFloat(primaryInvoice?.amount_paid || '0') || 0) - (parseFloat(primaryInvoice?.total_refunded_amount || '0') || 0)
+      );
       const primaryTotalAfterDiscount = Math.max(0, primarySubtotal - discountAmt);
 
-      if (primaryTotalAfterDiscount < primaryPaid) {
-        alert(`Discount of ₹${discountAmt} would make this invoice total ₹${primaryTotalAfterDiscount} less than invoice paid amount ₹${primaryPaid}.`);
+      if (primaryTotalAfterDiscount < primaryNetPaid) {
+        alert(`Discount of ₹${discountAmt} would make this invoice total ₹${primaryTotalAfterDiscount} less than the amount collected on it ₹${primaryNetPaid} (net of refunds).`);
         return;
       }
 
@@ -1066,7 +1075,7 @@ const DashboardOrderModal: React.FC<DashboardOrderModalProps> = ({
       setDiscountInput('');
       setDiscountReason('');
       setInvoiceRefreshTrigger(t => t + 1);
-      setCurrentDue(Math.max(0, newTotal - combinedPaid));
+      setCurrentDue(Math.max(0, newTotal - (combinedNetPaid + combinedRefunded)));
       await onUpdateStatus(order.id, order.status);
       alert('Discount saved. Please regenerate the PDF to reflect the change.');
     } catch (err: any) {

@@ -285,6 +285,11 @@ export const DEFAULT_TEMPLATES = {
     message: 'Hello [PatientName],\n\nYour order has been registered successfully!\n\nOrder #: [OrderNumber]\nTests: [TestName]\nExpected Date: [ExpectedDate]\n\nThank you for choosing [LabName]!',
     requires_attachment: false,
   },
+  doctor_registration_confirmation: {
+    name: 'Doctor Registration Confirmation',
+    message: 'Hello Dr. [DoctorName],\n\nA new order has been registered for patient [PatientName].\n\nOrder #: [OrderNumber]\nTests: [TestName]\nExpected Date: [ExpectedDate]\n\nThank you,\n[LabName]',
+    requires_attachment: false,
+  },
 } as const;
 
 /**
@@ -297,6 +302,7 @@ export const TEMPLATE_CATEGORIES = [
   { key: 'loyalty_points_earned', label: 'Loyalty Points Earned', description: 'Sent to patient when points are awarded' },
   { key: 'loyalty_points_redeemed', label: 'Loyalty Points Redeemed', description: 'Sent to patient when points are redeemed' },
   { key: 'registration_confirmation', label: 'Registration Confirmation', description: 'Sent to patient when order is registered' },
+  { key: 'doctor_registration_confirmation', label: 'Registration Confirmation (Doctor)', description: 'Sent to referring doctor when order is registered' },
   { key: 'payment_reminder', label: 'Payment Reminder', description: 'Sent for pending payments' },
   { key: 'appointment_reminder', label: 'Appointment Reminder', description: 'Sent before scheduled appointments' },
   { key: 'test_results', label: 'Test Results Available', description: 'Notification that results are ready for pickup' },

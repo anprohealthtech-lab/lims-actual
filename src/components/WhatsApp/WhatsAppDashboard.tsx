@@ -36,14 +36,40 @@ const WhatsAppDashboard: React.FC<WhatsAppDashboardProps> = ({ onConnectionChang
   const pollingTimeoutRef = React.useRef<number | null>(null);
   const pollingStartedAtRef = React.useRef<number>(0);
   const currentDelayRef = React.useRef<number>(5000);
-  const stoppedRef = React.useRef<boolean>(false);
+  // true = no polling loop active; must start as true or startPollingForStatus's
+  // "already polling" guard blocks the very first start
+  const stoppedRef = React.useRef<boolean>(true);
   const isOperationInProgressRef = React.useRef<boolean>(false);
   const isMountedRef = React.useRef<boolean>(true);
+  // Zombie-session recovery: the backend only serves a QR while its session has
+  // one pending; a session left over from an expired QR yields nothing forever
+  const qrShownRef = React.useRef<boolean>(false);
+  const qrMissesRef = React.useRef<number>(0);
+  const autoResetDoneRef = React.useRef<boolean>(false);
 
   // Build an img src when backend only returns raw QR data
   const buildQrFromRaw = (raw?: string | null, size = 256) => {
     if (!raw) return null;
     return `https://api.qrserver.com/v1/create-qr-code/?size=${size}x${size}&data=${encodeURIComponent(raw)}`;
+  };
+
+  // The backend may return the QR as a data/http URL or as raw QR payload
+  const parseQrFromResult = (result: any): string | null => {
+    const qrFromResult = result?.qrCode as string | undefined;
+    if (qrFromResult) {
+      return qrFromResult.startsWith('data:') || qrFromResult.startsWith('http')
+        ? qrFromResult
+        : buildQrFromRaw(qrFromResult);
+    }
+    const rawQR = result?.rawQR as string | undefined;
+    return rawQR ? buildQrFromRaw(rawQR) : null;
+  };
+
+  const showQr = (qr: string | null) => {
+    if (!qr) return;
+    setQrCode(qr);
+    qrShownRef.current = true;
+    qrMissesRef.current = 0;
   };
 
   useEffect(() => {
@@ -94,8 +120,7 @@ const WhatsAppDashboard: React.FC<WhatsAppDashboardProps> = ({ onConnectionChang
 
     switch (eventType) {
       case 'user-qr-code': {
-        const qr = payload?.qrCode || buildQrFromRaw(payload?.rawQR);
-        if (qr) setQrCode(qr);
+        showQr(payload?.qrCode || buildQrFromRaw(payload?.rawQR));
         setConnectionStatus(prev => ({
           ...prev,
           message: 'QR Code generated. Scan with WhatsApp to connect.'
@@ -112,6 +137,7 @@ const WhatsAppDashboard: React.FC<WhatsAppDashboardProps> = ({ onConnectionChang
         });
         setQrCode(null);
         setIsConnecting(false);
+        isOperationInProgressRef.current = false;
         setLastUpdated(new Date());
         // Stop any pending polling immediately
         stopPollingForStatus();
@@ -126,6 +152,7 @@ const WhatsAppDashboard: React.FC<WhatsAppDashboardProps> = ({ onConnectionChang
         setQrCode(null);
         setIsConnecting(false);
         setIsDisconnecting(false);
+        isOperationInProgressRef.current = false;
         setLastUpdated(new Date());
         break;
       }
@@ -138,6 +165,7 @@ const WhatsAppDashboard: React.FC<WhatsAppDashboardProps> = ({ onConnectionChang
         setQrCode(null);
         setIsConnecting(false);
         setIsDisconnecting(false);
+        isOperationInProgressRef.current = false;
         break;
       }
       default:
@@ -158,7 +186,7 @@ const WhatsAppDashboard: React.FC<WhatsAppDashboardProps> = ({ onConnectionChang
         rawQR = latest?.rawQR;
         qr = latest?.qrCode || buildQrFromRaw(rawQR);
       }
-      if (qr) setQrCode(qr);
+      showQr(qr);
       setLastUpdated(new Date());
     } catch (error) {
       console.error('Failed to check connection status:', error);
@@ -177,6 +205,9 @@ const WhatsAppDashboard: React.FC<WhatsAppDashboardProps> = ({ onConnectionChang
     isOperationInProgressRef.current = true;
     setIsConnecting(true);
     setQrCode(null);
+    qrShownRef.current = false;
+    qrMissesRef.current = 0;
+    autoResetDoneRef.current = false;
 
     try {
       // Check if already connected or has active QR
@@ -185,6 +216,7 @@ const WhatsAppDashboard: React.FC<WhatsAppDashboardProps> = ({ onConnectionChang
         setConnectionStatus(existing);
         setConnectAttempts(0);
         setIsConnecting(false);
+        isOperationInProgressRef.current = false;
         return;
       }
 
@@ -204,15 +236,9 @@ const WhatsAppDashboard: React.FC<WhatsAppDashboardProps> = ({ onConnectionChang
       }
       setConnectAttempts(nextAttemptCount);
 
-      // If existing QR found, use it and start polling
-      if ((existing as any)?.qrCode || (existing as any)?.rawQR) {
-        setConnectionStatus(existing);
-        const rawQR = (existing as any)?.rawQR as string | undefined;
-        const qr = (existing as any)?.qrCode || buildQrFromRaw(rawQR);
-        if (qr) setQrCode(qr);
-        startPollingForStatus();
-        return;
-      }
+      // Note: don't reuse a QR from the status response here — after a QR expires
+      // unscanned the backend destroys the session, so that QR is dead and the
+      // /qr endpoint errors until a new session is created. Always POST connect.
 
       // Initiate new connection
       console.log('Initiating new WhatsApp connection...');
@@ -228,29 +254,14 @@ const WhatsAppDashboard: React.FC<WhatsAppDashboardProps> = ({ onConnectionChang
 
       setConnectionStatus(result);
 
-      // Parse QR code from result
-      // The backend might return qrCode as raw string or as image URL
-      const rawQR = (result as any)?.rawQR as string | undefined;
-      const qrCodeFromResult = (result as any)?.qrCode as string | undefined;
-
-      // If qrCode is a data URL or http URL, use it directly
-      // Otherwise, treat it as raw QR data and convert it
-      let qr: string | null = null;
-      if (qrCodeFromResult) {
-        if (qrCodeFromResult.startsWith('data:') || qrCodeFromResult.startsWith('http')) {
-          qr = qrCodeFromResult;
-        } else {
-          // It's raw QR data, convert it to image URL
-          qr = buildQrFromRaw(qrCodeFromResult);
-        }
-      } else if (rawQR) {
-        qr = buildQrFromRaw(rawQR);
-      }
-
+      const qr = parseQrFromResult(result);
       console.log('Connect result:', result, 'Parsed QR:', qr);
-      if (qr) setQrCode(qr);
+      showQr(qr);
 
-      if (result.success && qr) {
+      if (result.success) {
+        // Poll even without a QR in the response: this backend delivers the QR
+        // via the user-qr-code WebSocket event, and polling fetches it over HTTP
+        // as a fallback once the session exists
         setConnectAttempts(0);
         startPollingForStatus();
       } else {
@@ -313,7 +324,35 @@ const WhatsAppDashboard: React.FC<WhatsAppDashboardProps> = ({ onConnectionChang
           const raw = latest?.rawQR;
           qr = latest?.qrCode || (raw ? buildQrFromRaw(raw) : null);
         }
-        if (qr) setQrCode(qr);
+        if (qr) {
+          showQr(qr);
+        } else if (!status.isConnected && !qrShownRef.current) {
+          // Backend session exists but never yields a QR (zombie left over from
+          // an expired QR, and no WebSocket delivery). Reset it once and
+          // reconnect for a fresh QR; if that also fails, stop instead of
+          // polling for the full timeout.
+          qrMissesRef.current += 1;
+          if (qrMissesRef.current >= 3) {
+            if (!autoResetDoneRef.current) {
+              autoResetDoneRef.current = true;
+              qrMissesRef.current = 0;
+              console.info('[WA] No QR after several polls; resetting stale session and reconnecting');
+              await WhatsAppAPI.resetUserWhatsAppSession();
+              const retry = await WhatsAppAPI.connectWhatsApp();
+              showQr(parseQrFromResult(retry));
+            } else {
+              stopPollingForStatus();
+              setIsConnecting(false);
+              isOperationInProgressRef.current = false;
+              setConnectionStatus({
+                success: false,
+                isConnected: false,
+                message: 'Could not generate a QR code. Please wait a moment and click Connect again.'
+              });
+              return;
+            }
+          }
+        }
         setLastUpdated(new Date());
 
         const elapsed = Date.now() - pollingStartedAtRef.current;

@@ -57,40 +57,41 @@ const AccountInfoCard: React.FC<AccountInfoCardProps> = ({ account }) => {
         <div className="bg-white rounded-lg shadow-md border border-gray-200 overflow-hidden">
             {/* Header - Always Visible */}
             <div
-                className="p-6 cursor-pointer hover:bg-gray-50 transition-colors"
+                className="p-4 cursor-pointer hover:bg-gray-50 transition-colors"
                 onClick={() => setIsExpanded(!isExpanded)}
             >
                 <div className="flex items-center justify-between">
-                    <div className="flex items-center space-x-4">
-                        <div className="w-12 h-12 bg-blue-600 rounded-full flex items-center justify-center">
-                            <Building2 className="h-6 w-6 text-white" />
+                    <div className="flex items-center space-x-3 min-w-0">
+                        <div className="w-9 h-9 shrink-0 bg-blue-600 rounded-full flex items-center justify-center">
+                            <Building2 className="h-4 w-4 text-white" />
                         </div>
-                        <div>
-                            <h2 className="text-2xl font-bold text-gray-900">{account.name}</h2>
-                            <div className="flex items-center space-x-3 mt-1">
+                        <div className="min-w-0">
+                            <h2 className="text-base font-bold text-gray-900 truncate">{account.name}</h2>
+                            <div className="flex items-center space-x-2 mt-0.5">
                                 {account.code && (
-                                    <span className="text-sm text-gray-600">Code: {account.code}</span>
+                                    <span className="text-xs text-gray-500">Code: {account.code}</span>
                                 )}
-                                <span className={`px-2 py-1 rounded-full text-xs font-medium ${getTypeColor(account.type)}`}>
+                                <span className={`px-2 py-0.5 rounded-full text-[10px] font-medium ${getTypeColor(account.type)}`}>
                                     {account.type.replace('_', ' ').toUpperCase()}
                                 </span>
                             </div>
                         </div>
                     </div>
-                    <button className="p-2 hover:bg-gray-100 rounded-full transition-colors">
+                    <div className="flex items-center gap-1 text-xs text-gray-400">
+                        <span className="hidden sm:inline">{isExpanded ? 'Hide details' : 'Client details'}</span>
                         {isExpanded ? (
-                            <ChevronUp className="h-6 w-6 text-gray-600" />
+                            <ChevronUp className="h-5 w-5 text-gray-500" />
                         ) : (
-                            <ChevronDown className="h-6 w-6 text-gray-600" />
+                            <ChevronDown className="h-5 w-5 text-gray-500" />
                         )}
-                    </button>
+                    </div>
                 </div>
             </div>
 
             {/* Expandable Details */}
             {isExpanded && (
-                <div className="px-6 pb-6 border-t border-gray-200">
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mt-6">
+                <div className="px-4 pb-4 border-t border-gray-200">
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mt-4">
                         {/* Contact Information */}
                         <div>
                             <h3 className="text-sm font-semibold text-gray-700 mb-3">Contact Information</h3>
@@ -135,11 +136,11 @@ const AccountInfoCard: React.FC<AccountInfoCardProps> = ({ account }) => {
                                         <CreditCard className="h-4 w-4 mr-2" />
                                         Credit Limit
                                     </div>
-                                    <span className="font-semibold text-gray-900">{formatCurrency(account.credit_limit)}</span>
+                                    <span className="font-semibold text-gray-900">{formatCurrency(account.credit_limit || 0)}</span>
                                 </div>
                                 <div className="flex items-center justify-between text-sm">
                                     <span className="text-gray-600">Payment Terms</span>
-                                    <span className="font-semibold text-gray-900">{account.payment_terms} days</span>
+                                    <span className="font-semibold text-gray-900">{account.payment_terms || 0} days</span>
                                 </div>
                                 {account.default_discount_percent !== undefined && account.default_discount_percent > 0 && (
                                     <div className="flex items-center justify-between text-sm">

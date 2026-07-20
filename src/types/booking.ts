@@ -31,6 +31,14 @@ export interface Booking {
   converted_order_id?: string;
   assigned_phlebo_id?: string;
   assigned_phlebo_name?: string;
+  patient_id?: string;
+  collection_status?: 'assigned' | 'started' | 'reached' | 'collected' | null;
+  collection_started_at?: string | null;
+  collection_reached_at?: string | null;
+  collection_collected_at?: string | null;
+  phlebo_last_lat?: number | null;
+  phlebo_last_lng?: number | null;
+  phlebo_location_updated_at?: string | null;
   created_by?: string;
   created_at: string;
   updated_at: string;

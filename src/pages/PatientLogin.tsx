@@ -1,7 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Stethoscope, Phone, KeyRound, LogIn, AlertCircle, ArrowLeft, CheckCircle } from 'lucide-react';
+import { Stethoscope, Phone, KeyRound, LogIn, AlertCircle, ArrowLeft, CheckCircle, MessageCircle } from 'lucide-react';
 import { isPatientUser, resolvePatientByPhone, patientSignIn } from '../utils/patientAuth';
+import { supabase } from '../utils/supabase';
 
 type Step = 'phone' | 'pin';
 
@@ -17,6 +18,10 @@ const PatientLogin: React.FC = () => {
   const [resolvedEmail, setResolvedEmail] = useState('');
   const [patientName, setPatientName] = useState('');
   const [labName, setLabName] = useState('');
+
+  // Forgot PIN state
+  const [forgotLoading, setForgotLoading] = useState(false);
+  const [forgotMessage, setForgotMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
 
   // Redirect if already logged in as patient
   useEffect(() => {
@@ -49,6 +54,40 @@ const PatientLogin: React.FC = () => {
       setError('Unable to verify mobile number. Please try again.');
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleForgotPin = async () => {
+    setForgotLoading(true);
+    setForgotMessage(null);
+    setError(null);
+    try {
+      const supabaseUrl = (supabase as any).supabaseUrl as string;
+      const res = await fetch(`${supabaseUrl}/functions/v1/patient-forgot-pin`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'apikey': (supabase as any).supabaseKey as string,
+        },
+        body: JSON.stringify({ phone }),
+      });
+      const json = await res.json();
+      if (json.success) {
+        setForgotMessage({ type: 'success', text: json.message || 'A new PIN has been sent to your WhatsApp.' });
+        setPin('');
+      } else {
+        setForgotMessage({
+          type: 'error',
+          text: json.message || `Could not send a new PIN. Please contact ${labName || 'your lab'} for help.`,
+        });
+      }
+    } catch {
+      setForgotMessage({
+        type: 'error',
+        text: `Could not send a new PIN. Please contact ${labName || 'your lab'} for help.`,
+      });
+    } finally {
+      setForgotLoading(false);
     }
   };
 
@@ -194,6 +233,25 @@ const PatientLogin: React.FC = () => {
                   Enter the 6-digit PIN sent to your mobile by the lab.
                 </p>
               </div>
+
+              {/* Forgot PIN */}
+              {forgotMessage && (
+                <div className={`rounded-lg p-3 flex items-start text-sm ${forgotMessage.type === 'success' ? 'bg-green-50 border border-green-200 text-green-800' : 'bg-amber-50 border border-amber-200 text-amber-800'}`}>
+                  {forgotMessage.type === 'success'
+                    ? <CheckCircle className="h-4 w-4 mt-0.5 mr-2 flex-shrink-0" />
+                    : <AlertCircle className="h-4 w-4 mt-0.5 mr-2 flex-shrink-0" />}
+                  {forgotMessage.text}
+                </div>
+              )}
+              <button
+                type="button"
+                onClick={handleForgotPin}
+                disabled={forgotLoading || loading}
+                className="w-full flex items-center justify-center gap-1.5 text-sm text-teal-600 hover:text-teal-700 font-medium disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                <MessageCircle className="h-4 w-4" />
+                {forgotLoading ? 'Sending new PIN...' : 'Forgot PIN? Get a new one on WhatsApp'}
+              </button>
 
               <div className="flex gap-3">
                 <button

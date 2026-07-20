@@ -3,7 +3,8 @@ import { useNavigate } from 'react-router-dom';
 import {
   LogOut, Download, Search, RefreshCw, FileText, Printer,
   User, Phone, Droplets, Calendar, ChevronDown, ChevronUp,
-  Clock, CheckCircle, Loader, AlertCircle, KeyRound, Eye, EyeOff
+  Clock, CheckCircle, Loader, AlertCircle, KeyRound, Eye, EyeOff,
+  Home, MapPin, Truck, Navigation
 } from 'lucide-react';
 import { supabase } from '../utils/supabase';
 import { getCurrentPatientMeta, patientSignOut } from '../utils/patientAuth';
@@ -49,6 +50,50 @@ interface SampleSummary {
   rejection_reason?: string | null;
 }
 
+interface HomeCollectionBooking {
+  id: string;
+  status: string;
+  scheduled_at: string | null;
+  home_collection_address: { address?: string; city?: string; pincode?: string } | null;
+  test_details: Array<{ name: string; type?: string }> | null;
+  assigned_phlebo_name: string | null;
+  collection_status: string | null;
+  phlebo_last_lat: number | null;
+  phlebo_last_lng: number | null;
+  phlebo_location_updated_at: string | null;
+  created_at: string;
+}
+
+// How often the patient portal re-fetches the phlebo's position while en route
+const TRACK_REFRESH_MS = 20000;
+
+const isEnRoute = (b: HomeCollectionBooking) =>
+  b.collection_status === 'started' || b.collection_status === 'reached';
+
+const timeAgo = (iso: string | null): string => {
+  if (!iso) return '';
+  const secs = Math.max(0, Math.floor((Date.now() - new Date(iso).getTime()) / 1000));
+  if (secs < 60) return `${secs}s ago`;
+  const mins = Math.floor(secs / 60);
+  if (mins < 60) return `${mins} min ago`;
+  return new Date(iso).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' });
+};
+
+const BOOKING_STATUS_CONFIG: Record<string, { label: string; color: string }> = {
+  pending:   { label: 'Requested',  color: 'bg-amber-100 text-amber-800' },
+  quoted:    { label: 'Quoted',     color: 'bg-blue-100 text-blue-800' },
+  confirmed: { label: 'Confirmed',  color: 'bg-green-100 text-green-800' },
+  converted: { label: 'Completed',  color: 'bg-gray-100 text-gray-700' },
+  cancelled: { label: 'Cancelled',  color: 'bg-red-100 text-red-700' },
+};
+
+const JOURNEY_STATUS_CONFIG: Record<string, { label: string; color: string }> = {
+  assigned:  { label: 'Phlebotomist Assigned', color: 'bg-indigo-100 text-indigo-800' },
+  started:   { label: 'Phlebotomist On The Way', color: 'bg-blue-100 text-blue-800' },
+  reached:   { label: 'Phlebotomist Arrived', color: 'bg-purple-100 text-purple-800' },
+  collected: { label: 'Sample Collected', color: 'bg-green-100 text-green-800' },
+};
+
 const STATUS_CONFIG: Record<string, { label: string; color: string; icon: React.ReactNode }> = {
   'Pending Collection': { label: 'Pending Collection', color: 'bg-yellow-100 text-yellow-800', icon: <Clock className="h-3 w-3" /> },
   'In Progress':        { label: 'In Progress',        color: 'bg-blue-100 text-blue-800',   icon: <Loader className="h-3 w-3 animate-spin" /> },
@@ -75,9 +120,45 @@ const PatientPortal: React.FC = () => {
   const [pinMessage, setPinMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   const [labName, setLabName] = useState('');
 
+  // Home collection booking
+  const [bookings, setBookings] = useState<HomeCollectionBooking[]>([]);
+  const [showBookingForm, setShowBookingForm] = useState(false);
+  const [bookingDate, setBookingDate] = useState('');
+  const [bookingTime, setBookingTime] = useState('');
+  const [bookingAddress, setBookingAddress] = useState('');
+  const [bookingCity, setBookingCity] = useState('');
+  const [bookingPincode, setBookingPincode] = useState('');
+  const [bookingNotes, setBookingNotes] = useState('');
+  const [bookingLoading, setBookingLoading] = useState(false);
+  const [bookingMessage, setBookingMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+  const [trackingOpenId, setTrackingOpenId] = useState<string | null>(null);
+
   useEffect(() => {
     loadData();
   }, []);
+
+  // While a phlebo is en route, refresh their live position + journey status periodically
+  useEffect(() => {
+    const enRouteIds = bookings.filter(isEnRoute).map((b) => b.id);
+    if (enRouteIds.length === 0) return;
+
+    const timer = setInterval(async () => {
+      const { data } = await supabase
+        .from('bookings')
+        .select('id, collection_status, phlebo_last_lat, phlebo_last_lng, phlebo_location_updated_at')
+        .in('id', enRouteIds);
+      if (data && data.length > 0) {
+        setBookings((prev) =>
+          prev.map((b) => {
+            const fresh = data.find((d) => d.id === b.id);
+            return fresh ? { ...b, ...fresh } : b;
+          })
+        );
+      }
+    }, TRACK_REFRESH_MS);
+
+    return () => clearInterval(timer);
+  }, [bookings]);
 
   useEffect(() => {
     let filtered = [...orders];
@@ -136,10 +217,76 @@ const PatientPortal: React.FC = () => {
         .order('order_date', { ascending: false });
 
       setOrders(ordersData || []);
+
+      // Fetch home collection requests (RLS ensures own bookings only)
+      const { data: bookingsData } = await supabase
+        .from('bookings')
+        .select('id, status, scheduled_at, home_collection_address, test_details, assigned_phlebo_name, collection_status, phlebo_last_lat, phlebo_last_lng, phlebo_location_updated_at, created_at')
+        .eq('patient_id', meta.patient_id)
+        .order('created_at', { ascending: false });
+
+      setBookings(bookingsData || []);
     } catch (err) {
       console.error('PatientPortal load error:', err);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleBookHomeCollection = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setBookingMessage(null);
+
+    if (!bookingDate || !bookingTime) {
+      setBookingMessage({ type: 'error', text: 'Please choose a preferred date and time.' });
+      return;
+    }
+    if (!bookingAddress.trim()) {
+      setBookingMessage({ type: 'error', text: 'Please enter your collection address.' });
+      return;
+    }
+
+    setBookingLoading(true);
+    try {
+      const meta = await getCurrentPatientMeta();
+      if (!meta) { navigate('/patient/login'); return; }
+
+      const scheduledAt = new Date(`${bookingDate}T${bookingTime}`).toISOString();
+
+      const { error } = await supabase.from('bookings').insert({
+        lab_id: meta.lab_id,
+        patient_id: meta.patient_id,
+        booking_source: 'patient_app',
+        status: 'pending',
+        collection_type: 'home_collection',
+        patient_info: {
+          name: patient?.name || meta.name,
+          phone: patient?.phone || meta.phone,
+          age: patient?.age ?? undefined,
+          gender: patient?.gender ?? undefined,
+        },
+        test_details: bookingNotes.trim() ? [{ name: bookingNotes.trim(), type: 'note' }] : [],
+        scheduled_at: scheduledAt,
+        home_collection_address: {
+          address: bookingAddress.trim(),
+          city: bookingCity.trim() || undefined,
+          pincode: bookingPincode.trim() || undefined,
+        },
+      });
+
+      if (error) throw error;
+
+      setBookingMessage({ type: 'success', text: 'Home collection request sent! The lab will confirm your slot shortly.' });
+      setBookingDate('');
+      setBookingTime('');
+      setBookingNotes('');
+      await loadData();
+      setTimeout(() => { setShowBookingForm(false); setBookingMessage(null); }, 2500);
+    } catch (err) {
+      console.error('Home collection booking error:', err);
+      setBookingMessage({ type: 'error', text: 'Failed to send request. Please try again or call the lab.' });
+    } finally {
+      setBookingLoading(false);
     }
   };
 
@@ -413,6 +560,212 @@ const PatientPortal: React.FC = () => {
               </div>
             )}
           </div>
+        </div>
+
+        {/* Home Collection Section */}
+        <div className="bg-white rounded-xl shadow-sm border border-gray-200">
+          <div className="p-4 flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <div className="w-9 h-9 bg-teal-50 rounded-lg flex items-center justify-center">
+                <Home className="h-4 w-4 text-teal-600" />
+              </div>
+              <div>
+                <p className="text-sm font-medium text-gray-900">Home Collection</p>
+                <p className="text-xs text-gray-500">Book a sample collection at your doorstep</p>
+              </div>
+            </div>
+            <button
+              onClick={() => { setShowBookingForm(!showBookingForm); setBookingMessage(null); }}
+              className="px-3 py-2 text-sm font-medium bg-teal-600 text-white rounded-lg hover:bg-teal-700 transition-colors"
+            >
+              {showBookingForm ? 'Close' : 'Book Now'}
+            </button>
+          </div>
+
+          {showBookingForm && (
+            <div className="px-4 pb-4 border-t border-gray-100">
+              <form onSubmit={handleBookHomeCollection} className="mt-4 space-y-4">
+                {bookingMessage && (
+                  <div className={`flex items-center gap-2 p-3 rounded-lg text-sm ${bookingMessage.type === 'success' ? 'bg-green-50 text-green-800' : 'bg-red-50 text-red-800'}`}>
+                    {bookingMessage.type === 'success'
+                      ? <CheckCircle className="h-4 w-4 flex-shrink-0" />
+                      : <AlertCircle className="h-4 w-4 flex-shrink-0" />}
+                    {bookingMessage.text}
+                  </div>
+                )}
+
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-xs font-medium text-gray-700 mb-1.5">Preferred Date</label>
+                    <input
+                      type="date"
+                      value={bookingDate}
+                      min={new Date().toISOString().split('T')[0]}
+                      onChange={(e) => setBookingDate(e.target.value)}
+                      className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-teal-500 focus:border-teal-500"
+                      required
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-medium text-gray-700 mb-1.5">Preferred Time</label>
+                    <input
+                      type="time"
+                      value={bookingTime}
+                      onChange={(e) => setBookingTime(e.target.value)}
+                      className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-teal-500 focus:border-teal-500"
+                      required
+                    />
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-medium text-gray-700 mb-1.5">Collection Address</label>
+                  <textarea
+                    value={bookingAddress}
+                    onChange={(e) => setBookingAddress(e.target.value)}
+                    rows={2}
+                    className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-teal-500 focus:border-teal-500"
+                    placeholder="House / flat, street, landmark..."
+                    required
+                  />
+                </div>
+
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-xs font-medium text-gray-700 mb-1.5">City</label>
+                    <input
+                      type="text"
+                      value={bookingCity}
+                      onChange={(e) => setBookingCity(e.target.value)}
+                      className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-teal-500 focus:border-teal-500"
+                      placeholder="City"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-medium text-gray-700 mb-1.5">Pincode</label>
+                    <input
+                      type="text"
+                      inputMode="numeric"
+                      maxLength={6}
+                      value={bookingPincode}
+                      onChange={(e) => setBookingPincode(e.target.value.replace(/\D/g, '').slice(0, 6))}
+                      className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-teal-500 focus:border-teal-500"
+                      placeholder="Pincode"
+                    />
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-medium text-gray-700 mb-1.5">Tests Needed / Notes (optional)</label>
+                  <textarea
+                    value={bookingNotes}
+                    onChange={(e) => setBookingNotes(e.target.value)}
+                    rows={2}
+                    className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-teal-500 focus:border-teal-500"
+                    placeholder="e.g. CBC, Thyroid profile — or doctor's prescription details"
+                  />
+                </div>
+
+                <button
+                  type="submit"
+                  disabled={bookingLoading}
+                  className="w-full py-2 text-sm font-medium bg-teal-600 text-white rounded-lg hover:bg-teal-700 disabled:bg-teal-300 disabled:cursor-not-allowed transition-colors"
+                >
+                  {bookingLoading ? 'Sending Request...' : 'Request Home Collection'}
+                </button>
+              </form>
+            </div>
+          )}
+
+          {/* Existing requests */}
+          {bookings.length > 0 && (
+            <div className="px-4 pb-4 border-t border-gray-100">
+              <p className="text-xs text-gray-500 mt-3 mb-2 font-medium">Your Requests</p>
+              <div className="space-y-2">
+                {bookings.map((b) => {
+                  const statusCfg = BOOKING_STATUS_CONFIG[b.status] || { label: b.status, color: 'bg-gray-100 text-gray-700' };
+                  const journeyCfg = b.collection_status ? JOURNEY_STATUS_CONFIG[b.collection_status] : null;
+                  return (
+                    <div key={b.id} className="border border-gray-200 rounded-lg p-3">
+                      <div className="flex items-center justify-between gap-2 flex-wrap">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <span className={`inline-flex px-2 py-0.5 rounded-full text-xs font-medium ${statusCfg.color}`}>
+                            {statusCfg.label}
+                          </span>
+                          {journeyCfg && (
+                            <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium ${journeyCfg.color}`}>
+                              <Truck className="h-3 w-3" />
+                              {journeyCfg.label}
+                            </span>
+                          )}
+                        </div>
+                        {b.scheduled_at && (
+                          <span className="text-xs text-gray-500 flex items-center gap-1">
+                            <Clock className="h-3 w-3" />
+                            {new Date(b.scheduled_at).toLocaleString('en-IN', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })}
+                          </span>
+                        )}
+                      </div>
+                      {b.assigned_phlebo_name && (
+                        <p className="text-xs text-gray-600 mt-1.5">
+                          Phlebotomist: <span className="font-medium">{b.assigned_phlebo_name}</span>
+                        </p>
+                      )}
+                      {isEnRoute(b) && (
+                        b.phlebo_last_lat != null && b.phlebo_last_lng != null ? (
+                          <div className="mt-2">
+                            <div className="flex items-center gap-3 flex-wrap">
+                              <button
+                                onClick={() => setTrackingOpenId(trackingOpenId === b.id ? null : b.id)}
+                                className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
+                              >
+                                <Navigation className="h-3.5 w-3.5" />
+                                {trackingOpenId === b.id ? 'Hide Live Location' : 'Track Phlebotomist Live'}
+                              </button>
+                              <a
+                                href={`https://www.google.com/maps?q=${b.phlebo_last_lat},${b.phlebo_last_lng}`}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="text-xs text-blue-600 hover:text-blue-700 underline"
+                              >
+                                Open in Google Maps
+                              </a>
+                            </div>
+                            {trackingOpenId === b.id && (
+                              <div className="mt-2 rounded-lg overflow-hidden border border-gray-200">
+                                <iframe
+                                  title="Phlebotomist live location"
+                                  src={`https://maps.google.com/maps?q=${b.phlebo_last_lat},${b.phlebo_last_lng}&z=15&output=embed`}
+                                  className="w-full h-48 border-0"
+                                  loading="lazy"
+                                />
+                                <p className="text-[11px] text-gray-500 px-2 py-1.5 bg-gray-50 flex items-center gap-1">
+                                  <span className="w-1.5 h-1.5 bg-green-500 rounded-full animate-pulse flex-shrink-0" />
+                                  Location updated {timeAgo(b.phlebo_location_updated_at)} · refreshes automatically
+                                </p>
+                              </div>
+                            )}
+                          </div>
+                        ) : (
+                          <p className="text-xs text-blue-600 mt-2 flex items-center gap-1.5">
+                            <Loader className="h-3 w-3 animate-spin" />
+                            Phlebotomist is on the way — waiting for live location…
+                          </p>
+                        )
+                      )}
+                      {b.home_collection_address?.address && (
+                        <p className="text-xs text-gray-500 mt-1 flex items-start gap-1">
+                          <MapPin className="h-3 w-3 mt-0.5 flex-shrink-0" />
+                          {b.home_collection_address.address}
+                          {b.home_collection_address.city ? `, ${b.home_collection_address.city}` : ''}
+                        </p>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
         </div>
 
         {/* Change PIN Section */}

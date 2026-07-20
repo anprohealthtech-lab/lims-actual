@@ -9,6 +9,7 @@ import { database, supabase } from '../../utils/supabase';
 import {
   CalculatedDependency,
   selectPreferredCalculatedDependencies,
+  dedupeDependenciesForSave,
 } from '../../utils/calculatedDependencies';
 import AnalyteForm from './AnalyteForm';
 import { SimpleAnalyteEditor } from '../TestGroups/SimpleAnalyteEditor';
@@ -266,6 +267,7 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
   const [syncGlobalResult, setSyncGlobalResult] = useState<string | null>(null);
   const [aiLayoutBusy, setAiLayoutBusy] = useState(false);
   const [aiDropdownBusy, setAiDropdownBusy] = useState(false);
+  const [aiCalcBusy, setAiCalcBusy] = useState(false);
   const [aiHelperResult, setAiHelperResult] = useState<string | null>(null);
   const [showReportPreview, setShowReportPreview] = useState(false);
   const [newSampleCondition, setNewSampleCondition] = useState('');
@@ -796,9 +798,9 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
     try {
       const labId = await database.getCurrentUserLabId();
       if (!labId) throw new Error('Unable to determine lab context');
-      console.log('[SyncFromGlobal] lab_id:', labId, 'test_group_name:', testGroup.name);
+      console.log('[SyncFromGlobal] lab_id:', labId, 'test_group_name:', testGroup.name, 'test_group_code:', testGroup.code);
       const { data, error: fnError } = await supabase.functions.invoke('onboarding-lab', {
-        body: { lab_id: labId, mode: 'single', test_group_name: testGroup.name }
+        body: { lab_id: labId, mode: 'single', test_group_name: testGroup.name, test_group_code: testGroup.code }
       });
       if (fnError) throw new Error(fnError.message);
       if (!data?.success) {
@@ -808,9 +810,21 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
       const parts = [];
       if (data.analytesAdded) parts.push(`${data.analytesAdded} added`);
       if (data.analytesUpdated) parts.push(`${data.analytesUpdated} updated`);
+      if (data.groupDetailsSynced) parts.push('test details updated');
       if (data.interpretationSynced) parts.push('interpretation updated');
       const msg = parts.length ? `Synced: ${parts.join(', ')}` : 'Synced: already up to date';
       setSyncGlobalResult(msg);
+      if (data.syncedTestGroup) {
+        setFormData(prev => ({
+          ...prev,
+          code: data.syncedTestGroup.code || prev.code,
+          category: data.syncedTestGroup.category || prev.category,
+          sampleType: data.syncedTestGroup.sample_type || prev.sampleType,
+          default_ai_processing_type: data.syncedTestGroup.default_ai_processing_type || prev.default_ai_processing_type,
+          group_level_prompt: data.syncedTestGroup.group_level_prompt ?? prev.group_level_prompt,
+          global_test_catalog_id: data.syncedTestGroup.global_test_catalog_id || prev.global_test_catalog_id,
+        }));
+      }
       // Refresh metadata so sort_order and section_heading populate from the DB
       await loadData();
     } catch (err: any) {
@@ -1031,7 +1045,7 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
     });
   })();
 
-  const buildAiHelperPayload = (action: 'layout_order' | 'dropdown_values') => ({
+  const buildAiHelperPayload = (action: 'layout_order' | 'dropdown_values' | 'calculated_fields') => ({
     action,
     test_group: {
       name: formData.name || testGroup?.name || '',
@@ -1057,11 +1071,14 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
         reference_range: analyte.referenceRange || analyte.reference_range || '',
         sort_order: meta.sort_order || index + 1,
         section_heading: meta.section_heading || '',
+        is_calculated: analyte.is_calculated ?? false,
+        formula: analyte.formula || '',
+        formula_variables: Array.isArray(analyte.formula_variables) ? analyte.formula_variables : [],
       };
     }),
   });
 
-  const invokeAiHelper = async (action: 'layout_order' | 'dropdown_values') => {
+  const invokeAiHelper = async (action: 'layout_order' | 'dropdown_values' | 'calculated_fields') => {
     const payload = buildAiHelperPayload(action);
     const { data, error } = await supabase.functions.invoke('ai-test-group-analyte-helper', {
       body: payload,
@@ -1206,6 +1223,120 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
       setAiHelperResult(`Error: ${error.message || 'AI dropdown setup failed'}`);
     } finally {
       setAiDropdownBusy(false);
+    }
+  };
+
+  const handleAiCalculatedFields = async () => {
+    if (aiCalcBusy || formData.is_section_only || selectedAnalyteDetails.length === 0) return;
+    setAiCalcBusy(true);
+    setAiHelperResult(null);
+    try {
+      const labId = await database.getCurrentUserLabId();
+      if (!labId) throw new Error('Unable to determine lab context');
+
+      const result = await invokeAiHelper('calculated_fields');
+      const calculated = Array.isArray(result.calculated) ? result.calculated : [];
+      if (calculated.length === 0) {
+        setAiHelperResult('AI found no calculated fields in this test group.');
+        return;
+      }
+
+      // Lookup for resolving AI source references back to real analyte rows
+      const analyteById = new Map<string, any>();
+      for (const analyte of selectedAnalyteDetails) {
+        analyteById.set(String(analyte.id), analyte);
+      }
+      const resolveLabAnalyteId = (analyteId: string, fallback?: any) =>
+        analyteMetadata[analyteId]?.lab_analyte_id ||
+        fallback?.lab_analyte_id ||
+        null;
+
+      let changed = 0;
+      let skippedMissingSources = 0;
+
+      for (const item of calculated) {
+        const analyteId = String(item.analyte_id || '');
+        if (!analyteId || !analyteById.has(analyteId)) continue;
+        const formula = String(item.formula || '').trim();
+        if (!formula) continue;
+
+        const targetAnalyte = analyteById.get(analyteId);
+        const labAnalyteId = item.lab_analyte_id || resolveLabAnalyteId(analyteId, targetAnalyte);
+
+        // Resolve source dependencies — every source must exist in this group
+        const sources = Array.isArray(item.sources) ? item.sources : [];
+        const deps: Array<{ source_analyte_id: string; source_lab_analyte_id: string | null; variable_name: string }> = [];
+        const variableNames: string[] = [];
+        let hasMissingSource = false;
+        for (const src of sources) {
+          const srcId = String(src.analyte_id || '');
+          const variableName = String(src.variable_name || '').trim();
+          if (!srcId || !variableName) continue;
+          const srcAnalyte = analyteById.get(srcId);
+          if (!srcAnalyte) {
+            hasMissingSource = true;
+            break;
+          }
+          deps.push({
+            source_analyte_id: srcId,
+            source_lab_analyte_id: resolveLabAnalyteId(srcId, srcAnalyte),
+            variable_name: variableName,
+          });
+          variableNames.push(variableName);
+        }
+
+        if (hasMissingSource || deps.length === 0) {
+          skippedMissingSources++;
+          continue;
+        }
+
+        const calcResultType = item.calculation_result_type === 'text' ? 'text' : 'numeric';
+        const patch = {
+          is_calculated: true,
+          formula,
+          formula_variables: variableNames,
+          formula_description: item.formula_description || null,
+          calculation_result_type: calcResultType,
+        };
+
+        // Persist formula config on the lab_analyte row (lab-specific)
+        if (labAnalyteId) {
+          const { error } = await database.labAnalytes.updateFieldsById(labAnalyteId, patch);
+          if (error) throw new Error(error.message || `Failed updating ${labAnalyteId}`);
+        }
+
+        // Persist dependency mappings (variable_name → source analyte)
+        const dedupedDeps = dedupeDependenciesForSave(deps);
+        const { error: depError } = await database.analyteDependencies.setDependencies(
+          analyteId,
+          dedupedDeps,
+          labId,
+          labAnalyteId,
+        );
+        if (depError) throw new Error(depError.message || `Failed saving dependencies for ${analyteId}`);
+
+        // Reflect changes locally so is_calculated + warnings update immediately
+        setAllLinkedAnalytes(prev => prev.map((analyte: any) =>
+          analyte.id === analyteId ? { ...analyte, ...patch } : analyte
+        ));
+        setAnalytes(prev => prev.map((analyte: any) =>
+          analyte.id === analyteId ? { ...analyte, ...patch } : analyte
+        ));
+        changed++;
+      }
+
+      const parts: string[] = [];
+      if (changed > 0) {
+        parts.push(`AI linked ${changed} calculated field${changed !== 1 ? 's' : ''} with formulas and source dependencies.`);
+      }
+      if (skippedMissingSources > 0) {
+        parts.push(`${skippedMissingSources} skipped (required source analytes not in this group).`);
+      }
+      setAiHelperResult(parts.length > 0 ? parts.join(' ') : 'AI found no calculated fields to link.');
+    } catch (error: any) {
+      setAiHelperResult(`Error: ${error.message || 'AI calculated-field setup failed'}`);
+    } finally {
+      setAiCalcBusy(false);
     }
   };
 
@@ -2409,6 +2540,16 @@ const TestGroupForm: React.FC<TestGroupFormProps> = ({ onClose, onSubmit, testGr
                     >
                       <Sparkles className={`h-3 w-3 ${aiDropdownBusy ? 'animate-pulse' : ''}`} />
                       {aiDropdownBusy ? 'Checking...' : 'AI Dropdowns'}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleAiCalculatedFields}
+                      disabled={aiCalcBusy || loading}
+                      className="flex items-center gap-1 px-2 py-1 border border-emerald-300 text-emerald-700 rounded hover:bg-emerald-50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors text-xs"
+                      title="Use AI to detect calculated parameters, mark them calculated, and link their formulas and source dependencies"
+                    >
+                      <Calculator className={`h-3 w-3 ${aiCalcBusy ? 'animate-pulse' : ''}`} />
+                      {aiCalcBusy ? 'Linking...' : 'AI Calculated'}
                     </button>
                     <button
                       type="button"

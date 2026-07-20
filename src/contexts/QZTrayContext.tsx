@@ -11,6 +11,7 @@
  *   barcodeBrowserPrintEnabled = location.barcode_browser_print_enabled ?? lab.barcode_browser_print_enabled
  *   autoPrintBarcodeOnOrder = location.auto_print_barcode_on_order ?? lab.auto_print_barcode_on_order
  *   autoPrintReportOnApproval = location.auto_print_report_on_approval ?? lab.auto_print_report_on_approval
+ *   barcodeLabelLayout      = location.barcode_label_layout ?? lab.barcode_label_layout ?? app default
  */
 
 import React, {
@@ -24,6 +25,12 @@ import React, {
 import { database, supabase } from '../utils/supabase';
 import * as printService from '../utils/qzTrayService';
 import type { BarcodeLabelData, QZConnectionStatus } from '../utils/qzTrayService';
+import {
+  DEFAULT_LABEL_LAYOUT,
+  normalizeLabelLayout,
+  setActiveLabelLayout,
+  type LabelLayout,
+} from '../utils/labelLayout';
 
 interface QZPrintSettings {
   barcodePrinterName: string | null;
@@ -31,6 +38,7 @@ interface QZPrintSettings {
   barcodeBrowserPrintEnabled: boolean;
   autoPrintBarcodeOnOrder: boolean;
   autoPrintReportOnApproval: boolean;
+  barcodeLabelLayout: LabelLayout;
 }
 
 interface QZTrayContextValue {
@@ -50,6 +58,7 @@ const defaultSettings: QZPrintSettings = {
   barcodeBrowserPrintEnabled: false,
   autoPrintBarcodeOnOrder: false,
   autoPrintReportOnApproval: false,
+  barcodeLabelLayout: DEFAULT_LABEL_LAYOUT,
 };
 
 export const QZTrayContext = createContext<QZTrayContextValue>({
@@ -80,6 +89,16 @@ export const QZTrayProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     return printService.onConnectionStatusChange(setStatus);
   }, []);
 
+  /**
+   * Publish the resolved layout to the label renderers as well as to React
+   * state. The PDF and ZPL builders read it from there, which keeps every
+   * existing print call site unchanged.
+   */
+  const applySettings = useCallback((next: QZPrintSettings) => {
+    setSettings(next);
+    setActiveLabelLayout(next.barcodeLabelLayout);
+  }, []);
+
   const refreshSettings = useCallback(async (): Promise<QZPrintSettings> => {
     try {
       const [labId, locationId] = await Promise.all([
@@ -88,20 +107,20 @@ export const QZTrayProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       ]);
 
       if (!labId) {
-        setSettings(defaultSettings);
+        applySettings(defaultSettings);
         return defaultSettings;
       }
 
       const [labResult, locationResult] = await Promise.all([
         supabase
           .from('labs')
-          .select('barcode_printer_name, report_printer_name, barcode_browser_print_enabled, auto_print_barcode_on_order, auto_print_report_on_approval')
+          .select('barcode_printer_name, report_printer_name, barcode_browser_print_enabled, barcode_label_layout, auto_print_barcode_on_order, auto_print_report_on_approval')
           .eq('id', labId)
           .single(),
         locationId
           ? supabase
               .from('locations')
-              .select('barcode_printer_name, report_printer_name, barcode_browser_print_enabled, auto_print_barcode_on_order, auto_print_report_on_approval')
+              .select('barcode_printer_name, report_printer_name, barcode_browser_print_enabled, barcode_label_layout, auto_print_barcode_on_order, auto_print_report_on_approval')
               .eq('id', locationId)
               .eq('lab_id', labId)
               .maybeSingle()
@@ -112,7 +131,7 @@ export const QZTrayProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       const loc = locationResult.data;
 
       if (!lab) {
-        setSettings(defaultSettings);
+        applySettings(defaultSettings);
         return defaultSettings;
       }
 
@@ -129,15 +148,18 @@ export const QZTrayProvider: React.FC<{ children: React.ReactNode }> = ({ childr
           loc?.auto_print_barcode_on_order ?? lab.auto_print_barcode_on_order ?? false,
         autoPrintReportOnApproval:
           loc?.auto_print_report_on_approval ?? lab.auto_print_report_on_approval ?? false,
+        barcodeLabelLayout: normalizeLabelLayout(
+          loc?.barcode_label_layout ?? lab.barcode_label_layout
+        ),
       };
 
-      setSettings(nextSettings);
+      applySettings(nextSettings);
       return nextSettings;
     } catch {
-      setSettings(defaultSettings);
+      applySettings(defaultSettings);
       return defaultSettings;
     }
-  }, []);
+  }, [applySettings]);
 
   useEffect(() => {
     if (settingsLoadedRef.current) return;

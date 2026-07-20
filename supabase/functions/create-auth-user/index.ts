@@ -450,6 +450,24 @@ Deno.serve(async (req: Request) => {
     
     console.log('[CREATE-AUTH-USER] SUCCESS: Public user record created');
 
+    // Record the initial password so lab admins can look it up later
+    // (portal_credentials is admin-read-only via RLS, written only with service role)
+    try {
+      const { error: credError } = await supabaseAdmin
+        .from("portal_credentials")
+        .upsert({
+          lab_id,
+          credential_type: "staff",
+          auth_user_id: newUserId,
+          email,
+          password_text: finalPassword,
+          updated_at: new Date().toISOString(),
+        }, { onConflict: "lab_id,credential_type,email" });
+      if (credError) console.warn('[CREATE-AUTH-USER] Could not store credential:', credError.message);
+    } catch (credErr) {
+      console.warn('[CREATE-AUTH-USER] Credential store failed:', credErr);
+    }
+
     // Note: Trigger may also create a record, but our manual insert handles it
 
     console.log('[CREATE-AUTH-USER] SUCCESS: User creation completed successfully');

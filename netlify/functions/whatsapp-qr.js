@@ -35,39 +35,44 @@ export const handler = async (event) => {
     // Fallback: status with includeQr flag if backend supports it
     add(`/api/users/${encodeURIComponent(userId)}/whatsapp/status`, { labId, includeQr: '1' });
 
-    let upstream, dataText;
+    let lastStatus = 502;
+    let lastBody = '';
     for (const url of candidates) {
-      upstream = await fetch(url, {
+      const upstream = await fetch(url, {
         method: 'GET',
         headers: {
           'Authorization': event.headers.authorization || '',
         },
       });
-      if (upstream.ok) {
-        dataText = await upstream.text();
-        try {
-          const json = dataText ? JSON.parse(dataText) : {};
-          return {
-            statusCode: 200,
-            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-            body: JSON.stringify(json),
-          };
-        } catch {
-          return {
-            statusCode: 200,
-            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-            body: dataText || '{}',
-          };
-        }
+      const dataText = await upstream.text();
+      lastStatus = upstream.status;
+      lastBody = dataText;
+      if (!upstream.ok) continue;
+
+      try {
+        const json = dataText ? JSON.parse(dataText) : {};
+        // Only return responses that actually carry QR data. Candidates can
+        // answer 200 with success:false ("QR via WebSocket only") or with a
+        // status/sessions payload — both are misses, try the next candidate.
+        const qrCode = json?.qrCode || json?.data?.qrCode;
+        const rawQR = json?.rawQR || json?.data?.rawQR;
+        if (!qrCode && !rawQR) continue;
+        return {
+          statusCode: 200,
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ success: true, qrCode, rawQR }),
+        };
+      } catch {
+        // Non-JSON 200 body — not QR data, try next candidate
+        continue;
       }
     }
 
-    // If none succeed, return last error text
-    dataText = await upstream.text();
+    // No candidate produced a QR
     return {
-      statusCode: upstream.status,
-      headers: { ...corsHeaders, 'Content-Type': upstream.headers.get('content-type') || 'application/json' },
-      body: dataText || JSON.stringify({ success: false, error: 'QR not available' }),
+      statusCode: 200,
+      headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ success: false, error: 'QR not available yet', lastStatus, lastBody: lastBody?.slice(0, 500) }),
     };
   } catch (err) {
     return {

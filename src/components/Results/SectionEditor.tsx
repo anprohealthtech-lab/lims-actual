@@ -6,6 +6,8 @@
  */
 
 import React, { useState, useEffect, useCallback, useImperativeHandle, forwardRef } from 'react';
+import { CKEditor } from '@ckeditor/ckeditor5-react';
+import ClassicEditor from '@ckeditor/ckeditor5-build-classic';
 import {
   FileText,
   CheckSquare,
@@ -193,6 +195,73 @@ function escapeHtml(value: string): string {
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&#39;');
 }
+
+// ── Rich text (CKEditor) support ───────────────────────────────────────────
+// Uses the self-hosted npm build (v40) — no license key required, works offline.
+// Do NOT use the CDN v47 build here: without a paid license it throws
+// license-key-invalid-distribution-channel and silently locks read-only.
+
+const containsHtmlTags = (value: string): boolean => /<[a-z][\s\S]*>/i.test(value);
+
+// Convert legacy plain-text content to HTML paragraphs (same rules pdfService applies)
+function plainTextToHtml(text: string): string {
+  return text
+    .split(/\n\n+/)
+    .map(par => par.trim())
+    .filter(Boolean)
+    .map(par => `<p>${escapeHtml(par).replace(/\n/g, '<br/>')}</p>`)
+    .join('');
+}
+
+// Join content parts; if any part is HTML (rich text), lift the plain parts to HTML
+// so pdfService's HTML detection renders everything consistently.
+function combineContentParts(parts: (string | undefined | null)[]): string {
+  const nonEmpty = parts.map(p => (p || '').trim()).filter(Boolean);
+  if (nonEmpty.length === 0) return '';
+  if (nonEmpty.some(containsHtmlTags)) {
+    return nonEmpty.map(p => (containsHtmlTags(p) ? p : plainTextToHtml(p))).join('');
+  }
+  return nonEmpty.join('\n\n');
+}
+
+const toEditorHtml = (value: string): string =>
+  !value ? '' : containsHtmlTags(value) ? value : plainTextToHtml(value);
+
+interface RichTextAreaProps {
+  value: string;
+  onChange: (html: string) => void;
+  disabled?: boolean;
+  placeholder?: string;
+}
+
+/**
+ * Rich text input backed by the self-hosted CKEditor 5 classic build (v40,
+ * license-free). Preserves bold/headings/lists/tables when pasting from Word
+ * (PasteFromOffice is bundled). Emits HTML.
+ */
+const RichTextArea: React.FC<RichTextAreaProps> = ({ value, onChange, disabled, placeholder }) => {
+  return (
+    <div className="rich-text-area text-sm">
+      <CKEditor
+        editor={ClassicEditor}
+        data={toEditorHtml(value)}
+        disabled={disabled}
+        config={{
+          toolbar: ['heading', '|', 'bold', 'italic', '|', 'bulletedList', 'numberedList', 'insertTable', '|', 'undo', 'redo'],
+          table: { contentToolbar: ['tableColumn', 'tableRow', 'mergeTableCells'] },
+          placeholder,
+        }}
+        onReady={(editor: any) => {
+          const el = editor.ui.view.editable.element;
+          if (el) { el.style.minHeight = '110px'; el.style.maxHeight = '360px'; el.style.overflowY = 'auto'; }
+        }}
+        onChange={(_evt: unknown, editor: any) => {
+          onChange(editor.getData());
+        }}
+      />
+    </div>
+  );
+};
 
 const MATRIX_COL_LABEL_PREFIX = 'col_label:';
 const MATRIX_COL_ORDER_KEY = 'matrix_col_order';
@@ -648,6 +717,7 @@ const SectionEditor = forwardRef<SectionEditorRef, SectionEditorProps>(({
   const [error, setError] = useState<string | null>(null);
   const [expandedSections, setExpandedSections] = useState<Set<string>>(new Set());
   const [uploadingSections, setUploadingSections] = useState<Record<string, boolean>>({});
+  const [importingWordSection, setImportingWordSection] = useState<string | null>(null);
 
   // AI Assistant state
   const [showAIPanel, setShowAIPanel] = useState<string | null>(null);
@@ -794,11 +864,8 @@ const SectionEditor = forwardRef<SectionEditorRef, SectionEditorProps>(({
         .sort((a, b) => a - b)
         .map(i => section?.predefined_options[i])
         .filter(Boolean);
-      
-      const finalContent = [
-        ...selectedTexts,
-        content.custom_text.trim(),
-      ].filter(Boolean).join('\n\n');
+
+      const finalContent = combineContentParts([...selectedTexts, content.custom_text]);
 
       newMap.set(sectionId, {
         ...content,
@@ -845,10 +912,10 @@ const SectionEditor = forwardRef<SectionEditorRef, SectionEditorProps>(({
           .sort((a, b) => a - b)
           .map(i => section?.predefined_options[i])
           .filter(Boolean) as string[];
-        baseContent = selectedTexts.join('\n\n');
+        baseContent = combineContentParts(selectedTexts);
       }
 
-      const finalContent = [baseContent, text.trim()].filter(Boolean).join('\n\n');
+      const finalContent = combineContentParts([baseContent, text]);
 
       newMap.set(sectionId, {
         ...content,
@@ -932,6 +999,32 @@ const SectionEditor = forwardRef<SectionEditorRef, SectionEditorProps>(({
       setError(err?.message || 'Failed to upload section images');
     } finally {
       setUploadingForSection(sectionId, false);
+    }
+  };
+
+  // Import a Word (.docx) file into a section: converts to HTML (bold/headings/lists preserved)
+  const importWordDoc = async (sectionId: string, files: FileList | null) => {
+    const file = files?.[0];
+    if (!file) return;
+    setImportingWordSection(sectionId);
+    setError(null);
+    try {
+      const mod: any = await import('mammoth/mammoth.browser');
+      const mammoth = mod.default || mod;
+      const arrayBuffer = await file.arrayBuffer();
+      const { value: html } = await mammoth.convertToHtml({ arrayBuffer });
+      if (!html || !html.trim()) {
+        setError('No readable content found in the Word file.');
+        return;
+      }
+      const existing = contents.get(sectionId)?.custom_text || '';
+      const merged = existing.trim() ? combineContentParts([existing, html]) : html;
+      updateCustomText(sectionId, merged);
+    } catch (err: any) {
+      console.error('Word import failed:', err);
+      setError('Failed to import the Word file. Please copy-paste the content instead.');
+    } finally {
+      setImportingWordSection(null);
     }
   };
 
@@ -1065,20 +1158,20 @@ const SectionEditor = forwardRef<SectionEditorRef, SectionEditorProps>(({
       if (!content || content.is_finalized) return prev;
 
       const section = sections.find(s => s.id === sectionId);
-      // Append AI content to custom text
+      // Append AI content to custom text (HTML-aware if the editor already holds rich text)
       const newCustomText = content.custom_text
-        ? `${content.custom_text}\n\n${aiResult.generatedContent}`
+        ? combineContentParts([content.custom_text, aiResult.generatedContent])
         : aiResult.generatedContent;
 
       const finalContent = section?.section_config?.mode === 'matrix'
         ? buildMatrixHtml(section.section_config.matrix, content.cascading_selections || {}, newCustomText)
-        : [
+        : combineContentParts([
           ...content.selected_options
             .sort((a, b) => a - b)
             .map(i => section?.predefined_options[i])
             .filter(Boolean),
-          newCustomText.trim(),
-        ].filter(Boolean).join('\n\n');
+          newCustomText,
+        ]);
 
       newMap.set(sectionId, {
         ...content,
@@ -1248,8 +1341,7 @@ const SectionEditor = forwardRef<SectionEditorRef, SectionEditorProps>(({
                           const newMap = new Map(prev);
                           const existing = newMap.get(section.id);
                           if (!existing || existing.is_finalized) return prev;
-                          const custom = existing.custom_text?.trim() || '';
-                          const combined = [cascadeContent, custom].filter(Boolean).join('\n\n');
+                          const combined = combineContentParts([cascadeContent, existing.custom_text]);
                           newMap.set(section.id, {
                             ...existing,
                             cascading_selections: newSelections,
@@ -1326,23 +1418,54 @@ const SectionEditor = forwardRef<SectionEditorRef, SectionEditorProps>(({
                   {/* Custom Text */}
                   {section.is_editable && (
                     <div>
-                      <label className="block text-sm font-medium text-gray-700 mb-2">
-                        {section.section_config?.mode === 'matrix'
-                          ? 'Add notes below table (optional):'
-                          : section.predefined_options?.length > 0
-                            ? 'Add custom text (optional):'
-                            : 'Enter content:'}
-                      </label>
-                      <textarea
-                        value={content?.custom_text || ''}
-                        onChange={(e) => canEditText && updateCustomText(section.id, e.target.value)}
-                        disabled={!canEditText}
-                        rows={4}
-                        placeholder={section.default_content || 'Enter your findings, observations, or notes...'}
-                        className={`w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent ${
-                          !canEditText ? 'bg-gray-100 cursor-not-allowed' : 'bg-white'
-                        }`}
-                      />
+                      <div className="flex items-center justify-between mb-2">
+                        <label className="block text-sm font-medium text-gray-700">
+                          {section.section_config?.mode === 'matrix'
+                            ? 'Add notes below table (optional):'
+                            : section.predefined_options?.length > 0
+                              ? 'Add custom text (optional):'
+                              : 'Enter content:'}
+                        </label>
+                        {section.section_config?.mode !== 'matrix' && canEditText && (
+                          <label className="inline-flex items-center px-2.5 py-1 rounded-md border border-gray-300 bg-white text-xs text-gray-700 hover:bg-gray-50 cursor-pointer transition-colors">
+                            {importingWordSection === section.id ? (
+                              <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" />
+                            ) : (
+                              <FileText className="h-3.5 w-3.5 mr-1.5" />
+                            )}
+                            {importingWordSection === section.id ? 'Importing...' : 'Import Word (.docx)'}
+                            <input
+                              type="file"
+                              accept=".docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                              disabled={importingWordSection === section.id}
+                              onChange={(e) => {
+                                importWordDoc(section.id, e.target.files);
+                                e.target.value = '';
+                              }}
+                              className="hidden"
+                            />
+                          </label>
+                        )}
+                      </div>
+                      {section.section_config?.mode === 'matrix' ? (
+                        <textarea
+                          value={content?.custom_text || ''}
+                          onChange={(e) => canEditText && updateCustomText(section.id, e.target.value)}
+                          disabled={!canEditText}
+                          rows={4}
+                          placeholder={section.default_content || 'Enter your findings, observations, or notes...'}
+                          className={`w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent ${
+                            !canEditText ? 'bg-gray-100 cursor-not-allowed' : 'bg-white'
+                          }`}
+                        />
+                      ) : (
+                        <RichTextArea
+                          value={content?.custom_text || ''}
+                          onChange={(html) => canEditText && updateCustomText(section.id, html)}
+                          disabled={!canEditText}
+                          placeholder={section.default_content || 'Enter your findings, observations, or notes... (paste from Word keeps bold/formatting)'}
+                        />
+                      )}
                     </div>
                   )}
 
@@ -1537,10 +1660,10 @@ const SectionEditor = forwardRef<SectionEditorRef, SectionEditorProps>(({
 	                      </label>
 	                      <div className="bg-gray-50 border border-gray-200 rounded-lg space-y-3 overflow-hidden">
 	                        {content?.final_content !== undefined && (
-	                          section.section_config?.mode === 'matrix' ? (
+	                          section.section_config?.mode === 'matrix' || containsHtmlTags(content.final_content) ? (
 	                            <div className="px-4 py-3">
 	                              <div
-	                                className="text-sm text-gray-800 overflow-x-auto"
+	                                className="text-sm text-gray-800 overflow-x-auto [&_p]:mb-2 [&_ul]:list-disc [&_ul]:pl-5 [&_ol]:list-decimal [&_ol]:pl-5 [&_h1]:text-base [&_h1]:font-bold [&_h2]:text-base [&_h2]:font-bold [&_h3]:text-sm [&_h3]:font-bold [&_table]:border-collapse [&_td]:border [&_td]:border-gray-300 [&_td]:px-2 [&_td]:py-1 [&_th]:border [&_th]:border-gray-300 [&_th]:px-2 [&_th]:py-1"
 	                                dangerouslySetInnerHTML={{ __html: content.final_content }}
 	                              />
 	                            </div>

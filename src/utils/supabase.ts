@@ -13192,6 +13192,19 @@ const whatsappTemplates = {
         is_active: true,
       },
       {
+        name: DEFAULT_TEMPLATES.doctor_registration_confirmation.name,
+        category: "doctor_registration_confirmation",
+        message_content:
+          DEFAULT_TEMPLATES.doctor_registration_confirmation.message,
+        requires_attachment:
+          DEFAULT_TEMPLATES.doctor_registration_confirmation.requires_attachment,
+        placeholders: extractPlaceholders(
+          DEFAULT_TEMPLATES.doctor_registration_confirmation.message,
+        ),
+        is_default: true,
+        is_active: true,
+      },
+      {
         name: DEFAULT_TEMPLATES.doctor_report_ready.name,
         category: "doctor_report_ready",
         message_content: DEFAULT_TEMPLATES.doctor_report_ready.message,
@@ -13968,6 +13981,7 @@ const notificationSettings = {
     send_report_on_status?: string;
     auto_send_invoice_to_patient?: boolean;
     auto_send_registration_confirmation?: boolean;
+    auto_send_registration_to_doctor?: boolean;
     auto_send_loyalty_points?: boolean;
     auto_send_loyalty_redemption?: boolean;
     include_test_details_in_registration?: boolean;

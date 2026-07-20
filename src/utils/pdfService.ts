@@ -2765,6 +2765,31 @@ export const savePDFToStorage = async (
 ): Promise<string> => {
   console.log("Saving PDF to Supabase storage...");
 
+  // Append received outsourced-lab reports after the in-house pages so the
+  // stored PDF is always the complete document (drafts stay in-house only).
+  if (variant !== "draft") {
+    try {
+      const { appendOutsourcedReportsToPdf } = await import(
+        "./outsourcedReportService"
+      );
+      const merged = await appendOutsourcedReportsToPdf(
+        pdfBlob,
+        orderId,
+        variant === "print" ? "print" : "final",
+      );
+      if (merged) {
+        pdfBlob = merged.blob;
+        console.log(
+          `Appended ${merged.appendedCount} outsourced report(s) to ${variant} PDF`,
+          merged.skipped.length > 0 ? { skipped: merged.skipped } : "",
+        );
+      }
+    } catch (mergeError) {
+      // Outsourced merge must never block report generation
+      console.warn("Outsourced report merge skipped:", mergeError);
+    }
+  }
+
   try {
     // Create a unique filename
     const suffix = variant === "final" ? "" : `_${variant}`;

@@ -1603,6 +1603,7 @@ const OrderForm: React.FC<OrderFormProps> = ({ onClose, onSubmit, preSelectedPat
         const collectorName = currentUser?.user_metadata?.name || currentUser?.email || 'Reception';
         orderData.sample_collected_at = new Date().toISOString();
         orderData.sample_collected_by = collectorName;
+        orderData.sample_collector_id = currentUser?.id || null;
       }
 
       if (testsPayload) orderData.tests = testsPayload;

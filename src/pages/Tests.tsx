@@ -1547,6 +1547,32 @@ const Tests: React.FC = () => {
       }
 
       console.log('✅ Sync response:', data);
+      const syncDiagnostics = data?.syncDiagnostics;
+      if (syncDiagnostics) {
+        console.group('[Test Sync] Global catalog sync diagnostics');
+        console.log('[Test Sync] Stats:', data?.stats || {});
+        if (syncDiagnostics.skippedTests?.length) {
+          console.warn(`[Test Sync] Skipped ${syncDiagnostics.skippedTests.length} global test(s)`);
+          console.table(syncDiagnostics.skippedTests);
+        }
+        if (syncDiagnostics.createFailures?.length) {
+          console.error(`[Test Sync] Failed to create ${syncDiagnostics.createFailures.length} chunk(s)`);
+          console.table(syncDiagnostics.createFailures);
+        }
+        if (syncDiagnostics.createCandidates?.length) {
+          console.log(`[Test Sync] Create candidates: ${syncDiagnostics.createCandidates.length}`);
+          console.table(syncDiagnostics.createCandidates);
+        }
+        if (syncDiagnostics.createdTests?.length) {
+          console.log(`[Test Sync] Created tests: ${syncDiagnostics.createdTests.length}`);
+          console.table(syncDiagnostics.createdTests);
+        }
+        if (syncDiagnostics.existingMatches?.length) {
+          console.log(`[Test Sync] Existing matches updated/not created: ${syncDiagnostics.existingMatches.length}`);
+          console.table(syncDiagnostics.existingMatches);
+        }
+        console.groupEnd();
+      }
       setSyncStatus('Reloading test groups...');
 
       // Reload test groups to reflect changes

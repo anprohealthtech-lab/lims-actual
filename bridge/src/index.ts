@@ -72,6 +72,9 @@ function extractSampleBarcode(rawContent: string): string | null {
       if (obr3) return obr3;
       const obr2 = fields[2]?.split('^')[0]?.trim();
       if (obr2) return obr2;
+      // Peerless HA560 carries the sample ID in OBR-18 (Placer Field 1)
+      const obr18 = fields[18]?.split('^')[0]?.trim();
+      if (obr18) return obr18;
     }
   }
 

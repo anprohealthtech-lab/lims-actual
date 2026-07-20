@@ -236,11 +236,22 @@ export class WhatsAppAPI {
         return { success: false, message: 'User not authenticated' };
       }
 
-      const url = new URL(`/api/users/${encodeURIComponent(userId)}/whatsapp/session`, WHATSAPP_API_BASE_URL);
-      const response = await fetch(url.toString(), {
-        method: 'DELETE',
-        headers: await buildHeaders({ 'Content-Type': 'application/json' }),
-      });
+      let response: Response;
+      if (WHATSAPP_API_MODE === 'netlify-functions') {
+        // Direct browser calls to the backend fail CORS; go through the Netlify proxy
+        const labId = await database.getCurrentUserLabId();
+        response = await fetch('/.netlify/functions/whatsapp-session-reset', {
+          method: 'POST',
+          headers: await buildHeaders({ 'Content-Type': 'application/json' }),
+          body: JSON.stringify({ userId, labId }),
+        });
+      } else {
+        const url = new URL(`/api/users/${encodeURIComponent(userId)}/whatsapp/session`, WHATSAPP_API_BASE_URL);
+        response = await fetch(url.toString(), {
+          method: 'DELETE',
+          headers: await buildHeaders({ 'Content-Type': 'application/json' }),
+        });
+      }
 
       let data: any = null;
       try {
@@ -719,7 +730,7 @@ export class WhatsAppAPI {
   }
 
   // WebSocket connection for real-time updates
-  static createWebSocketConnection(onMessage: (data: any) => void): WebSocket | null {
+  static createWebSocketConnection(onMessage: (data: any) => void): { close: () => void } | null {
     // Allow disabling WS from env if backend isn't ready; rely on polling fallback
     if (!WHATSAPP_WS_ENABLED) {
       if (WHATSAPP_WS_DEBUG) console.info('[WA-WS] Disabled by VITE_WHATSAPP_WS_ENABLED=false');
@@ -822,6 +833,7 @@ export class WhatsAppAPI {
       };
 
       let active: WebSocket | null = null;
+      let closedByCaller = false;
 
       const tryConnect = (url: string, protocols?: string[]): Promise<WebSocket> => new Promise((resolve, reject) => {
         try {
@@ -856,8 +868,14 @@ export class WhatsAppAPI {
       (async () => {
         const candidates = await buildCandidates();
         for (const c of candidates) {
+          if (closedByCaller) return;
           try {
             const s = await tryConnect(c.url, c.protocols);
+            // Caller unmounted while we were connecting — discard the socket
+            if (closedByCaller) {
+              try { s.close(); } catch {}
+              return;
+            }
             // Close any previous
             if (active && active.readyState === WebSocket.OPEN) {
               try { active.close(); } catch {}
@@ -872,7 +890,18 @@ export class WhatsAppAPI {
         if (!active && WHATSAPP_WS_DEBUG) console.info('[WA-WS] All WS candidates failed; relying on HTTP polling only');
       })();
 
-      return active;
+      // Connection attempts run async, so the socket doesn't exist yet at
+      // return time (the old `return active` was always null — callers could
+      // never close the socket). Hand back a close handle instead.
+      return {
+        close: () => {
+          closedByCaller = true;
+          if (active) {
+            try { active.close(); } catch {}
+            active = null;
+          }
+        },
+      };
     } catch (error) {
       console.error('WebSocket connection error:', error);
       return null;

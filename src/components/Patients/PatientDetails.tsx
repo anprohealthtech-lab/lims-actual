@@ -3,6 +3,7 @@ import { useState, useEffect } from 'react';
 import { X, User, Phone, Mail, MapPin, Droplet, FileText, QrCode, Palette, Printer, Edit, Plus, Upload, ExternalLink, Calendar, Gift, Smartphone, KeyRound, Copy, Check } from 'lucide-react';
 import { QRCodeCanvas } from 'qrcode.react';
 import { database, supabase, formatAge, LabPatientFieldConfig } from '../../utils/supabase';
+import { WhatsAppAPI } from '../../utils/whatsappAPI';
 import ExternalReportUploadModal from './ExternalReportUploadModal';
 
 interface Patient {
@@ -59,6 +60,7 @@ const PatientDetails: React.FC<PatientDetailsProps> = ({
   const [portalPin, setPortalPin] = useState<string | null>(null);
   const [portalAction, setPortalAction] = useState<'created' | 'pin_reset' | null>(null);
   const [pinCopied, setPinCopied] = useState(false);
+  const [pinWAStatus, setPinWAStatus] = useState<'sending' | 'sent' | 'failed' | null>(null);
   const [externalReports, setExternalReports] = useState<any[]>([]);
   const [loadingExternalReports, setLoadingExternalReports] = useState(true);
   const [loyaltyBalance, setLoyaltyBalance] = useState<{ current_balance: number; total_earned: number; total_redeemed: number } | null>(null);
@@ -218,6 +220,27 @@ const PatientDetails: React.FC<PatientDetailsProps> = ({
     }
   };
 
+  const buildPortalCredentialsMessage = (pin: string) => {
+    const portalUrl = `${window.location.origin}/patient/login`;
+    return `Hello ${patient.name},\n\nYour patient portal access is ready!\n\n` +
+      `Login: ${portalUrl}\n` +
+      `Mobile number: ${patient.phone}\n` +
+      `PIN: *${pin}*\n\n` +
+      `Use your registered mobile number and this 6-digit PIN to view your reports online. ` +
+      `You can change the PIN after logging in.\n\nThank you!`;
+  };
+
+  const sendPinViaWhatsApp = async (pin: string) => {
+    setPinWAStatus('sending');
+    try {
+      const result = await WhatsAppAPI.sendTextMessage(patient.phone, buildPortalCredentialsMessage(pin));
+      setPinWAStatus(result.success ? 'sent' : 'failed');
+    } catch (err) {
+      console.error('Portal PIN WhatsApp send error:', err);
+      setPinWAStatus('failed');
+    }
+  };
+
   const handleGeneratePortalAccess = async () => {
     if (!patient.phone) {
       alert('This patient has no phone number. Add a phone number first.');
@@ -225,6 +248,7 @@ const PatientDetails: React.FC<PatientDetailsProps> = ({
     }
     setPortalLoading(true);
     setPortalPin(null);
+    setPinWAStatus(null);
     try {
       const { data: { session } } = await supabase.auth.getSession();
       const supabaseUrl = (supabase as any).supabaseUrl as string;
@@ -241,6 +265,8 @@ const PatientDetails: React.FC<PatientDetailsProps> = ({
       if (!res.ok || json.error) throw new Error(json.error || 'Failed');
       setPortalPin(json.pin);
       setPortalAction(json.action);
+      // Auto-send credentials to the patient via WhatsApp
+      sendPinViaWhatsApp(json.pin);
     } catch (err) {
       alert(err instanceof Error ? err.message : 'Failed to generate portal access');
     } finally {
@@ -706,7 +732,7 @@ const PatientDetails: React.FC<PatientDetailsProps> = ({
                 {portalAction === 'created' ? 'Portal access created!' : 'PIN reset successfully!'}
                 {' '}Share this PIN with the patient via WhatsApp:
               </p>
-              <div className="flex items-center gap-3">
+              <div className="flex items-center gap-3 flex-wrap">
                 <span className="font-mono text-2xl font-bold text-teal-700 tracking-widest">{portalPin}</span>
                 <button
                   onClick={handleCopyPin}
@@ -715,7 +741,25 @@ const PatientDetails: React.FC<PatientDetailsProps> = ({
                   {pinCopied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
                   {pinCopied ? 'Copied!' : 'Copy PIN'}
                 </button>
+                <button
+                  onClick={() => sendPinViaWhatsApp(portalPin)}
+                  disabled={pinWAStatus === 'sending'}
+                  className="flex items-center gap-1.5 px-3 py-1.5 text-sm bg-green-600 text-white rounded-lg hover:bg-green-700 disabled:opacity-60 transition-colors"
+                >
+                  <Smartphone className="h-3.5 w-3.5" />
+                  {pinWAStatus === 'sending' ? 'Sending...' : pinWAStatus === 'sent' ? 'Resend WhatsApp' : 'Send via WhatsApp'}
+                </button>
               </div>
+              {pinWAStatus === 'sent' && (
+                <p className="text-xs text-green-700 mt-2 flex items-center gap-1">
+                  <Check className="h-3.5 w-3.5" /> Credentials sent to {patient.phone} via WhatsApp.
+                </p>
+              )}
+              {pinWAStatus === 'failed' && (
+                <p className="text-xs text-red-600 mt-2">
+                  WhatsApp auto-send failed — share the PIN manually or retry with the button above.
+                </p>
+              )}
               <p className="text-xs text-teal-600 mt-2">
                 Patient logs in at <span className="font-mono">/patient/login</span> with their mobile number + this PIN.
               </p>

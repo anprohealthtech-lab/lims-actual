@@ -40,6 +40,7 @@ interface User {
   assigned_centers: string[];
   lab_id: string;
   is_phlebotomist: boolean;
+  is_hidden: boolean;
 }
 
 const UserManagement: React.FC = () => {
@@ -64,6 +65,12 @@ const UserManagement: React.FC = () => {
   const [resetLoading, setResetLoading] = useState(false);
   const [resetError, setResetError] = useState('');
   const [resetDone, setResetDone] = useState(false);
+  // View stored password state (admin only)
+  const [viewPwTarget, setViewPwTarget] = useState<User | null>(null);
+  const [viewPwValue, setViewPwValue] = useState<string | null>(null);
+  const [viewPwUpdatedAt, setViewPwUpdatedAt] = useState<string | null>(null);
+  const [viewPwLoading, setViewPwLoading] = useState(false);
+  const [viewPwVisible, setViewPwVisible] = useState(false);
 
   // Load users
   useEffect(() => {
@@ -106,11 +113,12 @@ const UserManagement: React.FC = () => {
       
       setLabId(currentLabId);
 
-      // Load users with permissions and roles from the view
+      // Load users with permissions and roles from the view (exclude hidden users)
       const { data, error } = await supabase
         .from('v_users_with_permissions')
         .select('*')
         .eq('lab_id', currentLabId)
+        .or('is_hidden.is.null,is_hidden.eq.false')
         .order('name');
 
       if (error) throw error;
@@ -141,8 +149,8 @@ const UserManagement: React.FC = () => {
     }
   };
 
-  const handleDeleteUser = async (userId: string) => {
-    if (!confirm('Are you sure you want to deactivate this user?')) return;
+  const handleDeactivateUser = async (userId: string) => {
+    if (!confirm('Are you sure you want to deactivate this user? They will still appear in the list but marked as Inactive.')) return;
 
     try {
       const { error } = await supabase
@@ -157,6 +165,25 @@ const UserManagement: React.FC = () => {
     } catch (error) {
       console.error('Error deactivating user:', error);
       alert('Failed to deactivate user');
+    }
+  };
+
+  const handleHideUser = async (userId: string, userName: string) => {
+    if (!confirm(`Are you sure you want to delete "${userName}"? This will deactivate and hide the user from this list. This action cannot be undone from the UI.`)) return;
+
+    try {
+      const { error } = await supabase
+        .from('users')
+        .update({ status: 'Inactive', is_hidden: true })
+        .eq('id', userId);
+
+      if (error) throw error;
+
+      // Reload users
+      await loadUsers();
+    } catch (error) {
+      console.error('Error hiding user:', error);
+      alert('Failed to delete user');
     }
   };
 
@@ -204,6 +231,41 @@ const UserManagement: React.FC = () => {
     } finally {
       setResetLoading(false);
     }
+  };
+
+  const openViewPasswordModal = async (user: User) => {
+    setViewPwTarget(user);
+    setViewPwValue(null);
+    setViewPwUpdatedAt(null);
+    setViewPwVisible(false);
+    setViewPwLoading(true);
+    try {
+      // portal_credentials is only readable by admin/owner/lab_manager (RLS)
+      const { data, error } = await supabase
+        .from('portal_credentials')
+        .select('password_text, updated_at')
+        .eq('lab_id', user.lab_id)
+        .eq('email', user.email)
+        .order('updated_at', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
+      if (error) throw error;
+      setViewPwValue(data?.password_text || null);
+      setViewPwUpdatedAt(data?.updated_at || null);
+    } catch (err) {
+      console.error('Failed to load stored password:', err);
+      setViewPwValue(null);
+    } finally {
+      setViewPwLoading(false);
+    }
+  };
+
+  const closeViewPasswordModal = () => {
+    setViewPwTarget(null);
+    setViewPwValue(null);
+    setViewPwUpdatedAt(null);
+    setViewPwVisible(false);
   };
 
   // Helper functions for badges and formatting
@@ -522,11 +584,30 @@ const UserManagement: React.FC = () => {
                         >
                           <KeyRound className="h-4 w-4" />
                         </button>
+                        {canResetPasswords && (
+                          <button
+                            onClick={() => openViewPasswordModal(user)}
+                            className="text-purple-600 hover:text-purple-900 p-1 rounded hover:bg-purple-50"
+                            title="View stored password"
+                          >
+                            <Eye className="h-4 w-4" />
+                          </button>
+                        )}
+                        {user.status === 'Active' && (
+                          <button
+                            onClick={() => handleDeactivateUser(user.id)}
+                            disabled={!canDeactivateUsers}
+                            className="text-orange-600 hover:text-orange-900 p-1 rounded hover:bg-orange-50"
+                            title="Deactivate user"
+                          >
+                            <UserX className="h-4 w-4" />
+                          </button>
+                        )}
                         <button
-                          onClick={() => handleDeleteUser(user.id)}
+                          onClick={() => handleHideUser(user.id, user.name)}
                           disabled={!canDeactivateUsers}
                           className="text-red-600 hover:text-red-900 p-1 rounded hover:bg-red-50"
-                          title="Deactivate user"
+                          title="Delete user (hide from list)"
                         >
                           <Trash2 className="h-4 w-4" />
                         </button>
@@ -569,6 +650,92 @@ const UserManagement: React.FC = () => {
             loadUsers();
           }}
         />
+      )}
+
+      {/* View Stored Password Modal (admin only) */}
+      {viewPwTarget && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-lg shadow-2xl w-full max-w-md">
+            <div className="flex items-center justify-between px-6 py-4 border-b border-gray-200">
+              <div>
+                <h2 className="text-lg font-semibold text-gray-900">Stored Password</h2>
+                <p className="text-sm text-gray-500 mt-0.5">
+                  Login credentials for <span className="font-medium text-gray-700">{viewPwTarget.name}</span>
+                </p>
+              </div>
+              <button onClick={closeViewPasswordModal} className="text-gray-400 hover:text-gray-600">
+                <span className="sr-only">Close</span>
+                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+            <div className="px-6 py-5 space-y-4">
+              {viewPwLoading ? (
+                <div className="flex items-center justify-center py-6">
+                  <Loader className="h-6 w-6 animate-spin text-blue-600" />
+                </div>
+              ) : viewPwValue ? (
+                <>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">Login Email</label>
+                    <div className="px-3 py-2 bg-gray-50 border border-gray-200 rounded-md text-sm text-gray-900">
+                      {viewPwTarget.email}
+                    </div>
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">Password</label>
+                    <div className="flex items-center gap-2">
+                      <div className="flex-1 px-3 py-2 bg-gray-50 border border-gray-200 rounded-md text-sm font-mono text-gray-900">
+                        {viewPwVisible ? viewPwValue : '••••••••••'}
+                      </div>
+                      <button
+                        onClick={() => setViewPwVisible(v => !v)}
+                        className="p-2 text-gray-500 hover:text-gray-700 rounded hover:bg-gray-100"
+                        title={viewPwVisible ? 'Hide password' : 'Show password'}
+                      >
+                        {viewPwVisible ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                      </button>
+                      <button
+                        onClick={() => {
+                          navigator.clipboard.writeText(viewPwValue);
+                        }}
+                        className="px-3 py-2 text-sm text-blue-600 hover:text-blue-800 rounded hover:bg-blue-50"
+                        title="Copy password"
+                      >
+                        Copy
+                      </button>
+                    </div>
+                    {viewPwUpdatedAt && (
+                      <p className="text-xs text-gray-500 mt-1">
+                        Last set: {new Date(viewPwUpdatedAt).toLocaleString()}
+                      </p>
+                    )}
+                  </div>
+                </>
+              ) : (
+                <div className="flex items-start gap-3 bg-amber-50 border border-amber-200 rounded-md p-4">
+                  <AlertCircle className="h-5 w-5 text-amber-600 flex-shrink-0 mt-0.5" />
+                  <div className="text-sm text-amber-800">
+                    <p className="font-medium">No stored password found.</p>
+                    <p className="mt-1">
+                      Passwords set before this feature was enabled cannot be shown.
+                      Use <span className="font-medium">Reset Password</span> to set a new one — it will be stored for viewing.
+                    </p>
+                  </div>
+                </div>
+              )}
+            </div>
+            <div className="flex items-center justify-end px-6 py-4 border-t border-gray-200">
+              <button
+                onClick={closeViewPasswordModal}
+                className="px-4 py-2 border border-gray-300 rounded-md text-gray-700 hover:bg-gray-50"
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
       )}
 
       {/* Admin Reset Password Modal */}

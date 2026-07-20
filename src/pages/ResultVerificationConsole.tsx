@@ -56,6 +56,7 @@ import {
   getVerificationPermissionForDepartment,
 } from "../utils/resultPermissions";
 import { evaluateTextCalculation, normalizeCalculationResultType } from "../utils/calculationRules";
+import { calculateFlag } from "../utils/flagCalculation";
 
 /* =========================================
    Types
@@ -1641,7 +1642,7 @@ const ResultVerificationConsole: React.FC = () => {
         catch { return []; }
       };
 
-      const updates: Array<{ id: string; value: string; inputs: Record<string, number> }> = [];
+      const updates: Array<{ id: string; value: string; inputs: Record<string, number>; flag: string | null; flagSource: string }> = [];
       const debugHintsForResult: Record<string, string[]> = {};
       const recalcLogPrefix = `[Panel Recalculate][${row.result_id}]`;
 
@@ -1803,7 +1804,7 @@ const ResultVerificationConsole: React.FC = () => {
               });
               continue;
             }
-            updates.push({ id: calcRow.id, value: textResult.value, inputs: { ...scope } });
+            updates.push({ id: calcRow.id, value: textResult.value, inputs: { ...scope }, flag: null, flagSource: 'auto_text' });
             console.info(`${recalcLogPrefix} Text calculation matched`, {
               ...calcLogBase,
               value: textResult.value,
@@ -1843,7 +1844,14 @@ const ResultVerificationConsole: React.FC = () => {
               continue;
             }
             const roundedValue = String(Math.round(Number(computed) * 100) / 100);
-            updates.push({ id: calcRow.id, value: roundedValue, inputs: { ...scope } });
+            const recalculatedFlag = calculateFlag(roundedValue, calcRow.reference_range || '') || 'normal';
+            updates.push({
+              id: calcRow.id,
+              value: roundedValue,
+              inputs: { ...scope },
+              flag: recalculatedFlag,
+              flagSource: 'auto_numeric',
+            });
             console.info(`${recalcLogPrefix} Calculated successfully`, {
               ...calcLogBase,
               value: roundedValue,
@@ -1878,6 +1886,8 @@ const ResultVerificationConsole: React.FC = () => {
       const patchResults = await Promise.all(updates.map(upd =>
         supabase.from('result_values').update({
           value: upd.value,
+          flag: upd.flag,
+          flag_source: upd.flagSource,
           calculation_inputs: upd.inputs,
           calculated_at: new Date().toISOString(),
           is_auto_calculated: true,
@@ -1885,7 +1895,7 @@ const ResultVerificationConsole: React.FC = () => {
           verify_note: 'Recalculated by verifier',
           verified_at: null,
           verified_by: null,
-        }).eq('id', upd.id).select('id, value')
+        }).eq('id', upd.id).select('id, value, flag')
       ));
 
       const firstError = patchResults.find(r => r.error);
@@ -1912,6 +1922,7 @@ const ResultVerificationConsole: React.FC = () => {
           return {
             ...a,
             value: upd.value,
+            flag: upd.flag,
             calculation_inputs: upd.inputs,
             calculated_at: new Date().toISOString(),
             is_auto_calculated: true,

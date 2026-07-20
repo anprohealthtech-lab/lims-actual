@@ -424,3 +424,9 @@ entrypoint = "./functions/initiate-payment/index.ts"
 enabled = true
 verify_jwt = true
 entrypoint = "./functions/create-auth-user/index.ts"
+
+# Patient portal self-service PIN reset - public, PIN delivered only via lab WhatsApp
+[functions.patient-forgot-pin]
+enabled = true
+verify_jwt = false
+entrypoint = "./functions/patient-forgot-pin/index.ts"

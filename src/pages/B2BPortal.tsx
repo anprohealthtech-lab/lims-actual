@@ -1,11 +1,11 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { LogOut, Download, Filter, Search, Calendar, RefreshCw, PlusCircle, X, Clock, User, Phone, Trash2, Printer, FileText, Wallet, CreditCard, Receipt, Loader2, CheckCircle, AlertCircle, BarChart3, Building2, ChevronLeft, ChevronRight, Megaphone } from 'lucide-react';
+import { LogOut, Download, Filter, Search, Calendar, RefreshCw, PlusCircle, X, Clock, User, Phone, Trash2, Printer, FileText, Wallet, CreditCard, Receipt, Loader2, CheckCircle, AlertCircle, BarChart3, Building2, ChevronLeft, ChevronRight, Megaphone, Image as ImageIcon } from 'lucide-react';
 import { supabase } from '../utils/supabase';
 import { getCurrentB2BAccount } from '../utils/b2bAuth';
-import AccountInfoCard from '../components/B2B/AccountInfoCard';
 import B2BBookingModal from '../components/B2B/B2BBookingModal';
 import B2BResultAnalysisModal from '../components/B2B/B2BResultAnalysisModal';
+import AccountInfoCard from '../components/B2B/AccountInfoCard';
 import { format } from 'date-fns';
 import type { InitiatePaymentResponse } from '../types/payment';
 
@@ -107,6 +107,12 @@ interface ConsolidatedInvoice {
 interface PortalUpdateSlide {
     title: string;
     message: string;
+    image_url?: string;
+}
+
+interface PortalAnnouncement {
+    title: string;
+    message: string;
 }
 
 interface PortalSettings {
@@ -114,11 +120,16 @@ interface PortalSettings {
     updates_enabled: boolean;
     updates_title: string;
     update_slides: PortalUpdateSlide[];
+    announcements_enabled: boolean;
+    announcements_title: string;
+    announcement_slides: PortalAnnouncement[];
+    slider_aspect: 'square' | 'landscape' | 'banner';
     hide_lims_branding: boolean;
 }
 
 const normalizePortalSettings = (raw: any): PortalSettings => {
     const updateSlides = Array.isArray(raw?.update_slides) ? raw.update_slides : [];
+    const announcementSlides = Array.isArray(raw?.announcement_slides) ? raw.announcement_slides : [];
     return {
         welcome_note: String(raw?.welcome_note || '').trim(),
         updates_enabled: raw?.updates_enabled !== false,
@@ -127,8 +138,20 @@ const normalizePortalSettings = (raw: any): PortalSettings => {
             .map((slide: any) => ({
                 title: String(slide?.title || '').trim(),
                 message: String(slide?.message || '').trim(),
+                image_url: String(slide?.image_url || '').trim(),
             }))
-            .filter((slide: PortalUpdateSlide) => slide.title || slide.message),
+            .filter((slide: PortalUpdateSlide) => slide.title || slide.message || slide.image_url),
+        announcements_enabled: raw?.announcements_enabled !== false,
+        announcements_title: String(raw?.announcements_title || 'Announcements').trim() || 'Announcements',
+        announcement_slides: announcementSlides
+            .map((slide: any) => ({
+                title: String(slide?.title || '').trim(),
+                message: String(slide?.message || '').trim(),
+            }))
+            .filter((slide: PortalAnnouncement) => slide.title || slide.message),
+        slider_aspect: ['square', 'landscape', 'banner'].includes(String(raw?.slider_aspect))
+            ? raw.slider_aspect
+            : 'square',
         hide_lims_branding: raw?.hide_lims_branding === true,
     };
 };
@@ -160,6 +183,7 @@ const B2BPortal: React.FC = () => {
     const [showResultAnalysis, setShowResultAnalysis] = useState(false);
     const [labInfo, setLabInfo] = useState<{ name: string; logo: string | null; portalSettings: PortalSettings } | null>(null);
     const [activeUpdateIndex, setActiveUpdateIndex] = useState(0);
+    const [activeAnnouncementIndex, setActiveAnnouncementIndex] = useState(0);
 
     // Load account and orders
     useEffect(() => {
@@ -172,13 +196,34 @@ const B2BPortal: React.FC = () => {
     }, [orders, searchTerm, statusFilter, dateRange, sortMode]);
 
     const portalSettings = normalizePortalSettings(labInfo?.portalSettings);
-    const activeUpdate = portalSettings.update_slides[activeUpdateIndex] || portalSettings.update_slides[0];
+    const imageSlides = portalSettings.update_slides.filter((slide) => slide.image_url);
+    // Text-only slides saved before dedicated announcements existed keep showing as announcements
+    const announcements = portalSettings.announcement_slides.length > 0
+        ? portalSettings.announcement_slides
+        : portalSettings.update_slides.filter((slide) => !slide.image_url);
+    const activeImageSlide = imageSlides[activeUpdateIndex] || imageSlides[0];
+    const activeAnnouncement = announcements[activeAnnouncementIndex] || announcements[0];
 
     useEffect(() => {
-        if (activeUpdateIndex >= portalSettings.update_slides.length) {
+        if (activeUpdateIndex >= imageSlides.length) {
             setActiveUpdateIndex(0);
         }
-    }, [activeUpdateIndex, portalSettings.update_slides.length]);
+    }, [activeUpdateIndex, imageSlides.length]);
+
+    useEffect(() => {
+        if (activeAnnouncementIndex >= announcements.length) {
+            setActiveAnnouncementIndex(0);
+        }
+    }, [activeAnnouncementIndex, announcements.length]);
+
+    // Auto-rotate the promotional image carousel
+    useEffect(() => {
+        if (imageSlides.length < 2) return;
+        const timer = window.setInterval(() => {
+            setActiveUpdateIndex((prev) => (prev + 1) % imageSlides.length);
+        }, 6000);
+        return () => window.clearInterval(timer);
+    }, [imageSlides.length]);
 
     const loadData = async () => {
         try {
@@ -579,6 +624,16 @@ const B2BPortal: React.FC = () => {
         return normalized ? normalized.charAt(0).toUpperCase() + normalized.slice(1) : 'Pending';
     };
 
+    const isFinalOrderStatus = (status: string) => {
+        return ['Report Ready', 'Completed', 'Delivered'].includes(status);
+    };
+
+    const shouldShowSampleStatus = (order: Order, sample: SampleSummary) => {
+        const normalizedSampleStatus = String(sample.status || '').toLowerCase();
+        if (normalizedSampleStatus === 'rejected' || sample.rejection_reason) return true;
+        return !isFinalOrderStatus(order.status);
+    };
+
     const formatCurrency = (amount: number) => {
         return new Intl.NumberFormat('en-IN', {
             style: 'currency',
@@ -677,15 +732,6 @@ const B2BPortal: React.FC = () => {
                                 <div className="text-xs text-gray-500">Welcome back</div>
                             </div>
                             <button
-                                onClick={() => setShowBookingModal(true)}
-                                disabled={isCreditBlocked}
-                                title={isCreditBlocked ? 'Clear pending credit before booking a new test' : 'Book New Test'}
-                                className="flex items-center px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors shadow-sm disabled:bg-gray-300 disabled:text-gray-500 disabled:cursor-not-allowed disabled:shadow-none"
-                            >
-                                <PlusCircle className="h-4 w-4 mr-2" />
-                                Book New Test
-                            </button>
-                            <button
                                 onClick={handleLogout}
                                 className="flex items-center px-4 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 transition-colors"
                             >
@@ -699,294 +745,81 @@ const B2BPortal: React.FC = () => {
 
             {/* Main Content */}
             <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-                {/* Account Info */}
-                {account && (
-                    <div className="mb-8">
-                        <AccountInfoCard account={account} />
-                    </div>
-                )}
-
-                {(portalSettings.welcome_note || (portalSettings.updates_enabled && activeUpdate)) && (
-                    <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-8">
-                        {portalSettings.welcome_note && (
-                            <div className="lg:col-span-2 rounded-lg border border-blue-100 bg-blue-50 p-5">
-                                <div className="text-xs font-semibold uppercase tracking-wide text-blue-700 mb-2">
-                                    Welcome
-                                </div>
-                                <h1 className="text-xl font-bold text-gray-900 mb-2">
-                                    Hello, {account?.name || 'Partner'}
-                                </h1>
-                                <p className="text-sm leading-6 text-gray-700 whitespace-pre-line">
-                                    {portalSettings.welcome_note}
-                                </p>
+                <div className="mb-8 grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,1fr)_360px] lg:items-start">
+                    <div className="space-y-6">
+                        <div className="rounded-lg border border-blue-100 bg-blue-50 p-5">
+                            <div className="text-xs font-semibold uppercase tracking-wide text-blue-700 mb-2">
+                                Welcome
                             </div>
-                        )}
+                            <h1 className="text-xl font-bold text-gray-900 mb-2">
+                                Hello, {account?.name || 'Partner'}
+                            </h1>
+                            <p className="text-sm leading-6 text-gray-700 whitespace-pre-line">
+                                {portalSettings.welcome_note || 'Track your bookings, samples, and reports from one place.'}
+                            </p>
+                        </div>
 
-                        {portalSettings.updates_enabled && activeUpdate && (
-                            <div className="rounded-lg border border-amber-200 bg-white p-5 shadow-sm">
-                                <div className="flex items-center justify-between gap-3 mb-4">
+                        {account && <AccountInfoCard account={account} />}
+
+                        {portalSettings.announcements_enabled && activeAnnouncement && (
+                            <div className="overflow-hidden rounded-lg border border-amber-200 bg-amber-50 shadow-sm">
+                                <div className="flex items-center justify-between gap-3 px-5 py-3">
                                     <div className="flex items-center gap-2 min-w-0">
-                                        <div className="h-9 w-9 shrink-0 rounded-lg bg-amber-50 flex items-center justify-center">
+                                        <div className="h-9 w-9 shrink-0 rounded-lg bg-white flex items-center justify-center border border-amber-200">
                                             <Megaphone className="h-4 w-4 text-amber-600" />
                                         </div>
                                         <div className="min-w-0">
-                                            <h2 className="text-sm font-bold text-gray-900 truncate">{portalSettings.updates_title}</h2>
-                                            <p className="text-xs text-gray-500">
-                                                {activeUpdateIndex + 1} of {portalSettings.update_slides.length}
+                                            <h2 className="text-sm font-bold text-gray-900 truncate">{portalSettings.announcements_title}</h2>
+                                            <p className="text-xs text-amber-700">
+                                                {activeAnnouncementIndex + 1} of {announcements.length}
                                             </p>
                                         </div>
                                     </div>
-                                    {portalSettings.update_slides.length > 1 && (
+                                    {announcements.length > 1 && (
                                         <div className="flex items-center gap-1">
                                             <button
                                                 type="button"
-                                                onClick={() => setActiveUpdateIndex((activeUpdateIndex - 1 + portalSettings.update_slides.length) % portalSettings.update_slides.length)}
-                                                className="p-1.5 rounded border border-gray-200 text-gray-500 hover:bg-gray-50"
-                                                aria-label="Previous update"
+                                                onClick={() => setActiveAnnouncementIndex((activeAnnouncementIndex - 1 + announcements.length) % announcements.length)}
+                                                className="p-1.5 rounded border border-amber-200 bg-white text-amber-700 hover:bg-amber-100"
+                                                aria-label="Previous announcement"
                                             >
                                                 <ChevronLeft className="h-4 w-4" />
                                             </button>
                                             <button
                                                 type="button"
-                                                onClick={() => setActiveUpdateIndex((activeUpdateIndex + 1) % portalSettings.update_slides.length)}
-                                                className="p-1.5 rounded border border-gray-200 text-gray-500 hover:bg-gray-50"
-                                                aria-label="Next update"
+                                                onClick={() => setActiveAnnouncementIndex((activeAnnouncementIndex + 1) % announcements.length)}
+                                                className="p-1.5 rounded border border-amber-200 bg-white text-amber-700 hover:bg-amber-100"
+                                                aria-label="Next announcement"
                                             >
                                                 <ChevronRight className="h-4 w-4" />
                                             </button>
                                         </div>
                                     )}
                                 </div>
-                                {activeUpdate.title && (
-                                    <h3 className="font-semibold text-gray-900 mb-1">{activeUpdate.title}</h3>
-                                )}
-                                {activeUpdate.message && (
-                                    <p className="text-sm leading-6 text-gray-600 whitespace-pre-line">{activeUpdate.message}</p>
-                                )}
+                                <div className="border-t border-amber-200 bg-white px-5 py-4">
+                                    {activeAnnouncement.title && (
+                                        <h3 className="text-base font-semibold text-gray-900">{activeAnnouncement.title}</h3>
+                                    )}
+                                    {activeAnnouncement.message && (
+                                        <p className="mt-1 text-sm leading-6 text-gray-600 whitespace-pre-line">{activeAnnouncement.message}</p>
+                                    )}
+                                </div>
                             </div>
                         )}
-                    </div>
-                )}
 
-	                {/* Finance Section */}
-	                {account && (
-	                    <div className="grid grid-cols-1 xl:grid-cols-3 gap-6 mb-8">
-                        <div className="bg-white rounded-lg shadow-md border border-gray-200 p-6">
-                            <div className="flex items-center justify-between mb-5">
-                                <div>
-                                    <h2 className="text-lg font-bold text-gray-900">Credit Summary</h2>
-                                    <p className="text-sm text-gray-500">Available balance and limit</p>
-                                </div>
-                                <div className="h-10 w-10 rounded-lg bg-blue-50 flex items-center justify-center">
-                                    <Wallet className="h-5 w-5 text-blue-600" />
-                                </div>
+                        {isCreditBlocked && (
+                            <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+                                Account credit is overdue. New bookings and report downloads are disabled until payment is received.
                             </div>
-                            <div className="space-y-3">
-                                <div className="flex items-center justify-between">
-                                    <span className="text-sm text-gray-500">Credit Limit</span>
-                                    <span className="font-semibold text-gray-900">{formatCurrency(creditLimit)}</span>
-                                </div>
-                                <div className="flex items-center justify-between">
-                                    <span className="text-sm text-gray-500">Open Orders</span>
-                                    <span className="font-semibold text-orange-600">{formatCurrency(openOrderAmount)}</span>
-                                </div>
-                                <div className="flex items-center justify-between">
-                                    <span className="text-sm text-gray-500">Outstanding Bills</span>
-                                    <span className="font-semibold text-orange-600">{formatCurrency(outstandingInvoiceAmount)}</span>
-                                </div>
-                                <div className="flex items-center justify-between">
-                                    <span className="text-sm text-gray-500">Pending Bookings</span>
-                                    <span className="font-semibold text-amber-600">{formatCurrency(pendingBookingAmount)}</span>
-                                </div>
-                                <div className="flex items-center justify-between">
-                                    <span className="text-sm text-gray-500">Payments Applied</span>
-                                    <span className="font-semibold text-green-600">-{formatCurrency(paymentCreditTotal)}</span>
-                                </div>
-                                <div className="flex items-center justify-between">
-                                    <span className="text-sm text-gray-500">Used Credit</span>
-                                    <span className="font-semibold text-gray-900">{formatCurrency(effectiveCreditUsed)}</span>
-                                </div>
-                                <div className="pt-3 border-t border-gray-200 flex items-center justify-between">
-                                    <span className="text-sm font-medium text-gray-700">Balance Credit</span>
-                                    <span className={`text-xl font-bold ${availableCredit >= 0 ? 'text-green-600' : 'text-red-600'}`}>
-                                        {formatCurrency(availableCredit)}
-                                    </span>
-                                </div>
-                            </div>
-                        </div>
+                        )}
 
-                        <div className="bg-white rounded-lg shadow-md border border-gray-200 p-6">
-                            <div className="flex items-center justify-between mb-5">
-                                <div>
-                                    <h2 className="text-lg font-bold text-gray-900">Pay Now</h2>
-                                    <p className="text-sm text-gray-500">Top up account credit</p>
-                                </div>
-                                <div className="h-10 w-10 rounded-lg bg-green-50 flex items-center justify-center">
-                                    <CreditCard className="h-5 w-5 text-green-600" />
-                                </div>
-                            </div>
-                            <div className="space-y-3">
-                                <div className="relative">
-                                    <span className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500">₹</span>
-                                    <input
-                                        type="number"
-                                        min="1"
-                                        value={topUpAmount}
-                                        onChange={(e) => {
-                                            setTopUpAmountEdited(true);
-                                            setTopUpAmount(e.target.value);
-                                        }}
-                                        placeholder="Enter amount"
-                                        className="w-full pl-8 pr-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                                    />
-                                </div>
-                                {paymentError && (
-                                    <div className="flex items-start gap-2 text-sm text-red-600 bg-red-50 border border-red-100 rounded-lg p-2">
-                                        <AlertCircle className="h-4 w-4 mt-0.5 shrink-0" />
-                                        <span>{paymentError}</span>
-	                    </div>
-	                )}
-
-                {isCreditBlocked && (
-                    <div className="mb-8 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
-                        Account credit is overdue. New bookings and report downloads are disabled until payment is received.
-                    </div>
-                )}
-                                <button
-                                    onClick={handlePayNow}
-                                    disabled={paymentLoading}
-                                    className="w-full flex items-center justify-center gap-2 px-4 py-2.5 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors disabled:opacity-60"
-                                >
-                                    {paymentLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <CreditCard className="h-4 w-4" />}
-                                    {paymentLoading ? 'Opening Gateway...' : 'Pay Now'}
-                                </button>
-                            </div>
-                        </div>
-
-                        <div className="bg-white rounded-lg shadow-md border border-gray-200 p-6">
-                            <div className="flex items-center justify-between mb-5">
-                                <div>
-                                    <h2 className="text-lg font-bold text-gray-900">Recent Payments</h2>
-                                    <p className="text-sm text-gray-500">Successful gateway payments</p>
-                                </div>
-                                <div className="h-10 w-10 rounded-lg bg-emerald-50 flex items-center justify-center">
-                                    <CheckCircle className="h-5 w-5 text-emerald-600" />
-                                </div>
-                            </div>
-                            <div className="space-y-3">
-                                {payments.length === 0 ? (
-                                    <p className="text-sm text-gray-500 py-4 text-center">No successful payments yet</p>
-                                ) : (
-                                    payments.map((payment) => (
-                                        <div key={payment.id} className="flex items-center justify-between border-b border-gray-100 pb-3 last:border-0 last:pb-0">
-                                            <div className="min-w-0">
-                                                <p className="text-sm font-medium text-gray-900">{formatCurrency(payment.amount)}</p>
-                                                <p className="text-xs text-gray-500 capitalize">
-                                                    {payment.provider || 'gateway'} {payment.payment_method ? ` - ${payment.payment_method}` : ''}
-                                                </p>
-                                            </div>
-                                            <div className="text-right">
-                                                <span className="inline-flex px-2 py-1 rounded-full text-xs font-medium bg-green-100 text-green-700">
-                                                    Success
-                                                </span>
-                                                <p className="text-xs text-gray-500 mt-1">
-                                                    {formatDate(payment.completed_at || payment.created_at || '')}
-                                                </p>
-                                            </div>
-                                        </div>
-                                    ))
-                                )}
-                            </div>
-                        </div>
-                    </div>
-                )}
-
-                {/* Bills Section */}
-                {account && (
-                    <div className="bg-white rounded-lg shadow-md border border-gray-200 mb-8">
-                        <div className="p-6 border-b border-gray-200 flex items-center justify-between">
-                            <div>
-                                <h2 className="text-lg font-bold text-gray-900 flex items-center gap-2">
-                                    <Receipt className="h-5 w-5 text-blue-600" />
-                                    Bills
-                                </h2>
-                                <p className="text-sm text-gray-500 mt-1">Recent consolidated monthly bills</p>
-                            </div>
-                        </div>
-                        <div className="overflow-x-auto">
-                            <table className="w-full">
-                                <thead className="bg-gray-50 border-b border-gray-200">
-                                    <tr>
-                                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Bill No.</th>
-                                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Period</th>
-                                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Due Date</th>
-                                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Status</th>
-                                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Amount</th>
-                                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Action</th>
-                                    </tr>
-                                </thead>
-                                <tbody className="bg-white divide-y divide-gray-200">
-                                    {invoices.length === 0 ? (
-                                        <tr>
-                                            <td colSpan={6} className="px-6 py-10 text-center text-gray-500">
-                                                No bills generated yet
-                                            </td>
-                                        </tr>
-                                    ) : (
-                                        invoices.map((invoice) => (
-                                            <tr key={invoice.id} className="hover:bg-gray-50 transition-colors">
-                                                <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">{invoice.invoice_number}</td>
-                                                <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-600">
-                                                    {invoice.billing_period_start && invoice.billing_period_end
-                                                        ? `${formatDate(invoice.billing_period_start)} - ${formatDate(invoice.billing_period_end)}`
-                                                        : '-'}
-                                                </td>
-                                                <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-600">
-                                                    {invoice.due_date ? formatDate(invoice.due_date) : '-'}
-                                                </td>
-                                                <td className="px-6 py-4 whitespace-nowrap">
-                                                    <span className={`px-2 py-1 rounded-full text-xs font-medium capitalize ${
-                                                        invoice.status === 'paid'
-                                                            ? 'bg-green-100 text-green-700'
-                                                            : invoice.status === 'overdue'
-                                                                ? 'bg-red-100 text-red-700'
-                                                                : 'bg-blue-100 text-blue-700'
-                                                    }`}>
-                                                        {invoice.status}
-                                                    </span>
-                                                </td>
-                                                <td className="px-6 py-4 whitespace-nowrap text-sm font-semibold text-gray-900">
-                                                    {formatCurrency(invoice.total_amount)}
-                                                </td>
-                                                <td className="px-6 py-4 whitespace-nowrap text-sm">
-                                                    {invoice.pdf_url ? (
-                                                        <button
-                                                            onClick={() => handleDownloadReport(invoice.pdf_url!)}
-                                                            className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium rounded-lg text-white bg-blue-600 hover:bg-blue-700 transition-colors"
-                                                        >
-                                                            <Download className="h-3.5 w-3.5" />
-                                                            Download
-                                                        </button>
-                                                    ) : (
-                                                        <span className="text-gray-400 text-xs italic">Not ready</span>
-                                                    )}
-                                                </td>
-                                            </tr>
-                                        ))
-                                    )}
-                                </tbody>
-                            </table>
-                        </div>
-                    </div>
-                )}
-
-                {/* Pending Bookings Section */}
+                        {/* Pending Bookings Section */}
                 {pendingBookings.length > 0 && (
-                    <div className="bg-yellow-50 rounded-lg shadow-md border border-yellow-200 mb-8">
+                    <div className="bg-yellow-50 rounded-lg shadow-md border border-yellow-200">
                         <div className="p-4 border-b border-yellow-200">
                             <h2 className="text-lg font-bold text-yellow-800 flex items-center gap-2">
                                 <Clock className="h-5 w-5" />
-                                Pending Bookings ({pendingBookings.length})
+                                Booked Samples ({pendingBookings.length})
                             </h2>
                             <p className="text-sm text-yellow-700 mt-1">
                                 These bookings are waiting to be processed by the lab.
@@ -1041,7 +874,7 @@ const B2BPortal: React.FC = () => {
                     {/* Filters */}
                     <div className="p-6 border-b border-gray-200">
                         <div className="flex items-center justify-between mb-4">
-                            <h2 className="text-xl font-bold text-gray-900">Your Orders</h2>
+                            <h2 className="text-xl font-bold text-gray-900">Booked Samples and Reports</h2>
                             <button
                                 onClick={loadData}
                                 className="flex items-center px-3 py-2 text-sm bg-blue-50 text-blue-600 rounded-lg hover:bg-blue-100 transition-colors"
@@ -1129,7 +962,7 @@ const B2BPortal: React.FC = () => {
                         <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
                             <div className="text-sm text-gray-600">
                                 Showing {filteredOrders.length} of {orders.length} orders
-                                {selectedOrderIds.size > 0 && <span className="ml-2 font-medium text-indigo-600">· {selectedOrderIds.size} selected</span>}
+                                {selectedOrderIds.size > 0 && <span className="ml-2 font-medium text-indigo-600"> - {selectedOrderIds.size} selected</span>}
                             </div>
                             <button
                                 onClick={() => setShowResultAnalysis(true)}
@@ -1141,7 +974,6 @@ const B2BPortal: React.FC = () => {
                             </button>
                         </div>
                     </div>
-
                     {/* Orders Table */}
                     <div className="overflow-x-auto">
                         <table className="w-full">
@@ -1235,7 +1067,7 @@ const B2BPortal: React.FC = () => {
                                                     <span className={`inline-flex px-2 py-1 rounded-full text-xs font-medium ${getStatusColor(order.status)}`}>
                                                         {order.status}
                                                     </span>
-                                                    {orderSamples.map((sample) => (
+                                                    {orderSamples.filter((sample) => shouldShowSampleStatus(order, sample)).map((sample) => (
                                                         <div key={`${sample.id}-status`} className="text-xs">
                                                             <span className={`inline-flex px-2 py-0.5 rounded-full font-medium ${getSampleStatusColor(sample.status)}`}>
                                                                 {getSampleStatusLabel(sample.status)}
@@ -1294,6 +1126,298 @@ const B2BPortal: React.FC = () => {
                         </table>
                     </div>
                 </div>
+                    </div>
+
+                    <div className="space-y-6">
+                        <div className="bg-white rounded-lg shadow-md border border-gray-200 p-6">
+                            <h2 className="text-lg font-bold text-gray-900">Create Booking</h2>
+                            <p className="mt-1 text-sm text-gray-500">Start a new sample booking for your patients.</p>
+                            <button
+                                onClick={() => setShowBookingModal(true)}
+                                disabled={isCreditBlocked}
+                                className="mt-5 flex w-full items-center justify-center gap-2 rounded-lg bg-blue-600 px-4 py-3 text-sm font-medium text-white shadow-sm transition-colors hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-gray-300 disabled:text-gray-500"
+                            >
+                                <PlusCircle className="h-4 w-4" />
+                                Create Booking
+                            </button>
+                        </div>
+
+                        <div className="bg-white rounded-lg shadow-md border border-gray-200 p-6">
+                            <div className="flex items-center justify-between gap-4">
+                                <div>
+                                    <h2 className="text-lg font-bold text-gray-900">Current Balance</h2>
+                                    <p className="text-sm text-gray-500">Available credit</p>
+                                </div>
+                                <span className={`text-2xl font-bold ${availableCredit >= 0 ? 'text-green-600' : 'text-red-600'}`}>
+                                    {formatCurrency(availableCredit)}
+                                </span>
+                            </div>
+                            <div className="mt-5 space-y-3">
+                                <div className="relative">
+                                    <span className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500">Rs.</span>
+                                    <input
+                                        type="number"
+                                        min="1"
+                                        value={topUpAmount}
+                                        onChange={(e) => {
+                                            setTopUpAmountEdited(true);
+                                            setTopUpAmount(e.target.value);
+                                        }}
+                                        placeholder="Enter amount"
+                                        className="w-full pl-11 pr-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                                    />
+                                </div>
+                                {paymentError && (
+                                    <div className="flex items-start gap-2 text-sm text-red-600 bg-red-50 border border-red-100 rounded-lg p-2">
+                                        <AlertCircle className="h-4 w-4 mt-0.5 shrink-0" />
+                                        <span>{paymentError}</span>
+                                    </div>
+                                )}
+                                <button
+                                    onClick={handlePayNow}
+                                    disabled={paymentLoading}
+                                    className="w-full flex items-center justify-center gap-2 px-4 py-2.5 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors disabled:opacity-60"
+                                >
+                                    {paymentLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <CreditCard className="h-4 w-4" />}
+                                    {paymentLoading ? 'Opening Gateway...' : 'Pay Now'}
+                                </button>
+                            </div>
+                        </div>
+
+                        {portalSettings.updates_enabled && activeImageSlide && (
+                            <div className="overflow-hidden rounded-lg border border-gray-200 bg-white shadow-sm">
+                                <div className="flex items-center justify-between gap-3 border-b border-gray-100 px-4 py-3">
+                                    <div className="flex items-center gap-2 min-w-0">
+                                        <div className="h-8 w-8 shrink-0 rounded-lg bg-blue-50 flex items-center justify-center">
+                                            <ImageIcon className="h-4 w-4 text-blue-600" />
+                                        </div>
+                                        <div className="min-w-0">
+                                            <h2 className="text-sm font-bold text-gray-900 truncate">{portalSettings.updates_title}</h2>
+                                            <p className="text-xs text-gray-500">
+                                                {activeUpdateIndex + 1} of {imageSlides.length}
+                                            </p>
+                                        </div>
+                                    </div>
+                                    {imageSlides.length > 1 && (
+                                        <div className="flex items-center gap-1">
+                                            <button
+                                                type="button"
+                                                onClick={() => setActiveUpdateIndex((activeUpdateIndex - 1 + imageSlides.length) % imageSlides.length)}
+                                                className="p-1.5 rounded border border-gray-200 text-gray-500 hover:bg-gray-50"
+                                                aria-label="Previous update"
+                                            >
+                                                <ChevronLeft className="h-4 w-4" />
+                                            </button>
+                                            <button
+                                                type="button"
+                                                onClick={() => setActiveUpdateIndex((activeUpdateIndex + 1) % imageSlides.length)}
+                                                className="p-1.5 rounded border border-gray-200 text-gray-500 hover:bg-gray-50"
+                                                aria-label="Next update"
+                                            >
+                                                <ChevronRight className="h-4 w-4" />
+                                            </button>
+                                        </div>
+                                    )}
+                                </div>
+                                <div className="bg-gray-100 p-3">
+                                    <div
+                                        className={`relative mx-auto w-full overflow-hidden rounded-lg bg-gray-200 ${
+                                            portalSettings.slider_aspect === 'banner'
+                                                ? 'aspect-[3/1]'
+                                                : portalSettings.slider_aspect === 'landscape'
+                                                    ? 'aspect-video'
+                                                    : 'aspect-square'
+                                        }`}
+                                    >
+                                        <img
+                                            src={activeImageSlide.image_url}
+                                            alt={activeImageSlide.title || portalSettings.updates_title}
+                                            className="absolute inset-0 h-full w-full object-cover"
+                                        />
+                                        {(activeImageSlide.title || activeImageSlide.message) && (
+                                            <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/70 to-transparent p-3 pb-6 text-white">
+                                                {activeImageSlide.title && <h3 className="text-base font-semibold">{activeImageSlide.title}</h3>}
+                                                {activeImageSlide.message && <p className="mt-1 text-xs leading-5 text-white/90 whitespace-pre-line">{activeImageSlide.message}</p>}
+                                            </div>
+                                        )}
+                                        {imageSlides.length > 1 && (
+                                            <div className="absolute inset-x-0 bottom-2 flex justify-center gap-1.5">
+                                                {imageSlides.map((_, index) => (
+                                                    <button
+                                                        key={index}
+                                                        type="button"
+                                                        onClick={() => setActiveUpdateIndex(index)}
+                                                        className={`h-1.5 rounded-full transition-all ${index === activeUpdateIndex ? 'w-5 bg-white' : 'w-1.5 bg-white/50'}`}
+                                                        aria-label={`Go to slide ${index + 1}`}
+                                                    />
+                                                ))}
+                                            </div>
+                                        )}
+                                    </div>
+                                </div>
+                            </div>
+                        )}
+                    </div>
+                </div>
+
+                {/* Payment Section */}
+                {account && (
+                    <div className="space-y-6">
+                        <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
+                            <div className="bg-white rounded-lg shadow-md border border-gray-200 p-6">
+                                <div className="flex items-center justify-between mb-5">
+                                    <div>
+                                        <h2 className="text-lg font-bold text-gray-900">Current Balance Details</h2>
+                                        <p className="text-sm text-gray-500">Credit limit, open work, and pending bills</p>
+                                    </div>
+                                    <div className="h-10 w-10 rounded-lg bg-blue-50 flex items-center justify-center">
+                                        <Wallet className="h-5 w-5 text-blue-600" />
+                                    </div>
+                                </div>
+                                <div className="space-y-3">
+                                    <div className="flex items-center justify-between">
+                                        <span className="text-sm text-gray-500">Credit Limit</span>
+                                        <span className="font-semibold text-gray-900">{formatCurrency(creditLimit)}</span>
+                                    </div>
+                                    <div className="flex items-center justify-between">
+                                        <span className="text-sm text-gray-500">Open Orders</span>
+                                        <span className="font-semibold text-orange-600">{formatCurrency(openOrderAmount)}</span>
+                                    </div>
+                                    <div className="flex items-center justify-between">
+                                        <span className="text-sm text-gray-500">Outstanding Bills</span>
+                                        <span className="font-semibold text-orange-600">{formatCurrency(outstandingInvoiceAmount)}</span>
+                                    </div>
+                                    <div className="flex items-center justify-between">
+                                        <span className="text-sm text-gray-500">Pending Bookings</span>
+                                        <span className="font-semibold text-amber-600">{formatCurrency(pendingBookingAmount)}</span>
+                                    </div>
+                                    <div className="flex items-center justify-between">
+                                        <span className="text-sm text-gray-500">Payments Applied</span>
+                                        <span className="font-semibold text-green-600">-{formatCurrency(paymentCreditTotal)}</span>
+                                    </div>
+                                    <div className="pt-3 border-t border-gray-200 flex items-center justify-between">
+                                        <span className="text-sm font-medium text-gray-700">Available Credit</span>
+                                        <span className={`text-xl font-bold ${availableCredit >= 0 ? 'text-green-600' : 'text-red-600'}`}>
+                                            {formatCurrency(availableCredit)}
+                                        </span>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div className="bg-white rounded-lg shadow-md border border-gray-200 p-6">
+                                <div className="flex items-center justify-between mb-5">
+                                    <div>
+                                        <h2 className="text-lg font-bold text-gray-900">Past Payments</h2>
+                                        <p className="text-sm text-gray-500">Successful gateway payments</p>
+                                    </div>
+                                    <div className="h-10 w-10 rounded-lg bg-emerald-50 flex items-center justify-center">
+                                        <CheckCircle className="h-5 w-5 text-emerald-600" />
+                                    </div>
+                                </div>
+                                <div className="space-y-3">
+                                    {payments.length === 0 ? (
+                                        <p className="text-sm text-gray-500 py-4 text-center">No successful payments yet</p>
+                                    ) : (
+                                        payments.slice(0, 5).map((payment) => (
+                                            <div key={payment.id} className="flex items-center justify-between border-b border-gray-100 pb-3 last:border-0 last:pb-0">
+                                                <div className="min-w-0">
+                                                    <p className="text-sm font-medium text-gray-900">{formatCurrency(payment.amount)}</p>
+                                                    <p className="text-xs text-gray-500 capitalize">
+                                                        {payment.provider || 'gateway'} {payment.payment_method ? ` - ${payment.payment_method}` : ''}
+                                                    </p>
+                                                </div>
+                                                <div className="text-right">
+                                                    <span className="inline-flex px-2 py-1 rounded-full text-xs font-medium bg-green-100 text-green-700">
+                                                        Success
+                                                    </span>
+                                                    <p className="text-xs text-gray-500 mt-1">
+                                                        {formatDate(payment.completed_at || payment.created_at || '')}
+                                                    </p>
+                                                </div>
+                                            </div>
+                                        ))
+                                    )}
+                                </div>
+                            </div>
+                        </div>
+
+                        <div className="bg-white rounded-lg shadow-md border border-gray-200">
+                            <div className="p-6 border-b border-gray-200 flex items-center justify-between">
+                                <div>
+                                    <h2 className="text-lg font-bold text-gray-900 flex items-center gap-2">
+                                        <Receipt className="h-5 w-5 text-blue-600" />
+                                        Invoices
+                                    </h2>
+                                    <p className="text-sm text-gray-500 mt-1">Recent consolidated monthly bills</p>
+                                </div>
+                            </div>
+                            <div className="overflow-x-auto">
+                                <table className="w-full">
+                                    <thead className="bg-gray-50 border-b border-gray-200">
+                                        <tr>
+                                            <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Invoice No.</th>
+                                            <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Period</th>
+                                            <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Due Date</th>
+                                            <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Status</th>
+                                            <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Amount</th>
+                                            <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Action</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody className="bg-white divide-y divide-gray-200">
+                                        {invoices.length === 0 ? (
+                                            <tr>
+                                                <td colSpan={6} className="px-6 py-10 text-center text-gray-500">
+                                                    No invoices generated yet
+                                                </td>
+                                            </tr>
+                                        ) : (
+                                            invoices.map((invoice) => (
+                                                <tr key={invoice.id} className="hover:bg-gray-50 transition-colors">
+                                                    <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">{invoice.invoice_number}</td>
+                                                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-600">
+                                                        {invoice.billing_period_start && invoice.billing_period_end
+                                                            ? `${formatDate(invoice.billing_period_start)} - ${formatDate(invoice.billing_period_end)}`
+                                                            : '-'}
+                                                    </td>
+                                                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-600">
+                                                        {invoice.due_date ? formatDate(invoice.due_date) : '-'}
+                                                    </td>
+                                                    <td className="px-6 py-4 whitespace-nowrap">
+                                                        <span className={`px-2 py-1 rounded-full text-xs font-medium capitalize ${
+                                                            invoice.status === 'paid'
+                                                                ? 'bg-green-100 text-green-700'
+                                                                : invoice.status === 'overdue'
+                                                                    ? 'bg-red-100 text-red-700'
+                                                                    : 'bg-blue-100 text-blue-700'
+                                                        }`}>
+                                                            {invoice.status}
+                                                        </span>
+                                                    </td>
+                                                    <td className="px-6 py-4 whitespace-nowrap text-sm font-semibold text-gray-900">
+                                                        {formatCurrency(invoice.total_amount)}
+                                                    </td>
+                                                    <td className="px-6 py-4 whitespace-nowrap text-sm">
+                                                        {invoice.pdf_url ? (
+                                                            <button
+                                                                onClick={() => handleDownloadReport(invoice.pdf_url!)}
+                                                                className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium rounded-lg text-white bg-blue-600 hover:bg-blue-700 transition-colors"
+                                                            >
+                                                                <Download className="h-3.5 w-3.5" />
+                                                                Download
+                                                            </button>
+                                                        ) : (
+                                                            <span className="text-gray-400 text-xs italic">Not ready</span>
+                                                        )}
+                                                    </td>
+                                                </tr>
+                                            ))
+                                        )}
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+                )}
             </main>
 
             {showBookingModal && account && (

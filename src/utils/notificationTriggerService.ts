@@ -14,6 +14,7 @@ export interface NotificationSettings {
   send_report_on_status: 'Approved' | 'Completed' | 'Delivered';
   auto_send_invoice_to_patient: boolean;
   auto_send_registration_confirmation: boolean;
+  auto_send_registration_to_doctor: boolean;
   auto_send_loyalty_points: boolean;
   auto_send_loyalty_redemption: boolean;
   include_test_details_in_registration: boolean;
@@ -585,7 +586,7 @@ export const notificationTriggerService = {
     console.log(`[NotificationTrigger] Order registered: order=${orderId}`);
 
     const settings = await notificationTriggerService.getSettings(labId);
-    if (!settings?.auto_send_registration_confirmation) {
+    if (!settings?.auto_send_registration_confirmation && !settings?.auto_send_registration_to_doctor) {
       return { sent: false, reason: 'disabled' };
     }
 
@@ -600,8 +601,10 @@ export const notificationTriggerService = {
         id,
         order_display,
         patient_name,
+        doctor,
         expected_date,
-        patients!inner (id, name, phone)
+        patients!inner (id, name, phone),
+        doctors (id, name, phone)
       `)
       .eq('id', orderId)
       .single();
@@ -631,6 +634,7 @@ export const notificationTriggerService = {
       TestName: testNames,
       ExpectedDate: order.expected_date ? new Date(order.expected_date).toLocaleDateString('en-IN') : 'To be determined',
       LabName: lab?.name || 'Lab',
+      DoctorName: order.doctors?.name || order.doctor || 'Doctor',
     };
 
     // Try to use the lab's customized template from DB, fallback to hardcoded default
@@ -649,17 +653,19 @@ export const notificationTriggerService = {
       templateData
     );
 
-    const sendResult = shouldAttemptNow
-      ? await notificationTriggerService.sendWithFallback(
-        order.patients.phone,
-        message
-      )
-      : { success: false, error: 'Outside send window' };
+    const results: { patient?: any; doctor?: any } = {};
 
-    if (sendResult.success) {
-      return { sent: true, messageId: sendResult.messageId };
-    } else {
-      if (settings.queue_outside_window !== false) {
+    if (settings.auto_send_registration_confirmation && order.patients?.phone) {
+      const sendResult = shouldAttemptNow
+        ? await notificationTriggerService.sendWithFallback(
+          order.patients.phone,
+          message
+        )
+        : { success: false, error: 'Outside send window' };
+
+      if (sendResult.success) {
+        results.patient = { sent: true, messageId: sendResult.messageId };
+      } else if (settings.queue_outside_window !== false) {
         await notificationTriggerService.queueNotification({
           lab_id: labId,
           recipient_type: 'patient',
@@ -672,10 +678,53 @@ export const notificationTriggerService = {
           scheduled_for: scheduledFor,
           last_error: sendResult.error,
         });
-        return { sent: false, queued: true, error: sendResult.error };
+        results.patient = { sent: false, queued: true, error: sendResult.error };
+      } else {
+        results.patient = { sent: false, queued: false, skipped: true, reason: sendResult.error };
       }
-      return { sent: false, queued: false, skipped: true, reason: sendResult.error };
     }
+
+    if (settings.auto_send_registration_to_doctor && order.doctors?.phone) {
+      let doctorTemplateMessage = DEFAULT_TEMPLATES.doctor_registration_confirmation.message;
+      try {
+        const { data: dbTemplate } = await database.whatsappTemplates.getDefault('doctor_registration_confirmation', labId);
+        if (dbTemplate?.message_content) {
+          doctorTemplateMessage = dbTemplate.message_content;
+        }
+      } catch (e) {
+        console.warn('[NotificationTrigger] Failed to fetch doctor DB template, using default:', e);
+      }
+
+      const doctorMessage = replacePlaceholders(doctorTemplateMessage, templateData);
+      const sendResult = shouldAttemptNow
+        ? await notificationTriggerService.sendWithFallback(
+          order.doctors.phone,
+          doctorMessage
+        )
+        : { success: false, error: 'Outside send window' };
+
+      if (sendResult.success) {
+        results.doctor = { sent: true, messageId: sendResult.messageId };
+      } else if (settings.queue_outside_window !== false) {
+        await notificationTriggerService.queueNotification({
+          lab_id: labId,
+          recipient_type: 'doctor',
+          recipient_phone: order.doctors.phone,
+          recipient_name: order.doctors.name,
+          recipient_id: order.doctors.id,
+          trigger_type: 'order_registered',
+          order_id: orderId,
+          message_content: doctorMessage,
+          scheduled_for: scheduledFor,
+          last_error: sendResult.error,
+        });
+        results.doctor = { sent: false, queued: true, error: sendResult.error };
+      } else {
+        results.doctor = { sent: false, queued: false, skipped: true, reason: sendResult.error };
+      }
+    }
+
+    return { sent: true, results };
   },
 
   // Triggered when loyalty points are earned or redeemed

@@ -199,6 +199,8 @@ const Reports: React.FC = () => {
   const [isQueueingSelectedReports, setIsQueueingSelectedReports] = useState(false);
   const [isDeletingSelectedReports, setIsDeletingSelectedReports] = useState(false);
   const [isGeneratingSelectedReports, setIsGeneratingSelectedReports] = useState(false);
+  const [isBulkPrintingSelectedReports, setIsBulkPrintingSelectedReports] = useState(false);
+  const [bulkPrintProgress, setBulkPrintProgress] = useState<string | null>(null);
   const [isTestingTemplate, setIsTestingTemplate] = useState(false);
   const [previewingOrderId, setPreviewingOrderId] = useState<string | null>(null);
   const [isAdmin, setIsAdmin] = useState(false);
@@ -1216,6 +1218,100 @@ const Reports: React.FC = () => {
       setIsDeletingSelectedReports(false);
     }
   }, [loadApprovedResults, orderGroups, selectedOrders, verifyBulkReportDeletePermission]);
+
+  const handleBulkPrintSelectedReports = useCallback(async () => {
+    const selectedOrderIds = Array.from(selectedOrders);
+    if (selectedOrderIds.length === 0) {
+      alert('Please select at least one order');
+      return;
+    }
+
+    const selectedGroups = selectedOrderIds
+      .map((orderId) => orderGroups.find((group) => group.order_id === orderId))
+      .filter((group): group is OrderGroup => Boolean(group));
+
+    const groupsWithPrintPdf = selectedGroups.filter((group) => {
+      const result = group.results[0] as ApprovedResult | undefined;
+      return Boolean(
+        result?.print_pdf_url ||
+        result?.final_report?.print_pdf_url ||
+        result?.draft_report?.print_pdf_url
+      );
+    });
+
+    if (groupsWithPrintPdf.length === 0) {
+      alert('None of the selected orders have a generated print PDF yet. Generate print copies first.');
+      return;
+    }
+
+    const missingCount = selectedGroups.length - groupsWithPrintPdf.length;
+    if (missingCount > 0) {
+      const proceed = window.confirm(
+        `${missingCount} selected order${missingCount === 1 ? ' does' : 's do'} not have a generated print PDF and will be skipped.\n\nMerge and print the remaining ${groupsWithPrintPdf.length}?`
+      );
+      if (!proceed) return;
+    }
+
+    setIsBulkPrintingSelectedReports(true);
+    setBulkPrintProgress('Starting…');
+
+    try {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) throw new Error('You must be logged in.');
+      const { data: userData } = await supabase.from('users').select('lab_id').eq('id', user.id).single();
+      if (!userData?.lab_id) throw new Error('Could not resolve your lab.');
+
+      const orderIds = groupsWithPrintPdf.map((group) => group.order_id);
+
+      const { data: reqData, error: reqError } = await supabase
+        .from('bulk_pdf_download_requests')
+        .insert({
+          lab_id: userData.lab_id,
+          order_ids: orderIds,
+          total_orders: orderIds.length,
+          status: 'pending',
+          created_by: user.id,
+          download_type: 'merged',
+        })
+        .select()
+        .single();
+
+      if (reqError || !reqData) throw new Error(reqError?.message || 'Failed to create merge request');
+
+      const { error: fnError } = await supabase.functions.invoke('bulk-pdf-merge', {
+        body: { request_id: reqData.id, sort_mode: 'sample_asc' },
+      });
+      if (fnError) throw new Error(fnError.message);
+
+      const startedAt = Date.now();
+      while (Date.now() - startedAt < 5 * 60 * 1000) {
+        await new Promise((resolve) => setTimeout(resolve, 2000));
+        const { data: status } = await supabase
+          .from('bulk_pdf_download_requests')
+          .select('status, zip_url, processed_orders, total_orders, error_message')
+          .eq('id', reqData.id)
+          .single();
+
+        if (!status) continue;
+        setBulkPrintProgress(`Merging ${status.processed_orders ?? 0}/${status.total_orders ?? orderIds.length}…`);
+
+        if (status.status === 'completed' && status.zip_url) {
+          window.open(status.zip_url, '_blank');
+          return;
+        }
+        if (status.status === 'failed') {
+          throw new Error(status.error_message || 'Merge failed');
+        }
+      }
+      throw new Error('Merge timed out. Try again or select fewer orders.');
+    } catch (error) {
+      console.error('Bulk print merge failed:', error);
+      alert('Bulk print failed: ' + (error instanceof Error ? error.message : 'Unknown error'));
+    } finally {
+      setIsBulkPrintingSelectedReports(false);
+      setBulkPrintProgress(null);
+    }
+  }, [orderGroups, selectedOrders]);
 
   const moveOrderSettingsGroup = useCallback((index: number, direction: -1 | 1) => {
     setOrderSettingsGroups(prev => {
@@ -2515,6 +2611,23 @@ const Reports: React.FC = () => {
                       <Send className="w-4 h-4" />
                     )}
                     <span>{isQueueingSelectedReports ? 'Queueing...' : 'Queue WhatsApp'}</span>
+                  </button>
+                  <button
+                    onClick={handleBulkPrintSelectedReports}
+                    disabled={isBulkPrintingSelectedReports}
+                    className={`flex items-center space-x-2 px-4 py-2 rounded-md transition-colors ${
+                      isBulkPrintingSelectedReports
+                        ? 'bg-indigo-300 text-white cursor-not-allowed'
+                        : 'bg-indigo-600 text-white hover:bg-indigo-700'
+                    }`}
+                    title="Merge the generated print PDFs of the selected orders into one PDF for printing"
+                  >
+                    {isBulkPrintingSelectedReports ? (
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                    ) : (
+                      <Printer className="w-4 h-4" />
+                    )}
+                    <span>{isBulkPrintingSelectedReports ? (bulkPrintProgress || 'Merging…') : 'Bulk Print'}</span>
                   </button>
                   <button
                     onClick={handleDeleteSelectedReports}

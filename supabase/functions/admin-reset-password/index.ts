@@ -111,7 +111,7 @@ Deno.serve(async (req: Request) => {
     // Look up the target user — must be in the same lab
     const { data: target, error: targetError } = await supabaseAdmin
       .from("users")
-      .select("id, lab_id, name, email, auth_user_id")
+      .select("id, lab_id, name, email, auth_user_id, role")
       .eq("id", target_user_id)
       .single();
 
@@ -138,6 +138,26 @@ Deno.serve(async (req: Request) => {
     }
 
     console.log(`[ADMIN-RESET-PASSWORD] Password reset successfully for ${target.email}`);
+
+    // Record the new password so lab admins can look it up later
+    // (portal_credentials is admin-read-only via RLS, written only with service role)
+    try {
+      const credentialType = (target as any).role === "B2B Account" ? "b2b_portal" : "staff";
+      const { error: credError } = await supabaseAdmin
+        .from("portal_credentials")
+        .upsert({
+          lab_id: target.lab_id,
+          credential_type: credentialType,
+          auth_user_id: authUserId,
+          email: target.email,
+          password_text: new_password,
+          updated_by: callerAuth.id,
+          updated_at: new Date().toISOString(),
+        }, { onConflict: "lab_id,credential_type,email" });
+      if (credError) console.warn("[ADMIN-RESET-PASSWORD] Could not store credential:", credError.message);
+    } catch (credErr) {
+      console.warn("[ADMIN-RESET-PASSWORD] Credential store failed:", credErr);
+    }
 
     return json({
       success: true,

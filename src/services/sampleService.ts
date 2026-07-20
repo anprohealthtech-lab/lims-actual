@@ -102,6 +102,8 @@ export async function createSamplesForOrder(
   patientId: string,
   options?: {
     preBarcodedBarcode?: string | null;
+    collectedAt?: string | null;
+    collectedBy?: string | null;
   }
 ): Promise<Sample[]> {
   const labCode = await getLabCode(labId);
@@ -139,6 +141,9 @@ export async function createSamplesForOrder(
 
   const manualBarcode = String(options?.preBarcodedBarcode || '').trim();
   const canUseManualBarcode = !!manualBarcode && sampleTypeGroups.size === 1;
+  const collectedAt = String(options?.collectedAt || '').trim() || null;
+  const collectedBy = String(options?.collectedBy || '').trim() || null;
+  const isAutoCollected = !!collectedAt;
 
   const samplePlans = Array.from(sampleTypeGroups.entries()).map(([sampleType, testGroups], index) => {
     const sampleId = `${labCode}-${dateStr}-${idSequence.toString().padStart(4, '0')}-${getSampleTypeCode(sampleType)}`;
@@ -166,7 +171,9 @@ export async function createSamplesForOrder(
         qr_code_data: qrCodeData,
         container_type: getContainerType(sampleType),
         lab_id: labId,
-        status: 'created',
+        status: isAutoCollected ? 'collected' : 'created',
+        collected_at: collectedAt,
+        collected_by: isAutoCollected ? collectedBy : null,
         pre_barcoded: canUseManualBarcode && index === 0,
         barcode_source: canUseManualBarcode && index === 0 ? 'preprinted' : 'generated',
         barcode_assigned_at: now.toISOString(),
@@ -254,6 +261,19 @@ export async function createSamplesForOrder(
   );
 
   if (eventError) console.error('Error creating initial sample events:', eventError);
+
+  if (isAutoCollected) {
+    const { error: collectedEventError } = await supabase.from('sample_events').insert(
+      samplePlans.map((plan) => ({
+        sample_id: plan.row.id,
+        event_type: 'collected',
+        performed_by: collectedBy,
+        metadata: { source: 'auto_collect_on_registration' },
+      })),
+    );
+    if (collectedEventError) console.error('Error creating auto-collection sample events:', collectedEventError);
+  }
+
   return insertedSamples;
 }
 

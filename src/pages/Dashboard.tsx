@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from "react";
 import ReactDOM from "react-dom";
+import { useLocation, useNavigate } from "react-router-dom";
 import { endOfDay, format, isValid, parseISO, startOfDay, subDays } from "date-fns";
 import {
   Plus,
@@ -272,6 +273,20 @@ const Dashboard: React.FC = () => {
   const [doctorFilter, setDoctorFilter] = useState<string>("All");
   const [dashboardTab, setDashboardTab] = useState<"standard" | "patient-visits">("standard");
   const [bookingQueueOpen, setBookingQueueOpen] = useState(false);
+  const [pendingBookingsCount, setPendingBookingsCount] = useState(0);
+
+  useEffect(() => {
+    database.bookings
+      .list({ status: "pending" })
+      .then(({ data }) => {
+        if (data) {
+          setPendingBookingsCount(
+            (data as any[]).filter((b) => !["converted", "cancelled"].includes(b.status)).length
+          );
+        }
+      })
+      .catch(() => {});
+  }, []);
 
   // Date range state - default to last 5 calendar days
   const [dateFrom, setDateFrom] = useState<string>(() => {
@@ -283,6 +298,19 @@ const Dashboard: React.FC = () => {
   const [showOrderForm, setShowOrderForm] = useState(false);
   const [processingBooking, setProcessingBooking] = useState<any>(null); // State for booking being processed
   const [selectedOrder, setSelectedOrder] = useState<CardOrder | null>(null);
+
+  // Booking routed in from another page (e.g. Phlebo Collections "Process Order")
+  const routerLocation = useLocation();
+  const routerNavigate = useNavigate();
+  useEffect(() => {
+    const routedBooking = (routerLocation.state as any)?.processBooking;
+    if (routedBooking) {
+      setProcessingBooking(routedBooking);
+      setShowOrderForm(true);
+      // Clear the state so refresh/back doesn't reopen the form
+      routerNavigate(routerLocation.pathname, { replace: true, state: null });
+    }
+  }, [routerLocation.state]);
 
   // Auto-open collection modal after order creation
   const [pendingAutoCollectOrderId, setPendingAutoCollectOrderId] = useState<string | null>(null);
@@ -386,7 +414,8 @@ id, patient_id, patient_name, status, priority, order_date, expected_date, total
       `
       )
       .eq("lab_id", lab_id)
-      .order("order_date", { ascending: false });
+      .order("order_date", { ascending: false })
+      .order("id", { ascending: false });
 
     // Apply location filtering if required
     const { shouldFilter, locationIds } = await database.shouldFilterByLocation();
@@ -403,27 +432,64 @@ id, patient_id, patient_name, status, priority, order_date, expected_date, total
       q = q.gte("order_date", queryStart).lte("order_date", queryEnd);
     }
 
-    const { data: rows, error } = await q;
-
-    if (error) {
-      console.error("orders load error", error);
-      return;
+    // PostgREST caps every response at 1000 rows, so page through with
+    // range() until a short page signals the end.
+    const PAGE_SIZE = 1000;
+    const orderRows: OrderRow[] = [];
+    for (let from = 0; ; from += PAGE_SIZE) {
+      const { data: page, error } = await q.range(from, from + PAGE_SIZE - 1);
+      if (error) {
+        console.error("orders load error", error);
+        return;
+      }
+      orderRows.push(...((page || []) as OrderRow[]));
+      if (!page || page.length < PAGE_SIZE) break;
     }
 
-    const orderRows = (rows || []) as OrderRow[];
     const orderIds = orderRows.map((o) => o.id);
     if (orderIds.length === 0) {
       setOrders([]);
       return;
     }
 
-    // 2) view-based progress
-    const { data: prog, error: pErr } = await supabase
-      .from("v_order_test_progress_enhanced")
-      .select("*")
-      .in("order_id", orderIds);
+    // Run .in() lookups in id chunks so large order sets neither exceed URL
+    // limits nor get truncated by the 1000-row response cap, paging each
+    // chunk in case its result set alone exceeds the cap.
+    const fetchAllChunked = async (
+      ids: string[],
+      buildQuery: (chunkIds: string[]) => any,
+      label: string,
+    ): Promise<any[]> => {
+      const CHUNK = 100;
+      const chunks: string[][] = [];
+      for (let i = 0; i < ids.length; i += CHUNK) chunks.push(ids.slice(i, i + CHUNK));
+      const results = await Promise.all(chunks.map(async (chunkIds) => {
+        const rows: any[] = [];
+        const query = buildQuery(chunkIds);
+        for (let from = 0; ; from += PAGE_SIZE) {
+          const { data, error } = await query.range(from, from + PAGE_SIZE - 1);
+          if (error) {
+            console.error(`${label} load error`, error);
+            break;
+          }
+          rows.push(...(data || []));
+          if (!data || data.length < PAGE_SIZE) break;
+        }
+        return rows;
+      }));
+      return results.flat();
+    };
 
-    if (pErr) console.error("progress view error", pErr);
+    // 2) view-based progress
+    const prog = await fetchAllChunked(
+      orderIds,
+      (ids) =>
+        supabase
+          .from("v_order_test_progress_enhanced")
+          .select("*")
+          .in("order_id", ids),
+      "progress view",
+    );
 
     const byOrder = new Map<string, ProgressRow[]>();
     (prog || []).forEach((r) => {
@@ -434,27 +500,31 @@ id, patient_id, patient_name, status, priority, order_date, expected_date, total
 
     // 3) Fetch billing data in two batched requests. The previous per-order,
     // per-invoice fan-out produced dozens of duplicate requests on every refresh.
-    const { data: allInvoices, error: invoicesError } = await supabase
-      .from("invoices")
-      .select(`
-        id, order_id, invoice_date, subtotal, total, total_after_discount,
-        total_refunded_amount, whatsapp_sent_at, whatsapp_sent_via,
-        email_sent_at, email_sent_via, payment_reminder_count, last_reminder_at
-      `)
-      .in("order_id", orderIds)
-      .order("invoice_date", { ascending: false });
-
-    if (invoicesError) console.error("invoice batch load error", invoicesError);
+    const allInvoices = await fetchAllChunked(
+      orderIds,
+      (ids) =>
+        supabase
+          .from("invoices")
+          .select(`
+            id, order_id, invoice_date, subtotal, total, total_after_discount,
+            total_refunded_amount, whatsapp_sent_at, whatsapp_sent_via,
+            email_sent_at, email_sent_via, payment_reminder_count, last_reminder_at
+          `)
+          .in("order_id", ids)
+          .order("invoice_date", { ascending: false }),
+      "invoice batch",
+    );
 
     const invoiceIds = (allInvoices || []).map((invoice: any) => invoice.id);
-    const { data: allPayments, error: paymentsError } = invoiceIds.length > 0
-      ? await supabase
-        .from("payments")
-        .select("invoice_id, amount")
-        .in("invoice_id", invoiceIds)
-      : { data: [], error: null };
-
-    if (paymentsError) console.error("payment batch load error", paymentsError);
+    const allPayments = await fetchAllChunked(
+      invoiceIds,
+      (ids) =>
+        supabase
+          .from("payments")
+          .select("invoice_id, amount")
+          .in("invoice_id", ids),
+      "payment batch",
+    );
 
     const paidByInvoice = new Map<string, number>();
     (allPayments || []).forEach((payment: any) => {
@@ -509,11 +579,16 @@ id, patient_id, patient_name, status, priority, order_date, expected_date, total
     // These are charges added via the order modal but not yet on any invoice.
     // They must be added to orderAmount so due_amount is correct.
     const uninvoicedChargesMap = new Map<string, number>();
-    const { data: billingItemsRows } = await supabase
-      .from('order_billing_items')
-      .select('order_id, amount')
-      .in('order_id', orderIds)
-      .eq('is_invoiced', false);
+    const billingItemsRows = await fetchAllChunked(
+      orderIds,
+      (ids) =>
+        supabase
+          .from('order_billing_items')
+          .select('order_id, amount')
+          .in('order_id', ids)
+          .eq('is_invoiced', false),
+      'billing items',
+    );
     (billingItemsRows || []).forEach((row: any) => {
       uninvoicedChargesMap.set(row.order_id, (uninvoicedChargesMap.get(row.order_id) || 0) + (row.amount || 0));
     });
@@ -534,11 +609,16 @@ id, patient_id, patient_name, status, priority, order_date, expected_date, total
       }
     >();
 
-    const { data: reportsData } = await supabase
-      .from("reports")
-      .select("order_id, pdf_url, print_pdf_url, status, report_type, whatsapp_sent_at, whatsapp_sent_via, email_sent_at, email_sent_via, doctor_informed_at, doctor_sent_via")
-      .in("order_id", orderIds)
-      .eq("report_type", "final");
+    const reportsData = await fetchAllChunked(
+      orderIds,
+      (ids) =>
+        supabase
+          .from("reports")
+          .select("order_id, pdf_url, print_pdf_url, status, report_type, whatsapp_sent_at, whatsapp_sent_via, email_sent_at, email_sent_via, doctor_informed_at, doctor_sent_via")
+          .in("order_id", ids)
+          .eq("report_type", "final"),
+      "reports",
+    );
 
     (reportsData || []).forEach((r: any) => {
       reportMap.set(r.order_id, {
@@ -867,6 +947,8 @@ id,
 
           await createSamplesForOrder(order.id, testGroupsWithInfo, labId || order.lab_id, orderData.patient_id, {
             preBarcodedBarcode: orderData.__preBarcoded ? orderData.__preBarcodedBarcode : null,
+            collectedAt: order.sample_collected_at || orderData.sample_collected_at || null,
+            collectedBy: order.sample_collector_id || orderData.sample_collector_id || null,
           });
         }
       } catch (sampleCheckErr) {
@@ -1807,13 +1889,30 @@ id,
                 </button>
               </h1>
               {/* Center: Create Order — prominent CTA */}
-              <div className="flex justify-center">
+              <div className="flex justify-center items-center gap-3">
                 <button
                   onClick={() => setShowOrderForm(true)}
                   className="inline-flex items-center gap-2 px-8 py-3 bg-primary-600 text-white text-lg font-bold rounded-xl hover:bg-primary-700 active:bg-primary-800 shadow-lg hover:shadow-xl transition-all"
                 >
                   <Plus className="h-6 w-6" />
                   Create Order
+                </button>
+                <button
+                  onClick={() => setBookingQueueOpen((o) => !o)}
+                  className={`relative inline-flex items-center gap-2 px-4 py-3 rounded-xl font-semibold shadow-sm border transition-all ${
+                    bookingQueueOpen
+                      ? "bg-blue-50 text-blue-700 border-blue-300"
+                      : "bg-white text-gray-700 border-gray-200 hover:bg-blue-50 hover:border-blue-200"
+                  }`}
+                  title="View pending bookings"
+                >
+                  <Calendar className="h-5 w-5 text-blue-600" />
+                  Booking Queue
+                  {pendingBookingsCount > 0 && (
+                    <span className="absolute -top-2 -right-2 min-w-[22px] h-[22px] px-1.5 flex items-center justify-center rounded-full bg-red-500 text-white text-xs font-bold shadow">
+                      {pendingBookingsCount > 99 ? "99+" : pendingBookingsCount}
+                    </span>
+                  )}
                 </button>
               </div>
               {/* Right: secondary controls */}
@@ -1926,31 +2025,35 @@ id,
           </div>
         )}
 
-        {/* Booking Queue - only in Patient Visits tab */}
-        {dashboardTab === "patient-visits" && (
-          <div className="bg-white rounded-lg border border-gray-200 shadow-sm overflow-hidden mb-2">
-            <button
-              onClick={() => setBookingQueueOpen((o) => !o)}
-              className="w-full flex items-center justify-between px-5 py-3 hover:bg-gray-50 transition-colors"
-            >
-              <div className="flex items-center gap-2">
-                <Calendar className="h-4 w-4 text-blue-600" />
-                <span className="font-semibold text-gray-800">Booking Queue</span>
-              </div>
-              {bookingQueueOpen ? <ChevronUp className="h-4 w-4 text-gray-500" /> : <ChevronDown className="h-4 w-4 text-gray-500" />}
-            </button>
-            {bookingQueueOpen && (
-              <div className="border-t border-gray-100 p-4">
-                <BookingQueue
-                  onProcessBooking={(booking) => {
-                    setProcessingBooking(booking);
-                    setShowOrderForm(true);
-                  }}
-                />
-              </div>
-            )}
-          </div>
-        )}
+        {/* Booking Queue - available in all views */}
+        <div className="bg-white rounded-lg border border-gray-200 shadow-sm overflow-hidden mb-2">
+          <button
+            onClick={() => setBookingQueueOpen((o) => !o)}
+            className="w-full flex items-center justify-between px-5 py-3 hover:bg-gray-50 transition-colors"
+          >
+            <div className="flex items-center gap-2">
+              <Calendar className="h-4 w-4 text-blue-600" />
+              <span className="font-semibold text-gray-800">Booking Queue</span>
+              {pendingBookingsCount > 0 && (
+                <span className="min-w-[20px] h-5 px-1.5 flex items-center justify-center rounded-full bg-red-500 text-white text-xs font-bold">
+                  {pendingBookingsCount > 99 ? "99+" : pendingBookingsCount}
+                </span>
+              )}
+            </div>
+            {bookingQueueOpen ? <ChevronUp className="h-4 w-4 text-gray-500" /> : <ChevronDown className="h-4 w-4 text-gray-500" />}
+          </button>
+          {bookingQueueOpen && (
+            <div className="border-t border-gray-100 p-4">
+              <BookingQueue
+                onCountChange={setPendingBookingsCount}
+                onProcessBooking={(booking) => {
+                  setProcessingBooking(booking);
+                  setShowOrderForm(true);
+                }}
+              />
+            </div>
+          )}
+        </div>
 
         <SampleTransitWidget />
 

@@ -95,6 +95,12 @@ function App() {
   const [users, setUsers] = useState<LabUser[]>([]);
   const [selectedLabId, setSelectedLabId] = useState("");
   const [fixedUserLabIds, setFixedUserLabIds] = useState<Record<string, string>>({});
+  const [copySourceLabId, setCopySourceLabId] = useState("");
+  const [copyCategory, setCopyCategory] = useState("");
+  const [copyDepartment, setCopyDepartment] = useState("");
+  const [copySearch, setCopySearch] = useState("");
+  const [copyOverwriteExisting, setCopyOverwriteExisting] = useState(false);
+  const [copyBillingItemTypes, setCopyBillingItemTypes] = useState(true);
   const [search, setSearch] = useState("");
   const [trialDays, setTrialDays] = useState(7);
   const [loading, setLoading] = useState(false);
@@ -185,6 +191,12 @@ function App() {
     });
   }, [users]);
 
+  useEffect(() => {
+    if (!selectedLabId || copySourceLabId !== selectedLabId) return;
+    const fallbackSource = labs.find((lab) => lab.id !== selectedLabId);
+    setCopySourceLabId(fallbackSource?.id || "");
+  }, [copySourceLabId, labs, selectedLabId]);
+
   const signIn = async (event: FormEvent) => {
     event.preventDefault();
     if (!supabase) return;
@@ -272,6 +284,31 @@ VITE_SUPABASE_ANON_KEY=your-anon-key`}</pre>
     } finally {
       setLoading(false);
     }
+  };
+
+  const copyCatalogToSelectedLab = async () => {
+    if (!copySourceLabId) {
+      setError("Select a source lab first.");
+      return;
+    }
+    if (!selectedLabId) {
+      setError("Select a target lab first.");
+      return;
+    }
+    if (copySourceLabId === selectedLabId) {
+      setError("Source and target labs must be different.");
+      return;
+    }
+
+    await runAction("Catalog copy", "copy_lab_catalog", {
+      source_lab_id: copySourceLabId,
+      target_lab_id: selectedLabId,
+      category: copyCategory.trim() || undefined,
+      department: copyDepartment.trim() || undefined,
+      search: copySearch.trim() || undefined,
+      overwrite_existing: copyOverwriteExisting,
+      include_billing_item_types: copyBillingItemTypes,
+    });
   };
 
   if (!session) {
@@ -452,6 +489,49 @@ VITE_SUPABASE_ANON_KEY=your-anon-key`}</pre>
                     <button className="secondary" onClick={() => runAction("Section order repair", "repair_section_order", { lab_id: selectedLabId })} disabled={loading}>Repair section/order</button>
                     <button className="secondary" onClick={() => runAction("Dependency repair", "repair_dependencies", { lab_id: selectedLabId })} disabled={loading}>Repair analyte dependencies</button>
                   </div>
+                </div>
+
+                <div className="tool-card wide">
+                  <h3><Database size={18} /> Copy catalog between labs</h3>
+                  <p>Copies test groups, linked lab analytes, test-analyte layout, report sections, collection charges on tests, and optional extra charge types from a source lab into the selected target lab.</p>
+                  <div className="copy-grid">
+                    <label>
+                      Source lab
+                      <select value={copySourceLabId} onChange={(event) => setCopySourceLabId(event.target.value)}>
+                        <option value="">Select source lab</option>
+                        {labs.filter((lab) => lab.id !== selectedLabId).map((lab) => (
+                          <option key={lab.id} value={lab.id}>
+                            {lab.name} ({lab.code})
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label>
+                      Category filter
+                      <input placeholder="Optional, e.g. Radiology" value={copyCategory} onChange={(event) => setCopyCategory(event.target.value)} />
+                    </label>
+                    <label>
+                      Department filter
+                      <input placeholder="Optional, e.g. Radiology" value={copyDepartment} onChange={(event) => setCopyDepartment(event.target.value)} />
+                    </label>
+                    <label>
+                      Search filter
+                      <input placeholder="Optional name/code text" value={copySearch} onChange={(event) => setCopySearch(event.target.value)} />
+                    </label>
+                  </div>
+                  <div className="check-row">
+                    <label>
+                      <input type="checkbox" checked={copyBillingItemTypes} onChange={(event) => setCopyBillingItemTypes(event.target.checked)} />
+                      Copy extra charge types
+                    </label>
+                    <label>
+                      <input type="checkbox" checked={copyOverwriteExisting} onChange={(event) => setCopyOverwriteExisting(event.target.checked)} />
+                      Overwrite matching target tests/analytes/sections
+                    </label>
+                  </div>
+                  <button onClick={copyCatalogToSelectedLab} disabled={loading || !copySourceLabId || !selectedLabId}>
+                    Copy into {selectedLab.name}
+                  </button>
                 </div>
               </div>
 

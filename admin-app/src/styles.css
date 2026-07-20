@@ -337,6 +337,29 @@ label {
   color: #64748b;
 }
 
+.copy-grid {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.check-row {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+}
+
+.check-row label {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+}
+
+.check-row input {
+  width: auto;
+}
+
 .section-title {
   margin-top: 24px;
 }
@@ -388,7 +411,8 @@ pre {
   .workspace,
   .stats-grid,
   .details-grid,
-  .tool-grid {
+  .tool-grid,
+  .copy-grid {
     grid-template-columns: 1fr;
   }
 

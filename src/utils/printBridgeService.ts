@@ -1,4 +1,10 @@
 import { database, supabase } from './supabase';
+import {
+  getActiveLabelLayout,
+  getLabelZplMetrics,
+  normalizeLabelLayout,
+  type LabelLayout,
+} from './labelLayout';
 
 export type PrintBridgeStatus = 'disconnected' | 'connecting' | 'connected' | 'error';
 
@@ -77,7 +83,7 @@ function fit(value: string | undefined, length: number): string {
 }
 
 /**
- * Generate ZPL for a 2" x 1" thermal label at 203 dpi.
+ * Generate ZPL for a thermal label using the configured label layout.
  * Compatible with Zebra, TSC, and most ZPL-capable label printers.
  * Layout matches professional lab label format:
  * - Sample type (top left)
@@ -85,8 +91,11 @@ function fit(value: string | undefined, length: number): string {
  * - Barcode (center)
  * - Sample ID, date/time (below barcode)
  * - Referred by (bottom)
+ *
+ * Size, dpi and font scale come from the lab/location label layout, so this
+ * stays in step with the PDF renderer instead of being a second hardcoded copy.
  */
-export function generateBarcodeLabelZPL(data: BarcodeLabelData): string {
+export function generateBarcodeLabelZPL(data: BarcodeLabelData, layoutOverride?: LabelLayout): string {
   const { sampleId, patientName, sampleType, date, labelId, gender, age, collectionTime, referredBy } = data;
 
   const now = new Date();
@@ -108,38 +117,41 @@ export function generateBarcodeLabelZPL(data: BarcodeLabelData): string {
   // Referred by
   const displayReferredBy = fit(referredBy || '', 34);
 
+  const layout = layoutOverride ? normalizeLabelLayout(layoutOverride) : getActiveLabelLayout();
+  const m = getLabelZplMetrics(layout);
+
   return [
     '^XA',
     '^CI28',
     '~SD30',
-    '^PW406',
-    '^LL244',
+    `^PW${m.printWidthDots}`,
+    `^LL${m.labelLengthDots}`,
     '^LH0,0',
 
-    // Row 1: Sample Type (top left) - consistent 22pt font
-    '^FO12,8^A0N,22,22',
+    // Row 1: Sample Type (top left)
+    `^FO${m.leftDots},${m.typeYDots}^A0N,${m.typeFontDots},${m.typeFontDots}`,
     `^FD${displayType}.^FS`,
 
-    // Row 2: Patient Name + Gender/Age (same line) - consistent 24pt font
-    '^FO12,34^A0N,24,24',
+    // Row 2: Patient Name + Gender/Age (same line)
+    `^FO${m.leftDots},${m.nameYDots}^A0N,${m.nameFontDots},${m.nameFontDots}`,
     `^FD${displayName}^FS`,
-    '^FO270,34^A0N,24,24',
+    `^FO${m.genderAgeXDots},${m.nameYDots}^A0N,${m.nameFontDots},${m.nameFontDots}`,
     `^FD${displayGenderAge}^FS`,
 
     // Row 3: Barcode (centered, thick bars for better scanning)
-    '^FO40,64^BY3,3,55',
-    '^BCN,55,N,N,N',
+    `^FO${m.barcodeXDots},${m.barcodeYDots}^BY${m.moduleWidth},3,${m.barcodeHeightDots}`,
+    `^BCN,${m.barcodeHeightDots},N,N,N`,
     `^FD${barcodeValue}^FS`,
 
-    // Row 4: Sample ID (left) + Date/Time (right) - consistent 22pt font
-    '^FO12,132^A0N,22,22',
+    // Row 4: Sample ID (left) + Date/Time (right)
+    `^FO${m.leftDots},${m.infoYDots}^A0N,${m.infoFontDots},${m.infoFontDots}`,
     `^FD${displaySampleId}^FS`,
-    '^FO210,132^A0N,22,22',
+    `^FO${m.dateTimeXDots},${m.infoYDots}^A0N,${m.infoFontDots},${m.infoFontDots}`,
     `^FD${dateTimeStr}^FS`,
 
-    // Row 5: Referred By (bottom, if provided) - consistent 22pt font
+    // Row 5: Referred By (bottom, if provided)
     ...(displayReferredBy ? [
-      '^FO12,160^A0N,22,22',
+      `^FO${m.leftDots},${m.referredByYDots}^A0N,${m.infoFontDots},${m.infoFontDots}`,
       `^FD${displayReferredBy}^FS`,
     ] : []),
 

@@ -56,10 +56,19 @@ const TestGroupDetailModal: React.FC<TestGroupDetailModalProps> = ({ testGroup, 
   const displayByAnalyteId = new Map(
     (testGroup.analyteDisplay || []).map((item) => [item.analyte_id, item])
   );
+  const seenAnalyteIds = new Set<string>();
   const includedAnalytes = analytes
-    .filter(analyte =>
-      testGroup.analytes && Array.isArray(testGroup.analytes) && testGroup.analytes.includes(analyte.id)
-    )
+    .filter(analyte => {
+      if (!(testGroup.analytes && Array.isArray(testGroup.analytes) && testGroup.analytes.includes(analyte.id))) {
+        return false;
+      }
+      // The master analyte list has one entry per lab_analytes row, so the same
+      // global analyte id can appear multiple times (e.g. multiple sample types).
+      // Keep only the first occurrence to avoid rendering duplicate rows.
+      if (seenAnalyteIds.has(analyte.id)) return false;
+      seenAnalyteIds.add(analyte.id);
+      return true;
+    })
     .map((analyte, originalIndex) => ({
       ...analyte,
       sectionHeading: displayByAnalyteId.get(analyte.id)?.section_heading || null,

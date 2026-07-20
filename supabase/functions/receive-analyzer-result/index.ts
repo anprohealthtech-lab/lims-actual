@@ -12,20 +12,28 @@ const corsHeaders = {
 
 // Parse HL7 message type from MSH segment
 function parseMessageType(rawContent: string): { type: string; controlId: string } {
-  const mshMatch = rawContent.match(/MSH\|[^|]*\|([^|]*)\|([^|]*)\|([^|]*)\|([^|]*)\|([^|]*)\|[^|]*\|([^|]*)\|([^|]*)/i)
-  
-  if (mshMatch) {
-    return {
-      type: mshMatch[6] || 'UNKNOWN',    // Message Type (ORM, ORU, ACK)
-      controlId: mshMatch[7] || ''       // Message Control ID
+  // Positional MSH parse. Some analyzers (e.g. Peerless HA560) emit malformed MSH
+  // headers with shifted fields, so fall back to scanning MSH fields for a
+  // message-type-shaped token (ORU^R01, ORM^O01, ACK, ...).
+  const mshSegment = rawContent.split(/\r|\n/).find((s) => s.trim().startsWith('MSH'))
+  if (mshSegment) {
+    const fields = mshSegment.split('|')
+    const typePattern = /^(OR[UMR]|ACK|NAK|QRY|QCK|ORR|OUL)(\^[A-Z0-9]+)?$/i
+    const typeIndex = fields.findIndex((f) => typePattern.test(f.trim()))
+    if (typeIndex !== -1) {
+      return {
+        type: fields[typeIndex].trim().toUpperCase(),
+        controlId: fields[typeIndex + 1]?.trim() || ''
+      }
     }
+    return { type: 'UNKNOWN', controlId: '' }
   }
-  
+
   // Try ASTM format
   if (rawContent.includes('H|') || rawContent.startsWith('1H')) {
     return { type: 'ASTM_RESULT', controlId: '' }
   }
-  
+
   return { type: 'UNKNOWN', controlId: '' }
 }
 
@@ -438,13 +446,20 @@ async function storeResults(
   let log = ''
   let mappedCount = 0
   let unmappedCount = 0
-  
+
+  // An empty barcode must never reach the wildcard queries below —
+  // '%%' matches an arbitrary sample/order in the lab.
+  const barcode = String(parsedData.barcode ?? '').trim()
+  if (!barcode) {
+    return { success: false, mapped: 0, unmapped: parsedData.results?.length || 0, log: 'No sample barcode parsed from message' }
+  }
+
   // Find sample by barcode
   const { data: samples } = await supabase
     .from('samples')
     .select('id, order_id, lab_id, barcode')
     .eq('lab_id', labId)
-    .ilike('barcode', `%${parsedData.barcode}%`)
+    .ilike('barcode', `%${barcode}%`)
     .limit(1)
   
   const sample = samples?.[0]
@@ -455,11 +470,11 @@ async function storeResults(
       .from('orders')
       .select('id, sample_id, patient_id, lab_id')
       .eq('lab_id', labId)
-      .ilike('sample_id', `%${parsedData.barcode}%`)
+      .ilike('sample_id', `%${barcode}%`)
       .limit(1)
-    
+
     if (!orders?.[0]) {
-      log = `Sample not found for barcode: ${parsedData.barcode}`
+      log = `Sample not found for barcode: ${barcode}`
       return { success: false, mapped: 0, unmapped: parsedData.results?.length || 0, log }
     }
     
@@ -701,12 +716,13 @@ OUTPUT JSON:
   
   log += `Mapped ${mappedCount}/${parsedData.results.length} results. `
   
-  // Update order queue if exists
+  // Update order queue if exists. Include 'sent' — analyzers that never send an
+  // application-level ACK would otherwise leave the entry stuck at 'sent' forever.
   await supabase
     .from('analyzer_order_queue')
     .update({ status: 'completed', completed_at: new Date().toISOString() })
     .eq('order_id', order.id)
-    .eq('status', 'acknowledged')
+    .in('status', ['acknowledged', 'sent'])
   
   return { success: true, mapped: mappedCount, unmapped: unmappedCount, log }
 }

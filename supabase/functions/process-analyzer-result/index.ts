@@ -868,7 +868,8 @@ function parseHl7ResultsDeterministic(rawContent: string): {
   for (const segment of segments) {
     const fields = segment.split('|')
     if (fields[0] === 'OBR') {
-      sampleBarcode = firstComponent(fields[3]) || firstComponent(fields[2]) || sampleBarcode
+      // Some analyzers (e.g. Peerless HA560) carry the sample ID in OBR-18 (Placer Field 1)
+      sampleBarcode = firstComponent(fields[3]) || firstComponent(fields[2]) || firstComponent(fields[18]) || sampleBarcode
     } else if (fields[0] === 'ORC') {
       sampleBarcode = firstComponent(fields[2]) || sampleBarcode
     } else if (fields[0] === 'PID') {
@@ -1148,18 +1149,25 @@ Do NOT include or describe binary histogram data — it is already extracted sep
     let foundOrderId: string | null = null
     const barcode = String(parsedData.sample_barcode).trim()
 
-    // A. Find Sample (using robust WILDCARD search)
-    const { data: sampleList, error: sampleError } = await supabase
-        .from('samples')
-        .select('id, order_id, lab_id, barcode')
-        .eq('lab_id', record.lab_id)
-        .ilike('barcode', `%${barcode}%`)
-        .limit(1)
-
-    const sample = sampleList && sampleList.length > 0 ? sampleList[0] : null
+    // A. Find Sample (using robust WILDCARD search). An empty barcode must never
+    // reach the wildcard query — '%%' matches an arbitrary sample in the lab.
+    let sample: any = null
+    let sampleError: any = null
+    if (barcode) {
+        const { data: sampleList, error: sampleLookupError } = await supabase
+            .from('samples')
+            .select('id, order_id, lab_id, barcode')
+            .eq('lab_id', record.lab_id)
+            .ilike('barcode', `%${barcode}%`)
+            .limit(1)
+        sample = sampleList && sampleList.length > 0 ? sampleList[0] : null
+        sampleError = sampleLookupError
+    }
 
     if (sampleError || !sample) {
-       statusLog += `Warning: Sample with barcode '${barcode}' not found (Lab: ${record.lab_id}).`
+       statusLog += barcode
+           ? `Warning: Sample with barcode '${barcode}' not found (Lab: ${record.lab_id}).`
+           : `Warning: No sample barcode could be parsed from the message (Lab: ${record.lab_id}).`
     } else {
         foundOrderId = sample.order_id ?? null
         // B. Process Results

@@ -122,6 +122,7 @@ export const handler: Handler = async (event, context) => {
       .from('reports')
       .update({
         pdf_url: finalPdfUrl,
+        merged_at: new Date().toISOString(),
         updated_at: new Date().toISOString()
       })
       .eq('id', report.id);
@@ -129,6 +130,20 @@ export const handler: Handler = async (event, context) => {
     if (updateError) {
       throw new Error(`Database Update Failed: ${updateError.message}`);
     }
+
+    // 7. Move outsourced workflow forward (non-blocking bookkeeping)
+    await supabase
+      .from('outsourced_reports')
+      .update({ merge_status: 'completed' })
+      .eq('order_id', order_id)
+      .eq('file_url', outsourced_report_url);
+
+    await supabase
+      .from('results')
+      .update({ outsourced_status: 'merged' })
+      .eq('order_id', order_id)
+      .not('outsourced_to_lab_id', 'is', null)
+      .in('outsourced_status', ['received']);
 
     return {
       statusCode: 200,

@@ -9,7 +9,7 @@ const corsHeaders = {
 
 const CLAUDE_HAIKU_MODEL = 'claude-haiku-4-5-20251001'
 
-type HelperAction = 'layout_order' | 'dropdown_values'
+type HelperAction = 'layout_order' | 'dropdown_values' | 'calculated_fields'
 
 interface HelperRequest {
   action: HelperAction
@@ -32,6 +32,9 @@ interface HelperRequest {
     reference_range?: string | null
     sort_order?: number
     section_heading?: string | null
+    is_calculated?: boolean
+    formula?: string | null
+    formula_variables?: string[]
   }>
 }
 
@@ -68,6 +71,9 @@ function buildPrompt(body: HelperRequest): string {
     rr: item.reference_range || '',
     order: item.sort_order || 0,
     section: item.section_heading || '',
+    calc: item.is_calculated || false,
+    formula: item.formula || '',
+    fvars: item.formula_variables || [],
   }))
 
   if (body.action === 'layout_order') {
@@ -93,6 +99,45 @@ Return ONLY JSON:
       "analyte_id": "same id from input",
       "sort_order": 1,
       "section_heading": "SECTION HEADING"
+    }
+  ],
+  "notes": "short optional note"
+}`
+  }
+
+  if (body.action === 'calculated_fields') {
+    return `You are configuring calculated (auto-computed) parameters for a laboratory test group.
+
+TEST GROUP:
+${JSON.stringify(body.test_group)}
+
+ANALYTES (id, la=lab_analyte_id, n=name, c=code, u=unit, cat=category, rr=reference_range, calc=already_marked_calculated, formula=existing_formula, fvars=existing_variables):
+${JSON.stringify(compactAnalytes)}
+
+Task:
+- Identify every analyte in THIS group that is clinically a calculated/derived parameter, even if "calc" is currently false.
+- Common calculated parameters include: Absolute cell counts (e.g. Absolute Neutrophil Count = Total WBC * Neutrophil% / 100), MCV, MCH, MCHC, Red Cell Indices, A/G Ratio (Albumin / Globulin), Globulin (Total Protein - Albumin), Indirect Bilirubin (Total - Direct), LDL Cholesterol (Friedewald), VLDL (Triglycerides / 5), Non-HDL Cholesterol, Cholesterol/HDL ratio, eGFR, Anion Gap, Corrected Calcium, Transferrin Saturation, FEV1/FVC ratio, BMI.
+- For each calculated analyte, write a math formula using SHORT UPPERCASE variable names (e.g. WBC, NEUT_PCT, ALB, TP, TBIL, DBIL, TG, HDL, TC).
+- Every variable used in the formula MUST map to another analyte that EXISTS in the ANALYTES list above (match by name/code/unit). List these mappings in "sources" with the exact input analyte id.
+- Do NOT invent source analytes that are not present in the group. If a required source analyte is missing from the group, skip that calculated analyte.
+- Use calculation_result_type "numeric" for math formulas.
+- Do NOT mark plain measured analytes (directly entered from an instrument) as calculated.
+- If "calc" is already true and the formula/variables look correct, you may still return it to reaffirm the mapping.
+
+Return ONLY JSON:
+{
+  "calculated": [
+    {
+      "analyte_id": "input analyte id of the calculated parameter",
+      "lab_analyte_id": "input la value if present",
+      "formula": "WBC * NEUT_PCT / 100",
+      "calculation_result_type": "numeric",
+      "formula_description": "Absolute Neutrophil Count from Total WBC and Neutrophil percentage",
+      "sources": [
+        { "analyte_id": "input analyte id used as source", "variable_name": "WBC" },
+        { "analyte_id": "input analyte id used as source", "variable_name": "NEUT_PCT" }
+      ],
+      "reason": "short reason"
     }
   ],
   "notes": "short optional note"
@@ -195,7 +240,7 @@ serve(async (req) => {
     if (!apiKey) throw new Error('ANTHROPIC_API_KEY not configured')
 
     const body = await req.json() as HelperRequest
-    if (!['layout_order', 'dropdown_values'].includes(body.action)) {
+    if (!['layout_order', 'dropdown_values', 'calculated_fields'].includes(body.action)) {
       throw new Error('Unsupported helper action')
     }
     if (!Array.isArray(body.analytes) || body.analytes.length === 0) {

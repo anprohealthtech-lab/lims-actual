@@ -79,6 +79,7 @@ const navigation = [
   // Sample Transit (Intra-Lab)
   { name: 'Accession', href: '/accession', icon: TestTube, category: 'transit' },
   { name: 'Sample Transit', href: '/sample-transit', icon: Truck, category: 'transit' },
+  { name: 'My Collections', href: '/phlebo', icon: Truck, category: 'transit' },
 
   // Quality Control - AI-First QC Module
   { name: 'Quality Control', href: '/quality-control', icon: Shield, category: 'qc' },

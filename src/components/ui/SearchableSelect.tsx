@@ -1,5 +1,46 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useMemo } from 'react';
 import { ChevronDown, Search, X, Check } from 'lucide-react';
+
+// --- Fuzzy matching ---------------------------------------------------------
+// Every whitespace-separated query token must match the option's text, either
+// as a substring or as an in-order character subsequence. Tokens can be out of
+// order, so "abdomen usg", "usg abd" and "uwab" all match "USG Whole Abdomen".
+// Results are ranked: prefix > word-start > substring > subsequence.
+
+const subsequenceScore = (text: string, token: string): number => {
+  let ti = 0;
+  let firstIdx = -1;
+  let lastIdx = -1;
+  for (let i = 0; i < text.length && ti < token.length; i++) {
+    if (text[i] === token[ti]) {
+      if (firstIdx === -1) firstIdx = i;
+      lastIdx = i;
+      ti++;
+    }
+  }
+  if (ti < token.length) return 0;
+  // Tighter character clusters rank higher than scattered matches
+  return 10 + (token.length / (lastIdx - firstIdx + 1)) * 10;
+};
+
+const tokenScore = (text: string, token: string): number => {
+  const idx = text.indexOf(token);
+  if (idx === 0) return 100;
+  if (idx > 0 && !/[a-z0-9]/.test(text[idx - 1])) return 80; // starts a word
+  if (idx > 0) return 60;
+  return subsequenceScore(text, token);
+};
+
+const optionScore = (option: Option, tokens: string[]): number => {
+  const haystack = `${option.label} ${option.description ?? ''} ${option.badge ?? ''}`.toLowerCase();
+  let total = 0;
+  for (const token of tokens) {
+    const score = tokenScore(haystack, token);
+    if (score === 0) return 0;
+    total += score;
+  }
+  return total;
+};
 
 interface Option {
   id: string;
@@ -42,11 +83,16 @@ const SearchableSelect: React.FC<SearchableSelectProps> = ({
 
   const selectedOption = options.find(opt => opt.id === value);
 
-  // Filter options based on search term
-  const filteredOptions = options.filter(option =>
-    option.label.toLowerCase().includes(searchTerm.toLowerCase()) ||
-    option.description?.toLowerCase().includes(searchTerm.toLowerCase())
-  );
+  // Fuzzy-filter options and rank best matches first
+  const filteredOptions = useMemo(() => {
+    const tokens = searchTerm.toLowerCase().split(/\s+/).filter(Boolean);
+    if (tokens.length === 0) return options;
+    return options
+      .map((option, index) => ({ option, index, score: optionScore(option, tokens) }))
+      .filter(item => item.score > 0)
+      .sort((a, b) => b.score - a.score || a.index - b.index)
+      .map(item => item.option);
+  }, [options, searchTerm]);
 
   // Close dropdown when clicking outside
   useEffect(() => {
@@ -160,6 +206,16 @@ const SearchableSelect: React.FC<SearchableSelectProps> = ({
                 type="text"
                 value={searchTerm}
                 onChange={(e) => setSearchTerm(e.target.value)}
+                onKeyDown={(e) => {
+                  // Enter picks the top match instead of submitting an enclosing form
+                  if (e.key === 'Enter') {
+                    e.preventDefault();
+                    if (filteredOptions.length > 0) handleSelect(filteredOptions[0]);
+                  } else if (e.key === 'Escape') {
+                    e.stopPropagation();
+                    setIsOpen(false);
+                  }
+                }}
                 placeholder={searchPlaceholder}
                 className="w-full pl-10 pr-4 py-2 text-sm border border-gray-300 rounded focus:outline-none focus:ring-1 focus:ring-blue-500 focus:border-blue-500"
                 autoFocus

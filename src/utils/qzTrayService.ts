@@ -22,6 +22,7 @@ import {
 } from './printBridgeService';
 import JsBarcode from 'jsbarcode';
 import { generateBarcodeLabelsPDFBlob, generateBarcodeSync } from './barcodeGenerator';
+import { getActiveLabelLayout, getLabelCellSize } from './labelLayout';
 
 export type QZConnectionStatus = PrintBridgeStatus;
 export type { BarcodeLabelData };
@@ -64,6 +65,11 @@ export function printBarcodeLabelsInBrowser(
     return;
   }
 
+  const layout = getActiveLabelLayout();
+  // Render the barcode bitmap at a resolution proportional to the label so a
+  // 4" label is not an upscaled 2" image.
+  const barcodeScale = Math.max(1, Math.round(getLabelCellSize(layout).width / 50.8));
+
   const printableLabels = labels.map((label) => {
     const collectionDate = label.date || new Date().toLocaleDateString('en-GB', {
       day: '2-digit',
@@ -79,11 +85,11 @@ export function printBarcodeLabelsInBrowser(
     return {
       sampleId: label.labelId || label.sampleId,
       barcodeDataUrl: generateBarcodeSync(JsBarcode, label.sampleId, {
-        width: 2,
-        height: 50,
+        width: 2 * barcodeScale,
+        height: 50 * barcodeScale,
         displayValue: true,
-        fontSize: 12,
-        margin: 5,
+        fontSize: 12 * barcodeScale,
+        margin: 5 * barcodeScale,
       }),
       metadata: {
         sampleType: label.sampleType,

@@ -5,6 +5,7 @@ import { useAuth } from '../../../contexts/AuthContext';
 import { calculateFlagsForResults } from '../../../utils/flagCalculation';
 import { toast } from 'react-hot-toast';
 import SectionEditor from '../SectionEditor';
+import OutsourcedReportUpload from '../OutsourcedReportUpload';
 import { usePermissions } from '../../../hooks/usePermissions';
 import { getResultEntryPermissionForDepartment, getSectionEditPermissionForDepartment } from '../../../utils/resultPermissions';
 
@@ -505,6 +506,20 @@ const ManualEntryForm: React.FC<ManualEntryFormProps> = ({ order, testGroup, onS
           </p>
         )}
       </div>
+
+      {/* Outsourced test: attach the report received from the external lab */}
+      <OutsourcedReportUpload
+        orderId={order.id}
+        testGroupId={testGroup.id}
+        labId={order.lab_id}
+        patientId={order.patient_id}
+        ensureResultId={async () => {
+          if (sectionResultId) return sectionResultId;
+          const record = await ensureResultRecord();
+          if (record?.id) setSectionResultId(record.id);
+          return record?.id || null;
+        }}
+      />
 
       {/* Stock warnings for mapped inventory items */}
       {stockWarnings.length > 0 && (

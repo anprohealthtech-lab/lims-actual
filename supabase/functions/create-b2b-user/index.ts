@@ -121,6 +121,25 @@ Deno.serve(async (req) => {
       // Continue - not critical
     }
 
+    // Record the portal password so lab admins can look it up later
+    // (portal_credentials is admin-read-only via RLS, written only with service role)
+    try {
+      const { error: credError } = await supabaseAdmin
+        .from('portal_credentials')
+        .upsert({
+          lab_id,
+          credential_type: 'b2b_portal',
+          auth_user_id: userId,
+          account_id,
+          email,
+          password_text: password,
+          updated_at: new Date().toISOString(),
+        }, { onConflict: 'lab_id,credential_type,email' });
+      if (credError) console.warn('[CREATE-B2B-USER] Could not store portal credential:', credError.message);
+    } catch (credErr) {
+      console.warn('[CREATE-B2B-USER] Credential store failed:', credErr);
+    }
+
     console.log('[CREATE-B2B-USER] SUCCESS: B2B user created');
 
     return json({
